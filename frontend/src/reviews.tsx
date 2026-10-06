@@ -1,0 +1,843 @@
+import { useState } from "react";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
+import {
+  ChevronRight,
+  GitPullRequest,
+  Play,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
+import {
+  useAction,
+  useApi,
+  type Repository,
+  type Run,
+  type Schema,
+} from "./api";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "./components/ui/sheet";
+import {
+  active,
+  Code,
+  date,
+  Empty,
+  ErrorNotice,
+  ExternalLink,
+  Field,
+  Loading,
+  Markdown,
+  NativeSelect,
+  PageTitle,
+  Status,
+} from "./components/common";
+import { RepositorySettings } from "./settings";
+
+export function Repositories({ admin }: { admin: boolean }) {
+  const repos = useApi<Repository[]>("/repositories", true);
+  const [params, setParams] = useSearchParams();
+  const selected =
+    repos.data?.find((repo) => repo.id === Number(params.get("repo"))) ??
+    repos.data?.[0];
+  const pulls = useApi<Schema["PullRequestOut"][]>(
+    `/repositories/${selected?.id}/pulls`,
+    true,
+    !!selected,
+  );
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState("open");
+  const [edit, setEdit] = useState(false);
+  const action = useAction();
+  if (repos.isPending) return <Loading />;
+  const rows =
+    pulls.data?.filter(
+      (pr) =>
+        (scope === "all" || pr.state === scope) &&
+        `${pr.title} ${pr.number} ${pr.author}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
+    ) ?? [];
+  return (
+    <>
+      <PageTitle
+        title="Repositories"
+        actions={
+          admin && (
+            <Button asChild variant="outline">
+              <Link to="/settings?tab=github">Connect repository</Link>
+            </Button>
+          )
+        }
+      >
+        Follow each pull request from first review to final resolution.
+      </PageTitle>
+      <ErrorNotice error={repos.error || action.error} />
+      {!repos.data?.length ? (
+        <Empty title="Connect your first repository">
+          {admin ? (
+            <>
+              Install your GitHub App, then connect the installation in{" "}
+              <Link className="underline" to="/settings?tab=github">
+                settings
+              </Link>
+              .
+            </>
+          ) : (
+            "Ask your administrator to connect a repository you can access on GitHub."
+          )}
+        </Empty>
+      ) : (
+        <>
+          <div className="mb-7 flex flex-wrap items-center gap-3">
+            <label className="sr-only" htmlFor="repository">
+              Repository
+            </label>
+            <NativeSelect
+              id="repository"
+              className="w-full sm:w-80"
+              value={selected?.id}
+              onChange={(e) => setParams({ repo: e.target.value })}
+            >
+              {repos.data.map((repo) => (
+                <option key={repo.id} value={repo.id}>
+                  {repo.full_name}
+                </option>
+              ))}
+            </NativeSelect>
+            <Status value={selected?.enabled ? "enabled" : "paused"} />
+            <div className="ml-auto flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={action.isPending}
+                onClick={() =>
+                  action.mutate({ path: `/repositories/${selected!.id}/sync` })
+                }
+              >
+                <RefreshCw className="size-4" />
+                Sync
+              </Button>
+              {admin && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEdit(true)}
+                >
+                  <SlidersHorizontal className="size-4" />
+                  Configure
+                </Button>
+              )}
+            </div>
+          </div>
+          {selected && !selected.enabled && (
+            <div className="mb-6 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+              Reviews are paused for this repository.{" "}
+              {admin
+                ? "Choose an AI connection in Configure to enable them."
+                : "Your administrator can enable them."}
+            </div>
+          )}
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <h2 className="font-semibold">Pull requests</h2>
+              <span className="text-xs text-muted-foreground tabular">
+                {rows.length}
+              </span>
+            </div>
+            <div className="flex w-full gap-2 sm:w-auto">
+              <div className="relative min-w-0 flex-1">
+                <Search
+                  aria-hidden="true"
+                  className="absolute left-3 top-2.5 size-4 text-muted-foreground"
+                />
+                <Input
+                  aria-label="Search pull requests"
+                  className="pl-9 sm:w-60"
+                  placeholder="Search pull requests…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <NativeSelect
+                aria-label="Pull request state"
+                className="w-28"
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+              >
+                <option value="open">Open</option>
+                <option value="merged">Merged</option>
+                <option value="closed">Closed</option>
+                <option value="all">All</option>
+              </NativeSelect>
+            </div>
+          </div>
+          <ErrorNotice error={pulls.error} />
+          {pulls.isPending ? (
+            <Loading />
+          ) : rows.length ? (
+            <div className="overflow-hidden rounded-lg border bg-card divide-y">
+              {rows.map((pr) => (
+                <Link
+                  key={pr.id}
+                  to={`/pulls/${pr.id}`}
+                  className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
+                >
+                  <GitPullRequest
+                    aria-hidden="true"
+                    className="mt-1 size-4 shrink-0 text-primary"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="break-words text-sm font-medium group-hover:underline">
+                      {pr.title}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        #{pr.number} · {pr.author}
+                      </span>
+                      <span className="max-w-60 truncate font-mono">
+                        {pr.head_ref}
+                      </span>
+                      {pr.draft && <span>Draft</span>}
+                      {pr.fork && <span>Fork · manual review</span>}
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
+                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
+                      <span className="text-xs text-muted-foreground">
+                        {pr.open_findings} open findings
+                      </span>
+                    </div>
+                  </div>
+                  <div className="hidden items-center gap-6 sm:flex">
+                    <span className="text-xs text-muted-foreground tabular">
+                      {pr.open_findings} open findings
+                    </span>
+                    <Status value={pr.latest_run?.status ?? "not_reviewed"} />
+                  </div>
+                  <ChevronRight
+                    aria-hidden="true"
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <Empty
+              title={
+                query
+                  ? "No matching pull requests"
+                  : "No pull requests here yet"
+              }
+            >
+              {query
+                ? "Try another search or change the state filter."
+                : "Use Sync to fetch pull requests from GitHub. Reviews begin once this repository is enabled."}
+            </Empty>
+          )}
+          {selected && (
+            <Sheet open={edit} onOpenChange={setEdit}>
+              <SheetContent className="sm:max-w-xl overflow-y-auto">
+                <SheetHeader>
+                  <SheetTitle>Repository configuration</SheetTitle>
+                  <SheetDescription>{selected.full_name}</SheetDescription>
+                </SheetHeader>
+                <div className="p-6">
+                  <RepositorySettings
+                    key={selected.id}
+                    repository={selected}
+                    onSaved={() => setEdit(false)}
+                  />
+                </div>
+              </SheetContent>
+            </Sheet>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function RunList({ runs }: { runs: Run[] }) {
+  if (!runs.length)
+    return (
+      <Empty title="No reviews yet">
+        Start a review to record findings and coverage for this commit.
+      </Empty>
+    );
+  return (
+    <div className="divide-y rounded-lg border bg-card">
+      {runs.map((run) => (
+        <Link
+          className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
+          key={run.id}
+          to={`/runs/${run.id}`}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">{date(run.created_at)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              <span className="capitalize">{run.trigger}</span> ·{" "}
+              <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
+              {String(
+                (run.config.connection as Record<string, unknown> | undefined)
+                  ?.model ?? "",
+              )}
+            </div>
+          </div>
+          <Status value={run.status} />
+          <span className="text-xs text-muted-foreground">
+            GitHub: {run.publication.replaceAll("_", " ")}
+          </span>
+          <ChevronRight className="size-4 text-muted-foreground" />
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+export function PullDetail() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
+  const action = useAction<Run>();
+  const [status, setStatus] = useState("open");
+  const [severity, setSeverity] = useState("all");
+  const [finding, setFinding] = useState<string | null>(null);
+  if (query.isPending) return <Loading />;
+  if (!query.data) return <ErrorNotice error={query.error} />;
+  const {
+    pull_request: pr,
+    repository,
+    runs,
+    findings,
+    can_write,
+  } = query.data;
+  const running = runs.some((run) => active(run.status));
+  const observed = runs.find((run) =>
+    ["completed", "partial"].includes(run.status),
+  );
+  const visible = findings.filter(
+    (item) =>
+      (status === "all" || item.status === status) &&
+      (severity === "all" || item.severity === severity),
+  );
+  const count = (state: string) =>
+    findings.filter((item) => item.status === state).length;
+  return (
+    <>
+      <PageTitle
+        eyebrow={
+          <Link className="hover:underline" to={`/?repo=${repository.id}`}>
+            {repository.full_name} / Pull request #{pr.number}
+          </Link>
+        }
+        title={pr.title}
+        actions={
+          <>
+            <ExternalLink href={pr.url}>GitHub</ExternalLink>
+            {can_write && (
+              <Button
+                disabled={
+                  action.isPending ||
+                  running ||
+                  pr.state !== "open" ||
+                  !repository.enabled
+                }
+                onClick={async () => {
+                  const run = await action
+                    .mutateAsync({ path: `/pulls/${id}/runs` })
+                    .catch(() => null);
+                  if (run) navigate(`/runs/${run.id}`);
+                }}
+              >
+                <Play className="size-4" />
+                {running ? "Review in progress" : "Run review"}
+              </Button>
+            )}
+          </>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <Status value={pr.state} />
+          <span>@{pr.author}</span>
+          <code className="max-w-full truncate text-xs">
+            {pr.head_ref} · {pr.head_sha.slice(0, 7)}
+          </code>
+          {pr.fork && <span>Fork reviews require a manual start.</span>}
+        </div>
+      </PageTitle>
+      <ErrorNotice error={action.error || query.error} />
+      <div className="mb-8 grid grid-cols-3 border-y py-5">
+        <div>
+          <p className="text-2xl font-semibold tabular">{count("open")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Open findings</p>
+        </div>
+        <div>
+          <p className="text-2xl font-semibold tabular">{count("resolved")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Resolved</p>
+        </div>
+        <div>
+          <p className="text-2xl font-semibold tabular">{runs.length}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Review runs</p>
+        </div>
+      </div>
+      <Tabs defaultValue="findings">
+        <TabsList className="mb-6">
+          <TabsTrigger value="findings">Findings</TabsTrigger>
+          <TabsTrigger value="history">Run history</TabsTrigger>
+        </TabsList>
+        <TabsContent value="findings">
+          <div className="mb-4 flex flex-wrap gap-2">
+            <NativeSelect
+              aria-label="Finding status"
+              className="w-40"
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+            >
+              <option value="open">Open findings</option>
+              <option value="resolved">Resolved</option>
+              <option value="dismissed">Dismissed</option>
+              <option value="all">All findings</option>
+            </NativeSelect>
+            <NativeSelect
+              aria-label="Finding severity"
+              className="w-36"
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value)}
+            >
+              <option value="all">All severities</option>
+              {["critical", "high", "medium", "low"].map((value) => (
+                <option key={value} value={value}>
+                  {value[0].toUpperCase() + value.slice(1)}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          {visible.length ? (
+            <div className="divide-y overflow-hidden rounded-lg border bg-card">
+              {visible.map((item) => (
+                <button
+                  key={item.id}
+                  className="flex w-full gap-4 p-5 text-left hover:bg-muted/50"
+                  onClick={() => setFinding(item.id)}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <Status value={item.severity} />
+                      <span className="text-xs text-muted-foreground">
+                        {item.category}
+                      </span>
+                      {item.desired_status && (
+                        <span className="text-xs text-muted-foreground">
+                          {item.sync_error
+                            ? "Sync needs attention"
+                            : "Sync pending"}
+                        </span>
+                      )}
+                      {observed && item.last_seen_run_id !== observed.id && (
+                        <span className="text-xs text-muted-foreground">
+                          Not observed in latest review
+                        </span>
+                      )}
+                    </div>
+                    <p className="line-clamp-2 text-sm font-medium leading-relaxed">
+                      {item.content.replaceAll(/[*`#]/g, "")}
+                    </p>
+                    <p className="mt-3 truncate font-mono text-xs text-muted-foreground">
+                      {item.path}:{item.start_line}
+                      {item.end_line !== item.start_line && `–${item.end_line}`}
+                    </p>
+                  </div>
+                  <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <Empty
+              title={
+                findings.length
+                  ? "No findings match these filters"
+                  : runs.length
+                    ? "No findings recorded"
+                    : "This PR is ready for a review"
+              }
+            >
+              {findings.length
+                ? "Choose another status or severity to see more findings."
+                : runs.length
+                  ? "Check run history for completion and coverage. An incomplete review is not a clean result."
+                  : "Run a review to find issues and publish comments to GitHub."}
+            </Empty>
+          )}
+          <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
+            Resolving or reopening a GitHub review thread updates its finding
+            here. A finding missing from a later run stays open until someone
+            resolves it.
+          </p>
+        </TabsContent>
+        <TabsContent value="history">
+          <RunList runs={runs} />
+        </TabsContent>
+      </Tabs>
+      <Sheet
+        open={!!finding}
+        onOpenChange={(open) => {
+          if (!open) setFinding(null);
+        }}
+      >
+        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>Finding details</SheetTitle>
+            <SheetDescription>
+              Review the evidence and its resolution history.
+            </SheetDescription>
+          </SheetHeader>
+          {finding && (
+            <FindingPanel key={finding} id={finding} canWrite={can_write} />
+          )}
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+
+function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
+  const query = useApi<Schema["FindingDetail"]>(`/findings/${id}`, true);
+  const action = useAction();
+  const [dismiss, setDismiss] = useState(false);
+  const [reason, setReason] = useState("");
+  if (query.isPending)
+    return (
+      <div className="px-6">
+        <Loading />
+      </div>
+    );
+  if (!query.data) return <ErrorNotice error={query.error} />;
+  const { finding: f, activities } = query.data;
+  async function change(status: string) {
+    await action
+      .mutateAsync({
+        path: `/findings/${id}`,
+        method: "PATCH",
+        body: { status, reason },
+      })
+      .catch(() => null);
+    setDismiss(false);
+  }
+  return (
+    <div className="space-y-6 px-6 pb-10">
+      <div className="flex flex-wrap items-center gap-2">
+        <Status value={f.severity} />
+        <Status value={f.status} />
+        {f.github_url && (
+          <span className="ml-auto">
+            <ExternalLink href={f.github_url}>GitHub thread</ExternalLink>
+          </span>
+        )}
+      </div>
+      <p className="break-all font-mono text-xs text-muted-foreground">
+        {f.path}:{f.start_line}–{f.end_line}
+      </p>
+      <Markdown>{f.content}</Markdown>
+      {f.existing_code && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">Code at detection</h3>
+          <Code>{f.existing_code}</Code>
+        </div>
+      )}
+      {f.suggestion && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">Suggested change</h3>
+          <Code>{f.suggestion}</Code>
+        </div>
+      )}
+      <ErrorNotice error={action.error || f.sync_error || query.error} />
+      {f.desired_status && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {f.sync_error
+            ? "GitHub has not confirmed the change. Retry to sync again."
+            : `Waiting for GitHub to confirm: ${f.desired_status}.`}
+        </p>
+      )}
+      {canWrite && (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={action.isPending || (!!f.desired_status && !f.sync_error)}
+            onClick={() =>
+              change(
+                f.desired_status ?? (f.status === "open" ? "resolved" : "open"),
+              )
+            }
+          >
+            {f.sync_error
+              ? "Retry sync"
+              : f.status === "open"
+                ? "Resolve finding"
+                : "Reopen finding"}
+          </Button>
+          {f.status === "open" && !f.desired_status && (
+            <Button variant="outline" onClick={() => setDismiss(!dismiss)}>
+              Dismiss
+            </Button>
+          )}
+        </div>
+      )}
+      {dismiss && (
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void change("dismissed");
+          }}
+        >
+          <Field label="Why dismiss this finding?">
+            {(id) => (
+              <Textarea
+                id={id}
+                required
+                maxLength={2000}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="For example, this is intentional and covered by…"
+              />
+            )}
+          </Field>
+          <Button disabled={!reason.trim() || action.isPending}>
+            Confirm dismissal
+          </Button>
+        </form>
+      )}
+      <div className="border-t pt-6">
+        <h3 className="mb-5 text-sm font-semibold">Activity</h3>
+        <ol className="space-y-5">
+          {activities.map((event) => (
+            <li key={event.id} className="relative border-l-2 pl-4">
+              <p className="text-sm">
+                <span className="font-medium">{event.actor}</span> ·{" "}
+                {event.action}{" "}
+                <span className="text-muted-foreground">
+                  via {event.source}
+                </span>
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {date(event.created_at)}
+              </p>
+              {event.reason && <p className="mt-2 text-sm">{event.reason}</p>}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+type Coverage = {
+  selected?: unknown[];
+  completed?: unknown[];
+  reused?: unknown[];
+  failed?: unknown[];
+  waived?: unknown[];
+};
+export function RunDetail() {
+  const { id } = useParams();
+  const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
+  const action = useAction();
+  if (query.isPending) return <Loading />;
+  if (!query.data) return <ErrorNotice error={query.error} />;
+  const {
+    run,
+    pull_request: pr,
+    repository,
+    occurrences,
+    can_write,
+  } = query.data;
+  const coverage = ((
+    run.report?.manifest as { coverage?: Coverage } | undefined
+  )?.coverage ?? {}) as Coverage;
+  const duration =
+    run.started_at && run.finished_at
+      ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
+      : null;
+  return (
+    <>
+      <PageTitle
+        eyebrow={
+          <Link className="hover:underline" to={`/pulls/${pr.id}`}>
+            {repository.full_name} / #{pr.number} / Run history
+          </Link>
+        }
+        title="Review run"
+        actions={
+          can_write && (
+            <>
+              {active(run.status) && (
+                <Button
+                  variant="outline"
+                  disabled={action.isPending}
+                  onClick={() => action.mutate({ path: `/runs/${id}/cancel` })}
+                >
+                  Cancel review
+                </Button>
+              )}
+              {["failed", "partially_published"].includes(run.publication) && (
+                <Button
+                  disabled={action.isPending}
+                  onClick={() => action.mutate({ path: `/runs/${id}/publish` })}
+                >
+                  Retry GitHub publication
+                </Button>
+              )}
+            </>
+          )
+        }
+      >
+        <span>
+          {date(run.created_at)} · {run.trigger} ·{" "}
+          <code>{run.head_sha.slice(0, 7)}</code>
+          {duration && ` · ${duration}`}
+        </span>
+      </PageTitle>
+      <ErrorNotice error={action.error || query.error} />
+      <div className="mb-6 grid gap-4 sm:grid-cols-2">
+        <div className="rounded-lg border bg-card p-5">
+          <p className="mb-3 text-xs text-muted-foreground">Review execution</p>
+          <Status value={run.status} />
+          <p className="mt-3 text-sm text-muted-foreground">
+            {String(
+              (run.config.connection as Record<string, unknown> | undefined)
+                ?.name ?? "",
+            )}{" "}
+            ·{" "}
+            {String(
+              (run.config.connection as Record<string, unknown> | undefined)
+                ?.model ?? "",
+            )}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card p-5">
+          <p className="mb-3 text-xs text-muted-foreground">GitHub comments</p>
+          <Status value={run.publication} />
+          <p className="mt-3 text-sm text-muted-foreground">
+            Publication retries use this run’s saved findings.
+          </p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        <ErrorNotice error={run.error} />
+        <ErrorNotice error={run.publication_error} />
+      </div>
+      {run.status === "partial" && (
+        <div className="my-5 rounded-lg border border-amber-600/30 bg-amber-600/5 p-4 text-sm">
+          This review is incomplete. Findings are available, but some selected
+          review items did not finish.
+        </div>
+      )}
+      {active(run.status) ? (
+        <div
+          role="status"
+          className="my-6 rounded-lg border border-dashed p-6 text-sm text-muted-foreground"
+        >
+          {run.status === "queued"
+            ? "Waiting for the review worker. This page updates automatically."
+            : "Reviewing the requested commit. Findings will appear when OCR returns its coverage report."}
+        </div>
+      ) : (
+        <section className="my-8">
+          <h2 className="mb-4 font-semibold">Coverage</h2>
+          {run.report ? (
+            <>
+              <div className="grid grid-cols-2 gap-4 border-y py-5 sm:grid-cols-5">
+                {(
+                  [
+                    "selected",
+                    "completed",
+                    "reused",
+                    "failed",
+                    "waived",
+                  ] as const
+                ).map((key) => (
+                  <div key={key}>
+                    <p className="text-xl font-semibold tabular">
+                      {coverage[key]?.length ?? 0}
+                    </p>
+                    <p className="mt-1 text-xs capitalize text-muted-foreground">
+                      {key}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <details className="mt-4 text-sm">
+                <summary className="cursor-pointer text-muted-foreground">
+                  Inspect coverage report
+                </summary>
+                <div className="mt-3">
+                  <Code>{JSON.stringify(run.report, null, 2)}</Code>
+                </div>
+              </details>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No coverage report was produced.
+            </p>
+          )}
+        </section>
+      )}
+      <section className="mt-8">
+        <h2 className="mb-4 font-semibold">
+          Findings at this run{" "}
+          <span className="ml-2 font-normal text-muted-foreground">
+            {occurrences.length}
+          </span>
+        </h2>
+        {occurrences.length ? (
+          <div className="space-y-4">
+            {occurrences.map((item) => (
+              <article
+                key={item.finding_id}
+                className="rounded-lg border bg-card p-5"
+              >
+                <div className="mb-3 flex flex-wrap items-center gap-3">
+                  <Status value={String(item.snapshot.severity)} />
+                  <code className="break-all text-xs text-muted-foreground">
+                    {String(item.snapshot.path)}:
+                    {String(item.snapshot.start_line)}
+                  </code>
+                  {!item.inline_line && (
+                    <span className="text-xs text-muted-foreground">
+                      Summary comment
+                    </span>
+                  )}
+                </div>
+                <Markdown>{String(item.snapshot.content)}</Markdown>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No findings recorded in this run.
+          </p>
+        )}
+      </section>
+      <details className="mt-8 text-sm">
+        <summary className="cursor-pointer text-muted-foreground">
+          Configuration used
+        </summary>
+        <div className="mt-3">
+          <Code>{JSON.stringify(run.config, null, 2)}</Code>
+        </div>
+      </details>
+    </>
+  );
+}

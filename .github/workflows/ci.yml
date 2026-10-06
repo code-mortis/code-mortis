@@ -1,0 +1,53 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
+        ports: [55439:5432]
+        options: --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: [56389:6379]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.14' }
+      - run: uv sync --frozen --python 3.13
+      - run: uv run ruff check .
+      - run: uv run python -m pytest -q
+      - run: uv run python -m code_mortis.manage export-openapi
+      - run: git diff --exit-code -- ../docs/openapi.json
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: '1.4.2' }
+      - run: bun install --frozen-lockfile
+      - run: bun run api:types
+      - run: git diff --exit-code -- src/api.generated.ts
+      - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t code-mortis:test .
+      - run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:mode=1777,size=256m
+          --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m
+          code-mortis:test python tests/ocr_container_smoke.py

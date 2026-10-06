@@ -1,0 +1,86 @@
+name: code-mortis
+
+x-app: &app
+  image: code-mortis:0.1.0
+  build: .
+  env_file: .env
+  environment: &environment
+    CM_DATABASE_URL: postgresql+psycopg://mortis:${POSTGRES_PASSWORD:?Run init-env first}@postgres:5432/mortis
+    CM_REDIS_URL: redis://redis:6379/0
+    CM_FRONTEND_DIR: /app/frontend/dist
+  restart: unless-stopped
+  init: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: ["/tmp:mode=1777,size=2g", "/home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=256m"]
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mortis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run init-env first}
+      POSTGRES_DB: mortis
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U mortis -d mortis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
+    volumes: [redis-data:/data]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  migrate:
+    <<: *app
+    restart: "no"
+    command: [alembic, upgrade, head]
+  api:
+    <<: *app
+    command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --no-access-log]
+    ports: ["127.0.0.1:${CM_PORT:-8080}:8080"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready', timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+  review-worker:
+    <<: *app
+    environment:
+      <<: *environment
+      CM_OCR_ISOLATED_RUNTIME: "true"
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
+    stop_grace_period: 30s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  sync-worker:
+    <<: *app
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, sync, --concurrency=1, --loglevel=INFO, --hostname=sync@%h]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  scheduler:
+    <<: *app
+    command: [celery, -A, code_mortis.jobs:celery, beat, --loglevel=INFO, --schedule=/tmp/celerybeat-schedule]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+volumes:
+  postgres-data:
+  redis-data:

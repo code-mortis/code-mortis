@@ -1,0 +1,190 @@
+import { useId, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import { AlertCircle, ArrowUpRight, LoaderCircle } from "lucide-react";
+import { Badge } from "./ui/badge";
+import { Label } from "./ui/label";
+import { Button } from "./ui/button";
+import { cn } from "@/lib/utils";
+
+export const active = (status: string) =>
+  ["queued", "running"].includes(status);
+export const date = (value: string) =>
+  new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+export const words = (value: string) => value.replaceAll("_", " ");
+export function Status({ value }: { value: string }) {
+  const good = ["completed", "published", "resolved", "connected"].includes(
+    value,
+  );
+  const bad = ["failed", "critical", "high"].includes(value);
+  const caution = ["partial", "medium", "partially_published"].includes(value);
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "capitalize gap-1.5 font-medium whitespace-nowrap",
+        good &&
+          "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
+        bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
+        caution &&
+          "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
+      )}
+    >
+      {active(value) && (
+        <LoaderCircle className="size-3 motion-safe:animate-spin" />
+      )}
+      {words(value)}
+    </Badge>
+  );
+}
+export function ErrorNotice({ error }: { error: unknown }) {
+  if (!error) return null;
+  return (
+    <div
+      role="alert"
+      className="flex gap-3 rounded-md border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
+    >
+      <AlertCircle className="mt-0.5 size-4 shrink-0" />
+      <span>{error instanceof Error ? error.message : String(error)}</span>
+    </div>
+  );
+}
+export function Loading() {
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 py-14 text-sm text-muted-foreground"
+    >
+      <LoaderCircle className="size-4 motion-safe:animate-spin" /> Loading
+      workspace…
+    </div>
+  );
+}
+export function Empty({
+  title,
+  children,
+}: {
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-dashed px-6 py-14 text-center">
+      <h2 className="text-lg font-medium">{title}</h2>
+      <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
+        {children}
+      </div>
+    </div>
+  );
+}
+export function PageTitle({
+  eyebrow,
+  title,
+  children,
+  actions,
+}: {
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="mb-8">
+      {eyebrow && (
+        <div className="mb-3 text-xs font-medium text-muted-foreground">
+          {eyebrow}
+        </div>
+      )}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-3xl">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl text-balance">
+            {title}
+          </h1>
+          {children && (
+            <div className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              {children}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">{actions}</div>
+      </div>
+    </header>
+  );
+}
+export function Field({
+  label,
+  children,
+  hint,
+}: {
+  label: string;
+  children: (id: string) => ReactNode;
+  hint?: string;
+}) {
+  const id = useId();
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      {children(id)}
+      {hint && (
+        <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+      )}
+    </div>
+  );
+}
+export function NativeSelect({
+  className,
+  ...props
+}: React.ComponentProps<"select">) {
+  return (
+    <select
+      {...props}
+      className={cn(
+        "h-9 w-full rounded-md border border-input bg-card px-3 text-sm disabled:opacity-50",
+        className,
+      )}
+    />
+  );
+}
+export function Markdown({ children }: { children: string }) {
+  return (
+    <div className="markdown text-sm">
+      <ReactMarkdown
+        skipHtml
+        components={{
+          img: () => null,
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+export function ExternalLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: ReactNode;
+}) {
+  return (
+    <Button asChild variant="outline" size="sm">
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+        <ArrowUpRight className="size-3.5" />
+      </a>
+    </Button>
+  );
+}
+export function Code({ children }: { children: string }) {
+  return (
+    <pre className="max-w-full overflow-x-auto rounded-md border bg-muted p-4 text-xs leading-relaxed">
+      <code>{children}</code>
+    </pre>
+  );
+}

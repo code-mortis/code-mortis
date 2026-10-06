@@ -1,0 +1,250 @@
+from datetime import datetime
+from pathlib import PurePosixPath
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ConnectionInput(StrictModel):
+    name: str = Field(min_length=1, max_length=100)
+    provider: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
+    protocol: Literal["openai", "openai-responses", "anthropic", "anthropic-bedrock"]
+    model: str = Field(min_length=1, max_length=150)
+    base_url: str = Field(default="", max_length=1000)
+    api_key: str | None = Field(default=None, max_length=20000)
+    extra_headers: dict[str, str] | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("options")
+    @classmethod
+    def allowed_options(cls, value):
+        allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header"}
+        if set(value) - allowed:
+            raise ValueError("Unsupported provider options")
+        if "timeout_sec" in value and (
+            type(value["timeout_sec"]) is not int or not 5 <= value["timeout_sec"] <= 900
+        ):
+            raise ValueError("timeout_sec must be between 5 and 900")
+        if "extra_body" in value:
+            if not isinstance(value["extra_body"], dict):
+                raise ValueError("extra_body must be an object")
+            if set(value["extra_body"]) & {"messages", "input", "tools", "model", "stream", "api_key"}:
+                raise ValueError("extra_body cannot replace review inputs, tools, or authentication")
+        if "retry_codes" in value and (
+            not isinstance(value["retry_codes"], list)
+            or any(type(code) is not int or not 400 <= code < 500 for code in value["retry_codes"])
+        ):
+            raise ValueError("retry_codes must contain HTTP 4xx integers")
+        for key in ("aws_region", "aws_profile", "auth_header"):
+            if key in value and (not isinstance(value[key], str) or len(value[key]) > 150):
+                raise ValueError(f"Invalid {key}")
+        return value
+
+    @field_validator("extra_headers")
+    @classmethod
+    def header_values(cls, value):
+        if value and any(
+            "\n" in key + val or "\r" in key + val or len(val) > 20000 for key, val in value.items()
+        ):
+            raise ValueError("Invalid provider headers")
+        return value
+
+
+class RepoSettings(StrictModel):
+    automatic: bool = True
+    model: str = Field(default="", max_length=150)
+    effort: Literal["low", "medium", "high"] = "medium"
+    language: str = Field(default="English", min_length=1, max_length=100)
+    exclusions: str = Field(default="", max_length=4000)
+    background: str = Field(default="", max_length=20000)
+    timeout_seconds: int = Field(default=900, ge=60, le=3600)
+    token_budget: int = Field(default=200000, ge=1000, le=5000000)
+    concurrency: int = Field(default=2, ge=1, le=8)
+    rules: dict[str, Any] | None = None
+
+
+class RepositoryInput(StrictModel):
+    enabled: bool
+    connection_id: str | None = None
+    settings: RepoSettings = Field(default_factory=RepoSettings)
+
+
+class FindingAction(StrictModel):
+    status: Literal["open", "resolved", "dismissed"]
+    reason: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def dismiss_reason(self):
+        if self.status == "dismissed" and not self.reason.strip():
+            raise ValueError("Add a reason when dismissing a finding")
+        return self
+
+
+class MemberInput(StrictModel):
+    login: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
+    role: Literal["admin", "member"] = "member"
+
+
+class ReviewComment(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    content: str = Field(min_length=1, max_length=60000)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    category: str = Field(default="other", max_length=50)
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    existing_code: str = Field(default="", max_length=60000)
+    suggestion_code: str = Field(default="", max_length=60000)
+
+    @field_validator("path")
+    @classmethod
+    def relative_path(cls, value):
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or ".git" in path.parts
+            or "\\" in value
+            or "\x00" in value
+        ):
+            raise ValueError("Finding path must stay inside the repository")
+        return value
+
+    @model_validator(mode="after")
+    def ordered_lines(self):
+        if self.end_line < self.start_line:
+            raise ValueError("Finding end_line must follow start_line")
+        return self
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserOut(ORMModel):
+    id: int
+    login: str
+    avatar_url: str
+    role: str
+    csrf: str = ""
+
+
+class ConnectionOut(ORMModel):
+    id: str
+    name: str
+    provider: str
+    protocol: str
+    model: str
+    base_url: str
+    options: dict[str, Any]
+    has_key: bool = False
+    header_names: list[str] = Field(default_factory=list)
+    last_test: str | None
+    tested_at: datetime | None
+
+
+class RepositoryOut(ORMModel):
+    id: int
+    installation_id: int
+    full_name: str
+    private: bool
+    active: bool
+    enabled: bool
+    connection_id: str | None
+    settings: RepoSettings
+    open_prs: int = 0
+
+
+class RunOut(ORMModel):
+    id: str
+    pr_id: str
+    trigger: str
+    base_sha: str
+    head_sha: str
+    status: str
+    publication: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    publication_error: str | None
+    config: dict[str, Any]
+    report: dict[str, Any] | None
+
+
+class PullRequestOut(ORMModel):
+    id: str
+    repository_id: int
+    number: int
+    title: str
+    author: str
+    url: str
+    state: str
+    draft: bool
+    fork: bool
+    head_sha: str
+    base_sha: str
+    head_ref: str
+    updated_at: datetime
+    latest_run: RunOut | None = None
+    open_findings: int = 0
+
+
+class FindingOut(ORMModel):
+    id: str
+    pr_id: str
+    status: str
+    desired_status: str | None
+    sync_error: str | None
+    path: str
+    content: str
+    severity: str
+    category: str
+    start_line: int
+    end_line: int
+    existing_code: str
+    suggestion: str
+    thread_id: str | None
+    github_url: str | None
+    last_seen_run_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ActivityOut(ORMModel):
+    id: str
+    action: str
+    actor: str
+    source: str
+    reason: str
+    created_at: datetime
+
+
+class FindingDetail(BaseModel):
+    finding: FindingOut
+    activities: list[ActivityOut]
+
+
+class PRDetail(BaseModel):
+    pull_request: PullRequestOut
+    repository: RepositoryOut
+    runs: list[RunOut]
+    findings: list[FindingOut]
+    can_write: bool
+
+
+class OccurrenceOut(ORMModel):
+    finding_id: str
+    snapshot: dict[str, Any]
+    inline_line: int | None
+
+
+class RunDetail(BaseModel):
+    run: RunOut
+    pull_request: PullRequestOut
+    repository: RepositoryOut
+    occurrences: list[OccurrenceOut]
+    can_write: bool

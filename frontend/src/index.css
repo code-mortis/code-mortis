@@ -1,0 +1,189 @@
+@import "@fontsource-variable/inter";
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  font-family: "Inter Variable", sans-serif;
+  color-scheme: light;
+  --background: #f7f8f5;
+  --foreground: #202c26;
+  --card: #ffffff;
+  --card-foreground: #202c26;
+  --popover: #ffffff;
+  --popover-foreground: #202c26;
+  --primary: #245944;
+  --primary-foreground: #ffffff;
+  --secondary: #e9eee8;
+  --secondary-foreground: #254533;
+  --muted: #eef0ec;
+  --muted-foreground: #606a62;
+  --accent: #e1ebe2;
+  --accent-foreground: #173e2a;
+  --destructive: #b32d37;
+  --border: #dce1d9;
+  --input: #c5cec3;
+  --ring: #377c59;
+  --radius: 0.5rem;
+  --rail: #162923;
+  --rail-foreground: #e5efe7;
+}
+.dark {
+  color-scheme: dark;
+  --background: #17201c;
+  --foreground: #e8eee9;
+  --card: #1e2923;
+  --card-foreground: #e8eee9;
+  --popover: #25322b;
+  --popover-foreground: #e8eee9;
+  --primary: #a2d1aa;
+  --primary-foreground: #163021;
+  --secondary: #293a2f;
+  --secondary-foreground: #d0e6d3;
+  --muted: #25312a;
+  --muted-foreground: #a7b6ab;
+  --accent: #304a39;
+  --accent-foreground: #ddf0df;
+  --destructive: #ff9b9b;
+  --border: #35433a;
+  --input: #53685a;
+  --ring: #95c9a5;
+  --rail: #111d17;
+  --rail-foreground: #e5efe7;
+}
+@theme inline {
+  --font-sans: "Inter Variable", sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply m-0 bg-background text-foreground antialiased;
+  }
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    touch-action: manipulation;
+  }
+  button:not(:disabled),
+  select {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+  }
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+  input,
+  textarea {
+    caret-color: var(--primary);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) transparent;
+  }
+  a {
+    text-underline-offset: 3px;
+  }
+}
+.markdown {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.markdown p + p,
+.markdown pre,
+.markdown ul,
+.markdown ol {
+  margin-top: 0.85rem;
+}
+.markdown ul {
+  list-style: disc;
+  padding-left: 1.4rem;
+}
+.markdown ol {
+  list-style: decimal;
+  padding-left: 1.4rem;
+}
+.markdown code {
+  font-size: 0.86em;
+  background: var(--muted);
+  border-radius: 3px;
+  padding: 0.12em 0.3em;
+}
+.markdown pre {
+  overflow-x: auto;
+  background: var(--muted);
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+.markdown pre code {
+  padding: 0;
+}
+.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-weight: 600;
+  margin-top: 1rem;
+}
+.markdown img {
+  display: none;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.82rem;
+  color: #b3c9bd;
+}
+.nav-link:hover,
+.nav-active {
+  background: #284638;
+  color: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
