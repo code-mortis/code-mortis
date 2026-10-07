@@ -5,7 +5,7 @@ from datetime import timedelta
 from celery import Celery
 from sqlalchemy import or_, select
 
-from . import github, ocr, runner_client
+from . import checks, github, ocr, runner_client
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -138,6 +138,12 @@ def process_webhook(payload: dict):
             if body.get("action") == "unsuspend":
                 installation.active = True
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
+            if body.get("action") in {"new_permissions_accepted", "unsuspend"}:
+                for run in db.scalars(select(ReviewRun).join(PullRequest).join(Repository).where(
+                    Repository.installation_id == installation.id,
+                    ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True),
+                )):
+                    checks.enqueue_sync(db, run)
             return
         if not installation.active:
             return
@@ -147,6 +153,10 @@ def process_webhook(payload: dict):
         repository_id = (body.get("repository") or {}).get("id")
         repo = db.get(Repository, repository_id) if repository_id else None
         if not repo or repo.installation_id != installation.id:
+            return
+        if event == "check_run":
+            if body.get("action") == "rerequested":
+                checks.rerequest(db, body, payload.get("delivery", ""))
             return
         pr = body.get("pull_request")
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
@@ -166,6 +176,8 @@ def execute(kind: str, payload: dict):
         perform_review(payload["run_id"])
     elif kind == "publish":
         publish_run(payload["run_id"])
+    elif kind == "sync_check":
+        checks.sync_check(payload["run_id"])
     elif kind == "resolve":
         synchronize_finding(payload)
     elif kind == "webhook":
@@ -237,6 +249,11 @@ def execute_job(job_id: str):
                         run.status = "queued"
                     else:
                         run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
+                        run.failure_reason = "timeout" if isinstance(exc, TimeoutError) else "execution"
+            elif kind == "sync_check":
+                run = db.get(ReviewRun, payload["run_id"])
+                if run:
+                    run.check_error, run.check_pending = message[:2000], True
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
                 run.publication = "partially_published" if run.review_ids else "failed"
@@ -250,7 +267,8 @@ def execute_job(job_id: str):
                 if connection:
                     connection.last_test, connection.tested_at = message[:2000], now()
         log.warning(
-            "job_failed id=%s kind=%s error_type=%s retry=%s", job_id, kind, type(exc).__name__, retry
+            "job_failed id=%s kind=%s run_id=%s error_type=%s retry=%s",
+            job_id, kind, payload.get("run_id"), type(exc).__name__, retry
         )
         return
     with transaction() as db:
@@ -259,7 +277,7 @@ def execute_job(job_id: str):
         # Signed webhook payloads are only needed until they have been processed.
         if kind == "webhook":
             job.payload = {"event": payload["event"]}
-    log.info("job_completed id=%s kind=%s", job_id, kind)
+    log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
 
 
 @celery.task(name="mortis.dispatch")
@@ -284,6 +302,11 @@ def dispatch():
                             job.error,
                             now(),
                         )
+                        run.failure_reason = "worker_stopped"
+                elif job.kind == "sync_check":
+                    run = db.get(ReviewRun, job.payload["run_id"])
+                    if run:
+                        run.check_error, run.check_pending = job.error, True
                 elif job.kind == "publish":
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
@@ -320,6 +343,10 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
+        for run in db.scalars(select(ReviewRun).where(
+            ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
+        )):
+            checks.enqueue_sync(db, run)
         for installation in db.scalars(select(Installation).where(Installation.active.is_(True))):
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
         for repo in db.scalars(

@@ -19,6 +19,10 @@ Native clients enforce elapsed time and explicit input-context bytes. API review
 
 ## Completed local checks
 
+GitHub checks implementation, 2026-10-06: **76 backend tests** passed against the isolated test database, including check state mapping, informational findings, lost-create-response reconciliation, concurrent updates, timeout and exhausted-worker recovery, cancellation, permission denial, Re-run identity/ownership/stale-commit rejection, durable webhook replay, publication-only retry and migration preservation. **24 built-frontend Playwright tests** passed on desktop and mobile; check URL and pending/permission error are covered. Ruff, OpenAPI/type generation and production frontend build passed. The additive migration was applied to development and its workers restarted with no active reviews. No model, budget or timeout settings were changed.
+
+Live Checks acceptance remains pending: development App `code-mortis-123` (ID `5218022`) installation `168695498` was inspected and lacks Checks write permission. The browser available to the agent is signed out of GitHub; the owner was asked to update and approve the existing App permission. PR #1 was merged during implementation, and no open code-mortis PR remained when checked. A small open test PR is required for real queued/running/completed, cancellation and GitHub Re-run evidence. No live check or successful review is claimed by the local tests. The existing server instance was not restarted or reconfigured.
+
 | Check | Evidence | What it does not establish |
 | --- | --- | --- |
 | Backend | 40 pytest cases passed against isolated PostgreSQL/Redis. Ruff passed. | External GitHub or model availability. |

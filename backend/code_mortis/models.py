@@ -169,6 +169,16 @@ class ReviewRun(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     blocked_reason: Mapped[str | None] = mapped_column(Text)
+    failure_reason: Mapped[str | None] = mapped_column(String(30))
+    check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    check_pending: Mapped[bool] = mapped_column(Boolean, default=True)
+    check_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    check_url: Mapped[str | None] = mapped_column(Text)
+    check_status: Mapped[str | None] = mapped_column(String(30))
+    check_conclusion: Mapped[str | None] = mapped_column(String(30))
+    check_error: Mapped[str | None] = mapped_column(Text)
+    check_payload_hash: Mapped[str | None] = mapped_column(String(64))
+    check_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Finding(Base):
@@ -223,6 +233,7 @@ class WebhookDelivery(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     event: Mapped[str] = mapped_column(String(100))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Job(Base):

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
+import type { Run } from "../src/api";
 
 const at = "2026-10-05T13:20:00Z";
 const repo = {
@@ -41,6 +42,12 @@ const run = {
   finished_at: "2026-10-05T13:21:30Z",
   error: null,
   publication_error: "GitHub temporarily rate-limited this app.",
+  check_enabled: true,
+  check_pending: true,
+  check_status: "in_progress",
+  check_conclusion: null,
+  check_url: "https://github.com/acme/payments/runs/42",
+  check_error: "Enable Checks: Read and write on the GitHub App and approve the installation permission update.",
   config: {
     connection: {
       name: "Team reviews",
@@ -127,6 +134,7 @@ async function mock(
     publicUrl?: string;
     personal?: boolean;
     claude?: boolean;
+    run?: Partial<Run>;
   } = {},
 ) {
   const current = structuredClone(finding);
@@ -218,7 +226,7 @@ async function mock(
             };
     } else if (path === "/runs/run")
       data = {
-        run,
+        run: { ...run, ...options.run },
         pull_request: pr,
         repository: repo,
         occurrences: [
@@ -370,7 +378,7 @@ test("resolution waits for GitHub and preserves the confirmed status", async ({
 
 test("partial review and publication retry remain distinct", async ({
   page,
-}) => {
+}, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
   await expect(
@@ -379,7 +387,43 @@ test("partial review and publication retry remain distinct", async ({
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
+  await expect(page.getByRole("link", { name: "View check on GitHub" })).toHaveAttribute("href", run.check_url);
+  await expect(page.getByText(run.check_error)).toBeVisible();
+  await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
+});
+
+test("GitHub check handles pending, conclusion-only, and empty states", async ({ page }, info) => {
+  const checkState: Partial<Run> = {
+    check_status: null,
+    check_conclusion: null,
+    check_url: null,
+    check_error: null,
+  };
+  await mock(page, { run: checkState });
+  await page.goto("/runs/run");
+  const check = page.getByText("GitHub check", { exact: true }).locator("..");
+  await expect(check.getByRole("status")).toHaveText("Updating the check on GitHub…");
+  await expect(check.locator(":scope > :empty")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-pending-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_conclusion = "success";
+  checkState.check_pending = false;
+  await page.reload();
+  await expect(check.getByText("success", { exact: true })).toBeVisible();
+  await expect(check.getByRole("status")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-conclusion-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_conclusion = null;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await expect(page.getByText("GitHub check", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-empty-${info.project.name}.png`, fullPage: true });
 });
 
 test("read-only members cannot change findings or instance settings", async ({

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import github, ocr, runner_client
+from .checks import queue_check_changes as queue_check_changes
 from .config import settings
 from .db import now, transaction, uid
 from .models import (
@@ -215,6 +216,7 @@ def perform_review(run_id: str):
                 raise runner_client.RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
         run.status, run.started_at, run.error, run.blocked_reason = "running", now(), None, None
+        run.failure_reason = None
         checkpoint = run.progress
         args = (
             repo.full_name,
@@ -413,6 +415,7 @@ def publish_run(run_id: str):
             ):
                 run.publication = "partially_published" if run.review_ids else "not_applicable"
                 run.publication_error = "The PR changed or closed; remaining comments were not published."
+                run.failure_reason = "superseded"
                 return
             expected = marker("run", f"{run.id}:{index}")
             bot = github.app_config(db).github_slug + "[bot]"

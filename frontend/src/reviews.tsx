@@ -690,6 +690,7 @@ export function RunDetail() {
     run.started_at && run.finished_at
       ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
       : null;
+  const checkValue = run.check_conclusion || run.check_status;
   return (
     <>
       <PageTitle
@@ -768,6 +769,27 @@ export function RunDetail() {
           <p className="mt-3 text-sm text-muted-foreground">
             Publication retries use this run’s saved findings.
           </p>
+          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && (
+            <div className="mt-5 space-y-3 border-t pt-4">
+              <p className="text-xs text-muted-foreground">GitHub check</p>
+              {(checkValue || run.check_url) && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {checkValue && <Status value={checkValue} />}
+                  {run.check_url && (
+                    <a className="text-sm underline underline-offset-4" href={run.check_url} target="_blank" rel="noreferrer">
+                      View check on GitHub
+                    </a>
+                  )}
+                </div>
+              )}
+              {run.check_pending && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}
+                </p>
+              )}
+              <ErrorNotice error={run.check_error} />
+            </div>
+          )}
         </div>
       </div>
       <div className="space-y-3">

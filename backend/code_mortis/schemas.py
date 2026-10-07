@@ -208,6 +208,14 @@ class RunOut(ORMModel):
     actor_id: int | None
     progress: dict[str, Any]
     blocked_reason: str | None
+    failure_reason: str | None
+    check_enabled: bool
+    check_pending: bool
+    check_url: str | None
+    check_status: str | None
+    check_conclusion: str | None
+    check_error: str | None
+    check_synced_at: datetime | None
 
 
 class PullRequestOut(ORMModel):

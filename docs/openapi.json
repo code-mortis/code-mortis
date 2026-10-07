@@ -2589,6 +2589,81 @@
               }
             ],
             "title": "Blocked Reason"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "check_enabled": {
+            "type": "boolean",
+            "title": "Check Enabled"
+          },
+          "check_pending": {
+            "type": "boolean",
+            "title": "Check Pending"
+          },
+          "check_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Url"
+          },
+          "check_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Status"
+          },
+          "check_conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Conclusion"
+          },
+          "check_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Error"
+          },
+          "check_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Synced At"
           }
         },
         "type": "object",
@@ -2612,7 +2687,15 @@
           "owner_id",
           "actor_id",
           "progress",
-          "blocked_reason"
+          "blocked_reason",
+          "failure_reason",
+          "check_enabled",
+          "check_pending",
+          "check_url",
+          "check_status",
+          "check_conclusion",
+          "check_error",
+          "check_synced_at"
         ],
         "title": "RunOut"
       },
