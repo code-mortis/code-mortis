@@ -1,5 +1,6 @@
 services:
   api:
+    ports: !reset []
     labels:
       - traefik.enable=true
       - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
