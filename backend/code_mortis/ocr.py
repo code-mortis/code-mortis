@@ -1,3 +1,4 @@
+import base64
 import fcntl
 import json
 import os
@@ -335,12 +336,15 @@ def review(
         repo = directory / "repo"
         repo.mkdir()
         env = child_environment()
-        askpass = directory / "askpass"
-        askpass.write_text(
-            '#!/bin/sh\ncase "$1" in *Username*) echo x-access-token ;; *) printf "%s" "$CM_GIT_TOKEN" ;; esac\n'
-        )
-        askpass.chmod(0o700)
-        fetch_env = {**env, "GIT_ASKPASS": str(askpass), "CM_GIT_TOKEN": token}
+        # Fetch credentials stay in this process environment, scoped to GitHub.
+        # Temporary workspaces are noexec; no credential helper is written there.
+        authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        fetch_env = {
+            **env,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}",
+        }
         git(repo, env, "init", "--quiet")
         git(repo, env, "remote", "add", "origin", f"https://github.com/{full_name}.git")
         fetch_refs = [f"{base_sha}:refs/mortis/base", f"refs/pull/{number}/head:refs/mortis/head"]
@@ -355,7 +359,6 @@ def review(
         except ValueError:
             git(repo, fetch_env, "fetch", "--unshallow", "--no-tags", "origin", *fetch_refs, stopped=stopped)
             merge_base = git(repo, env, "merge-base", base_sha, head_sha).strip()
-        askpass.unlink()
         # Check that trusted rules cannot lead the resolver outside the checkout through symlinks.
         for path in (repo / ".opencodereview", repo / ".opencodereview" / "rule.json"):
             if path.exists() and not path.resolve().is_relative_to(repo.resolve()):

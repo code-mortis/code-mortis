@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -142,6 +143,44 @@ def test_endpoints_reject_credentials_and_metadata(monkeypatch):
     monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("169.254.169.254", 443))])
     with pytest.raises(ValueError, match="Metadata"):
         safe_endpoint("https://metadata.example")
+
+
+def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(settings(), "work_dir", tmp_path)
+    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    base, head = "a" * 40, "b" * 40
+    fetches = []
+
+    def git(directory, env, *args, **kwargs):
+        assert not (directory.parent / "askpass").exists()
+        assert "GIT_ASKPASS" not in env and "CM_GIT_TOKEN" not in env
+        if args[0] == "fetch":
+            assert env["GIT_CONFIG_COUNT"] == "1"
+            assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+            encoded = env["GIT_CONFIG_VALUE_0"].removeprefix("Authorization: Basic ")
+            assert base64.b64decode(encoded).decode() == "x-access-token:installation-secret"
+            fetches.append(args)
+        else:
+            assert "GIT_CONFIG_VALUE_0" not in env
+        return head if args[0] == "rev-parse" else base
+
+    def model_command(args, directory, env, **kwargs):
+        assert "GIT_CONFIG_VALUE_0" not in env and "installation-secret" not in str(env)
+        data = report()
+        data["comments"] = []
+        return 0, json.dumps(data), ""
+
+    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(ocr, "command", model_command)
+    state, _, _ = ocr.review(
+        "owner/repo", 1, base, head, {}, {},
+        {"effort": "low", "concurrency": 1, "token_budget": 1000, "timeout_seconds": 60},
+        "installation-secret", lambda: False,
+    )
+    assert state == "completed" and len(fetches) == 1
 
 
 def test_provider_probe_does_not_claim_unverified_tools(monkeypatch, tmp_path):
