@@ -1,0 +1,16 @@
+services:
+  api:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
+      - traefik.http.routers.code-mortis.rule=Host(`${CM_PUBLIC_HOST}`)
+      - traefik.http.routers.code-mortis.entrypoints=https
+      - traefik.http.routers.code-mortis.tls=true
+      - traefik.http.routers.code-mortis.tls.certresolver=letsencrypt
+      - traefik.http.routers.code-mortis.service=code-mortis
+      - traefik.http.services.code-mortis.loadbalancer.server.port=8080
+
+networks:
+  default:
+    name: ${COOLIFY_RESOURCE_UUID}
+    external: true
