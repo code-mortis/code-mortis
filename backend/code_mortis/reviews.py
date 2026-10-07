@@ -4,15 +4,17 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import github, ocr
+from . import github, ocr, runner_client
 from .config import settings
 from .db import now, transaction, uid
 from .models import (
     Activity,
     Connection,
+    ConnectionGrant,
     Finding,
     Installation,
     Job,
+    Membership,
     Occurrence,
     PullRequest,
     Repository,
@@ -22,7 +24,7 @@ from .models import (
 from .schemas import RepoSettings
 from .security import digest, unseal
 
-ACTIVE = {"queued", "running"}
+ACTIVE = {"queued", "running", "blocked"}
 
 
 def enqueue(db: Session, kind: str, payload: dict) -> Job:
@@ -40,17 +42,29 @@ def connection_snapshot(connection: Connection) -> dict:
         "model": connection.model,
         "base_url": connection.base_url,
         "options": connection.options,
+        "kind": connection.kind,
+        "owner_id": connection.owner_id,
+        "client_version": {"chatgpt": "0.160.1", "claude_code": "2.1.292"}.get(connection.kind),
+        "ocr_version": settings().ocr_version,
     }
 
 
 def create_run(
-    db: Session, pr: PullRequest, repo: Repository, trigger: str, actor: User | None = None
+    db: Session,
+    pr: PullRequest,
+    repo: Repository,
+    trigger: str,
+    actor: User | None = None,
+    connection_id: str | None = None,
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
     db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
-    if not repo.active or not repo.enabled or not repo.connection_id:
+    if not repo.active or not repo.enabled or not (connection_id or repo.connection_id):
         raise ValueError("Enable this repository and select an AI connection first.")
-    connection = db.get(Connection, repo.connection_id)
+    connection = db.get(Connection, connection_id or repo.connection_id)
+    if not connection:
+        raise ValueError("The selected connection no longer exists.")
+    authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.model_validate(repo.settings).model_dump()
     config = {"connection": connection_snapshot(connection), "settings": options}
     if options["model"]:
@@ -62,8 +76,10 @@ def create_run(
             return prior
     active = db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))).all()
     for run in active:
-        if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha:
+        if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and run.config == config:
             return run
+        if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha:
+            continue
         run.status = "superseded"
         run.publication = "not_applicable"
         run.cancel_requested = True
@@ -77,10 +93,31 @@ def create_run(
         base_sha=pr.base_sha,
         head_sha=pr.head_sha,
         config=config,
+        connection_id=connection.id,
+        owner_id=connection.owner_id,
+        engine="ocr" if connection.kind == "api" else connection.kind,
     )
     db.add(run)
     enqueue(db, "review", {"run_id": run.id})
     return run
+
+
+def authorize_connection(db, connection, repo, trigger, actor=None):
+    if connection.kind == "api":
+        return
+    owner = db.get(User, connection.owner_id)
+    if not owner or not owner.enabled or not db.get(Membership, owner.id):
+        raise ValueError("The subscription owner no longer has access to this instance.")
+    if trigger == "manual":
+        if not actor or actor.id != owner.id:
+            raise ValueError("Choose your own personal connection or a shared API connection.")
+    else:
+        grant = db.get(ConnectionGrant, (connection.id, repo.id))
+        if not grant or not grant.automatic:
+            raise ValueError(
+                "The subscription owner has not authorized automatic reviews for this repository."
+            )
+    github.authorize_repo(db, owner, repo.full_name, write=True)
 
 
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
@@ -109,7 +146,18 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
 def review_stopped(run_id: str) -> bool:
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
-        return not run or run.cancel_requested or run.status in {"cancelled", "superseded"}
+        if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
+            return True
+        pr = db.get(PullRequest, run.pr_id)
+        repo = db.get(Repository, pr.repository_id)
+        if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
+            run.cancel_requested = True
+            return True
+        if run.owner_id:
+            owner = db.get(User, run.owner_id)
+            if not owner or not owner.enabled or not db.get(Membership, owner.id):
+                return True
+        return False
 
 
 def perform_review(run_id: str):
@@ -146,8 +194,28 @@ def perform_review(run_id: str):
             raise ValueError(
                 "The AI connection endpoint changed after this run was queued. Start a new review."
             )
+        authorize_connection(
+            db, connection, repo, run.trigger, db.get(User, run.actor_id) if run.actor_id else None
+        )
+        if connection.kind != "api":
+            # Serialize ownership claims across workers without holding a transaction during inference.
+            db.scalar(select(Connection).where(Connection.id == connection.id).with_for_update())
+            other = db.scalar(
+                select(ReviewRun.id)
+                .where(
+                    ReviewRun.connection_id == connection.id,
+                    ReviewRun.id != run.id,
+                    ReviewRun.status == "running",
+                )
+                .limit(1)
+            )
+            if other:
+                raise runner_client.RunnerBlocked("busy")
+            if connection.auth_status != "connected":
+                raise runner_client.RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
-        run.status, run.started_at, run.error = "running", now(), None
+        run.status, run.started_at, run.error, run.blocked_reason = "running", now(), None, None
+        checkpoint = run.progress
         args = (
             repo.full_name,
             pr.number,
@@ -159,7 +227,20 @@ def perform_review(run_id: str):
             token,
         )
     try:
-        status, report, comments = ocr.review(*args, stopped=lambda: review_stopped(run_id))
+
+        def progress(value):
+            with transaction() as db:
+                current = db.get(ReviewRun, run_id)
+                if current and not current.cancel_requested:
+                    current.progress = value
+
+        status, report, comments = ocr.review(
+            *args,
+            stopped=lambda: review_stopped(run_id),
+            run_id=run_id,
+            progress=progress,
+            checkpoint=checkpoint,
+        )
     except ocr.ReviewStopped:
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
@@ -310,7 +391,7 @@ def publish_run(run_id: str):
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
-        if not repo.active or not db.get(Installation, repo.installation_id).active:
+        if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The GitHub installation is no longer active.")
         token = github.installation_token(db, repo.installation_id)
         reconcile_threads(db, pr, repo, token)

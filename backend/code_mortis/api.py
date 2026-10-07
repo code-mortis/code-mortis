@@ -4,11 +4,12 @@ import secrets
 from datetime import timedelta
 from importlib.resources import files
 from typing import Annotated
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ from .models import (
     Activity,
     AppConfig,
     Connection,
+    ConnectionGrant,
     Finding,
     Installation,
     Job,
@@ -48,6 +50,7 @@ from .schemas import (
     RepositoryOut,
     RunDetail,
     RunOut,
+    StartRunInput,
     UserOut,
 )
 from .security import digest, safe_endpoint, seal, unseal, valid_signature
@@ -62,8 +65,10 @@ def current_user(request: Request, db: DB) -> User:
     if not session or session.expires_at.timestamp() <= now().timestamp():
         raise HTTPException(401, "Sign in with GitHub to continue.")
     user = db.get(User, session.user_id)
-    if not user or not user.enabled or not db.get(Membership, user.id):
+    membership = db.get(Membership, user.id) if user else None
+    if not user or not user.enabled or not membership:
         raise HTTPException(403, "Your account is not allowed on this instance.")
+    user.role = membership.role
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
             raise HTTPException(403, "Your session changed. Refresh the page and retry.")
@@ -89,38 +94,77 @@ def bootstrap(request: Request, db: Session):
     if db.get(AppConfig, 1):
         raise HTTPException(409, "This instance is already configured.")
     if not hmac.compare_digest(request.headers.get("x-setup-token", ""), settings().bootstrap_token):
-        raise HTTPException(403, "Enter the bootstrap token from your instance configuration.")
+        raise HTTPException(
+            403,
+            "The bootstrap token does not match this instance. "
+            "Copy the CM_BOOTSTRAP_TOKEN value from the environment file used to start it "
+            "(.env.dev for development, .env for the server).",
+        )
 
 
-def state_cookie(response: Response, state: str):
+def browser_binding(request: Request, response: Response) -> str:
+    binding = request.cookies.get("cm_browser", "")
+    if len(binding) != 43:
+        binding = secrets.token_urlsafe(32)
     response.set_cookie(
-        "cm_oauth",
-        state,
+        "cm_browser",
+        binding,
         httponly=True,
         secure=settings().cookie_secure,
         samesite="lax",
-        max_age=600,
+        max_age=86400,
         path="/api/v1",
     )
+    return binding
+
+
+def start_attempt(request: Request, response: Response, db: Session, purpose: str, return_path="/"):
+    state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+    db.execute(delete(OAuthState).where(OAuthState.expires_at <= now()))
+    db.add(
+        OAuthState(
+            state=digest(state),
+            purpose=purpose,
+            expires_at=now() + timedelta(minutes=10),
+            browser_hash=digest(browser_binding(request, response)),
+            verifier=seal(verifier),
+            return_path=return_path,
+        )
+    )
+    return state, verifier
 
 
 def consume_state(request: Request, db: Session, state: str, purpose: str):
-    if not state or not hmac.compare_digest(request.cookies.get("cm_oauth", ""), state):
-        raise HTTPException(400, "Sign-in state did not match. Start again.")
-    found = db.execute(
+    found = db.scalars(
         delete(OAuthState)
         .where(
-            OAuthState.state == digest(state), OAuthState.purpose == purpose, OAuthState.expires_at > now()
+            OAuthState.state == digest(state),
+            OAuthState.purpose == purpose,
+            OAuthState.expires_at > now(),
+            OAuthState.browser_hash == digest(request.cookies.get("cm_browser", "")),
         )
-        .returning(OAuthState.state)
-    ).scalar_one_or_none()
+        .returning(OAuthState)
+    ).one_or_none()
     if not found:
         raise HTTPException(400, "This sign-in attempt has expired or was already used.")
+    # Consume before exchanging a one-use remote code, even if the provider later rejects it.
+    db.commit()
+    return found
+
+
+def auth_error(request: Request, code: str, setup=False):
+    query = urlencode({"auth_error": code, "diagnostic": request.state.request_id})
+    return RedirectResponse(settings().public_url + ("/setup?" if setup else "/?") + query, status_code=303)
 
 
 @router.get("/setup/status")
-def setup_status(db: DB) -> dict:
-    return {"configured": db.get(AppConfig, 1) is not None, "public_url": settings().public_url}
+def setup_status(request: Request, response: Response, db: DB) -> dict:
+    browser_binding(request, response)
+    return {
+        "configured": db.get(AppConfig, 1) is not None,
+        "public_url": settings().public_url,
+        "configuration_errors": settings().diagnostics(),
+    }
 
 
 class ManifestInput(BaseModel):
@@ -130,22 +174,24 @@ class ManifestInput(BaseModel):
 @router.post("/setup/manifest")
 def manifest(body: ManifestInput, request: Request, response: Response, db: DB) -> dict:
     bootstrap(request, db)
-    state = secrets.token_urlsafe(32)
-    db.add(OAuthState(state=digest(state), purpose="manifest", expires_at=now() + timedelta(minutes=10)))
-    state_cookie(response, state)
-    prefix = f"organizations/{body.organization}/settings" if body.organization else "settings"
     origin = settings().public_url
+    if request.headers.get("origin") not in {None, origin}:
+        raise HTTPException(400, f"Open {origin} in this browser and start GitHub App setup there.")
+    if errors := settings().diagnostics():
+        raise HTTPException(422, " ".join(errors))
+    state, _ = start_attempt(request, response, db, "manifest")
+    prefix = f"organizations/{body.organization}/settings" if body.organization else "settings"
     return {
         "action": f"https://github.com/{prefix}/apps/new?state={state}",
         "manifest": {
             "name": f"Code Mortis {secrets.token_hex(3)}",
             "url": origin,
-            "hook_attributes": {"url": origin + "/api/v1/webhooks/github", "active": True},
+            "hook_attributes": {"url": settings().github_webhook_url, "active": True},
             "redirect_url": origin + "/api/v1/setup/callback",
             "callback_urls": [origin + "/api/v1/auth/callback"],
-            "setup_url": origin + "/settings?tab=github",
+            "setup_url": origin + "/api/v1/installations/callback",
             "public": True,
-            "request_oauth_on_install": True,
+            "request_oauth_on_install": False,
             "default_permissions": {"contents": "read", "pull_requests": "write", "metadata": "read"},
             "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment"],
         },
@@ -155,11 +201,17 @@ def manifest(body: ManifestInput, request: Request, response: Response, db: DB) 
 @router.get("/setup/callback")
 def manifest_callback(request: Request, db: DB, state: str = "", code: str = ""):
     if db.get(AppConfig, 1):
-        raise HTTPException(409, "This instance is already configured.")
-    consume_state(request, db, state, "manifest")
+        return RedirectResponse(settings().public_url + "/setup?registered=1", status_code=303)
+    try:
+        consume_state(request, db, state, "manifest")
+    except HTTPException:
+        return auth_error(request, "expired", setup=True)
     if not code or len(code) > 200 or not code.isalnum():
-        raise HTTPException(400, "Invalid GitHub App registration code.")
-    data = github.request("POST", f"/app-manifests/{code}/conversions", "")
+        return auth_error(request, "cancelled", setup=True)
+    try:
+        data = github.request("POST", f"/app-manifests/{code}/conversions", "")
+    except github.GitHubError:
+        return auth_error(request, "provider", setup=True)
     db.add(
         AppConfig(
             id=1,
@@ -172,24 +224,37 @@ def manifest_callback(request: Request, db: DB, state: str = "", code: str = "")
         )
     )
     response = RedirectResponse(settings().public_url + "/setup?registered=1", status_code=303)
-    response.delete_cookie("cm_oauth", path="/api/v1")
     return response
 
 
 @router.get("/auth/login")
-def login(db: DB):
-    state = secrets.token_urlsafe(32)
-    db.add(OAuthState(state=digest(state), purpose="login", expires_at=now() + timedelta(minutes=10)))
-    response = RedirectResponse(github.login_url(db, state))
-    state_cookie(response, state)
+def login(request: Request, db: DB, installation_id: int | None = None):
+    # Compare hosts because TLS may terminate at a reverse proxy before reaching us.
+    if request.url.netloc != urlsplit(settings().public_url).netloc:
+        query = f"?installation_id={installation_id}" if installation_id else ""
+        return RedirectResponse(settings().public_url + "/api/v1/auth/login" + query, status_code=303)
+    response = RedirectResponse("/", status_code=303)
+    return_path = (
+        f"/api/v1/installations/callback?installation_id={installation_id}" if installation_id else "/"
+    )
+    state, verifier = start_attempt(request, response, db, "login", return_path)
+    response.headers["location"] = github.login_url(db, state, verifier)
     return response
 
 
 @router.get("/auth/callback")
-def login_callback(request: Request, db: DB, state: str = "", code: str = ""):
-    consume_state(request, db, state, "login")
-    tokens = github.exchange_code(db, code)
-    identity = github.request("GET", "/user", tokens["access_token"])
+def login_callback(request: Request, db: DB, state: str = "", code: str = "", error: str = ""):
+    try:
+        attempt = consume_state(request, db, state, "login")
+    except HTTPException:
+        return auth_error(request, "expired")
+    if error or not code:
+        return auth_error(request, "cancelled")
+    try:
+        tokens = github.exchange_code(db, code, unseal(attempt.verifier))
+        identity = github.request("GET", "/user", tokens["access_token"])
+    except github.GitHubError:
+        return auth_error(request, "provider")
     membership = db.get(Membership, identity["id"])
     if membership is None and identity["login"].casefold() == settings().owner_github_login.casefold():
         # Bootstrap the owner once; later username reuse must not grant administrator access.
@@ -197,7 +262,7 @@ def login_callback(request: Request, db: DB, state: str = "", code: str = ""):
             membership = Membership(github_id=identity["id"], login=identity["login"], role="admin")
             db.add(membership)
     if membership is None:
-        raise HTTPException(403, "Ask the instance administrator to allow your GitHub account.")
+        return auth_error(request, "membership")
     user = db.get(User, identity["id"])
     if user is None:
         user = User(id=identity["id"], login=identity["login"], role=membership.role)
@@ -219,7 +284,7 @@ def login_callback(request: Request, db: DB, state: str = "", code: str = ""):
             expires_at=now() + timedelta(days=settings().session_days),
         )
     )
-    response = RedirectResponse(settings().public_url + "/", status_code=303)
+    response = RedirectResponse(settings().public_url + attempt.return_path, status_code=303)
     response.set_cookie(
         "cm_session",
         token,
@@ -229,7 +294,6 @@ def login_callback(request: Request, db: DB, state: str = "", code: str = ""):
         max_age=settings().session_days * 86400,
         path="/",
     )
-    response.delete_cookie("cm_oauth", path="/api/v1")
     return response
 
 
@@ -314,6 +378,15 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         raise HTTPException(422, "Choose an existing AI connection.")
     if body.enabled and not body.connection_id:
         raise HTTPException(422, "Choose an AI connection before enabling reviews.")
+    if body.connection_id:
+        selected = db.get(Connection, body.connection_id)
+        if selected.kind != "api":
+            grant = db.get(ConnectionGrant, (selected.id, repo.id))
+            if not grant or (body.settings.automatic and not grant.automatic):
+                raise HTTPException(
+                    403,
+                    "The connection owner must authorize this repository and its automatic reviews first.",
+                )
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,
@@ -368,14 +441,14 @@ def pull_detail(pr_id: str, db: DB, user: USER):
 
 
 @router.post("/pulls/{pr_id}/runs", response_model=RunOut, status_code=202)
-def start_run(pr_id: str, db: DB, user: USER):
+def start_run(pr_id: str, db: DB, user: USER, body: StartRunInput | None = None):
     pr, repo, _ = pr_access(db, user, pr_id, write=True)
     token = github.installation_token(db, repo.installation_id)
     data = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
     pr = upsert_pr(db, repo, data)
     if pr.state != "open":
         raise HTTPException(409, "Reopen the pull request before starting another review.")
-    run = create_run(db, pr, repo, "manual", user)
+    run = create_run(db, pr, repo, "manual", user, body.connection_id if body else None)
     db.flush()
     return RunOut.model_validate(run)
 
@@ -405,7 +478,7 @@ def cancel_run(run_id: str, db: DB, user: USER):
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id, write=True)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-    if run.status not in {"queued", "running"}:
+    if run.status not in {"queued", "running", "blocked"}:
         raise HTTPException(409, "This review is no longer running.")
     run.cancel_requested, run.status, run.publication, run.finished_at = (
         True,
@@ -413,6 +486,27 @@ def cancel_run(run_id: str, db: DB, user: USER):
         "not_applicable",
         now(),
     )
+    return RunOut.model_validate(run)
+
+
+@router.post("/runs/{run_id}/retry", response_model=RunOut, status_code=202)
+def retry_review(run_id: str, db: DB, user: USER):
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    if run.status != "blocked":
+        raise HTTPException(
+            409, "Start a new review to retry a terminal run; only blocked reviews can resume."
+        )
+    from .reviews import authorize_connection
+
+    connection = db.get(Connection, run.connection_id)
+    if not connection or (connection.owner_id and connection.owner_id != user.id):
+        raise HTTPException(403, "Only the connection owner can resume this review.")
+    authorize_connection(db, connection, repo, run.trigger, user)
+    run.status, run.error, run.blocked_reason = "queued", None, None
+    enqueue(db, "review", {"run_id": run.id})
     return RunOut.model_validate(run)
 
 
@@ -469,16 +563,40 @@ def connection_out(connection: Connection) -> ConnectionOut:
 
 
 @router.get("/providers")
-def providers(user: ADMIN) -> list[dict]:
+def providers(user: USER) -> list[dict]:
     return json.loads(files("code_mortis").joinpath("providers.json").read_text())
 
 
 @router.get("/connections", response_model=list[ConnectionOut])
-def connections(db: DB, user: ADMIN):
-    return [connection_out(row) for row in db.scalars(select(Connection).order_by(Connection.name))]
+def connections(db: DB, user: USER, repository_id: int | None = None):
+    condition = or_(Connection.kind == "api", Connection.owner_id == user.id)
+    if repository_id is not None:
+        repo_access(db, user, repository_id)
+        granted = select(ConnectionGrant.connection_id).where(ConnectionGrant.repository_id == repository_id)
+        condition = or_(condition, Connection.id.in_(granted))
+    return [
+        connection_out(row)
+        for row in db.scalars(select(Connection).where(condition).order_by(Connection.name))
+    ]
 
 
-def save_connection(db: Session, body: ConnectionInput, connection: Connection | None = None):
+def manage_connection(db: Session, user: User, identity: str) -> Connection:
+    connection = db.get(Connection, identity)
+    if not connection:
+        raise HTTPException(404, "Connection not found.")
+    if (connection.kind == "api" and user.role != "admin") or (
+        connection.kind != "api" and connection.owner_id != user.id
+    ):
+        raise HTTPException(
+            403,
+            "Only the connection owner can manage this personal account; API connections require an administrator.",
+        )
+    return connection
+
+
+def save_connection(db: Session, body: ConnectionInput, connection: Connection | None = None, owner_id=None):
+    if connection and connection.kind != body.kind:
+        raise HTTPException(422, "Create a new connection to change its type.")
     old = json.loads(unseal(connection.secret)) if connection else {}
     credentials = {
         "api_key": body.api_key if body.api_key is not None else old.get("api_key", ""),
@@ -486,13 +604,13 @@ def save_connection(db: Session, body: ConnectionInput, connection: Connection |
         if body.extra_headers is not None
         else old.get("extra_headers", {}),
     }
-    if body.protocol != "anthropic-bedrock" and not credentials["api_key"]:
+    if body.kind == "api" and body.protocol != "anthropic-bedrock" and not credentials["api_key"]:
         raise HTTPException(
             422, "Enter an API key; use a placeholder for local models that do not require one."
         )
-    url = safe_endpoint(body.base_url) if body.protocol != "anthropic-bedrock" else ""
+    url = safe_endpoint(body.base_url) if body.kind == "api" and body.protocol != "anthropic-bedrock" else ""
     if connection is None:
-        connection = Connection()
+        connection = Connection(kind=body.kind, owner_id=owner_id if body.kind != "api" else None)
         db.add(connection)
     for key in ("name", "provider", "protocol", "model", "options"):
         setattr(connection, key, getattr(body, key))
@@ -503,40 +621,44 @@ def save_connection(db: Session, body: ConnectionInput, connection: Connection |
 
 
 @router.post("/connections", response_model=ConnectionOut, status_code=201)
-def add_connection(body: ConnectionInput, db: DB, user: ADMIN):
-    return save_connection(db, body)
+def add_connection(body: ConnectionInput, db: DB, user: USER):
+    if body.kind == "api" and user.role != "admin":
+        raise HTTPException(403, "Administrator access is required to create shared API connections.")
+    return save_connection(db, body, owner_id=user.id)
 
 
 @router.put("/connections/{connection_id}", response_model=ConnectionOut)
-def edit_connection(connection_id: str, body: ConnectionInput, db: DB, user: ADMIN):
-    connection = db.get(Connection, connection_id)
-    if not connection:
-        raise HTTPException(404, "Connection not found.")
+def edit_connection(connection_id: str, body: ConnectionInput, db: DB, user: USER):
+    connection = manage_connection(db, user, connection_id)
     return save_connection(db, body, connection)
 
 
 @router.post("/connections/{connection_id}/test", status_code=202)
-def test_connection(connection_id: str, db: DB, user: ADMIN) -> dict:
-    connection = db.get(Connection, connection_id)
-    if not connection:
-        raise HTTPException(404, "Connection not found.")
+def test_connection(connection_id: str, db: DB, user: USER) -> dict:
+    connection = manage_connection(db, user, connection_id)
+    if connection.kind != "api":
+        raise HTTPException(
+            422, "Check the official client's connection status, then start a manual review to test it."
+        )
     connection.last_test = "Testing connection…"
     job = enqueue(db, "test_connection", {"connection_id": connection.id})
     return {"job_id": job.id}
 
 
 @router.delete("/connections/{connection_id}")
-def delete_connection(connection_id: str, db: DB, user: ADMIN) -> dict:
-    connection = db.get(Connection, connection_id)
-    if not connection:
-        raise HTTPException(404, "Connection not found.")
+def delete_connection(connection_id: str, db: DB, user: USER) -> dict:
+    connection = manage_connection(db, user, connection_id)
     if db.scalar(select(Repository).where(Repository.connection_id == connection_id).limit(1)):
         raise HTTPException(409, "Change the repositories using this connection before deleting it.")
     if any(
         run.config["connection"]["id"] == connection_id
-        for run in db.scalars(select(ReviewRun).where(ReviewRun.status.in_({"queued", "running"})))
+        for run in db.scalars(select(ReviewRun).where(ReviewRun.status.in_({"queued", "running", "blocked"})))
     ):
         raise HTTPException(409, "Wait for active reviews using this connection to finish.")
+    if connection.kind != "api":
+        from . import runner_client
+
+        runner_client.request("POST", f"/connections/{connection.id}/disconnect", {"kind": connection.kind})
     db.delete(connection)
     return {"ok": True}
 
@@ -548,7 +670,7 @@ def instance_settings(db: DB, user: ADMIN) -> dict:
         "github_app": {
             "id": config.github_app_id,
             "slug": config.github_slug,
-            "install_url": f"https://github.com/apps/{config.github_slug}/installations/new",
+            "install_url": "/api/v1/installations/start",
         },
         "installations": [
             {"id": row.id, "account": row.account, "active": row.active}
@@ -565,7 +687,52 @@ def instance_settings(db: DB, user: ADMIN) -> dict:
             )
         ],
         "public_url": settings().public_url,
+        "webhook_url": settings().github_webhook_url,
+        "configuration_errors": settings().diagnostics(),
+        "registration": {
+            "callback_url": settings().public_url + "/api/v1/auth/callback",
+            "setup_url": settings().public_url + "/api/v1/installations/callback",
+            "request_oauth_on_install": False,
+        },
     }
+
+
+@router.get("/installations/start")
+def start_installation(request: Request, db: DB, user: ADMIN):
+    response = RedirectResponse("/", status_code=303)
+    state, _ = start_attempt(request, response, db, "installation", str(user.id))
+    slug = github.app_config(db).github_slug
+    response.headers["location"] = f"https://github.com/apps/{slug}/installations/new?state={state}"
+    return response
+
+
+@router.get("/installations/callback")
+def installation_callback(request: Request, db: DB, installation_id: int | None = None, state: str = ""):
+    if not installation_id or installation_id < 1:
+        return auth_error(request, "installation_cancelled")
+    try:
+        user = current_user(request, db)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return RedirectResponse(
+                settings().public_url + f"/api/v1/auth/login?installation_id={installation_id}",
+                status_code=303,
+            )
+        return auth_error(request, "membership")
+    if user.role != "admin":
+        return auth_error(request, "installation_admin")
+    if state:
+        try:
+            attempt = consume_state(request, db, state, "installation")
+        except HTTPException:
+            return auth_error(request, "expired")
+        if attempt.return_path != str(user.id):
+            return auth_error(request, "installation_denied")
+    try:
+        connect_installation(installation_id, db, user)
+    except (HTTPException, github.GitHubError):
+        return auth_error(request, "installation_denied")
+    return RedirectResponse(settings().public_url + "/settings?tab=github&installed=1", status_code=303)
 
 
 @router.get("/installations/available")
@@ -622,6 +789,16 @@ def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
     existing = db.get(User, user_id)
     if existing:
         existing.enabled, existing.access_token, existing.refresh_token = False, "", ""
+    for run in db.scalars(
+        select(ReviewRun)
+        .where(
+            or_(ReviewRun.actor_id == user_id, ReviewRun.owner_id == user_id),
+            ReviewRun.status.in_({"queued", "running", "blocked"}),
+        )
+        .with_for_update()
+    ):
+        run.cancel_requested = True
+        run.status, run.publication, run.finished_at = "cancelled", "not_applicable", now()
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
     return {"ok": True}
 

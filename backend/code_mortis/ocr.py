@@ -238,6 +238,7 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
     if not isinstance(raw_comments, list):
         raise ValueError("OCR returned an invalid findings list.")
     comments = []
+    selected_paths = {item.get("path") for item in coverage["selected"]}
     for raw_comment in raw_comments:
         if not isinstance(raw_comment, dict):
             raise ValueError("OCR returned a malformed finding.")
@@ -247,6 +248,8 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
             comment = ReviewComment.model_validate(item).model_dump()
         except ValidationError as exc:
             raise ValueError("OCR returned a finding with an invalid path, location, or content.") from exc
+        if comment["path"] not in selected_paths:
+            raise ValueError("OCR returned a finding outside the selected review scope.")
         comments.append(
             {
                 key: clean_text(value, secrets) if isinstance(value, str) else value
@@ -303,6 +306,9 @@ def review(
     review_settings: dict,
     token: str,
     stopped: Callable[[], bool],
+    run_id: str = "",
+    progress: Callable[[dict], None] = lambda value: None,
+    checkpoint: dict | None = None,
 ) -> tuple[str, dict, list[dict]]:
     safe_repo_name(full_name)
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base_sha, head_sha)):
@@ -339,6 +345,22 @@ def review(
         for path in (repo / ".opencodereview", repo / ".opencodereview" / "rule.json"):
             if path.exists() and not path.resolve().is_relative_to(repo.resolve()):
                 raise ValueError("Repository review rules point outside the checkout.")
+        if connection.get("kind", "api") != "api":
+            from .delegated import review as delegated_review
+
+            return delegated_review(
+                repo,
+                env,
+                base_sha,
+                head_sha,
+                merge_base,
+                connection,
+                review_settings,
+                run_id,
+                stopped,
+                progress,
+                checkpoint or {},
+            )
         args = [
             settings().ocr_binary,
             "review",
@@ -376,7 +398,27 @@ def review(
             )
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         status, report, comments = parse_report(output, code, secrets)
+        deleted = (
+            set(
+                git(
+                    repo,
+                    env,
+                    "diff",
+                    "--name-only",
+                    "--diff-filter=D",
+                    "-z",
+                    f"{merge_base}..{head_sha}",
+                    stopped=stopped,
+                ).split("\0")
+            )
+            if comments
+            else set()
+        )
         for comment in comments:
+            ref = merge_base if comment["path"] in deleted else head_sha
+            source = git(repo, env, "show", f"{ref}:{comment['path']}", stopped=stopped)
+            if comment["end_line"] > len(source.splitlines()):
+                raise ValueError("OCR returned a finding outside the reviewed file's lines.")
             patch = git(
                 repo,
                 env,

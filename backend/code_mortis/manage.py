@@ -17,10 +17,34 @@ def main():
     init.add_argument("--owner", required=True, help="Instance owner's GitHub username")
     init.add_argument("--url", default="http://localhost:8080")
     init.add_argument("--output", default=".env")
+    init.add_argument(
+        "--webhook-url", default="", help="Public webhook URL, independently of the browser origin"
+    )
+    upgrade = sub.add_parser("upgrade-env", help="Add missing configuration without replacing secrets")
+    upgrade.add_argument("--file", default=".env")
     export = sub.add_parser("export-openapi")
     export.add_argument("--output", default="../docs/openapi.json")
     args = parser.parse_args()
-    if args.command == "init-env":
+    if args.command == "upgrade-env":
+        path = Path(args.file)
+        if not path.is_file():
+            parser.error(f"{args.file} does not exist; use init-env for a new instance")
+        content = path.read_text()
+        if re.search(r"(?m)^CM_RUNNER_TOKEN=.+$", content):
+            print("Runner configuration already exists; no values were changed.")
+            return
+        if re.search(r"(?m)^CM_RUNNER_TOKEN=", content):
+            parser.error("CM_RUNNER_TOKEN is empty; remove the empty line before upgrading")
+        path.chmod(0o600)
+        with path.open("a") as output:
+            output.write(
+                ("" if content.endswith("\n") else "\n")
+                + "CM_RUNNER_TOKEN="
+                + secrets.token_urlsafe(32)
+                + "\n"
+            )
+        print("Added CM_RUNNER_TOKEN. Existing keys, credentials, URLs and data were preserved.")
+    elif args.command == "init-env":
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", args.owner):
             parser.error("Use a valid GitHub username")
         url = urlsplit(args.url)
@@ -35,11 +59,24 @@ def main():
             parser.error("Use an HTTP(S) origin without a path, query, or credentials")
         if url.scheme != "https" and url.hostname not in {"localhost", "127.0.0.1"}:
             parser.error("Remote installations require HTTPS")
+        if args.webhook_url:
+            webhook = urlsplit(args.webhook_url)
+            if (
+                webhook.scheme != "https"
+                or not webhook.hostname
+                or webhook.hostname in {"localhost", "127.0.0.1"}
+                or webhook.username
+                or webhook.query
+                or webhook.fragment
+            ):
+                parser.error("Use a public HTTPS webhook URL without credentials, query or fragment")
         content = {
             "CM_PUBLIC_URL": args.url.rstrip("/"),
+            "CM_WEBHOOK_URL": args.webhook_url,
             "CM_OWNER_GITHUB_LOGIN": args.owner,
             "CM_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
             "CM_BOOTSTRAP_TOKEN": secrets.token_urlsafe(32),
+            "CM_RUNNER_TOKEN": secrets.token_urlsafe(32),
             "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
             "CM_COOKIE_SECURE": "true" if url.scheme == "https" else "false",
             "CM_ALLOW_PRIVATE_ENDPOINTS": "false",

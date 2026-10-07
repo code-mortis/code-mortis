@@ -1,0 +1,120 @@
+name: code-mortis-dev
+
+x-app: &app
+  image: code-mortis-dev:0.2.0
+  build: .
+  env_file: .env.dev
+  environment: &environment
+    CM_DATABASE_URL: postgresql+psycopg://mortis:${POSTGRES_PASSWORD:?Use --env-file .env.dev}@postgres:5432/mortis_dev
+    CM_REDIS_URL: redis://redis:6379/0
+    CM_PUBLIC_URL: http://localhost:5173
+    CM_COOKIE_SECURE: "false"
+  volumes:
+    - ./backend/code_mortis:/app/backend/code_mortis:ro
+    - ./backend/migrations:/app/backend/migrations:ro
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+  tmpfs: ["/tmp:mode=1777,size=2g", "/home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=256m"]
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mortis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Use --env-file .env.dev}
+      POSTGRES_DB: mortis_dev
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U mortis -d mortis_dev"]
+      interval: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      retries: 20
+  migrate:
+    <<: *app
+    command: [alembic, upgrade, head]
+  api:
+    <<: *app
+    command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --reload, --reload-dir, /app/backend/code_mortis, --no-access-log]
+    networks: [default, runners]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready',timeout=5)"]
+      interval: 5s
+      retries: 20
+  frontend:
+    image: oven/bun:1.4.2
+    working_dir: /src/frontend
+    command: [sh, -c, "bun install --frozen-lockfile && bun run dev --host 0.0.0.0"]
+    environment:
+      CM_DEV_API_URL: http://api:8080
+    volumes:
+      - ./frontend:/src/frontend
+      - frontend-modules:/src/frontend/node_modules
+    ports: ["127.0.0.1:5173:5173"]
+    depends_on:
+      api: {condition: service_healthy}
+  review-worker:
+    <<: *app
+    environment:
+      <<: *environment
+      CM_OCR_ISOLATED_RUNTIME: "true"
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
+    networks: [default, runners]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  sync-worker:
+    <<: *app
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, sync, --concurrency=1, --loglevel=INFO, --hostname=sync@%h]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  scheduler:
+    <<: *app
+    command: [celery, -A, code_mortis.jobs:celery, beat, --loglevel=INFO, --schedule=/tmp/celerybeat-schedule]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  runner:
+    image: code-mortis-runner:0.2.0
+    build: {context: ., dockerfile: Dockerfile.runner}
+    environment:
+      CM_RUNNER_TOKEN: ${CM_RUNNER_TOKEN:?Generate .env.dev with init-env}
+    volumes: [runner-profiles:/profiles, "./backend/code_mortis:/app/backend/code_mortis:ro"]
+    tmpfs: ["/tmp:mode=1777,size=1g", "/home/mortis:uid=10001,gid=10001,mode=0700,size=64m"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    networks: [runners]
+  relay:
+    image: code-mortis-relay:5.0.0
+    build: {context: ., dockerfile: Dockerfile.relay}
+    profiles: [webhooks]
+    environment:
+      CM_WEBHOOK_URL: ${CM_WEBHOOK_URL:-}
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  postgres-data:
+  redis-data:
+  runner-profiles:
+  frontend-modules:
+
+networks:
+  runners:

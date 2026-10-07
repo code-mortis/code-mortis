@@ -2,53 +2,57 @@
 
 Self-hosted GitHub pull request reviews powered by [Open Code Review](https://github.com/alibaba/open-code-review). Findings become comments from your own GitHub App. Review runs, coverage, and resolution history stay in one workspace.
 
+Shared API connections and personal ChatGPT and Claude Code subscriptions use the same review history and publisher. Official clients run on the server, with persistent private authentication profiles. Personal automation requires the subscription owner's consent for each repository. See [acceptance evidence](docs/acceptance.md) for implemented behavior, local checks and integrations still awaiting real accounts.
+
 ## Run your instance
 
-Requires Docker with Compose and Python 3.12 or newer to generate configuration. Production also needs a public HTTPS origin reachable by GitHub. No personal bot account is required.
+Requires Docker Compose and Python 3.12 or newer to generate configuration. Production needs a public HTTPS origin. No personal GitHub bot account is required.
 
 ```sh
 python3 backend/code_mortis/manage.py init-env --owner YOUR_GITHUB_LOGIN --url https://reviews.example.com
 docker compose up -d --build
 ```
 
-Put your reverse proxy in front of `127.0.0.1:8080`, forwarding to the same public origin configured above. Open that URL, enter `CM_BOOTSTRAP_TOKEN` from `.env`, and follow the GitHub App registration flow. Sign in as the configured owner. In **Settings → GitHub**, install the app on selected repositories and connect the installation. Then add and test an AI connection, and enable reviews in the repository's **Configure** panel.
+Point an HTTPS reverse proxy at `127.0.0.1:8080`, including WebSocket forwarding. Open the configured URL, enter `CM_BOOTSTRAP_TOKEN` from `.env`, and register your GitHub App. Sign in as the configured owner. In **Settings → GitHub**, install the app on selected repositories. Then add a connection and enable reviews in the repository's **Configure** panel. Never commit `.env`; retain its encryption key with your backups.
 
-For a local UI preview, omit `--url` to use `http://localhost:8080`. GitHub needs a public webhook URL for real automatic reviews; use an HTTPS reverse proxy or tunnel and set the matching public origin before registering the app. Never commit `.env`. Keep its encryption key with your backups.
+Registration, login and installation are separate flows. Always finish each flow in the browser where you started it. `CM_PUBLIC_URL` is the browser origin and callback origin. `CM_WEBHOOK_URL` optionally overrides only the webhook destination. Production defaults to `CM_PUBLIC_URL/api/v1/webhooks/github`.
 
-## Review workflow
+## Develop locally with Docker
 
-- Opening or updating an enabled, non-draft PR queues a review. External forks require a manual review by someone with repository write access.
-- Workers fetch the requested commits and run pinned OCR 1.12.11 with the configured model. Proposed code is not executed. The checkout uses the trusted base commit; OCR reads the PR diff from Git objects. OCR MCP servers are disabled.
-- Completed and partial runs preserve findings and the coverage manifest. Incomplete coverage is labeled **partial**, including when OCR exits successfully. Failed or cancelled runs never become a clean review.
-- Findings with valid diff locations become inline comments. Others appear in the review summary. Reviews use GitHub's `COMMENT` event; they do not approve or request changes.
-- GitHub publication has its own status. Retrying publication uses saved results and reconciles already-posted review markers before writing again.
-- Resolve, reopen, or dismiss findings in the app. Linked threads update on GitHub. Thread changes on GitHub return through webhooks and periodic reconciliation. Pending or failed sync remains visible until confirmed.
-- Every run preserves its finding snapshots. Findings absent from a later review are **not observed**, not automatically resolved.
+Development has its own database, Redis, profiles, secrets and GitHub App. The browser URL stays `http://localhost:5173`; Vite proxies the API and WebSockets. Obtain a dedicated channel at [smee.io](https://smee.io/) to relay GitHub webhooks.
 
-## AI connections
+```sh
+python3 backend/code_mortis/manage.py init-env --output .env.dev --owner YOUR_GITHUB_LOGIN --url http://localhost:5173 --webhook-url https://smee.io/YOUR_CHANNEL
+docker compose --env-file .env.dev -f compose.dev.yaml --profile webhooks up -d --build
+```
 
-The provider picker includes OCR's native presets, OpenCode, and custom endpoints. Supported protocols: OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Anthropic Bedrock. Models must support tool calls. Provider availability and model support depend on the selected service; the connection test performs a real OCR tool-call round trip and may incur provider charges.
+Open [localhost:5173](http://localhost:5173), bootstrap with `.env.dev`, and register a **separate development GitHub App**. Its callbacks stay on localhost; only webhooks use the relay. HMR updates the frontend and the API reloads Python changes. Restart review-worker, sync-worker, scheduler or runner after changing their code. Restarting preserves data; `down -v` deletes development data. These commands do not reconfigure the production project.
 
-API keys and extra headers are encrypted with Fernet and never returned to the frontend. Repository settings can override model, effort, language, exclusions, background, rules, concurrency, timeout, and token budget. Bedrock supports worker-provided AWS credentials; inject them into the review worker using your deployment's secret mechanism.
+All services, including the frontend, run in Docker. Keep port 5173 available so the browser origin and GitHub callbacks stay consistent.
 
-Custom endpoint URLs are administrator-controlled. HTTPS public endpoints are the default. Trusted local gateways need `CM_ALLOW_PRIVATE_ENDPOINTS=true` or a narrowly configured `CM_TRUSTED_ENDPOINT_HOSTS` entry. Network policy should restrict worker egress when administrators or custom endpoints are not fully trusted; URL checks are not a DNS-rebinding or redirect firewall.
+## Connections and review workflow
 
-Personal ChatGPT/OpenAI and Claude Code subscription sign-in are a follow-up milestone. They are not exposed as working authentication options in this release.
+- Administrators manage shared API connections. The catalog includes OCR's 29 native presets, OpenCode and custom endpoints. Protocols are OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and Bedrock. Models must support tools. **Test connection** completes a real OCR tool-call round trip and can incur provider charges.
+- Members manage their own personal subscriptions. **Connect account** starts official ChatGPT device authorization or a limited console running the unmodified `claude auth login` command. Enable device authorization in ChatGPT security settings if required. Neither flow exposes a general shell or converts subscription credentials into an API key.
+- The owner grants repository access and separately opts into automatic consumption. An administrator can select an authorized connection for a repository but cannot grant consent for its owner. Manual subscription reviews use the initiating member's own connection. One execution runs per personal connection; waiting, expired sessions, quotas and runner outages remain visible. There is no automatic provider or paid-API substitution.
+- Opening or updating an enabled, non-draft PR queues a review. External forks require a manual review by a repository writer. Each run pins commits, model, settings, engine, connection, owner and initiator.
+- API reviews use `ocr review`. Subscriptions use `ocr delegate preview` and `ocr delegate rule`, then native clients analyze application-assigned files. Coverage is counted from validated file results, never a model's self-reported completion. Native clients get only explicit context and restricted read tools; repository scripts, agent instructions, hooks and MCP servers are not executed.
+- API reviews retain OCR's token budget. Native reviews instead enforce **context bytes and elapsed time**; official clients do not expose the same hard token/output cap. Reaching a bound produces incomplete coverage. Provider quotas still apply. Cancellation cannot refund already consumed usage.
+- Findings and coverage are saved before publication. Valid diff locations become inline comments; other findings appear in the summary. Reviews use GitHub's `COMMENT` event and the App's bot identity. Publication-only retries reconcile existing review markers without repeating model analysis.
+- Resolve, reopen or dismiss findings in the app. Linked threads synchronize with GitHub, with visible pending changes until confirmed. Periodic reconciliation recovers missed events. Every run preserves its occurrences; a finding absent later is **not observed**, never automatically resolved.
 
-## Architecture
+API keys and extra headers are encrypted and never returned to the browser. Custom provider endpoints are administrator-controlled. Private gateways need `CM_ALLOW_PRIVATE_ENDPOINTS=true` or a narrow `CM_TRUSTED_ENDPOINT_HOSTS` allowlist. Deploy an egress policy if administrators or endpoints are not fully trusted. Bedrock credentials belong only in the review worker, not the native runner.
 
-FastAPI serves the React production build and API from one origin. PostgreSQL stores users, encrypted connections, immutable run snapshots, findings, webhook delivery IDs, and durable jobs. Celery and Redis dispatch work, with separate review and synchronization workers. One scheduler dispatches pending database jobs every 10 seconds and reconciles GitHub every five minutes.
+## Architecture and checks
 
-The review worker runs as an unprivileged container user with a read-only root filesystem, temporary checkout storage, and a private temporary OCR configuration directory. There is no Docker socket mount. Do not set `CM_OCR_ISOLATED_RUNTIME=true` on an ordinary workstation account: OCR writes its configuration in the service user's actual home.
+FastAPI serves the production React build and API from one origin. PostgreSQL owns users, credentials, immutable runs, findings, deliveries and durable jobs. Celery/Redis dispatch review and synchronization queues. One scheduler dispatches work every ten seconds and reconciles GitHub every five minutes. The isolated native runner has no database or GitHub credentials and persists only official-client profiles. Do not expose its port or mount the Docker socket.
 
-The first release intentionally uses one review process and one synchronization process. Repeated worker crashes surface as failed operations after three attempts. An expired worker lease is recovered after two hours, allowing the maximum review plus fetch time. Review history is retained indefinitely; size your database and backups accordingly.
-
-## Development and verification
+OCR is pinned to **1.12.11**, Codex to **0.160.1**, and Claude Code to **2.1.292**. Review workers use one process each because OCR configuration is process-global. The native runner uses one ASGI process to own its sessions, terminal processes and locks.
 
 ```sh
 docker compose -f compose.test.yaml up -d --wait
 cd backend
-uv sync --python 3.13
+uv sync --frozen --python 3.13
 uv run python -m pytest -q
 uv run ruff check .
 uv run python -m code_mortis.manage export-openapi
@@ -60,15 +64,6 @@ bunx playwright install chromium
 bun run test
 ```
 
-The backend tests require the isolated `mortis_test` database on port 55439 and Redis on 56389. They refuse another database name. Browser tests serve the production build and mock GitHub-facing application APIs. This exercises UI behavior without publishing comments or calling paid models. Live integration needs your own GitHub App installation and provider credentials.
+Backend tests require the isolated `mortis_test` database on port 55439 and Redis on 56389. Browser tests use the production build with mocked application APIs. Container checks exercise real OCR and native client binaries with controlled or empty profiles. These tests do not prove authenticated provider or GitHub integration. See [acceptance evidence](docs/acceptance.md) for exact commands and remaining live checks.
 
-The image's engine integration check runs the real OCR binary against a local deterministic provider with external networking disabled:
-
-```sh
-docker build -t code-mortis:test .
-docker run --rm --network none --read-only --tmpfs /tmp:mode=1777,size=256m --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m code-mortis:test python tests/ocr_container_smoke.py
-```
-
-For frontend development use `bun run dev`; Vite proxies `/api` and `/health` to `localhost:8080`. The generated API contract is `docs/openapi.json`, with TypeScript types in `frontend/src/api.generated.ts`.
-
-See [operations](docs/operations.md) for backup, restore, upgrades, and troubleshooting. Code Mortis is MIT licensed; bundled OCR and other dependencies retain their licenses in [third-party notices](THIRD_PARTY_NOTICES.md).
+See [operations](docs/operations.md) for upgrading an existing App, backups, restoration and troubleshooting. Code Mortis is MIT licensed; dependencies retain their licenses in [third-party notices](THIRD_PARTY_NOTICES.md).

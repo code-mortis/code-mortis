@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
-import { useAction, useApi, type Connection, type Repository } from "./api";
+import {
+  useAction,
+  useApi,
+  type Connection,
+  type Repository,
+  type Schema,
+} from "./api";
+import { PersonalConnection } from "./subscriptions";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -38,6 +45,8 @@ type Instance = {
   members: { id: number; login: string; role: string }[];
   failed_jobs: { id: string; kind: string; error: string }[];
   public_url: string;
+  webhook_url?: string;
+  configuration_errors?: string[];
 };
 const protocols = [
   "openai",
@@ -59,7 +68,9 @@ export function RepositorySettings({
   repository: Repository;
   onSaved: () => void;
 }) {
-  const connections = useApi<Connection[]>("/connections");
+  const connections = useApi<Connection[]>(
+    `/connections?repository_id=${repo.id}`,
+  );
   const action = useAction();
   const [enabled, setEnabled] = useState(repo.enabled);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
@@ -68,6 +79,9 @@ export function RepositorySettings({
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
   const [error, setError] = useState<unknown>();
+  const personal = ["chatgpt", "claude_code"].includes(
+    connections.data?.find((item) => item.id === connection)?.kind ?? "api",
+  );
   function change<K extends keyof typeof settings>(
     key: K,
     value: (typeof settings)[K],
@@ -216,20 +230,54 @@ export function RepositorySettings({
               />
             )}
           </Field>
-          <Field label="Token budget">
-            {(id) => (
-              <Input
-                id={id}
-                type="number"
-                min={1000}
-                max={5000000}
-                required
-                value={settings.token_budget}
-                onChange={(e) => change("token_budget", Number(e.target.value))}
-              />
-            )}
-          </Field>
-          <Field label="Concurrency">
+          {!personal && (
+            <Field label="Token budget">
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={1000}
+                  max={5000000}
+                  required
+                  value={settings.token_budget}
+                  onChange={(e) =>
+                    change("token_budget", Number(e.target.value))
+                  }
+                />
+              )}
+            </Field>
+          )}
+          {personal && (
+            <Field
+              label="Native context budget (bytes)"
+              hint="Bounds the code and rules supplied to the official client. Subscription usage limits still apply; this is not an output-token cap."
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={4096}
+                  max={20000000}
+                  required
+                  value={settings.delegated_context_bytes ?? 800000}
+                  onChange={(event) =>
+                    change(
+                      "delegated_context_bytes",
+                      Number(event.target.value),
+                    )
+                  }
+                />
+              )}
+            </Field>
+          )}
+          <Field
+            label="Concurrency"
+            hint={
+              personal
+                ? "Personal subscriptions run one review at a time."
+                : undefined
+            }
+          >
             {(id) => (
               <Input
                 id={id}
@@ -237,7 +285,8 @@ export function RepositorySettings({
                 min={1}
                 max={8}
                 required
-                value={settings.concurrency}
+                disabled={personal}
+                value={personal ? 1 : settings.concurrency}
                 onChange={(e) => change("concurrency", Number(e.target.value))}
               />
             )}
@@ -268,12 +317,17 @@ export function RepositorySettings({
 function ConnectionForm({
   connection,
   providers,
+  canCreateApi,
   onSaved,
 }: {
   connection?: Connection;
   providers: Provider[];
+  canCreateApi: boolean;
   onSaved: () => void;
 }) {
+  const [kind, setKind] = useState(
+    connection?.kind ?? (canCreateApi ? "api" : "chatgpt"),
+  );
   const first = providers.find((p) => p.name === "openai") ?? providers[0];
   const [name, setName] = useState(connection?.name ?? "");
   const [provider, setProvider] = useState(
@@ -308,18 +362,22 @@ function ConnectionForm({
         e.preventDefault();
         setError(undefined);
         try {
-          const body = {
-            name,
-            provider,
-            protocol,
-            model,
-            base_url: url,
-            ...(key ? { api_key: key } : {}),
-            ...(headers.trim()
-              ? { extra_headers: parseObject(headers, "Headers") }
-              : {}),
-            options: parseObject(options, "Options"),
-          };
+          const body =
+            kind !== "api"
+              ? { name, kind, model }
+              : {
+                  kind,
+                  name,
+                  provider,
+                  protocol,
+                  model,
+                  base_url: url,
+                  ...(key ? { api_key: key } : {}),
+                  ...(headers.trim()
+                    ? { extra_headers: parseObject(headers, "Headers") }
+                    : {}),
+                  options: parseObject(options, "Options"),
+                };
           await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
             method: connection ? "PUT" : "POST",
@@ -332,6 +390,22 @@ function ConnectionForm({
       }}
     >
       <ErrorNotice error={error} />
+      <Field label="Connection type">
+        {(id) => (
+          <NativeSelect
+            id={id}
+            value={kind}
+            disabled={!!connection}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            {canCreateApi && <option value="api">Shared API connection</option>}
+            <option value="chatgpt">Personal ChatGPT subscription</option>
+            <option value="claude_code">
+              Personal Claude Code subscription
+            </option>
+          </NativeSelect>
+        )}
+      </Field>
       <Field label="Connection name">
         {(id) => (
           <Input
@@ -344,50 +418,54 @@ function ConnectionForm({
           />
         )}
       </Field>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Provider">
-          {(id) => (
-            <NativeSelect
-              id={id}
-              value={provider}
-              onChange={(e) => choose(e.target.value)}
-            >
-              {providers.map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.displayName}
-                </option>
-              ))}
-            </NativeSelect>
+      {kind === "api" && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Provider">
+              {(id) => (
+                <NativeSelect
+                  id={id}
+                  value={provider}
+                  onChange={(e) => choose(e.target.value)}
+                >
+                  {providers.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.displayName}
+                    </option>
+                  ))}
+                </NativeSelect>
+              )}
+            </Field>
+            <Field label="API protocol">
+              {(id) => (
+                <NativeSelect
+                  id={id}
+                  value={protocol}
+                  onChange={(e) => setProtocol(e.target.value)}
+                >
+                  {protocols.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </NativeSelect>
+              )}
+            </Field>
+          </div>
+          {protocol !== "anthropic-bedrock" && (
+            <Field label="API base URL">
+              {(id) => (
+                <Input
+                  id={id}
+                  required
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                />
+              )}
+            </Field>
           )}
-        </Field>
-        <Field label="API protocol">
-          {(id) => (
-            <NativeSelect
-              id={id}
-              value={protocol}
-              onChange={(e) => setProtocol(e.target.value)}
-            >
-              {protocols.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </NativeSelect>
-          )}
-        </Field>
-      </div>
-      {protocol !== "anthropic-bedrock" && (
-        <Field label="API base URL">
-          {(id) => (
-            <Input
-              id={id}
-              required
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          )}
-        </Field>
+        </>
       )}
       <Field
         label="Model identifier"
@@ -404,67 +482,82 @@ function ConnectionForm({
           />
         )}
       </Field>
-      <Field
-        label={connection?.has_key ? "Replace API key (optional)" : "API key"}
-        hint={
-          protocol === "anthropic-bedrock"
-            ? "Bedrock can use the worker’s AWS credentials."
-            : connection?.has_key
-              ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
-              : "For a trusted local endpoint without authentication, enter a placeholder."
-        }
-      >
-        {(id) => (
-          <Input
-            id={id}
-            type="password"
-            autoComplete="new-password"
-            required={!connection?.has_key && protocol !== "anthropic-bedrock"}
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-          />
-        )}
-      </Field>
-      <details>
-        <summary className="cursor-pointer text-sm font-medium">
-          Advanced provider settings
-        </summary>
-        <div className="mt-4 space-y-4">
+      {kind === "api" && (
+        <>
           <Field
-            label="Extra headers JSON"
+            label={
+              connection?.has_key ? "Replace API key (optional)" : "API key"
+            }
             hint={
-              connection?.header_names?.length
-                ? `Stored headers: ${connection.header_names!.join(", ")}. Leave blank to keep them; use {} to clear.`
-                : "Values are encrypted alongside the API key."
+              protocol === "anthropic-bedrock"
+                ? "Bedrock can use the worker’s AWS credentials."
+                : connection?.has_key
+                  ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
+                  : "For a trusted local endpoint without authentication, enter a placeholder."
             }
           >
             {(id) => (
-              <Textarea
+              <Input
                 id={id}
-                rows={3}
-                className="font-mono text-xs"
-                value={headers}
-                onChange={(e) => setHeaders(e.target.value)}
-                placeholder={'{"X-Custom-Header": "value"}'}
+                type="password"
+                autoComplete="new-password"
+                required={
+                  !connection?.has_key && protocol !== "anthropic-bedrock"
+                }
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
               />
             )}
           </Field>
-          <Field
-            label="Provider options JSON"
-            hint="timeout_sec, extra_body, retry_codes, aws_region, aws_profile, or auth_header."
-          >
-            {(id) => (
-              <Textarea
-                id={id}
-                rows={4}
-                className="font-mono text-xs"
-                value={options}
-                onChange={(e) => setOptions(e.target.value)}
-              />
-            )}
-          </Field>
-        </div>
-      </details>
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">
+              Advanced provider settings
+            </summary>
+            <div className="mt-4 space-y-4">
+              <Field
+                label="Extra headers JSON"
+                hint={
+                  connection?.header_names?.length
+                    ? `Stored headers: ${connection.header_names!.join(", ")}. Leave blank to keep them; use {} to clear.`
+                    : "Values are encrypted alongside the API key."
+                }
+              >
+                {(id) => (
+                  <Textarea
+                    id={id}
+                    rows={3}
+                    className="font-mono text-xs"
+                    value={headers}
+                    onChange={(e) => setHeaders(e.target.value)}
+                    placeholder={'{"X-Custom-Header": "value"}'}
+                  />
+                )}
+              </Field>
+              <Field
+                label="Provider options JSON"
+                hint="timeout_sec, extra_body, retry_codes, aws_region, aws_profile, or auth_header."
+              >
+                {(id) => (
+                  <Textarea
+                    id={id}
+                    rows={4}
+                    className="font-mono text-xs"
+                    value={options}
+                    onChange={(e) => setOptions(e.target.value)}
+                  />
+                )}
+              </Field>
+            </div>
+          </details>
+        </>
+      )}
+      {kind !== "api" && (
+        <p className="text-sm text-muted-foreground">
+          Save your personal connection, then complete sign-in with the official
+          client. You control which repositories may use your subscription
+          automatically.
+        </p>
+      )}
       <Button disabled={action.isPending} type="submit">
         {action.isPending ? "Saving…" : "Save connection"}
       </Button>
@@ -472,45 +565,57 @@ function ConnectionForm({
   );
 }
 
-export function SettingsPage() {
+export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
+  const isAdmin = user.role === "admin";
   const [params, setParams] = useSearchParams();
-  const tab = ["connections", "github", "team"].includes(
-    params.get("tab") ?? "",
-  )
-    ? params.get("tab")!
-    : "connections";
-  const query = useApi<Instance>("/settings", true);
+  const tab =
+    isAdmin &&
+    ["connections", "github", "team"].includes(params.get("tab") ?? "")
+      ? params.get("tab")!
+      : "connections";
+  const query = useApi<Instance>("/settings", true, isAdmin);
   const connections = useApi<Connection[]>("/connections", true);
   const providers = useApi<Provider[]>("/providers");
   const available = useApi<{ id: number; account: string }[]>(
     "/installations/available",
     false,
-    tab === "github",
+    isAdmin && tab === "github",
   );
   const action = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
+  const [personal, setPersonal] = useState<Connection | null>(null);
   const [login, setLogin] = useState("");
   const [role, setRole] = useState("member");
-  if (query.isPending) return <Loading />;
-  if (!query.data) return <ErrorNotice error={query.error} />;
-  const instance = query.data;
+  if (isAdmin && query.isPending) return <Loading />;
+  if (isAdmin && !query.data) return <ErrorNotice error={query.error} />;
+  const instance = query.data ?? {
+    github_app: { id: "", slug: "", install_url: "" },
+    installations: [],
+    members: [],
+    failed_jobs: [],
+    public_url: "",
+  };
   return (
     <>
       <PageTitle title="Settings">
-        Manage shared AI connections, repository access, and your team.
+        Manage review connections and your personal subscriptions.
       </PageTitle>
       <ErrorNotice error={query.error || action.error} />
       <Tabs value={tab} onValueChange={(value) => setParams({ tab: value })}>
         <TabsList className="mb-8">
           <TabsTrigger value="connections">AI connections</TabsTrigger>
-          <TabsTrigger value="github">GitHub</TabsTrigger>
-          <TabsTrigger value="team">Team</TabsTrigger>
+          {isAdmin && (
+            <>
+              <TabsTrigger value="github">GitHub</TabsTrigger>
+              <TabsTrigger value="team">Team</TabsTrigger>
+            </>
+          )}
         </TabsList>
         <TabsContent value="connections">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="font-semibold">Shared connections</h2>
+              <h2 className="font-semibold">Review connections</h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 Models available for manual and automatic reviews.
               </p>
@@ -528,7 +633,8 @@ export function SettingsPage() {
             <Loading />
           ) : !connections.data?.length ? (
             <Empty title="Choose your review model">
-              Add an API connection, test it, then assign it to a repository.
+              Connect an API or your personal subscription, then choose it for
+              reviews.
             </Empty>
           ) : (
             <div className="divide-y rounded-lg border bg-card">
@@ -541,7 +647,9 @@ export function SettingsPage() {
                     <h3 className="text-sm font-semibold">{connection.name}</h3>
                     <p className="mt-1 break-words text-xs text-muted-foreground">
                       {connection.provider} · {connection.model} ·{" "}
-                      {connection.protocol}
+                      {(connection.kind ?? "api") === "api"
+                        ? connection.protocol
+                        : `Personal · ${connection.auth_status}`}
                     </p>
                     {connection.last_test && (
                       <p
@@ -554,44 +662,62 @@ export function SettingsPage() {
                       </p>
                     )}
                   </div>
-                  <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={
-                        action.isPending ||
-                        connection.last_test === "Testing connection…"
-                      }
-                      onClick={() =>
-                        action.mutate({
-                          path: `/connections/${connection.id}/test`,
-                        })
-                      }
-                    >
-                      Test
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setEditing(connection)}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setDeleting(connection)}
-                    >
-                      Delete
-                    </Button>
+                  <div className="flex flex-wrap gap-1">
+                    {(connection.kind ?? "api") !== "api" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setPersonal(connection)}
+                      >
+                        Manage account
+                      </Button>
+                    ) : (
+                      isAdmin && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            action.isPending ||
+                            connection.last_test === "Testing connection…"
+                          }
+                          onClick={() =>
+                            action.mutate({
+                              path: `/connections/${connection.id}/test`,
+                            })
+                          }
+                        >
+                          Test
+                        </Button>
+                      )
+                    )}
+                    {((isAdmin && (connection.kind ?? "api") === "api") ||
+                      connection.owner_id === user.id) && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setEditing(connection)}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setDeleting(connection)}
+                        >
+                          Delete
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </article>
               ))}
             </div>
           )}
           <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
-            API connections are shared by this instance. Personal ChatGPT and
-            Claude Code sign-in are planned for a later release.
+            API connections are shared. Personal subscriptions belong to you;
+            automatic reviews require your explicit authorization per
+            repository.
           </p>
         </TabsContent>
         <TabsContent value="github">
@@ -674,7 +800,9 @@ export function SettingsPage() {
             </Empty>
           )}
           <p className="mt-6 break-words text-xs text-muted-foreground">
-            Webhook endpoint: {instance.public_url}/api/v1/webhooks/github
+            Webhook endpoint:{" "}
+            {instance.webhook_url ??
+              `${instance.public_url}/api/v1/webhooks/github`}
           </p>
         </TabsContent>
         <TabsContent value="team">
@@ -783,8 +911,27 @@ export function SettingsPage() {
               key={editing === "new" ? "new" : editing.id}
               connection={editing === "new" ? undefined : editing}
               providers={providers.data}
+              canCreateApi={isAdmin}
               onSaved={() => setEditing(null)}
             />
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={!!personal}
+        onOpenChange={(open) => {
+          if (!open) setPersonal(null);
+        }}
+      >
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{personal?.name}</DialogTitle>
+            <DialogDescription>
+              Connect your official account and authorize automatic reviews.
+            </DialogDescription>
+          </DialogHeader>
+          {personal && (
+            <PersonalConnection key={personal.id} connection={personal} />
           )}
         </DialogContent>
       </Dialog>

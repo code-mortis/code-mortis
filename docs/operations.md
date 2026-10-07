@@ -1,50 +1,91 @@
 # Operations
 
-## Service checks
+## Environments and configuration
 
-`GET /health/live` checks the API process. `GET /health/ready` checks PostgreSQL and Redis connectivity. Neither proves workers, GitHub, or a model provider are healthy. Use `docker compose ps`, `docker compose logs --tail=100 review-worker sync-worker scheduler`, the connection test, and Settings' background errors to inspect those.
+Production uses `docker compose` and `.env`. Development uses `docker compose --env-file .env.dev -f compose.dev.yaml` and a separate project, database, Redis, runner profile volume and App registration. Never point both instances at the same database or GitHub webhook channel.
 
-Queued reviews usually mean the review worker or scheduler is stopped. A failed connection test means OCR could not complete a tool call using that connection. A publication failure can be retried from the run page without paying for another model review. Failed resolution can be retried from the finding panel.
+`CM_PUBLIC_URL` is the exact browser origin, including a development port. OAuth and installation callbacks use it. `CM_WEBHOOK_URL` overrides only the webhook destination. Use a dedicated Smee channel for local development and enable `--profile webhooks`. Keep secure cookies enabled for HTTPS and disabled only for local HTTP. Setup reports inconsistent origins, cookies and webhook configuration before registering an App. Two login tabs have independent single-use attempts tied to a stable browser cookie; switching browsers still requires starting again there.
 
-Worker logs contain job IDs, kinds, and error classes. Raw provider output is not logged or retained. Configuration snapshots contain provider metadata and public options, but no API keys or extra-header values. Do not put credentials into model identifiers, background text, rules, provider options, or URLs.
+The production API binds loopback port 8080. Terminate TLS with a reverse proxy supporting WebSockets and long-lived connections. For Caddy, a minimal site is:
 
-## Backup and restore
+```caddyfile
+reviews.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
 
-PostgreSQL is the source of truth. Redis can be recreated because pending work is persisted in PostgreSQL. Back up `.env` separately in encrypted storage; database ciphertext is unrecoverable without `CM_ENCRYPTION_KEY`. A SQL backup contains sensitive review data even though credential fields are encrypted.
+The runner has no published port, database credentials, installation keys or Docker socket. Keep its network private and retain its service bearer token in `.env`. Run exactly one runner ASGI process and one scheduler. Each review worker uses concurrency one because OCR's configuration is process-global. The runner serializes each personal connection independently. Do not set `CM_OCR_ISOLATED_RUNTIME=true` on a normal workstation account.
 
-Create a backup with private permissions:
+## Upgrade an existing installation
+
+1. Back up the database, `.env` and native profiles. Let active reviews finish or cancel them in the app, then stop API, review-worker, sync-worker and scheduler. Keep the database available for backup and migration.
+2. Check out the intended version. Run `python3 backend/code_mortis/manage.py upgrade-env --file .env`. It adds only a missing runner service token and preserves existing keys, URLs and credentials. Never regenerate the encryption key for an existing database.
+3. In GitHub's settings for the **existing App**, set Callback URL to `CM_PUBLIC_URL/api/v1/auth/callback`, Setup URL to `CM_PUBLIC_URL/api/v1/installations/callback`, disable **Request user authorization (OAuth) during installation**, and set the webhook to `CM_WEBHOOK_URL` or `CM_PUBLIC_URL/api/v1/webhooks/github`. Retain the App ID, private key, client credentials and webhook secret. Contents read, Pull requests write and Metadata read remain required. The setup URL is distinct from the App manifest redirect used during initial registration.
+4. Run `docker compose build`, then `docker compose run --rm migrate`, then `docker compose up -d`. Migration is additive; existing connections become shared APIs. Pending old OAuth attempts are intentionally invalidated, so restart an interrupted login.
+5. Verify readiness, a fresh GitHub login, installation discovery, repository permissions and webhook delivery. Do not recreate the App or clear the database to address a callback error. Settings → GitHub displays the expected registration URLs. Finish by validating one manual and one automatic review using a repository authorized for tests.
+
+See [GitHub registration settings](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration). Never start two active copies of a restored instance against GitHub.
+
+## Backup and restoration
+
+PostgreSQL owns durable jobs and history. Redis can be rebuilt. `.env` and the native profile volume require separate encrypted backups; database ciphertext cannot be recovered without `CM_ENCRYPTION_KEY`. Native client profiles contain authentication credentials. Store the archive privately and never upload it as a diagnostic attachment.
+
+With work quiesced, make private backups:
 
 ```sh
 umask 077
 docker compose exec -T postgres pg_dump -U mortis -d mortis -Fc > mortis.dump
+# Stop authentication and review activity before archiving profiles.
+docker compose stop api review-worker sync-worker scheduler runner
+docker run --rm --network none -v code-mortis_runner-profiles:/profiles:ro postgres:17-alpine tar -C /profiles -czf - . > runner-profiles.tar.gz
 ```
 
-Restore into a new, empty installation using the original encryption key. Start only PostgreSQL and Redis, restore, then start the app services. Do not start review workers until the restore is complete.
+The volume name above is for the default production project; use `docker volume ls` to check a custom project name. Copy `.env` into your encrypted backup store. Restart services only when the backup is complete.
+
+Restore into a **new isolated installation**, retaining the original encryption key and matching App settings. Do not start workers while restoring:
 
 ```sh
 docker compose up -d postgres redis
 docker compose exec -T postgres pg_restore -U mortis -d mortis --no-owner --exit-on-error < mortis.dump
+docker compose create runner
+docker run --rm -i --network none -v code-mortis_runner-profiles:/profiles postgres:17-alpine tar -C /profiles -xzf - < runner-profiles.tar.gz
+docker compose run --rm migrate
 docker compose up -d
 ```
 
-Test restored instances behind a private network before accepting webhooks or dispatching jobs. Disable or remove pending jobs only as an intentional operator action after inspecting them. Never run two active copies of the same restored instance against GitHub.
+Restore profile ownership as UID/GID 10001 and private directory permissions. Use the same pinned client versions first, then upgrade deliberately. Providers can revoke or expire restored sessions; verify native account status and reconnect through the app if needed. A missing archive does not destroy review history: reconnect affected subscriptions. Inspect pending jobs before enabling dispatch or accepting webhooks. Test restoration privately before returning service to users.
 
-## Upgrades
+The repository includes `backend/tests/restore_smoke.py` for a disposable database restored from an offline copy of the original volume. It fingerprints original columns and verifies that additive migrations preserve every old record. Its source/target names are deliberately restricted; see [acceptance evidence](acceptance.md) for the completed test.
 
-Back up first. Pull the application version you intend to deploy, rebuild, and run migrations before starting the new API and workers. Stop workers for schema-changing upgrades and allow in-flight work to finish or cancel it in the app. `docker compose run --rm migrate` applies Alembic migrations. The image pins OCR and dependency lockfiles so engine and schema upgrades are explicit.
+## Diagnosis
 
-Keep one scheduler. Container scaling alone does not make simultaneous review jobs safe: each review worker has a single OCR configuration directory, so its concurrency must remain one. A future distributed review runner would need job-level isolation and coordinated cancellation.
+Every HTTP response has an `X-Request-ID`; callback errors display that diagnostic ID. Job logs contain job ID, kind and error class. Runs retain their IDs, pinned commits, connection, owner, initiator, engine, verified progress and publication state. Webhook delivery IDs are persisted for deduplication. Raw auth console input, OAuth codes and provider requests are not logged. Do not put secrets into model IDs, rules, background text, options or URLs.
 
-## GitHub permissions and access
+| Stage | Evidence and recovery |
+| --- | --- |
+| Startup | `docker compose ps` and `GET /health/ready` verify API, PostgreSQL and Redis. Inspect migration logs before retrying a failed startup. |
+| GitHub login | Check browser origin, callback URL and cookie scheme. An expired, cancelled, replayed or different-browser attempt shows a recovery action. Start a fresh login; do not disable state checks. |
+| Installation | Match the dedicated setup URL. Sign in if installation began at GitHub, then validate available installations with the user API. An installation ID is not authorization. |
+| Webhook | Check GitHub deliveries and relay connectivity in development. Verify destination and signature secret. Duplicate delivery IDs are acknowledged without duplicate work. |
+| Permissions | Check current repository access, installed repositories and instance membership. Reading requires access; manual reviews and finding mutations require write access. Removal/revocation prevents consumption. |
+| API connection | Test connection performs an OCR tool call. Check protocol, tool support, model, endpoint and provider quota. No native subscription tokens belong here. |
+| Personal auth | Settings → Connections → Manage account. ChatGPT requires device authorization enabled in account security settings. Claude uses its native login console, never a general shell. Status and reconnect controls are owner-only. |
+| Native runner | Check `docker compose ps runner` and its health. The API and review worker must share its bearer token. Runner outage waits without changing provider. Restart retains profile volume; recheck account status. |
+| Quota or expired session | The run is blocked, with a reason. Restore usage or reconnect the same account, then **Resume review**. Saved completed file checkpoints are reused. No automatic fallback to another account, model or paid API. |
+| Review | Queued work needs scheduler and review worker. Failed or partial coverage is not a clean review. Native limits are context bytes and timeout, not an output-token guarantee. Cancellation is cooperative in the worker and enforced by native process deadlines. |
+| Publication | Retry publication from the run. Saved findings are reconciled against GitHub markers first. New commits supersede old work; publication retry does not rerun OCR. |
+| Resolution | Pending state remains visible until GitHub confirms. Retry a failed operation. Periodic reconciliation recovers missed events; absent later findings are not resolved automatically. |
 
-The app requests Contents read, Pull requests write, and Metadata read. Installation events are implicit GitHub subscriptions. Pull request, review comment, and review thread events are explicit. Only installations connected by an instance administrator are processed.
+`GET /health/live` proves only the API process is alive. Readiness does not prove workers, native authentication, GitHub or a paid provider work. Inspect connection status, background errors and real runs separately. Useful logs:
 
-An allowed team member still needs access to each repository on GitHub. Manual reviews and resolution changes require push access; instance configuration also requires the Code Mortis administrator role. Removing a team member disables their tokens and sessions. The initial owner is bound to their numeric GitHub ID after first sign-in, preventing later username reuse from granting access.
+```sh
+docker compose logs --tail=100 migrate review-worker sync-worker scheduler runner
+```
 
-Resolution webhooks are reconciled against GitHub's current thread state instead of trusting event order. Missed events are repaired periodically. Findings without inline threads are resolved locally. If a remote thread is deleted, synchronization reports failure and retains history rather than pretending the deletion resolved the finding.
+## Access and recovery boundaries
 
-## Deployment boundaries
+Only explicitly allowed members can use an instance. The initial owner binds to a numeric GitHub ID. Personal accounts belong to that member; administrators cannot authenticate as them or authorize their subscription consumption. Grants permit administrator selection for the named repository, and automatic permission is explicit. Disconnect removes grants and cancels affected work even when the runner is offline; retry disconnect after recovery to remove any remaining native session. Reconnection never recreates grants automatically.
 
-This release is for an owner and a trusted, explicitly allowed team. It is not a multi-tenant service. Keep the database, Redis, and worker networks private. The application port binds to loopback; terminate HTTPS at your reverse proxy. Keep secure cookies enabled on remote deployments. The bootstrap token is accepted only until the GitHub App is configured.
+A native console ticket lasts 60 seconds, is single-use and is bound to the owner's authenticated session and origin. The console runs only `claude auth login`, expires after 15 minutes and closes on membership/session revocation. Authentication input is not retained. Reverse proxies must not record request bodies, WebSocket payloads or sensitive callback query strings.
 
-Repository content and model output are untrusted. The application never runs repository scripts or applies generated changes. Resource budgets limit review cost and duration; model output can still be wrong and needs human review. API provider keys should have the least privileges and budget needed for reviews.
+The database persists queued work before dispatch. Worker leases recover interrupted jobs; repeated process failures become visible after three attempts. Publication reconciles uncertain responses before a retry. History is retained indefinitely. Review content and model output remain untrusted and need human judgment; no scripts or generated changes are executed.

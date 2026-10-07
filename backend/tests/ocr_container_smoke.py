@@ -125,9 +125,55 @@ def main():
             assert len(report["manifest"]["coverage"]["selected"]) == 1
             assert len(report["manifest"]["coverage"]["completed"]) == 1
             assert findings == []
+            from code_mortis import delegated, runner_client
+            from code_mortis.schemas import RepoSettings
+
+            original = runner_client.review
+            runner_client.review = lambda *args: {"comments": []}
+            try:
+                events = []
+                native = {"id": "connection", "kind": "chatgpt", "model": "test-model"}
+                state, delegated_report, comments = delegated.review(
+                    root,
+                    env,
+                    base,
+                    head,
+                    base,
+                    native,
+                    RepoSettings().model_dump(),
+                    "run",
+                    lambda: False,
+                    events.append,
+                    {},
+                )
+                assert state == "completed" and comments == []
+                assert len(delegated_report["manifest"]["coverage"]["selected"]) == 1
+                assert events[-1]["completed"] == 1
+                checkpoint = events[-1]
+                runner_client.review = lambda *args: (_ for _ in ()).throw(
+                    AssertionError("Completed files must not be paid for twice")
+                )
+                assert (
+                    delegated.review(
+                        root,
+                        env,
+                        base,
+                        head,
+                        base,
+                        native,
+                        RepoSettings().model_dump(),
+                        "run",
+                        lambda: False,
+                        events.append,
+                        checkpoint,
+                    )[0]
+                    == "completed"
+                )
+            finally:
+                runner_client.review = original
         assert not (Path.home() / ".opencodereview/config.json").exists()
         print(
-            "Real OCR connection round trip, trusted-base diff review, coverage parsing, and cleanup passed."
+            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, and cleanup passed."
         )
     finally:
         server.shutdown()

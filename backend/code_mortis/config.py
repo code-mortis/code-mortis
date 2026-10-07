@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://mortis:mortis@localhost:5432/mortis"
     redis_url: str = "redis://localhost:6379/0"
     public_url: str = "http://localhost:8080"
+    webhook_url: str = ""
+    runner_url: str = "http://runner:8090"
+    runner_token: str = ""
     encryption_key: str
     bootstrap_token: str = Field(min_length=24)
     owner_github_login: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
@@ -36,6 +39,42 @@ class Settings(BaseSettings):
         if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
             raise ValueError("public_url must not include a path, query, or fragment")
         return value.rstrip("/")
+
+    @field_validator("webhook_url")
+    @classmethod
+    def clean_webhook_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "CM_WEBHOOK_URL must be a public HTTPS URL without credentials, query, or fragment"
+            )
+        if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("CM_WEBHOOK_URL must be reachable by GitHub, not localhost")
+        return value
+
+    @property
+    def github_webhook_url(self) -> str:
+        return self.webhook_url or self.public_url + "/api/v1/webhooks/github"
+
+    def diagnostics(self) -> list[str]:
+        from urllib.parse import urlsplit
+
+        errors = []
+        if self.cookie_secure != (urlsplit(self.public_url).scheme == "https"):
+            errors.append("CM_COOKIE_SECURE must be true for HTTPS and false for local HTTP development.")
+        if not self.github_webhook_url.startswith("https://"):
+            errors.append("Set CM_WEBHOOK_URL to a public HTTPS webhook relay for local development.")
+        return errors
 
 
 @lru_cache

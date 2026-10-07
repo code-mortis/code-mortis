@@ -1,37 +1,38 @@
 # Code Mortis implementation plan
 
-Build an MIT-licensed, self-hosted GitHub PR review application. Each instance has an owner, allowed team members, its own GitHub App, and shared API connections. Work is organized around repositories, pull requests, historical runs, findings, and resolution activity.
+The approved delivery is the complete self-hosted GitHub review product, in development and on a server. Shared APIs and personal ChatGPT and Claude Code subscriptions are all in scope for manual and automatic reviews. Finishing a phase does not finish the project. External integrations remain unverified until exercised with real accounts.
 
-## Agreed stack
+## Architecture
 
-- FastAPI, Pydantic, SQLAlchemy, Alembic, PostgreSQL.
-- Celery and Redis, with separate review and synchronization queues. PostgreSQL owns job state and recovery.
-- React, TypeScript, Vite, React Router, TanStack Query, **Tailwind CSS and shadcn/ui**. Bun and uv manage dependencies.
-- Pinned Open Code Review CLI 1.12.11; call it as an external process rather than importing internal Go APIs.
-- Docker Compose for self-hosting, one backend image reused by API, workers, and scheduler. FastAPI serves the frontend build.
+Keep FastAPI, Pydantic, SQLAlchemy, Alembic and PostgreSQL; Celery/Redis with separate review and synchronization queues; React, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS and shadcn/ui. Use locked dependencies and exact OCR/official-client versions.
 
-## First release
+Production serves the compiled frontend and API from one HTTPS origin. Development uses an independent Compose project with Vite HMR in Docker at localhost:5173, backend reload, separate secrets/volumes and a separate GitHub App. `CM_PUBLIC_URL` is the callback origin; `CM_WEBHOOK_URL` is the independently reachable webhook destination. Native clients execute on the server with persistent per-connection profiles and no database or GitHub secrets.
 
-1. Bootstrap-token-protected setup, GitHub App manifest registration, installation discovery, GitHub login, explicit membership, and repository permission checks.
-2. Admin-managed encrypted API connections covering OCR's native providers and supported custom protocols, including OpenCode API. Repository settings choose connection, model, effort, exclusions, review language, business context, and limits.
-3. Manual and automatic full-PR reviews. Pin base/head SHAs and settings for each run. Ignore draft PRs automatically, require a repository writer for external-fork runs, and supersede stale runs.
-4. Preserve normalized findings and sanitized OCR coverage/output. Distinguish completed, partial, failed, cancelled, superseded, and skipped execution from independent publication state.
-5. Publish COMMENT reviews with validated inline locations and a summary. Use stable markers and reconcile before retries. Never rerun OCR merely to retry GitHub publication.
-6. Separate stable findings from immutable per-run occurrences. Conservatively match repeated findings. Missing from a later run means not observed, never automatically fixed.
-7. Resolve/reopen in either app or GitHub, with durable pending actions, canonical reconciliation, and activity records. Dismissal is an explicit app reason that resolves a linked thread. Findings without a GitHub thread have local status.
-8. Compact repositories, PRs, runs, finding details, and settings UI. Support keyboard interaction, responsive layouts, and system/light/dark themes. No fabricated production data.
-9. Operational docs, migrations, backups, structured logs, health checks, pinned images, and focused automated checks.
+## Delivery and acceptance
 
-## Security boundaries
+| Phase | Required result | Required evidence |
+| --- | --- | --- |
+| 1. Foundation | Capability inventory and separate complete server/development environments | Fresh startup, HMR and restart persistence |
+| 2. GitHub | Protected registration, Authlib PKCE login, independent browser-bound single-use transactions, installation callback, permissions and recoverable errors | Real new-App and existing-App flow; multiple tabs, replay, expiration, cancellation, revocation and external installation |
+| 3. Subscriptions | Official Codex app-server device authorization and native Claude Code authentication, status, cancellation and disconnect | Both clients authenticate and complete a delegated review on the server |
+| 4. Unified reviews | OCR APIs and delegated subscriptions share normalized history and publication | Actual PR comments through OpenAI API, Claude API, OpenCode, a compatible endpoint and both subscriptions |
+| 5. Recovery | Personal repository consent, permission revalidation, serialized consumption, quotas, cancellation, checkpoints and durable jobs | Manual/automatic reviews, worker restart, uncertain publication, duplicate webhook and commit changes without duplicate comments |
+| 6. Complete UI | Connections, repositories, PRs, runs, findings and actionable operational states | Keyboard, desktop and mobile workflows, including failure recovery |
+| 7. Upgrade | Additive migrations, existing-App update, documentation, backup and restoration | Clean installation and existing-data upgrade, then final deployment |
 
-GitHub remains application identity. Read access requires current repository access; run/status mutations require write access. Installation tokens perform bot writes. Validate webhook signatures, deduplicate delivery IDs, and persist work before acknowledging it. Encrypt credentials with an operator-managed key outside PostgreSQL. Do not expose credentials in logs or API responses. Only trusted instance configuration controls provider endpoints and tools. Review repository data without executing hooks, project scripts, submodules, or project-controlled MCP servers. Use explicit base-revision review rules.
+## Required behavior
 
-## Following release
+- GitHub provides application identity and current repository permissions. Numeric membership identity survives username changes. An `installation_id` alone grants no access. App registration, login and installation are separate; request_oauth_on_install is disabled.
+- Shared API connections support the pinned OCR catalog and OpenAI Chat Completions, Responses, Anthropic and Bedrock protocols, including OpenCode and compatible endpoints. Connection tests exercise tools. Reject incompatible settings before execution.
+- Personal credentials stay under official-client management. The app exposes device authorization or an owner-only, expiring console for the exact native login command. It provides no general shell, custom Claude OAuth or generic API-key conversion.
+- The owner explicitly authorizes each repository consuming a personal connection, including automation. Admin selection does not substitute for consent. Each run records owner, initiator, trigger and immutable configuration. Revalidate before execution. One personal execution at a time; quota, authentication and availability failures never switch provider silently. Revocation stops new consumption and cancels affected work.
+- OCR selects files and trusted-base rules. Application-assigned result groups determine verifiable coverage. Validate schema, paths and line ranges. Preserve complete, partial, failed, skipped, superseded and cancelled states independently from publication.
+- Untrusted PR content cannot load scripts, hooks, agent configuration or MCP servers. Native tools only read authorized context and cannot write or execute commands.
+- Persist webhook deliveries and jobs before acknowledging them. Persist results before publishing COMMENT reviews. Reconcile uncertain writes before retrying; publication retries do not repeat inference. Check head commits again before publication.
+- Findings have current state and immutable historical occurrences. Missing later means not observed. Resolve/reopen in either system, dismiss with a reason, display pending GitHub changes and recover lost events periodically.
+- Preserve existing users, repositories, API credentials and history through additive migration. Document profile restoration/reconnection and structured diagnosis without secrets.
+- Keep English UI and configurable comment language. Public SaaS, billing, GitLab and automatic code changes are excluded.
 
-Personal OpenAI/ChatGPT and Claude Code subscription connections for manual reviews. Automatic reviews keep shared API connections. Use official Sign in with ChatGPT/Codex app-server, official unmodified Claude Code authentication, OCR delegation, isolated read-only runners, and the existing normalized result/publication pipeline. No inactive sign-in controls in the first release.
+## Definition of done
 
-## Validation
-
-Test access control and revoked access; invalid/duplicate/out-of-order webhooks; complete/partial/failed/malformed OCR output; cancellation and commit changes; interrupted jobs and uncertain GitHub writes; publication-only retries; both resolution directions; immutable history; safe paths and credentials; protocol adapters; clean migration and backup restoration; and the primary browser workflows. A live provider and GitHub App are required to claim live end-to-end integration.
-
-Public SaaS, billing, auto-fixes, GitLab, and mascot work are excluded.
+All capabilities above work in development and on the server; both personal subscriptions complete manual and automatic reviews; the acceptance matrix has actual evidence. Mocked tests and unauthenticated client startup are recorded separately. Missing external accounts, permissions or quota mean pending validation, not completion. See [acceptance record](docs/acceptance.md).

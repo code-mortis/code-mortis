@@ -259,6 +259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Review */
+        post: operations["retry_review_api_v1_runs__run_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/publish": {
         parameters: {
             query?: never;
@@ -381,6 +398,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/installations/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Start Installation */
+        get: operations["start_installation_api_v1_installations_start_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installations/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Installation Callback */
+        get: operations["installation_callback_api_v1_installations_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/installations/available": {
         parameters: {
             query?: never;
@@ -466,6 +517,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connections/{identity}/auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Auth Status */
+        get: operations["auth_status_api_v1_connections__identity__auth_get"];
+        put?: never;
+        /** Start Auth */
+        post: operations["start_auth_api_v1_connections__identity__auth_post"];
+        /** Cancel Auth */
+        delete: operations["cancel_auth_api_v1_connections__identity__auth_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{identity}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disconnect */
+        post: operations["disconnect_api_v1_connections__identity__disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{identity}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Grants */
+        get: operations["grants_api_v1_connections__identity__grants_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{identity}/grants/{repository_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Grant */
+        put: operations["grant_api_v1_connections__identity__grants__repository_id__put"];
+        post?: never;
+        /** Revoke */
+        delete: operations["revoke_api_v1_connections__identity__grants__repository_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/{identity}/console-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Console Ticket */
+        post: operations["console_ticket_api_v1_connections__identity__console_ticket_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/live": {
         parameters: {
             query?: never;
@@ -526,13 +665,23 @@ export interface components {
         ConnectionInput: {
             /** Name */
             name: string;
-            /** Provider */
+            /**
+             * Kind
+             * @default api
+             * @enum {string}
+             */
+            kind: "api" | "chatgpt" | "claude_code";
+            /**
+             * Provider
+             * @default
+             */
             provider: string;
             /**
              * Protocol
+             * @default native
              * @enum {string}
              */
-            protocol: "openai" | "openai-responses" | "anthropic" | "anthropic-bedrock";
+            protocol: "openai" | "openai-responses" | "anthropic" | "anthropic-bedrock" | "native";
             /** Model */
             model: string;
             /**
@@ -580,6 +729,14 @@ export interface components {
             last_test: string | null;
             /** Tested At */
             tested_at: string | null;
+            /** Kind */
+            kind: string;
+            /** Owner Id */
+            owner_id: number | null;
+            /** Auth Status */
+            auth_status: string;
+            /** Auth Message */
+            auth_message: string | null;
         };
         /** FindingAction */
         FindingAction: {
@@ -644,6 +801,14 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** GrantInput */
+        GrantInput: {
+            /**
+             * Automatic
+             * @default false
+             */
+            automatic: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -773,6 +938,11 @@ export interface components {
              */
             token_budget: number;
             /**
+             * Delegated Context Bytes
+             * @default 800000
+             */
+            delegated_context_bytes: number;
+            /**
              * Concurrency
              * @default 2
              */
@@ -860,6 +1030,25 @@ export interface components {
             report: {
                 [key: string]: unknown;
             } | null;
+            /** Engine */
+            engine: string;
+            /** Connection Id */
+            connection_id: string | null;
+            /** Owner Id */
+            owner_id: number | null;
+            /** Actor Id */
+            actor_id: number | null;
+            /** Progress */
+            progress: {
+                [key: string]: unknown;
+            };
+            /** Blocked Reason */
+            blocked_reason: string | null;
+        };
+        /** StartRunInput */
+        StartRunInput: {
+            /** Connection Id */
+            connection_id?: string | null;
         };
         /** UserOut */
         UserOut: {
@@ -990,7 +1179,9 @@ export interface operations {
     };
     login_api_v1_auth_login_get: {
         parameters: {
-            query?: never;
+            query?: {
+                installation_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1006,6 +1197,15 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     login_callback_api_v1_auth_callback_get: {
@@ -1013,6 +1213,7 @@ export interface operations {
             query?: {
                 state?: string;
                 code?: string;
+                error?: string;
             };
             header?: never;
             path?: never;
@@ -1241,7 +1442,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StartRunInput"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
@@ -1307,6 +1512,37 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_review_api_v1_runs__run_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1448,7 +1684,9 @@ export interface operations {
     };
     connections_api_v1_connections_get: {
         parameters: {
-            query?: never;
+            query?: {
+                repository_id?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1462,6 +1700,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1622,6 +1869,58 @@ export interface operations {
             };
         };
     };
+    start_installation_api_v1_installations_start_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    installation_callback_api_v1_installations_callback_get: {
+        parameters: {
+            query?: {
+                installation_id?: number | null;
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     available_installations_api_v1_installations_available_get: {
         parameters: {
             query?: never;
@@ -1763,6 +2062,260 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    auth_status_api_v1_connections__identity__auth_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_auth_api_v1_connections__identity__auth_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_auth_api_v1_connections__identity__auth_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_api_v1_connections__identity__disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grants_api_v1_connections__identity__grants_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_api_v1_connections__identity__grants__repository_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_v1_connections__identity__grants__repository_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    console_ticket_api_v1_connections__identity__console_ticket_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
