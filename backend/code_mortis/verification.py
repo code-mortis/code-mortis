@@ -310,6 +310,24 @@ def verification_tools():
     ]
 
 
+def scan_diagnostics(root, env, code, errors, secrets, stopped):
+    detail = {"exit_code": code, "stderr": clean_text(errors, secrets)}
+    session = re.search(r"\[ocr\] Session: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b", errors)
+    if code and session and not stopped():
+        try:
+            status, output, _ = ocr.command([
+                ocr.settings().ocr_binary, "session", "show", "--repo", str(root), "--json", session[1],
+            ], root, env, timeout=5, stopped=stopped)
+            data = json.loads(output)
+            summary = data["summary"]
+            if not status and summary["session_id"] == session[1] and summary["repo_dir"] == str(root):
+                detail["failures"] = [clean_text(item["error"], secrets) for item in data["items"]
+                                      if item.get("file_path") == "evidence.py" and item.get("error")]
+        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ocr.ReviewStopped):
+            pass  # Missing diagnostics must not hide the original failure or release its reservation.
+    return json.dumps(detail)[:4000]
+
+
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped):
     if token_budget <= 0 or timeout <= 0:
         raise ValueError("No verification allowance remains.")
@@ -342,23 +360,28 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         with ocr.configuration(connection, credentials, {}):
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
-            code, output, _ = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
+            code, output, errors = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
+            diagnostics = scan_diagnostics(root, env, code, errors, (
+                credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
+            ), stopped)
         try:
             data = json.loads(output)
             if not isinstance(data, dict):
                 raise ValueError("Expected an OCR result object.")
         except ValueError as exc:
-            raise ValueError("OCR returned invalid JSON; token consumption is unknown.") from exc
+            failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
+            raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
         summary = data.get("summary") or {}
-        usage = summary.get("total_tokens")
+        usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
-            raise ValueError("Verification usage could not be established.")
+            raise ValueError("Verification usage could not be established. " + diagnostics)
         comments = data.get("comments", [])
         if (code or data.get("status") != "success" or summary.get("budget_exceeded")
             or summary.get("files_reviewed") != 1 or data.get("warnings") or not isinstance(comments, list)
             or len(comments) != 1 or not isinstance(comments[0], dict) or comments[0].get("path") != "evidence.py"):
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
-                                 "warnings": data.get("warnings"), "comments": comments})[:4000]
+                                 "warnings": data.get("warnings"), "comments": comments,
+                                 "diagnostics": diagnostics})[:4000]
             raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
         try:
             raw = json.loads(comments[0]["content"])
