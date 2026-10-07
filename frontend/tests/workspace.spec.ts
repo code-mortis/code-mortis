@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
+import type { Run } from "../src/api";
 
 const at = "2026-10-05T13:20:00Z";
 const repo = {
@@ -133,6 +134,7 @@ async function mock(
     publicUrl?: string;
     personal?: boolean;
     claude?: boolean;
+    run?: Partial<Run>;
   } = {},
 ) {
   const current = structuredClone(finding);
@@ -224,7 +226,7 @@ async function mock(
             };
     } else if (path === "/runs/run")
       data = {
-        run,
+        run: { ...run, ...options.run },
         pull_request: pr,
         repository: repo,
         occurrences: [
@@ -390,6 +392,30 @@ test("partial review and publication retry remain distinct", async ({
   await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
+});
+
+test("GitHub check handles pending creation and a conclusion without status", async ({ page }, info) => {
+  const checkState: Partial<Run> = {
+    check_status: null,
+    check_conclusion: null,
+    check_url: null,
+    check_error: null,
+  };
+  await mock(page, { run: checkState });
+  await page.goto("/runs/run");
+  const check = page.getByText("GitHub check", { exact: true }).locator("..");
+  await expect(check.getByRole("status")).toHaveText("Updating the check on GitHub…");
+  await expect(check.locator(":scope > :empty")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-pending-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_conclusion = "success";
+  checkState.check_pending = false;
+  await page.reload();
+  await expect(check.getByText("success", { exact: true })).toBeVisible();
+  await expect(check.getByRole("status")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-conclusion-${info.project.name}.png`, fullPage: true });
 });
 
 test("read-only members cannot change findings or instance settings", async ({

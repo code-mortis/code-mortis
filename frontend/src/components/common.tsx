@@ -32,7 +32,7 @@ export function Status({ value }: { value: string }) {
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
     >
-      {(active(value) || value === "in_progress") && (
+      {["queued", "running", "in_progress"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
       {words(value)}
