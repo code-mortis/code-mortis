@@ -61,6 +61,9 @@ class OAuthState(Base):
     state: Mapped[str] = mapped_column(String(100), primary_key=True)
     purpose: Mapped[str] = mapped_column(String(30))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    browser_hash: Mapped[str] = mapped_column(String(64), default="")
+    verifier: Mapped[str] = mapped_column(Text, default="")
+    return_path: Mapped[str] = mapped_column(Text, default="/")
 
 
 class Installation(Base):
@@ -82,6 +85,30 @@ class Connection(Base):
     options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_test: Mapped[str | None] = mapped_column(Text)
     tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    kind: Mapped[str] = mapped_column(String(20), default="api")
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    auth_status: Mapped[str] = mapped_column(String(30), default="disconnected")
+    auth_message: Mapped[str | None] = mapped_column(Text)
+
+
+class ConnectionGrant(Base):
+    __tablename__ = "connection_grants"
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="CASCADE"), primary_key=True
+    )
+    repository_id: Mapped[int] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
+    )
+    automatic: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ConsoleTicket(Base):
+    __tablename__ = "console_tickets"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"))
+    session_hash: Mapped[str] = mapped_column(ForeignKey("login_sessions.token_hash", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Repository(Base):
@@ -135,6 +162,13 @@ class ReviewRun(Base):
     publication_error: Mapped[str | None] = mapped_column(Text)
     review_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     publication_plan: Mapped[list[dict] | None] = mapped_column(JSON)
+    engine: Mapped[str] = mapped_column(String(30), default="ocr")
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("connections.id", ondelete="SET NULL"), index=True
+    )
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class Finding(Base):

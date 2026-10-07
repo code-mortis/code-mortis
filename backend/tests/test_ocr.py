@@ -1,7 +1,9 @@
+import base64
 import json
 import os
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -105,12 +107,80 @@ def test_subprocess_credentials_limits_and_cancellation(tmp_path, monkeypatch):
         ocr.command([sys.executable, "-c", "print('x'*100)"], tmp_path, os.environ.copy())
 
 
+@pytest.mark.parametrize(
+    "url,is_go",
+    [
+        ("https://opencode.ai/zen/go/v1/", True),
+        ("https://opencode.ai/zen/v1", False),
+        ("https://opencode.ai.example/zen/go/v1", False),
+    ],
+)
+def test_opencode_go_headers_are_scoped_and_session_changes_per_invocation(url, is_go, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    connection = {"protocol": "openai-responses", "model": "model", "base_url": url, "options": {}}
+    credentials = {"extra_headers": {"user-agent": "old-client", "X-OpenCode-Session": "old", "X-Test": "keep"}}
+    sessions = []
+    for _ in range(2):
+        with ocr.configuration(connection, credentials, {}):
+            data = json.loads((tmp_path / ".opencodereview/config.json").read_text())
+            headers = data["custom_providers"]["mortis"]["extra_headers"]
+            if is_go:
+                assert headers["User-Agent"] == "code-mortis/0.1.0"
+                sessions.append(UUID(headers["x-opencode-session"]))
+                assert headers["X-Test"] == "keep" and len(headers) == 3
+            else:
+                assert headers == credentials["extra_headers"]
+    if is_go:
+        assert sessions[0] != sessions[1]
+    assert credentials["extra_headers"]["X-OpenCode-Session"] == "old"
+
+
 def test_endpoints_reject_credentials_and_metadata(monkeypatch):
     with pytest.raises(ValueError, match="credentials"):
         safe_endpoint("https://token@example.com/v1")
     monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("169.254.169.254", 443))])
     with pytest.raises(ValueError, match="Metadata"):
         safe_endpoint("https://metadata.example")
+
+
+def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(settings(), "work_dir", tmp_path)
+    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    base, head = "a" * 40, "b" * 40
+    fetches = []
+
+    def git(directory, env, *args, **kwargs):
+        assert not (directory.parent / "askpass").exists()
+        assert "GIT_ASKPASS" not in env and "CM_GIT_TOKEN" not in env
+        if args[0] == "fetch":
+            assert env["GIT_CONFIG_COUNT"] == "1"
+            assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+            encoded = env["GIT_CONFIG_VALUE_0"].removeprefix("Authorization: Basic ")
+            assert base64.b64decode(encoded).decode() == "x-access-token:installation-secret"
+            fetches.append(args)
+        else:
+            assert "GIT_CONFIG_VALUE_0" not in env
+        return head if args[0] == "rev-parse" else base
+
+    def model_command(args, directory, env, **kwargs):
+        assert "GIT_CONFIG_VALUE_0" not in env and "installation-secret" not in str(env)
+        data = report()
+        data["comments"] = []
+        return 0, json.dumps(data), ""
+
+    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(ocr, "command", model_command)
+    state, _, _ = ocr.review(
+        "owner/repo", 1, base, head, {}, {},
+        {"effort": "low", "concurrency": 1, "token_budget": 1000, "timeout_seconds": 60},
+        "installation-secret", lambda: False,
+    )
+    assert state == "completed" and len(fetches) == 1
 
 
 def test_provider_probe_does_not_claim_unverified_tools(monkeypatch, tmp_path):
@@ -129,3 +199,10 @@ def test_provider_probe_does_not_claim_unverified_tools(monkeypatch, tmp_path):
     )
     with pytest.raises(ValueError, match="not verified"):
         ocr.test_connection({}, {})
+
+    monkeypatch.setattr(
+        ocr, "command", lambda *a, **k: (1, "", "400 MissingSessionID key=private-key header=private-header")
+    )
+    with pytest.raises(ValueError, match="400 MissingSessionID") as error:
+        ocr.test_connection({}, {"api_key": "private-key", "extra_headers": {"X-Token": "private-header"}})
+    assert "private-key" not in str(error.value) and "private-header" not in str(error.value)

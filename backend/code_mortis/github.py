@@ -1,9 +1,10 @@
 import time
 from datetime import timedelta
-from urllib.parse import urlencode
 
 import httpx
 import jwt
+from authlib.integrations.httpx_client import OAuth2Client
+from authlib.oauth2 import OAuth2Error
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -82,16 +83,32 @@ def installation_token(db: Session, installation_id: int) -> str:
     return data["token"]
 
 
-def exchange_code(db: Session, code: str) -> dict:
+def oauth_client(db: Session) -> OAuth2Client:
     config = app_config(db)
-    return oauth_request(
-        {
-            "client_id": config.client_id,
-            "client_secret": unseal(config.client_secret),
-            "code": code,
-            "redirect_uri": settings().public_url + "/api/v1/auth/callback",
-        }
+    return OAuth2Client(
+        config.client_id,
+        unseal(config.client_secret),
+        redirect_uri=settings().public_url + "/api/v1/auth/callback",
+        token_endpoint_auth_method="client_secret_post",
+        code_challenge_method="S256",
+        headers={"Accept": "application/json"},
+        timeout=25,
     )
+
+
+def exchange_code(db: Session, code: str, verifier: str) -> dict:
+    try:
+        with oauth_client(db) as client:
+            return dict(
+                client.fetch_token(
+                    "https://github.com/login/oauth/access_token",
+                    code=code,
+                    code_verifier=verifier,
+                    grant_type="authorization_code",
+                )
+            )
+    except (httpx.HTTPError, OAuth2Error, ValueError) as exc:
+        raise GitHubError(401, "GitHub authorization was declined or expired. Sign in again.") from exc
 
 
 def oauth_request(data: dict) -> dict:
@@ -150,14 +167,11 @@ def authorize_repo(db: Session, user: User, full_name: str, write: bool = False)
     return result
 
 
-def login_url(db: Session, state: str) -> str:
-    return "https://github.com/login/oauth/authorize?" + urlencode(
-        {
-            "client_id": app_config(db).client_id,
-            "redirect_uri": settings().public_url + "/api/v1/auth/callback",
-            "state": state,
-        }
-    )
+def login_url(db: Session, state: str, verifier: str) -> str:
+    with oauth_client(db) as client:
+        return client.create_authorization_url(
+            "https://github.com/login/oauth/authorize", state=state, code_verifier=verifier
+        )[0]
 
 
 def graphql(token: str, query: str, variables: dict):

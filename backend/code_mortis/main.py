@@ -1,4 +1,5 @@
 import logging
+import secrets
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -10,12 +11,15 @@ from .api import router
 from .config import settings
 from .db import engine
 from .github import GitHubError
+from .subscriptions import router as subscriptions_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 app = FastAPI(
     title="Code Mortis", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
 )
 app.include_router(router)
+app.include_router(subscriptions_router)
 
 
 @app.exception_handler(GitHubError)
@@ -37,9 +41,11 @@ def invalid_request(request: Request, exc: RequestValidationError):
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    request.state.request_id = secrets.token_hex(12)
     response = await call_next(request)
     response.headers.update(
         {
+            "X-Request-ID": request.state.request_id,
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "DENY",

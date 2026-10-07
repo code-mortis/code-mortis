@@ -26,6 +26,10 @@ const repo = {
 };
 const run = {
   id: "run",
+  engine: "ocr",
+  owner_id: null,
+  actor_id: 7,
+  progress: {},
   pr_id: "pr",
   trigger: "automatic",
   base_sha: "b".repeat(40),
@@ -108,11 +112,22 @@ const connection = {
   header_names: [],
   last_test: "Connected. Model completed a tool-call round trip.",
   tested_at: at,
+  kind: "api",
+  owner_id: null,
+  auth_status: "not_required",
+  auth_message: null,
 };
 
 async function mock(
   page: Page,
-  options: { configured?: boolean; role?: string; canWrite?: boolean } = {},
+  options: {
+    configured?: boolean;
+    role?: string;
+    canWrite?: boolean;
+    publicUrl?: string;
+    personal?: boolean;
+    claude?: boolean;
+  } = {},
 ) {
   const current = structuredClone(finding);
   const requests: {
@@ -136,7 +151,7 @@ async function mock(
     if (path === "/setup/status")
       data = {
         configured: options.configured !== false,
-        public_url: "https://reviews.example.com",
+        public_url: options.publicUrl ?? new URL(request.url()).origin,
       };
     else if (path === "/auth/me")
       data = {
@@ -211,6 +226,32 @@ async function mock(
         ],
         can_write: options.canWrite !== false,
       };
+    else if (path === "/connections/personal/auth")
+      data = {
+        status: "disconnected",
+        attempt: options.claude ? null : {
+          status: "pending",
+          verificationUrl: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-1234",
+        },
+      };
+    else if (path === "/connections/personal/console-ticket") data = { ticket: "single-use-test-ticket" };
+    else if (path === "/connections/personal/grants") data = [];
+    else if (path === "/connections" && options.personal)
+      data = [
+        {
+          ...connection,
+          id: "personal",
+          name: options.claude ? "My Claude Code" : "My ChatGPT",
+          kind: options.claude ? "claude_code" : "chatgpt",
+          owner_id: 7,
+          auth_status: "disconnected",
+          protocol: "native",
+          has_key: false,
+          last_test: null,
+          tested_at: null,
+        },
+      ];
     else if (path === "/connections")
       data =
         method === "GET"
@@ -257,6 +298,9 @@ async function noOverflow(page: Page) {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+  for (const dialog of await page.getByRole("dialog").all()) {
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
 }
 
 test("repository navigation, filtering, and review workspace", async ({
@@ -346,7 +390,7 @@ test("read-only members cannot change findings or instance settings", async ({
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Settings", exact: true }),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
   await expect(
     page.getByRole("button", { name: "Run review", exact: true }),
   ).toHaveCount(0);
@@ -377,10 +421,14 @@ test("connection editing never preloads saved credentials", async ({
   await expect(page.getByLabel("Model identifier")).toHaveValue("review-model");
 });
 
-test("new instance shows registration with required bootstrap token", async ({
+test("new instance sends the bootstrap token in the request header", async ({
   page,
-}) => {
+}, info) => {
   await mock(page, { configured: false });
+  await page.route("**/api/v1/setup/manifest", (route) => route.fulfill({
+    status: 403,
+    json: { detail: "This test stops before GitHub registration." },
+  }));
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "Give your reviews a home." }),
@@ -389,8 +437,43 @@ test("new instance shows registration with required bootstrap token", async ({
     "type",
     "password",
   );
+  await page.getByLabel("Bootstrap token").fill("test-bootstrap-token");
+  const sent = page.waitForRequest("**/api/v1/setup/manifest");
+  await page.getByRole("button", { name: "Register GitHub App" }).click();
+  const request = await sent;
+  expect(request.headers()["x-setup-token"]).toBe("test-bootstrap-token");
+  expect(request.postDataJSON()).toEqual({ organization: "" });
+  await expect(page.getByText("This test stops before GitHub registration.")).toBeVisible();
   await noOverflow(page);
+  await page.screenshot({
+    path: `../.impeccable/review/bootstrap-${info.project.name}.png`,
+    fullPage: true,
+  });
 });
+
+for (const configured of [false, true]) {
+  test(`keeps the development browser origin before ${configured ? "sign-in" : "registration"}`, async ({
+    page,
+  }) => {
+    const publicUrl = "http://localhost:4178";
+    const requests = await mock(page, { configured, publicUrl });
+    const sessionOrigins: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/v1/auth/me") sessionOrigins.push(url.origin);
+    });
+    await page.goto("/?from=local#setup");
+    await expect(page).toHaveURL("http://127.0.0.1:4178/?from=local#setup");
+    await expect(
+      page.getByRole("heading", {
+        name: configured ? "Repositories" : "Give your reviews a home.",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(sessionOrigins).toEqual(configured ? ["http://127.0.0.1:4178"] : []);
+    expect(requests).toEqual([]);
+  });
+}
 
 test("system appearance follows OS changes and explicit choices persist", async ({
   page,
@@ -417,4 +500,73 @@ test("system appearance follows OS changes and explicit choices persist", async 
   await expect(page.locator("html")).toHaveClass("dark");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).not.toHaveClass("dark");
+});
+
+test("members manage personal subscriptions without administrative controls", async ({
+  page,
+}, info) => {
+  await mock(page, { role: "member", personal: true });
+  await page.goto("/settings");
+  await expect(
+    page.getByRole("tab", { name: "Team", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "GitHub", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Manage account" }).click();
+  await expect(page.getByText("ABCD-1234")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Authorize with ChatGPT" }),
+  ).toHaveAttribute("href", "https://auth.openai.com/codex/device");
+  await expect(
+    page.getByRole("switch", {
+      name: "I authorize automatic reviews with my subscription",
+    }),
+  ).not.toBeChecked();
+  await noOverflow(page);
+  await page.screenshot({
+    path: `../.impeccable/review/subscription-${info.project.name}.png`,
+    fullPage: true,
+  });
+  const automatic = page.getByRole("switch", { name: "I authorize automatic reviews with my subscription" });
+  await automatic.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/subscription-consent-${info.project.name}.png` });
+});
+
+test("Claude login uses a private console and closes with its dialog", async ({ page }, info) => {
+  await mock(page, { role: "member", personal: true, claude: true });
+  const messages: string[] = [];
+  let closed = false;
+  await page.routeWebSocket("**/connections/personal/console", (socket) => {
+    socket.onMessage((message) => {
+      messages.push(String(message));
+      if (messages.length === 1) socket.send("Open \x1b]8;;https://claude.com/cai/oauth/authorize?test=fixture\x1b\\https://claude.com/cai/oauth/authorize?test=fixture\x1b]8;;\x1b\\\nPaste the authorization code:");
+    });
+    socket.onClose(() => { closed = true; });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  await page.getByRole("button", { name: "Connect Claude Code", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Open Claude authorization" })).toBeVisible();
+  const response = page.getByLabel("Response to the official login prompt");
+  await expect(response).toHaveAttribute("type", "password");
+  await response.fill("test-authorization-code");
+  await page.getByRole("button", { name: "Send to Claude Code" }).click();
+  await expect(response).toHaveValue("");
+  expect(messages).toEqual([JSON.stringify({ ticket: "single-use-test-ticket" }), "test-authorization-code\r"]);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/claude-console-${info.project.name}.png` });
+  await page.getByRole("button", { name: "Close console" }).click();
+  await expect(page.getByLabel("Official Claude Code login console")).toHaveCount(0);
+  await expect.poll(() => closed).toBe(true);
+});
+
+test("OAuth errors remain recoverable inside the app", async ({ page }) => {
+  await mock(page);
+  await page.goto("/?auth_error=expired&diagnostic=request-123");
+  await expect(page.getByRole("alert")).toContainText("This attempt expired");
+  await expect(page.getByText("Diagnostic: request-123")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Continue with GitHub" }),
+  ).toHaveAttribute("href", "/api/v1/auth/login");
 });

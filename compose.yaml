@@ -50,6 +50,7 @@ services:
     <<: *app
     command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --no-access-log]
     ports: ["127.0.0.1:${CM_PORT:-8080}:8080"]
+    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -65,6 +66,7 @@ services:
       CM_OCR_ISOLATED_RUNTIME: "true"
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
     stop_grace_period: 30s
+    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -80,7 +82,31 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  runner:
+    image: code-mortis-runner:0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    environment:
+      CM_RUNNER_TOKEN: ${CM_RUNNER_TOKEN:?Generate a runner token before starting the native clients}
+    volumes: [runner-profiles:/profiles]
+    tmpfs: ["/tmp:mode=1777,size=1g", "/home/mortis:uid=10001,gid=10001,mode=0700,size=64m"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    networks: [runners]
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8090/health',headers={'Authorization':'Bearer '+os.environ['CM_RUNNER_TOKEN']}),timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
 
 volumes:
   postgres-data:
   redis-data:
+  runner-profiles:
+
+networks:
+  runners:

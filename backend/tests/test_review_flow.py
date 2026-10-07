@@ -15,6 +15,7 @@ from code_mortis.models import (
     Finding,
     Job,
     Membership,
+    OAuthState,
     Occurrence,
     PullRequest,
     Repository,
@@ -30,14 +31,29 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
     from code_mortis.config import settings
 
     assert client.post("/api/v1/setup/manifest", json={}).status_code == 403
+    wrong_origin = client.post(
+        "/api/v1/setup/manifest",
+        json={},
+        headers={"x-setup-token": settings().bootstrap_token, "origin": "http://localhost:5173"},
+    )
+    assert wrong_origin.status_code == 400
+    assert settings().public_url in wrong_origin.json()["detail"]
+    assert "set-cookie" not in wrong_origin.headers
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(OAuthState)) == 0
     response = client.post(
-        "/api/v1/setup/manifest", json={}, headers={"x-setup-token": settings().bootstrap_token}
+        "/api/v1/setup/manifest",
+        json={},
+        headers={"x-setup-token": settings().bootstrap_token, "origin": settings().public_url},
     )
     assert response.status_code == 200
     state = parse_qs(urlsplit(response.json()["action"]).query)["state"][0]
     assert response.json()["manifest"]["default_permissions"]["contents"] == "read"
+    assert response.json()["manifest"]["request_oauth_on_install"] is False
+    assert response.json()["manifest"]["setup_url"] == "http://testserver/api/v1/installations/callback"
+    assert response.json()["manifest"]["hook_attributes"]["url"] == settings().github_webhook_url
     assert (
-        client.get("/api/v1/setup/callback?state=wrong&code=valid", follow_redirects=False).status_code == 400
+        client.get("/api/v1/setup/callback?state=wrong&code=valid", follow_redirects=False).status_code == 303
     )
     monkeypatch.setattr(
         github,
@@ -63,6 +79,39 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
     )
 
 
+def test_login_redirects_to_public_host_before_setting_state(seed, client, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from code_mortis.config import settings
+
+    monkeypatch.setattr(settings(), "public_url", "https://reviews.example.com")
+    monkeypatch.setattr(settings(), "cookie_secure", True)
+    response = client.get("/api/v1/auth/login", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "https://reviews.example.com/api/v1/auth/login"
+    assert "set-cookie" not in response.headers
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(OAuthState)) == 0
+
+    # The reverse proxy can forward the HTTPS origin over HTTP without redirecting in a loop.
+    response = client.get("http://reviews.example.com/api/v1/auth/login", follow_redirects=False)
+    assert urlsplit(response.headers["location"]).hostname == "github.com"
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    assert "cm_browser=" in response.headers["set-cookie"]
+    assert "code_challenge=" in response.headers["location"]
+    assert "Secure" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    monkeypatch.setattr(github, "exchange_code", lambda *a: {"access_token": "token"})
+    monkeypatch.setattr(github, "request", lambda *a, **k: {"id": 7, "login": "owner", "avatar_url": ""})
+    assert (
+        client.get(
+            f"https://reviews.example.com/api/v1/auth/callback?state={state}&code=valid",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+
+
 def test_login_state_is_single_use_and_membership_is_required(seed, client, monkeypatch):
     from urllib.parse import parse_qs, urlsplit
 
@@ -72,14 +121,16 @@ def test_login_state_is_single_use_and_membership_is_required(seed, client, monk
     monkeypatch.setattr(github, "request", lambda *a, **k: {"id": 7, "login": "owner", "avatar_url": ""})
     callback = f"/api/v1/auth/callback?state={state}&code=valid"
     assert client.get(callback, follow_redirects=False).status_code == 303
-    assert client.get(callback, follow_redirects=False).status_code == 400
+    assert client.get(callback, follow_redirects=False).status_code == 303
     response = client.get("/api/v1/auth/login", follow_redirects=False)
     state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
     # A new account reusing the original owner's username must not bootstrap again.
     monkeypatch.setattr(github, "request", lambda *a, **k: {"id": 999, "login": "owner", "avatar_url": ""})
     assert (
-        client.get(f"/api/v1/auth/callback?state={state}&code=valid", follow_redirects=False).status_code
-        == 403
+        "auth_error=membership"
+        in client.get(f"/api/v1/auth/callback?state={state}&code=valid", follow_redirects=False).headers[
+            "location"
+        ]
     )
 
 
@@ -135,7 +186,9 @@ def test_auth_csrf_roles_and_repository_boundary(seed, client, monkeypatch):
     assert client.get("/api/v1/pulls/pr").status_code == 404
     with transaction() as db:
         db.get(User, 7).role = "member"
-    assert client.get("/api/v1/connections").status_code == 403
+        db.get(Membership, 7).role = "member"
+    assert client.get("/api/v1/connections").status_code == 200
+    assert client.post("/api/v1/connections/connection/test").status_code == 403
     with transaction() as db:
         db.delete(db.get(Membership, 7))
     assert client.get("/api/v1/auth/me").status_code == 403

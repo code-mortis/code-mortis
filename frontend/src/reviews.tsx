@@ -312,6 +312,8 @@ export function PullDetail() {
   const navigate = useNavigate();
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
+  const connections = useApi<Schema["ConnectionOut"][]>("/connections");
+  const [connection, setConnection] = useState("");
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("all");
   const [finding, setFinding] = useState<string | null>(null);
@@ -348,6 +350,21 @@ export function PullDetail() {
           <>
             <ExternalLink href={pr.url}>GitHub</ExternalLink>
             {can_write && (
+              <NativeSelect
+                aria-label="Review connection"
+                value={connection}
+                onChange={(event) => setConnection(event.target.value)}
+                className="max-w-64"
+              >
+                <option value="">Repository default connection</option>
+                {connections.data?.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            )}
+            {can_write && (
               <Button
                 disabled={
                   action.isPending ||
@@ -357,7 +374,10 @@ export function PullDetail() {
                 }
                 onClick={async () => {
                   const run = await action
-                    .mutateAsync({ path: `/pulls/${id}/runs` })
+                    .mutateAsync({
+                      path: `/pulls/${id}/runs`,
+                      body: connection ? { connection_id: connection } : {},
+                    })
                     .catch(() => null);
                   if (run) navigate(`/runs/${run.id}`);
                 }}
@@ -682,7 +702,15 @@ export function RunDetail() {
         actions={
           can_write && (
             <>
-              {active(run.status) && (
+              {run.status === "blocked" && (
+                <Button
+                  disabled={action.isPending}
+                  onClick={() => action.mutate({ path: `/runs/${id}/retry` })}
+                >
+                  Resume review
+                </Button>
+              )}
+              {(active(run.status) || run.status === "blocked") && (
                 <Button
                   variant="outline"
                   disabled={action.isPending}
@@ -714,6 +742,9 @@ export function RunDetail() {
         <div className="rounded-lg border bg-card p-5">
           <p className="mb-3 text-xs text-muted-foreground">Review execution</p>
           <Status value={run.status} />
+          {run.blocked_reason && (
+            <p className="mt-2 text-sm">Waiting: {run.blocked_reason}</p>
+          )}
           <p className="mt-3 text-sm text-muted-foreground">
             {String(
               (run.config.connection as Record<string, unknown> | undefined)
@@ -724,6 +755,11 @@ export function RunDetail() {
               (run.config.connection as Record<string, unknown> | undefined)
                 ?.model ?? "",
             )}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Engine: {run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review"}
+            {run.owner_id != null && ` · Account owner: GitHub #${run.owner_id}`}
+            {run.actor_id != null && ` · Started by: GitHub #${run.actor_id}`}
           </p>
         </div>
         <div className="rounded-lg border bg-card p-5">
@@ -737,6 +773,12 @@ export function RunDetail() {
       <div className="space-y-3">
         <ErrorNotice error={run.error} />
         <ErrorNotice error={run.publication_error} />
+        {typeof run.progress?.selected === "number" && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
+            {run.status === "blocked" && " Completed files are saved and reused when you resume."}
+          </p>
+        )}
       </div>
       {run.status === "partial" && (
         <div className="my-5 rounded-lg border border-amber-600/30 bg-amber-600/5 p-4 text-sm">
@@ -751,7 +793,7 @@ export function RunDetail() {
         >
           {run.status === "queued"
             ? "Waiting for the review worker. This page updates automatically."
-            : "Reviewing the requested commit. Findings will appear when OCR returns its coverage report."}
+            : "Reviewing the requested commit. This page updates as assigned files complete."}
         </div>
       ) : (
         <section className="my-8">

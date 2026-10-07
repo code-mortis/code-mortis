@@ -45,6 +45,21 @@ function Setup({ configured }: { configured: boolean }) {
   const [organization, setOrganization] = useState("");
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
+  const params = new URLSearchParams(location.search);
+  const authErrors: Record<string, string> = {
+    expired:
+      "This attempt expired or was already used. Start again in this browser.",
+    cancelled: "GitHub sign-in was cancelled. You can try again.",
+    provider: "GitHub could not complete authorization. Start a new attempt.",
+    membership: "Ask the instance administrator to allow your GitHub account.",
+    installation_cancelled:
+      "Installation was cancelled. You can start again from Settings.",
+    installation_admin:
+      "An instance administrator must connect this installation.",
+    installation_denied:
+      "GitHub did not confirm access to this installation. Check your permissions and retry.",
+  };
+  const authError = authErrors[params.get("auth_error") ?? ""];
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -84,6 +99,17 @@ function Setup({ configured }: { configured: boolean }) {
           ? "Sign in with GitHub, connect a repository, and choose the model that reviews your code."
           : "Register a GitHub App for this instance. It publishes comments under its own name and keeps review threads in sync."}
       </p>
+      {authError && (
+        <div
+          role="alert"
+          className="mt-6 rounded border border-destructive/30 p-4 text-sm"
+        >
+          <p>{authError}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Diagnostic: {params.get("diagnostic")}
+          </p>
+        </div>
+      )}
       {configured ? (
         <Button asChild className="mt-8">
           <a href="/api/v1/auth/login">
@@ -96,7 +122,7 @@ function Setup({ configured }: { configured: boolean }) {
           <ErrorNotice error={error} />
           <Field
             label="Bootstrap token"
-            hint="Use CM_BOOTSTRAP_TOKEN from your instance’s .env file."
+            hint="Copy only the CM_BOOTSTRAP_TOKEN value from .env.dev for development, or .env for the server. Each instance has its own token."
           >
             {(id) => (
               <Input
@@ -137,9 +163,11 @@ function Setup({ configured }: { configured: boolean }) {
   );
 }
 function App() {
-  const setup = useApi<{ configured: boolean; public_url: string }>(
-    "/setup/status",
-  );
+  const setup = useApi<{
+    configured: boolean;
+    public_url: string;
+    configuration_errors?: string[];
+  }>("/setup/status");
   const session = useApi<Schema["UserOut"]>(
     "/auth/me",
     false,
@@ -181,6 +209,21 @@ function App() {
         </Button>
       </div>
     );
+  if (setup.data?.configuration_errors?.length)
+    return (
+      <div className="mx-auto max-w-lg space-y-4 p-8">
+        <Brand />
+        <h1 className="text-xl font-semibold">Check instance configuration</h1>
+        {setup.data.configuration_errors.map((message) => (
+          <p key={message} role="alert" className="text-sm">
+            {message}
+          </p>
+        ))}
+        <Button onClick={() => setup.refetch()}>Check again</Button>
+      </div>
+    );
+  if (new URLSearchParams(location.search).has("auth_error"))
+    return <Setup configured={setup.data?.configured ?? false} />;
   if (!setup.data?.configured || session.error?.status === 401)
     return <Setup configured={setup.data?.configured ?? false} />;
   if (!session.data)
@@ -234,7 +277,7 @@ function App() {
             <Blocks className="size-4" />
             Repositories
           </NavLink>
-          {session.data.role === "admin" && (
+          {
             <NavLink
               to="/settings"
               className={({ isActive }) =>
@@ -244,7 +287,7 @@ function App() {
               <Settings className="size-4" />
               Settings
             </NavLink>
-          )}
+          }
         </nav>
         <div className="hidden px-6 pt-9 text-xs leading-relaxed text-white/50 lg:block">
           Every finding.
@@ -288,13 +331,7 @@ function App() {
             <Route path="/runs/:id" element={<RunDetail />} />
             <Route
               path="/settings"
-              element={
-                session.data.role === "admin" ? (
-                  <SettingsPage />
-                ) : (
-                  <Navigate to="/" replace />
-                )
-              }
+              element={<SettingsPage user={session.data} />}
             />
             <Route
               path="/setup"

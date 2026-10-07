@@ -7,9 +7,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
   server: {
+    host: "0.0.0.0",
+    port: 5173,
+    strictPort: true,
     proxy: {
-      "/api": "http://127.0.0.1:8080",
-      "/health": "http://127.0.0.1:8080",
+      "/api": { target: process.env.CM_DEV_API_URL || "http://127.0.0.1:8080", ws: true },
+      "/health": process.env.CM_DEV_API_URL || "http://127.0.0.1:8080",
     },
   },
 });

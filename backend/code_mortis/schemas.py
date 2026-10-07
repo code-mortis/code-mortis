@@ -11,13 +11,33 @@ class StrictModel(BaseModel):
 
 class ConnectionInput(StrictModel):
     name: str = Field(min_length=1, max_length=100)
-    provider: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
-    protocol: Literal["openai", "openai-responses", "anthropic", "anthropic-bedrock"]
+    kind: Literal["api", "chatgpt", "claude_code"] = "api"
+    provider: str = Field(default="", max_length=100, pattern=r"^[a-z0-9-]*$")
+    protocol: Literal["openai", "openai-responses", "anthropic", "anthropic-bedrock", "native"] = "native"
     model: str = Field(min_length=1, max_length=150)
     base_url: str = Field(default="", max_length=1000)
     api_key: str | None = Field(default=None, max_length=20000)
     extra_headers: dict[str, str] | None = None
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def connection_type(self):
+        if self.kind == "api":
+            if not self.provider or self.protocol == "native":
+                raise ValueError("API connections require a provider and supported API protocol")
+            if self.protocol != "anthropic-bedrock" and any(key.startswith("aws_") for key in self.options):
+                raise ValueError("AWS options require the Bedrock protocol")
+        else:
+            if (
+                self.api_key
+                or self.extra_headers
+                or self.base_url
+                or self.options
+                or self.protocol != "native"
+            ):
+                raise ValueError("Personal connections use only the official client's authentication")
+            self.provider = "openai" if self.kind == "chatgpt" else "anthropic"
+        return self
 
     @field_validator("options")
     @classmethod
@@ -63,6 +83,7 @@ class RepoSettings(StrictModel):
     background: str = Field(default="", max_length=20000)
     timeout_seconds: int = Field(default=900, ge=60, le=3600)
     token_budget: int = Field(default=200000, ge=1000, le=5000000)
+    delegated_context_bytes: int = Field(default=800000, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None
 
@@ -144,6 +165,14 @@ class ConnectionOut(ORMModel):
     header_names: list[str] = Field(default_factory=list)
     last_test: str | None
     tested_at: datetime | None
+    kind: str
+    owner_id: int | None
+    auth_status: str
+    auth_message: str | None
+
+
+class StartRunInput(StrictModel):
+    connection_id: str | None = None
 
 
 class RepositoryOut(ORMModel):
@@ -173,6 +202,12 @@ class RunOut(ORMModel):
     publication_error: str | None
     config: dict[str, Any]
     report: dict[str, Any] | None
+    engine: str
+    connection_id: str | None
+    owner_id: int | None
+    actor_id: int | None
+    progress: dict[str, Any]
+    blocked_reason: str | None
 
 
 class PullRequestOut(ORMModel):

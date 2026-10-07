@@ -5,10 +5,19 @@ from datetime import timedelta
 from celery import Celery
 from sqlalchemy import or_, select
 
-from . import github, ocr
+from . import github, ocr, runner_client
 from .config import settings
 from .db import now, transaction
-from .models import Connection, Finding, Installation, Job, PullRequest, Repository, ReviewRun
+from .models import (
+    Connection,
+    ConnectionGrant,
+    Finding,
+    Installation,
+    Job,
+    PullRequest,
+    Repository,
+    ReviewRun,
+)
 from .reviews import (
     connection_snapshot,
     create_run,
@@ -84,6 +93,11 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
             and not pr.draft
             and not pr.fork
         ):
+            connection = db.get(Connection, repo.connection_id)
+            if connection and connection.kind != "api":
+                grant = db.get(ConnectionGrant, (connection.id, repo.id))
+                if not grant or not grant.automatic or connection.auth_status == "revoked":
+                    return
             create_run(db, pr, repo, "automatic")
 
 
@@ -188,6 +202,19 @@ def execute_job(job_id: str):
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
         execute(kind, payload)
+    except runner_client.RunnerBlocked as exc:
+        with transaction() as db:
+            job = db.get(Job, job_id)
+            waiting = exc.reason in {"busy", "unavailable"}
+            job.status, job.lease_until, job.dispatched_at = "queued" if waiting else "failed", None, None
+            job.available_at, job.error = now() + timedelta(seconds=30), str(exc)
+            job.attempts -= 1
+            if kind == "review":
+                run = db.get(ReviewRun, payload["run_id"])
+                if run and not run.cancel_requested:
+                    run.status, run.blocked_reason = "queued" if waiting else "blocked", exc.reason
+                    run.error = str(exc)
+        return
     except Exception as exc:
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
