@@ -91,13 +91,13 @@ function Setup({ configured }: { configured: boolean }) {
       <Brand />
       <h1 className="mt-14 text-3xl font-semibold tracking-tight">
         {configured
-          ? "Ready for your first review."
+          ? "Connect your GitHub account."
           : "Give your reviews a home."}
       </h1>
       <p className="mt-4 leading-relaxed text-muted-foreground">
         {configured
-          ? "Sign in with GitHub, connect a repository, and choose the model that reviews your code."
-          : "Register a GitHub App for this instance. It publishes comments under its own name and keeps review threads in sync."}
+          ? "Your GitHub App is registered. Next, authorize your GitHub account, install the app on selected repositories, and choose a model connection."
+          : "Register a GitHub App for this instance. GitHub requires Contents: Read and write to resolve or reopen review threads. You choose which repositories it can access when installing it."}
       </p>
       {authError && (
         <div

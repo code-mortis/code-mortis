@@ -48,7 +48,9 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
     )
     assert response.status_code == 200
     state = parse_qs(urlsplit(response.json()["action"]).query)["state"][0]
-    assert response.json()["manifest"]["default_permissions"]["contents"] == "read"
+    assert response.json()["manifest"]["default_permissions"] == {
+        "contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write",
+    }
     assert response.json()["manifest"]["request_oauth_on_install"] is False
     assert response.json()["manifest"]["setup_url"] == "http://testserver/api/v1/installations/callback"
     assert response.json()["manifest"]["hook_attributes"]["url"] == settings().github_webhook_url
