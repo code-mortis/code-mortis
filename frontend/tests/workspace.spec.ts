@@ -679,3 +679,30 @@ test("automatic resolution is opt-in and requires automatic reviews", async ({ p
   await expect.poll(() => requests.some((request) => request.path === "/repositories/22" &&
     (request.body as { settings?: { auto_resolve?: boolean } }).settings?.auto_resolve === true)).toBe(true);
 });
+
+
+test("pending verification has one status and failed verification has an alert", async ({ page }) => {
+  await mock(page, { verifications: [
+    { id: "pending", run_id: "run", head_sha: "c".repeat(40), status: "queued", verdict: null,
+      resolution: "not_applicable", error: null, result: null, created_at: at, finished_at: null },
+    { id: "failed", run_id: "run", head_sha: "d".repeat(40), status: "failed", verdict: "uncertain",
+      resolution: "not_applicable", error: "Verification context is unavailable", result: null,
+      created_at: at, finished_at: at },
+  ] });
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const panel = page.getByRole("dialog");
+  await expect(panel.getByText("queued", { exact: true })).toHaveCount(1);
+  await expect(panel.getByRole("alert")).toContainText("Verification context is unavailable");
+  await expect(panel.getByText("Automatic resolution: not applicable")).toHaveCount(2);
+  await noOverflow(page);
+});
+
+for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { selected: 3, pending: -1 }]) {
+  test(`invalid verification counts are not presented: ${JSON.stringify(verification)}`, async ({ page }) => {
+    await mock(page, { run: { progress: { verification } } });
+    await page.goto("/runs/run");
+    await expect(page.getByText("Review run", { exact: true })).toBeVisible();
+    await expect(page.getByText(/findings verified/)).toHaveCount(0);
+  });
+}

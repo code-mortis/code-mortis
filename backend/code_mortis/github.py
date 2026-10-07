@@ -79,7 +79,12 @@ def app_token(db: Session) -> str:
 
 
 def installation_token(db: Session, installation_id: int, *, checks: bool = False) -> str:
-    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db))
+    return installation_token_from_jwt(app_token(db), installation_id, checks=checks)
+
+
+def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False) -> str:
+    """Exchange a snapshotted App JWT without keeping a database transaction open."""
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
     if checks and data.get("permissions", {}).get("checks") != "write":
         raise GitHubError(
             403, "Enable Checks: Read and write on the GitHub App and approve the installation permission update."

@@ -44,6 +44,7 @@ import {
   NativeSelect,
   PageTitle,
   Status,
+  words,
 } from "./components/common";
 import { RepositorySettings } from "./settings";
 
@@ -604,11 +605,7 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
               )
             }
           >
-            {f.sync_error
-              ? "Retry sync"
-              : f.status === "open"
-                ? "Resolve finding"
-                : "Reopen finding"}
+            {findingActionLabel(f)}
           </Button>
           {f.desired_status === "resolved" && !!f.sync_intent?.verification_id && (
             <Button variant="outline" disabled={action.isPending} onClick={() => change("open")}>
@@ -653,13 +650,14 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
           <div key={item.id} className="mb-5 space-y-3 rounded-lg border p-4">
             <div className="flex flex-wrap gap-2">
               <span className="text-sm font-medium">Fix verification</span>
-              <Status value={item.verdict ?? item.status} />
+              {item.verdict && <Status value={item.verdict} />}
               <Status value={item.status} />
             </div>
             <p className="break-all text-xs text-muted-foreground">
               Reviewed commit: {item.head_sha} · {date(item.created_at)}
             </p>
-            <p className="text-sm">{item.result?.explanation ?? item.error ?? "Verification is waiting for the review worker."}</p>
+            {!item.error && <p className="text-sm">{item.result?.explanation ?? "Verification is waiting for the review worker."}</p>}
+            {item.error && item.result && <p className="text-sm">{item.result.explanation}</p>}
             {item.result?.change_explanation && <p className="text-sm">{item.result.change_explanation}</p>}
             {item.result?.dismissal_recommended && (
               <p className="text-sm">Possible false positive. Review this finding and use Dismiss if appropriate.</p>
@@ -673,9 +671,9 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
               </details>
             ))}
             <p className="text-sm text-muted-foreground">
-              Automatic resolution: {item.resolution.replaceAll("_", " ")}
+              Automatic resolution: {words(item.resolution)}
             </p>
-            {item.result && item.error && <ErrorNotice error={item.error} />}
+            <ErrorNotice error={item.error} />
           </div>
         ))}
         <ol className="space-y-5">
@@ -698,6 +696,22 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
       </div>
     </div>
   );
+}
+
+function findingActionLabel(finding: Schema["FindingOut"]) {
+  if (finding.sync_error) return "Retry sync";
+  if (finding.status === "open") return "Resolve finding";
+  return "Reopen finding";
+}
+
+function verificationSummary(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const counts: Record<string, number> = {};
+  for (const [key, count] of Object.entries(value)) {
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return;
+    counts[key] = count;
+  }
+  return counts;
 }
 
 type Coverage = {
@@ -728,7 +742,7 @@ export function RunDetail() {
       ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
       : null;
   const checkValue = run.check_conclusion || run.check_status;
-  const verification = run.progress?.verification as Record<string, number> | undefined;
+  const verification = verificationSummary(run.progress?.verification);
   return (
     <>
       <PageTitle

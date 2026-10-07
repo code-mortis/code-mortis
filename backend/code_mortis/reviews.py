@@ -111,7 +111,7 @@ def create_run(
     return run
 
 
-def authorize_connection(db, connection, repo, trigger, actor=None):
+def authorize_connection(db, connection, repo, trigger, actor=None, *, check_repository=True):
     if connection.kind == "api":
         return
     owner = db.get(User, connection.owner_id)
@@ -126,7 +126,8 @@ def authorize_connection(db, connection, repo, trigger, actor=None):
             raise ValueError(
                 "The subscription owner has not authorized automatic reviews for this repository."
             )
-    github.authorize_repo(db, owner, repo.full_name, write=True)
+    if check_repository:
+        github.authorize_repo(db, owner, repo.full_name, write=True)
 
 
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:

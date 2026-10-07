@@ -190,19 +190,25 @@ def main():
                 runner_client.review = original
             options = RepoSettings().model_dump()
             for sources in ({"main.py": "count = 1\n"}, {"nested/main.py": "count = 2\n"}):
-                verification.filter_context(root, env, sources, options, lambda: False)
+                assert verification.filter_context(root, env, sources, options, lambda: False) == set(sources)
             options["exclusions"] = "**/private.py"
-            try:
-                verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("Excluded context reached verification")
-            context = {
-                "sources": {"original": {"main.py": "while True: retry()"},
-                            "current": {"main.py": "for attempt in range(3): retry()"}},
-                "diff": "-while True: retry()\n+for attempt in range(3): retry()",
-            }
+            assert not verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
+            # Reproduce the real PR: an excluded test changes alongside a fix in source.
+            options["exclusions"] = ""
+            (root / "main.py").write_text("while True: retry()\n")
+            git("add", ".")
+            git("commit", "-m", "original finding")
+            original_sha = git("rev-parse", "HEAD")
+            (root / "main.py").write_text("for attempt in range(3): retry()\n")
+            (root / "tests").mkdir()
+            (root / "tests/test_retry.py").write_text("assert True # excluded fixture\n")
+            git("add", ".")
+            git("commit", "-m", "fix with regression test")
+            actual_context = verification.build_context(root, env, env, {"path": "main.py"}, original_sha,
+                                                        git("rev-parse", "HEAD"), options, lambda: False)
+            assert actual_context["excluded_paths"] == ["tests/test_retry.py"]
+            assert "excluded fixture" not in json.dumps(actual_context)
+            context = actual_context
             scan_output = []
             original_command = ocr.command
             def capture(*args, **kwargs):

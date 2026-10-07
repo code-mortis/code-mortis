@@ -370,7 +370,7 @@ def test_migration_preserves_findings_occurrences_and_defaults(scenario):
     assert RepoSettings().auto_resolve is False
 
 
-@pytest.mark.parametrize("change", ["rename", "delete", "missing", "symlink", "deleted_excluded"])
+@pytest.mark.parametrize("change", ["rename", "delete", "missing", "symlink", "deleted_excluded", "literal_paths"])
 def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypatch, change):
     import subprocess
 
@@ -382,6 +382,9 @@ def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypa
     (root / "original.py").write_text("while True: retry()\n" + "# context\n" * 20)
     if change == "deleted_excluded":
         (root / "private.py").write_text("excluded = 'must not reach provider'\n")
+    if change == "literal_paths":
+        for name in ("file*.py", "file-secret.py"):
+            (root / name).write_text("old = 1\n")
     git("add", ".")
     git("commit", "--quiet", "-m", "fixture original")
     original = git("rev-parse", "HEAD")
@@ -397,31 +400,37 @@ def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypa
         (root / "original.py").write_text("changed\n")
         if change == "deleted_excluded":
             (root / "private.py").unlink()
+        if change == "literal_paths":
+            (root / "file*.py").write_text("allowed = 2\n")
+            (root / "file-secret.py").write_text("excluded_secret = 3\n")
     git("add", ".")
     git("commit", "--quiet", "-m", "fixture change")
     head = git("rev-parse", "HEAD")
     seen = []
-    monkeypatch.setattr(verification, "filter_context", lambda repo, env, sources, options, stopped: seen.append(sources))
-    if change == "deleted_excluded":
-        def exclude(repo, env, sources, options, stopped):
-            if "private.py" in sources:
-                raise ValueError("Excluded historical source")
-        monkeypatch.setattr(verification, "filter_context", exclude)
+    def select_paths(repo, env, sources, options, stopped):
+        seen.append(sources)
+        return set(sources) - {"private.py", "file-secret.py"}
+    monkeypatch.setattr(verification, "filter_context", select_paths)
     finding = {**COMMENT, "path": "missing.py" if change == "missing" else "original.py"}
     args = (root, ocr.child_environment(), {}, finding, original, head, RepoSettings().model_dump(), lambda: False)
-    if change in {"missing", "symlink", "deleted_excluded"}:
-        with pytest.raises(ValueError, match="Excluded" if change == "deleted_excluded" else "not a regular file"):
+    if change in {"missing", "symlink"}:
+        with pytest.raises(ValueError, match="not a regular file"):
             verification.build_context(*args)
     else:
         context = verification.build_context(*args)
         assert context["sources"]["original"]["original.py"].startswith("while True:")
         assert context["original_sha"] == original and context["head_sha"] == head
-        assert len(seen) == 2
+        assert len(seen) == 1
         if change == "rename":
             assert context["current_path"] == "renamed.py" and "rename from original.py" in context["diff"]
             assert context["sources"]["current"]["renamed.py"].startswith("for attempt")
-        else:
+        elif change == "delete":
             assert context["current_path"] is None and not context["sources"]["current"]
+        elif change == "deleted_excluded":
+            assert context["excluded_paths"] == ["private.py"]
+            assert "excluded =" not in json.dumps(context) and "must not reach provider" not in context["diff"]
+        else:
+            assert "allowed = 2" in context["diff"] and "excluded_secret" not in context["diff"]
 
 
 def test_manual_change_during_analysis_invalidates_fixed_result(scenario, monkeypatch):
@@ -530,9 +539,15 @@ def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, ba
         response["comments"][0]["content"] = "not json"
     monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, json.dumps(response), ""))
-    with pytest.raises(ValueError):
+    def command(args, *a, **k):
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        return 0, json.dumps(response), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(ValueError) as caught:
         verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    if bad != "usage":
+        assert caught.value.usage == {"tokens": 10}
 
 
 def test_multiple_run_jobs_do_not_start_two_analyses(scenario, monkeypatch):
@@ -752,3 +767,148 @@ def test_resolution_setting_changes_do_not_repeat_same_commit_analysis(seed, cha
         pr.head_sha = HEAD
         pushed = reviews.create_run(db, pr, repo, "automatic")
         assert pushed.id != first.id and pushed.config["settings"]["auto_resolve"] == (change == "enable")
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, monkeypatch, kind):
+    with transaction() as db:
+        finding = db.get(Finding, scenario["finding"])
+        other = Finding(id="second-finding", fingerprint="different", **{
+            key: getattr(finding, key) for key in (
+                "pr_id", "path", "content", "severity", "category", "start_line", "end_line",
+                "existing_code", "suggestion", "last_seen_run_id",
+            )
+        })
+        db.add(other)
+        db.flush()
+        occurrence = db.scalar(select(Occurrence))
+        db.add(Occurrence(finding_id=other.id, run_id=occurrence.run_id, snapshot=occurrence.snapshot))
+        if kind != "api":
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
+            run = db.get(ReviewRun, scenario["run"])
+            run.owner_id = 7
+            run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+    contexts = []
+    def context(*args):
+        contexts.append(True)
+        if len(contexts) == 1:
+            raise ValueError("Necessary context is unavailable")
+        return copy.deepcopy(CONTEXT)
+    monkeypatch.setattr(verification, "build_context", context)
+    monkeypatch.setattr(runner_client, "review", lambda *a: copy.deepcopy(RESULT))
+    reviews.perform_review(scenario["run"])
+    with transaction() as db:
+        rows = list(db.scalars(select(FindingVerification)))
+        failed = next(row for row in rows if row.status == "failed")
+        completed = next(row for row in rows if row.status == "completed")
+        assert failed.usage == {"tokens" if kind == "api" else "context_bytes": 0}
+        assert completed.verdict == "fixed" and sum(completed.usage.values()) > 0
+
+
+@pytest.mark.parametrize("known_usage", [True, False])
+def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenario, monkeypatch, known_usage):
+    def fail(*args):
+        if known_usage:
+            raise verification.VerificationOutputError("Missing verdict", {"tokens": 25})
+        raise ValueError("Unknown provider consumption")
+    monkeypatch.setattr(verification, "api_verify", fail)
+    row, finding, run = perform(scenario)
+    assert row.usage["tokens"] == (25 if known_usage else run.config["settings"]["token_budget"] - 100)
+    assert row.verdict == "uncertain" and finding.status == "open"
+
+
+def test_paginated_discussion_skips_sync_and_recovery(scenario):
+    _, finding, _ = perform(scenario)
+    scenario["thread"]["comments"]["pageInfo"]["hasNextPage"] = True
+    reviews.synchronize_finding(finding.sync_intent)
+    row, finding, _ = saved()
+    assert row.resolution == "superseded" and not scenario["mutations"]
+    assert finding.status == "open" and finding.desired_status is None
+    with transaction() as db:
+        finding = db.get(Finding, finding.id)
+        finding.sync_intent = {"status": "open", "version": finding.sync_version}
+        scenario["thread"].update(isResolved=True, resolvedBy={"login": "mortis-test[bot]"})
+        assert not verification.recover_reopening(db, finding, scenario["thread"])
+
+
+def test_github_sync_and_compensation_release_database_connections(scenario, monkeypatch):
+    from code_mortis.db import engine
+    _, finding, _ = perform(scenario)
+    old_request, old_threads = github.request, github.threads
+    def request(*args, **kwargs):
+        assert engine().pool.checkedout() == 0
+        return old_request(*args, **kwargs)
+    def threads(*args):
+        assert engine().pool.checkedout() == 0
+        return old_threads(*args)
+    def token(*args):
+        assert engine().pool.checkedout() == 0
+        return "installation-token"
+    def mutation(*args):
+        assert engine().pool.checkedout() == 0
+        response = scenario["set_thread"](*args)
+        if args[2]:
+            with transaction() as db:
+                db.get(Repository, 22).settings = {"automatic": True, "auto_resolve": False}
+        return response
+    monkeypatch.setattr(github, "request", request)
+    monkeypatch.setattr(github, "threads", threads)
+    monkeypatch.setattr(github, "installation_token_from_jwt", token)
+    monkeypatch.setattr(github, "set_thread", mutation)
+    reviews.synchronize_finding(finding.sync_intent)
+    assert scenario["mutations"] == [True, False] and saved()[1].status == "open"
+
+
+def test_manual_change_during_remote_preflight_prevents_mutation(scenario, monkeypatch):
+    _, finding, _ = perform(scenario)
+    original = github.threads
+    def changed(*args):
+        with transaction() as db:
+            reviews.request_finding_status(db, db.get(Finding, finding.id), "open", db.get(User, 7), "Keep open")
+        return original(*args)
+    monkeypatch.setattr(github, "threads", changed)
+    reviews.synchronize_finding(finding.sync_intent)
+    assert not scenario["mutations"] and saved()[0].resolution == "superseded"
+
+
+def test_lost_compensation_response_reconciles_without_duplicate_activity(scenario, monkeypatch):
+    _, finding, _ = perform(scenario)
+    def mutate(*args):
+        response = scenario["set_thread"](*args)
+        if args[2]:
+            with transaction() as db:
+                db.get(Repository, 22).settings = {"automatic": True, "auto_resolve": False}
+        else:
+            raise github.GitHubError(503, "Lost reopening response")
+        return response
+    monkeypatch.setattr(github, "set_thread", mutate)
+    with pytest.raises(github.GitHubError):
+        reviews.synchronize_finding(finding.sync_intent)
+    row, finding, _ = saved()
+    assert finding.desired_status == "open" and finding.sync_intent.get("reopen_verification_id") == row.id
+    monkeypatch.setattr(github, "set_thread", lambda *a: pytest.fail("Reopening repeated"))
+    reviews.synchronize_finding(finding.sync_intent)
+    reviews.synchronize_finding(finding.sync_intent)
+    assert saved()[1].status == "open" and saved()[1].desired_status is None
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(Activity).where(Activity.action == "auto_resolution_reverted")) == 1
+
+
+@pytest.mark.parametrize("failure", ["too_large", "invalid_preview", "cancelled"])
+def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
+    def preview(args, *a, **k):
+        assert "--preview" in args
+        if failure == "cancelled":
+            raise ocr.ReviewStopped()
+        return 0, "not json" if failure == "invalid_preview" else json.dumps({"files": [
+            {"path": "evidence.py", "will_review": False, "exclude_reason": "too_large"}
+        ]}), ""
+    monkeypatch.setattr(ocr, "command", preview)
+    with pytest.raises(verification.VerificationOutputError) as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    assert caught.value.usage == {"tokens": 0}
+    assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
