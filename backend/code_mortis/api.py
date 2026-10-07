@@ -192,8 +192,8 @@ def manifest(body: ManifestInput, request: Request, response: Response, db: DB) 
             "setup_url": origin + "/api/v1/installations/callback",
             "public": True,
             "request_oauth_on_install": False,
-            "default_permissions": {"contents": "read", "pull_requests": "write", "metadata": "read"},
-            "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment"],
+            "default_permissions": {"contents": "read", "pull_requests": "write", "metadata": "read", "checks": "write"},
+            "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment", "check_run"],
         },
     }
 
@@ -506,6 +506,7 @@ def retry_review(run_id: str, db: DB, user: USER):
         raise HTTPException(403, "Only the connection owner can resume this review.")
     authorize_connection(db, connection, repo, run.trigger, user)
     run.status, run.error, run.blocked_reason = "queued", None, None
+    run.failure_reason = None
     enqueue(db, "review", {"run_id": run.id})
     return RunOut.model_validate(run)
 
@@ -832,7 +833,7 @@ async def webhook(request: Request, db: DB) -> dict:
             db.add(WebhookDelivery(id=delivery, event=event))
             db.flush()
             if event != "ping":
-                enqueue(db, "webhook", {"event": event, "body": data})
+                enqueue(db, "webhook", {"event": event, "body": data, "delivery": delivery})
     except IntegrityError:
         return {"accepted": True, "duplicate": True}
     return {"accepted": True, "duplicate": False}

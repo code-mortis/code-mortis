@@ -768,6 +768,27 @@ export function RunDetail() {
           <p className="mt-3 text-sm text-muted-foreground">
             Publication retries use this run’s saved findings.
           </p>
+          {run.check_enabled && (
+            <div className="mt-5 space-y-3 border-t pt-4">
+              <p className="text-xs text-muted-foreground">GitHub check</p>
+              <div className="flex flex-wrap items-center gap-3">
+                {run.check_status && (
+                  <Status value={run.check_conclusion || run.check_status} />
+                )}
+                {run.check_url && (
+                  <a className="text-sm underline underline-offset-4" href={run.check_url} target="_blank" rel="noreferrer">
+                    View check on GitHub
+                  </a>
+                )}
+              </div>
+              {run.check_pending && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}
+                </p>
+              )}
+              <ErrorNotice error={run.check_error} />
+            </div>
+          )}
         </div>
       </div>
       <div className="space-y-3">

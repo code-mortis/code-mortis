@@ -1044,6 +1044,22 @@ export interface components {
             };
             /** Blocked Reason */
             blocked_reason: string | null;
+            /** Failure Reason */
+            failure_reason: string | null;
+            /** Check Enabled */
+            check_enabled: boolean;
+            /** Check Pending */
+            check_pending: boolean;
+            /** Check Url */
+            check_url: string | null;
+            /** Check Status */
+            check_status: string | null;
+            /** Check Conclusion */
+            check_conclusion: string | null;
+            /** Check Error */
+            check_error: string | null;
+            /** Check Synced At */
+            check_synced_at: string | null;
         };
         /** StartRunInput */
         StartRunInput: {

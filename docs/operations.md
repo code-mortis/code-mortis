@@ -26,6 +26,18 @@ The runner has no published port, database credentials, installation keys or Doc
 
 See [GitHub registration settings](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration). Never start two active copies of a restored instance against GitHub.
 
+## GitHub review checks
+
+After deploying the check migration, open the existing GitHub App's **Permissions & events** settings. Add **Repository permissions → Checks → Read and write** and save. Confirm the **Check run** webhook subscription, then approve the new permission in each account's installed-App settings. Do this separately for development and server Apps; retain their existing credentials, callbacks and webhook URLs. New registrations request the permission automatically.
+
+Reviews and comments keep working while approval is pending. The run page shows the permission error under **GitHub check**. Permission acceptance triggers recovery, with periodic reconciliation every five minutes as a fallback. No model rerun is needed to repair a check update. If an installation is removed, remote checks cannot be updated until access is restored; the app retains the synchronization error.
+
+The check is queued while waiting, in progress during analysis and publication, and successful only after full coverage and comment publication. Findings do not fail a completed check or approve the PR. Partial coverage, execution errors and publication failures fail it; timeouts, cancellation, skipped work and blocked authentication/quota have distinct conclusions. Repository branch-protection settings are unchanged.
+
+GitHub's per-check **Re-run** requires an enabled Code Mortis member with current repository write access. It rejects closed PRs and obsolete commits. For complete analysis with failed publication it retries saved comments; for blocked work it resumes the existing run. Other retries create a new manual run with current repository settings and the original connection. Personal connections remain owner-only, without provider fallback. Use Code Mortis to cancel a running review; its check follows the cancellation. Check-suite-wide reruns are not handled.
+
+Checks are added to new runs and unfinished work during migration, not completed historical runs. Details links use `CM_PUBLIC_URL`; development localhost links are reachable only on the development machine. Check metadata and errors are included in normal database backups. Logs identify `sync_check` jobs and their run IDs; repeated GitHub failures recover independently of paid review execution. Never mark a check successful manually to hide missing coverage or failed publication.
+
 ## Backup and restoration
 
 PostgreSQL owns durable jobs and history. Redis can be rebuilt. `.env` and the native profile volume require separate encrypted backups; database ciphertext cannot be recovered without `CM_ENCRYPTION_KEY`. Native client profiles contain authentication credentials. Store the archive privately and never upload it as a diagnostic attachment.

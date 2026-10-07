@@ -41,6 +41,12 @@ const run = {
   finished_at: "2026-10-05T13:21:30Z",
   error: null,
   publication_error: "GitHub temporarily rate-limited this app.",
+  check_enabled: true,
+  check_pending: true,
+  check_status: "in_progress",
+  check_conclusion: null,
+  check_url: "https://github.com/acme/payments/runs/42",
+  check_error: "Enable Checks: Read and write on the GitHub App and approve the installation permission update.",
   config: {
     connection: {
       name: "Team reviews",
@@ -370,7 +376,7 @@ test("resolution waits for GitHub and preserves the confirmed status", async ({
 
 test("partial review and publication retry remain distinct", async ({
   page,
-}) => {
+}, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
   await expect(
@@ -379,7 +385,11 @@ test("partial review and publication retry remain distinct", async ({
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
+  await expect(page.getByRole("link", { name: "View check on GitHub" })).toHaveAttribute("href", run.check_url);
+  await expect(page.getByText(run.check_error)).toBeVisible();
+  await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
 });
 
 test("read-only members cannot change findings or instance settings", async ({

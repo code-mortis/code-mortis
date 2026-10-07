@@ -15,11 +15,11 @@ export const date = (value: string) =>
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
 export function Status({ value }: { value: string }) {
-  const good = ["completed", "published", "resolved", "connected"].includes(
+  const good = ["completed", "published", "resolved", "connected", "success"].includes(
     value,
   );
-  const bad = ["failed", "critical", "high"].includes(value);
-  const caution = ["partial", "medium", "partially_published"].includes(value);
+  const bad = ["failed", "critical", "high", "failure", "timed_out"].includes(value);
+  const caution = ["partial", "medium", "partially_published", "action_required"].includes(value);
   return (
     <Badge
       variant="outline"
@@ -32,7 +32,7 @@ export function Status({ value }: { value: string }) {
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
     >
-      {active(value) && (
+      {(active(value) || value === "in_progress") && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
       {words(value)}
