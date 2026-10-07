@@ -667,6 +667,37 @@ def test_manual_override_refreshes_verification_summary(scenario):
     assert saved()[2].progress["verification"]["pending"] == 0
 
 
+@pytest.mark.parametrize("resolution,pending,resolved,failed", [
+    ("pending", 1, 0, 0), ("applying", 1, 0, 0), ("resolved", 0, 1, 0),
+    ("failed", 0, 0, 1), ("superseded", 0, 0, 0),
+])
+def test_resolution_summary_has_exclusive_sync_counts(scenario, resolution, pending, resolved, failed):
+    row, _, _ = perform(scenario)
+    with transaction() as db:
+        db.get(FindingVerification, row.id).resolution = resolution
+        run = db.get(ReviewRun, scenario["run"])
+        verification.record_summary(db, run)
+        summary = run.progress["verification"]
+        assert (summary["pending"], summary["resolved"], summary["sync_failed"]) == (pending, resolved, failed)
+
+
+def test_reconciliation_fetches_before_locking_and_refreshes_manual_intent(scenario, monkeypatch):
+    def threads(*args):
+        with transaction() as db:
+            finding = db.scalar(select(Finding).where(Finding.id == scenario["finding"]).with_for_update(nowait=True))
+            reviews.request_finding_status(db, finding, "open", db.get(User, 7), "Keep open")
+        return [{**scenario["thread"], "isResolved": True}]
+    monkeypatch.setattr(github, "threads", threads)
+    with transaction() as db:
+        finding = db.get(Finding, scenario["finding"])
+        reviews.reconcile_threads(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "token")
+        assert finding.status == "open" and finding.desired_status == "open"
+        assert finding.sync_intent["status"] == "open"
+    with transaction() as db:
+        finding = db.get(Finding, scenario["finding"])
+        assert finding.status == "open" and finding.desired_status == "open"
+
+
 def test_subscription_verification_does_not_reset_context_allowance(scenario, monkeypatch):
     with transaction() as db:
         c = db.get(Connection, "connection")
@@ -861,16 +892,26 @@ def test_github_sync_and_compensation_release_database_connections(scenario, mon
     assert scenario["mutations"] == [True, False] and saved()[1].status == "open"
 
 
-def test_manual_change_during_remote_preflight_prevents_mutation(scenario, monkeypatch):
+@pytest.mark.parametrize("status", ["open", "resolved", "dismissed"])
+def test_manual_change_during_remote_preflight_prevents_mutation(scenario, monkeypatch, status):
     _, finding, _ = perform(scenario)
     original = github.threads
     def changed(*args):
         with transaction() as db:
-            reviews.request_finding_status(db, db.get(Finding, finding.id), "open", db.get(User, 7), "Keep open")
+            reviews.request_finding_status(db, db.get(Finding, finding.id), status, db.get(User, 7), "Manual override")
         return original(*args)
     monkeypatch.setattr(github, "threads", changed)
     reviews.synchronize_finding(finding.sync_intent)
     assert not scenario["mutations"] and saved()[0].resolution == "superseded"
+    latest = saved()[1].sync_intent
+    reviews.synchronize_finding(latest)
+    reviews.synchronize_finding(latest)
+    row, updated, _ = saved()
+    assert updated.status == status and updated.desired_status is None
+    assert row.resolution == "superseded" and row.sync_attempt["expires"] > now().timestamp()
+    assert scenario["mutations"] == [status != "open"]
+    # Reopening intent is required to recover a late automatic write after worker loss.
+    assert updated.sync_intent == (latest if status == "open" else None)
 
 
 def test_lost_compensation_response_reconciles_without_duplicate_activity(scenario, monkeypatch):

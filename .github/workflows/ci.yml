@@ -3,6 +3,22 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  export-openapi:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.14' }
+      - run: uv sync --frozen --python 3.13
+      - run: uv run python -m code_mortis.manage export-openapi --output ../openapi.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: openapi.json
+          if-no-files-found: error
   backend:
     runs-on: ubuntu-latest
     services:
@@ -24,14 +40,8 @@ jobs:
       - run: uv sync --frozen --python 3.13
       - run: uv run ruff check .
       - run: uv run python -m pytest -q
-      - run: uv run python -m code_mortis.manage export-openapi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: openapi
-          path: frontend/node_modules/.cache/code-mortis-openapi.json
-          include-hidden-files: true
   frontend:
-    needs: backend
+    needs: export-openapi
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,8 +54,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: openapi
-          path: frontend/node_modules/.cache
-      - run: bun run api:types
+          path: .
+      - run: bunx openapi-typescript ../openapi.json -o src/api.generated.ts
       - run: git diff --exit-code -- src/api.generated.ts
       - run: bun run build
       - run: bunx playwright install --with-deps chromium

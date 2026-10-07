@@ -391,10 +391,11 @@ def comment_body(finding_id: str, snapshot: dict) -> str:
 
 def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str):
     bot = github.app_config(db).github_slug + "[bot]"
+    threads = github.threads(token, repo.full_name, pr.number)
     by_id = {finding.id: finding for finding in db.scalars(
-        select(Finding).where(Finding.pr_id == pr.id).with_for_update()
+        select(Finding).where(Finding.pr_id == pr.id).with_for_update().execution_options(populate_existing=True)
     )}
-    for thread in github.threads(token, repo.full_name, pr.number):
+    for thread in threads:
         comments = thread.get("comments", {}).get("nodes", [])
         if not comments:
             continue
@@ -559,6 +560,9 @@ def synchronize_finding(payload: dict):
         desired = finding.desired_status
         github.set_thread(token, finding.thread_id, desired != "open")
         finding.status, finding.desired_status, finding.sync_error = desired, None, None
+        # Retain reopening intent to recover a late automatic write after worker loss.
+        if desired != "open":
+            finding.sync_intent = None
         finding.updated_at = now()
         db.add(
             Activity(

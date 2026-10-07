@@ -380,7 +380,7 @@ def record_summary(db, run):
             summary[row.status] += 1
         if row.verdict in {"fixed", "still_present", "uncertain"}:
             summary[row.verdict] += 1
-        if row.resolution in {"resolved", "pending", "failed", "applying"}:
+        if row.resolution in {"resolved", "pending", "applying"}:
             summary["resolved" if row.resolution == "resolved" else "pending"] += 1
         if row.resolution == "failed":
             summary["sync_failed"] += 1
