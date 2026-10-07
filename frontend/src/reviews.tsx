@@ -545,7 +545,7 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
       </div>
     );
   if (!query.data) return <ErrorNotice error={query.error} />;
-  const { finding: f, activities } = query.data;
+  const { finding: f, activities, verifications = [] } = query.data;
   async function change(status: string) {
     await action
       .mutateAsync({
@@ -555,6 +555,9 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
       })
       .catch(() => null);
     setDismiss(false);
+  }
+  async function retrySync() {
+    await action.mutateAsync({ path: `/findings/${id}/sync`, method: "POST" }).catch(() => null);
   }
   return (
     <div className="space-y-6 px-6 pb-10">
@@ -596,7 +599,7 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
           <Button
             disabled={action.isPending || (!!f.desired_status && !f.sync_error)}
             onClick={() =>
-              change(
+              f.sync_error ? retrySync() : change(
                 f.desired_status ?? (f.status === "open" ? "resolved" : "open"),
               )
             }
@@ -607,6 +610,11 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
                 ? "Resolve finding"
                 : "Reopen finding"}
           </Button>
+          {f.desired_status === "resolved" && !!f.sync_intent?.verification_id && (
+            <Button variant="outline" disabled={action.isPending} onClick={() => change("open")}>
+              Keep finding open
+            </Button>
+          )}
           {f.status === "open" && !f.desired_status && (
             <Button variant="outline" onClick={() => setDismiss(!dismiss)}>
               Dismiss
@@ -641,6 +649,35 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
       )}
       <div className="border-t pt-6">
         <h3 className="mb-5 text-sm font-semibold">Activity</h3>
+        {verifications.map((item) => (
+          <div key={item.id} className="mb-5 space-y-3 rounded-lg border p-4">
+            <div className="flex flex-wrap gap-2">
+              <span className="text-sm font-medium">Fix verification</span>
+              <Status value={item.verdict ?? item.status} />
+              <Status value={item.status} />
+            </div>
+            <p className="break-all text-xs text-muted-foreground">
+              Reviewed commit: {item.head_sha} · {date(item.created_at)}
+            </p>
+            <p className="text-sm">{item.result?.explanation ?? item.error ?? "Verification is waiting for the review worker."}</p>
+            {item.result?.change_explanation && <p className="text-sm">{item.result.change_explanation}</p>}
+            {item.result?.dismissal_recommended && (
+              <p className="text-sm">Possible false positive. Review this finding and use Dismiss if appropriate.</p>
+            )}
+            {item.result?.evidence.map((evidence, index) => (
+              <details key={index} className="text-sm">
+                <summary className="cursor-pointer break-all">
+                  {evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}
+                </summary>
+                <div className="mt-2"><Code>{evidence.quote}</Code></div>
+              </details>
+            ))}
+            <p className="text-sm text-muted-foreground">
+              Automatic resolution: {item.resolution.replaceAll("_", " ")}
+            </p>
+            {item.result && item.error && <ErrorNotice error={item.error} />}
+          </div>
+        ))}
         <ol className="space-y-5">
           {activities.map((event) => (
             <li key={event.id} className="relative border-l-2 pl-4">
@@ -691,6 +728,7 @@ export function RunDetail() {
       ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
       : null;
   const checkValue = run.check_conclusion || run.check_status;
+  const verification = run.progress?.verification as Record<string, number> | undefined;
   return (
     <>
       <PageTitle
@@ -795,6 +833,14 @@ export function RunDetail() {
       <div className="space-y-3">
         <ErrorNotice error={run.error} />
         <ErrorNotice error={run.publication_error} />
+        {!!verification?.selected && (
+          <div className="space-y-2 rounded-lg border p-4 text-sm">
+            <p className="font-medium">Fix verification</p>
+            <p>{verification.completed ?? 0} of {verification.selected} findings verified. {verification.resolved ?? 0} automatically resolved, {verification.pending ?? 0} pending synchronization.</p>
+            <p className="text-muted-foreground">{verification.still_present ?? 0} still present, {verification.uncertain ?? 0} uncertain, {verification.skipped ?? 0} skipped, {verification.failed ?? 0} failed.</p>
+            <p className="text-muted-foreground">Verified fixes remain open until GitHub confirms resolution. Evidence is saved in each finding’s Activity.</p>
+          </div>
+        )}
         {typeof run.progress?.selected === "number" && (
           <p role="status" className="text-sm text-muted-foreground">
             {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.

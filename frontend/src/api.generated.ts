@@ -311,6 +311,23 @@ export interface paths {
         patch: operations["update_finding_api_v1_findings__finding_id__patch"];
         trace?: never;
     };
+    "/api/v1/findings/{finding_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Finding Sync */
+        post: operations["retry_finding_sync_api_v1_findings__finding_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/providers": {
         parameters: {
             query?: never;
@@ -756,6 +773,8 @@ export interface components {
             finding: components["schemas"]["FindingOut"];
             /** Activities */
             activities: components["schemas"]["ActivityOut"][];
+            /** Verifications */
+            verifications?: components["schemas"]["VerificationOut"][];
         };
         /** FindingOut */
         FindingOut: {
@@ -769,6 +788,10 @@ export interface components {
             desired_status: string | null;
             /** Sync Error */
             sync_error: string | null;
+            /** Sync Intent */
+            sync_intent?: {
+                [key: string]: unknown;
+            } | null;
             /** Path */
             path: string;
             /** Content */
@@ -901,6 +924,11 @@ export interface components {
              * @default true
              */
             automatic: boolean;
+            /**
+             * Auto Resolve
+             * @default false
+             */
+            auto_resolve: boolean;
             /**
              * Model
              * @default
@@ -1094,6 +1122,65 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VerificationEvidence */
+        VerificationEvidence: {
+            /**
+             * Revision
+             * @enum {string}
+             */
+            revision: "original" | "current";
+            /** Path */
+            path: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /** Quote */
+            quote: string;
+        };
+        /** VerificationOut */
+        VerificationOut: {
+            /** Id */
+            id: string;
+            /** Run Id */
+            run_id: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Status */
+            status: string;
+            /** Verdict */
+            verdict: string | null;
+            result: components["schemas"]["VerificationResult"] | null;
+            /** Error */
+            error: string | null;
+            /** Resolution */
+            resolution: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finished At */
+            finished_at: string | null;
+        };
+        /** VerificationResult */
+        VerificationResult: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "fixed" | "still_present" | "uncertain";
+            /** Original Issue Present */
+            original_issue_present: boolean;
+            /** Explanation */
+            explanation: string;
+            /** Change Explanation */
+            change_explanation: string;
+            /** Dismissal Recommended */
+            dismissal_recommended: boolean;
+            /** Evidence */
+            evidence: components["schemas"]["VerificationEvidence"][];
         };
     };
     responses: never;
@@ -1663,6 +1750,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_finding_sync_api_v1_findings__finding_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

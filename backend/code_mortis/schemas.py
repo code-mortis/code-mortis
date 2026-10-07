@@ -76,6 +76,7 @@ class ConnectionInput(StrictModel):
 
 class RepoSettings(StrictModel):
     automatic: bool = True
+    auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
     effort: Literal["low", "medium", "high"] = "medium"
     language: str = Field(default="English", min_length=1, max_length=100)
@@ -242,6 +243,7 @@ class FindingOut(ORMModel):
     status: str
     desired_status: str | None
     sync_error: str | None
+    sync_intent: dict[str, Any] | None = None
     path: str
     content: str
     severity: str
@@ -266,9 +268,40 @@ class ActivityOut(ORMModel):
     created_at: datetime
 
 
+class VerificationEvidence(StrictModel):
+    revision: Literal["original", "current"]
+    path: str = Field(min_length=1, max_length=2000)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    quote: str = Field(min_length=1, max_length=60000)
+
+
+class VerificationResult(StrictModel):
+    verdict: Literal["fixed", "still_present", "uncertain"]
+    original_issue_present: bool
+    explanation: str = Field(min_length=1, max_length=10000)
+    change_explanation: str = Field(max_length=10000)
+    dismissal_recommended: bool
+    evidence: list[VerificationEvidence] = Field(max_length=30)
+
+
+class VerificationOut(ORMModel):
+    id: str
+    run_id: str
+    head_sha: str
+    status: str
+    verdict: str | None
+    result: VerificationResult | None
+    error: str | None
+    resolution: str
+    created_at: datetime
+    finished_at: datetime | None
+
+
 class FindingDetail(BaseModel):
     finding: FindingOut
     activities: list[ActivityOut]
+    verifications: list[VerificationOut] = Field(default_factory=list)
 
 
 class PRDetail(BaseModel):

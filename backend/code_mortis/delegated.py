@@ -90,7 +90,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         paths.append(path)
     # Existing checkpoints belong to this immutable run and its exact commit/config snapshot.
     previous = checkpoint.get("items", {})
-    items, comments, used = {}, [], 0
+    items, comments = {}, []
+    used = checkpoint.get("context_bytes", sum(item.get("input_bytes", 0) for item in previous.values()))
 
     def save():
         progress(
@@ -99,6 +100,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 "completed": sum(row["status"] == "completed" for row in items.values()),
                 "failed": sum(row["status"] == "failed" for row in items.values()),
                 "items": dict(items),
+                "context_bytes": used,
             }
         )
 
@@ -109,7 +111,6 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         if previous.get(path, {}).get("status") == "completed":
             items[path] = previous[path]
             comments.extend(previous[path]["comments"])
-            used += previous[path].get("input_bytes", 0)
             save()
             continue
         if time.monotonic() >= deadline:
@@ -161,6 +162,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             save()
             continue
         used += input_bytes
+        save()  # Reserve failed or interrupted requests too; resuming must not reset consumed context.
         try:
             data = runner_client.review(
                 connection["id"],
@@ -176,6 +178,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 stopped,
             )
             found = validate_result(data, path, len(source.splitlines()), patch)
+            for comment in found:
+                comment["source_sha"] = ref
             items[path] = {"status": "completed", "comments": found, "input_bytes": input_bytes}
             comments.extend(found)
         except runner_client.RunnerBlocked as exc:

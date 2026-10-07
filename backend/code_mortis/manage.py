@@ -23,7 +23,7 @@ def main():
     upgrade = sub.add_parser("upgrade-env", help="Add missing configuration without replacing secrets")
     upgrade.add_argument("--file", default=".env")
     export = sub.add_parser("export-openapi")
-    export.add_argument("--output", default="../docs/openapi.json")
+    export.add_argument("--output", default="../frontend/node_modules/.cache/code-mortis-openapi.json")
     args = parser.parse_args()
     if args.command == "upgrade-env":
         path = Path(args.file)

@@ -25,8 +25,13 @@ jobs:
       - run: uv run ruff check .
       - run: uv run python -m pytest -q
       - run: uv run python -m code_mortis.manage export-openapi
-      - run: git diff --exit-code -- ../docs/openapi.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: frontend/node_modules/.cache/code-mortis-openapi.json
+          include-hidden-files: true
   frontend:
+    needs: backend
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,6 +41,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: '1.4.2' }
       - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: openapi
+          path: frontend/node_modules/.cache
       - run: bun run api:types
       - run: git diff --exit-code -- src/api.generated.ts
       - run: bun run build

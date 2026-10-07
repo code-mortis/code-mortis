@@ -96,7 +96,23 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         else:
             status, conclusion, title = "in_progress", None, "Publishing comments"
 
+    verification = run.progress.get("verification", {})
+    if status == "completed" and conclusion == "success" and verification.get("sync_failed"):
+        conclusion, title = "action_required", "Verified fixes need GitHub synchronization"
+    elif status == "completed" and conclusion == "success" and verification.get("pending"):
+        status, conclusion, title = "in_progress", None, "Synchronizing verified fixes"
+    elif status == "completed" and conclusion == "success" and (
+        verification.get("failed") or verification.get("skipped") or verification.get("uncertain")
+    ):
+        conclusion, title = "neutral", "Review complete; some findings could not be verified"
+
     lines = [f"Reviewed commit: `{run.head_sha}`", f"Findings: {findings}"]
+    if verification.get("selected"):
+        lines.append(
+            f"Fix verification: {verification.get('completed', 0)} of {verification['selected']} completed; "
+            f"{verification.get('resolved', 0)} automatically resolved; "
+            f"{verification.get('pending', 0)} pending synchronization."
+        )
     coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
     if isinstance(coverage.get("selected"), list):
         completed = len(coverage.get("completed", [])) + len(coverage.get("reused", []))
@@ -130,10 +146,16 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
 
 
 def sync_check(run_id: str):
+    from .verification import record_summary
+
     # Serialize create/update and state transitions through the same row lock.
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if not run or not run.check_enabled:
+        if not run:
+            return
+        if run.progress.get("verification_prepared"):
+            record_summary(db, run)
+        if not run.check_enabled:
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)

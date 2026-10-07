@@ -190,8 +190,9 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     query = """query($owner:String!,$repo:String!,$number:Int!,$after:String) {
       repository(owner:$owner,name:$repo) { pullRequest(number:$number) {
         reviewThreads(first:100,after:$after) { pageInfo { hasNextPage endCursor }
-          nodes { id isResolved resolvedBy { login }
-            comments(first:1) { nodes { databaseId body url author { login } } }
+          nodes { id isResolved isOutdated resolvedBy { login }
+            comments(first:100) { pageInfo { hasNextPage }
+              nodes { databaseId body url updatedAt author { login } } }
           }
         }
       } }

@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import github
+from . import github, verification
 from .config import settings
 from .db import get_db, now
 from .models import (
@@ -22,6 +22,7 @@ from .models import (
     Connection,
     ConnectionGrant,
     Finding,
+    FindingVerification,
     Installation,
     Job,
     LoginSession,
@@ -52,6 +53,7 @@ from .schemas import (
     RunOut,
     StartRunInput,
     UserOut,
+    VerificationOut,
 )
 from .security import digest, safe_endpoint, seal, unseal, valid_signature
 
@@ -486,6 +488,7 @@ def cancel_run(run_id: str, db: DB, user: USER):
         "not_applicable",
         now(),
     )
+    verification.skip_pending(db, run, "The run was cancelled.")
     return RunOut.model_validate(run)
 
 
@@ -539,6 +542,10 @@ def finding_detail(finding_id: str, db: DB, user: USER):
                 select(Activity).where(Activity.finding_id == finding.id).order_by(Activity.created_at)
             )
         ],
+        verifications=[VerificationOut.model_validate(row) for row in db.scalars(
+            select(FindingVerification).where(FindingVerification.finding_id == finding.id)
+            .order_by(FindingVerification.created_at)
+        )],
     )
 
 
@@ -548,9 +555,29 @@ def update_finding(finding_id: str, body: FindingAction, db: DB, user: USER):
     if not finding:
         raise HTTPException(404, "Finding not found.")
     pr_access(db, user, finding.pr_id, write=True)
-    finding = db.scalar(select(Finding).where(Finding.id == finding_id).with_for_update())
+    finding = db.scalar(select(Finding).where(Finding.id == finding_id).with_for_update().execution_options(populate_existing=True))
     request_finding_status(db, finding, body.status, user, body.reason)
     return FindingOut.model_validate(finding)
+
+
+@router.post("/findings/{finding_id}/sync", status_code=202)
+def retry_finding_sync(finding_id: str, db: DB, user: USER) -> dict:
+    finding = db.get(Finding, finding_id)
+    if not finding:
+        raise HTTPException(404, "Finding not found.")
+    pr_access(db, user, finding.pr_id, write=True)
+    finding = db.scalar(select(Finding).where(Finding.id == finding_id).with_for_update().execution_options(populate_existing=True))
+    if not finding.desired_status:
+        raise HTTPException(409, "This finding has no pending synchronization.")
+    if not finding.sync_intent:
+        # Compatibility with manual intents queued before the migration.
+        finding.sync_intent = {
+            "finding_id": finding.id, "version": finding.sync_version,
+            "actor_id": user.id, "reason": "Retry pending synchronization.",
+        }
+    finding.sync_error = None
+    job = enqueue(db, "resolve", finding.sync_intent)
+    return {"job_id": job.id}
 
 
 def connection_out(connection: Connection) -> ConnectionOut:
@@ -832,6 +859,7 @@ async def webhook(request: Request, db: DB) -> dict:
         with db.begin_nested():
             db.add(WebhookDelivery(id=delivery, event=event))
             db.flush()
+            verification.thread_event(db, event, data, delivery)
             if event != "ping":
                 enqueue(db, "webhook", {"event": event, "body": data, "delivery": delivery})
     except IntegrityError:

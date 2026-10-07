@@ -5,7 +5,7 @@ from datetime import timedelta
 from celery import Celery
 from sqlalchemy import or_, select
 
-from . import checks, github, ocr, runner_client
+from . import checks, github, ocr, runner_client, verification
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -19,6 +19,7 @@ from .models import (
     ReviewRun,
 )
 from .reviews import (
+    complete_saved_review,
     connection_snapshot,
     create_run,
     enqueue,
@@ -173,7 +174,7 @@ def process_webhook(payload: dict):
 
 def execute(kind: str, payload: dict):
     if kind == "review":
-        perform_review(payload["run_id"])
+        perform_review(payload["run_id"], payload.get("_claim"))
     elif kind == "publish":
         publish_run(payload["run_id"])
     elif kind == "sync_check":
@@ -213,10 +214,12 @@ def execute_job(job_id: str):
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
-        execute(kind, payload)
+        execute(kind, {**payload, "_claim": f"{job_id}:{attempt}"} if kind == "review" else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
-            job = db.get(Job, job_id)
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job.attempts != attempt or job.status != "running":
+                return
             waiting = exc.reason in {"busy", "unavailable"}
             job.status, job.lease_until, job.dispatched_at = "queued" if waiting else "failed", None, None
             job.available_at, job.error = now() + timedelta(seconds=30), str(exc)
@@ -237,17 +240,19 @@ def execute_job(job_id: str):
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
         retry = retryable and attempt < 3
         with transaction() as db:
-            job = db.get(Job, job_id)
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job.attempts != attempt or job.status != "running":
+                return
             job.status, job.error, job.lease_until = ("queued" if retry else "failed"), message[:2000], None
             delay = max(min(30 * 2**attempt, 300), getattr(exc, "retry_after", 0))
             job.available_at, job.dispatched_at = now() + timedelta(seconds=delay), None
             if kind == "review":
-                run = db.get(ReviewRun, payload["run_id"])
+                run = db.scalar(select(ReviewRun).where(ReviewRun.id == payload["run_id"]).with_for_update())
                 if run and run.status in {"queued", "running"}:
                     run.error = message[:2000]
                     if retry:
                         run.status = "queued"
-                    else:
+                    elif not complete_saved_review(db, run, message[:2000]):
                         run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
                         run.failure_reason = "timeout" if isinstance(exc, TimeoutError) else "execution"
             elif kind == "sync_check":
@@ -259,9 +264,7 @@ def execute_job(job_id: str):
                 run.publication = "partially_published" if run.review_ids else "failed"
                 run.publication_error = message[:2000]
             elif kind == "resolve":
-                finding = db.get(Finding, payload["finding_id"])
-                if finding and finding.sync_version == payload["version"]:
-                    finding.sync_error = message[:2000]
+                verification.sync_failed(db, payload, message[:2000])
             elif kind == "test_connection":
                 connection = db.get(Connection, payload["connection_id"])
                 if connection:
@@ -272,7 +275,9 @@ def execute_job(job_id: str):
         )
         return
     with transaction() as db:
-        job = db.get(Job, job_id)
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if job.attempts != attempt or job.status != "running":
+            return
         job.status, job.lease_until, job.error = "done", None, None
         # Signed webhook payloads are only needed until they have been processed.
         if kind == "webhook":
@@ -294,15 +299,13 @@ def dispatch():
             else:
                 job.status, job.error = "failed", "Worker stopped repeatedly. Retry the operation manually."
                 if job.kind == "review":
-                    run = db.get(ReviewRun, job.payload["run_id"])
+                    run = db.scalar(select(ReviewRun).where(ReviewRun.id == job.payload["run_id"]).with_for_update())
                     if run and run.status in {"running", "queued"}:
-                        run.status, run.publication, run.error, run.finished_at = (
-                            "failed",
-                            "not_applicable",
-                            job.error,
-                            now(),
-                        )
-                        run.failure_reason = "worker_stopped"
+                        if not complete_saved_review(db, run, job.error):
+                            run.status, run.publication, run.error, run.finished_at = (
+                                "failed", "not_applicable", job.error, now(),
+                            )
+                            run.failure_reason = "worker_stopped"
                 elif job.kind == "sync_check":
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
@@ -313,9 +316,7 @@ def dispatch():
                         run.publication = "partially_published" if run.review_ids else "failed"
                         run.publication_error = job.error
                 elif job.kind == "resolve":
-                    finding = db.get(Finding, job.payload["finding_id"])
-                    if finding and finding.sync_version == job.payload["version"]:
-                        finding.sync_error = job.error
+                    verification.sync_failed(db, job.payload, job.error)
                 elif job.kind == "test_connection":
                     connection = db.get(Connection, job.payload["connection_id"])
                     if connection:
@@ -353,6 +354,12 @@ def schedule_reconciliation():
             select(Repository).where(Repository.active.is_(True), Repository.enabled.is_(True))
         ):
             enqueue(db, "scan_repository", {"repository_id": repo.id})
+        for finding in db.scalars(select(Finding).where(Finding.desired_status.is_not(None))):
+            if finding.sync_intent and not db.scalar(select(Job.id).where(
+                Job.kind == "resolve", Job.status.in_(["queued", "running"]),
+                Job.payload["finding_id"].as_string() == finding.id,
+            ).limit(1)) and not finding.sync_error:
+                enqueue(db, "resolve", finding.sync_intent)
         # Closed PRs also retain resolvable review threads.
         for pr in db.scalars(select(PullRequest).where(PullRequest.state != "open")):
             enqueue(
