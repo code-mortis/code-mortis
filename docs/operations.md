@@ -59,6 +59,8 @@ The repository includes `backend/tests/restore_smoke.py` for a disposable databa
 
 ## Diagnosis
 
+For OpenCode Go, select the OpenCode API provider and set the base URL to `https://opencode.ai/zen/go/v1`. Muse Spark 1.3 Contributor uses model ID `muse-spark-1.3-contributor` and the `openai-responses` protocol. Code Mortis supplies its own User-Agent and a fresh `x-opencode-session` for each OCR invocation, preserving it across tool calls. These headers are generated for the Go endpoint, not stored as static connection headers. The connection test reports bounded provider errors with stored credentials redacted. See [OpenCode Go client requirements and endpoints](https://opencode.ai/docs/go/). Contributor prompts and completions may be used for Meta model training; consider this before sending repository content.
+
 Every HTTP response has an `X-Request-ID`; callback errors display that diagnostic ID. Job logs contain job ID, kind and error class. Runs retain their IDs, pinned commits, connection, owner, initiator, engine, verified progress and publication state. Webhook delivery IDs are persisted for deduplication. Raw auth console input, OAuth codes and provider requests are not logged. Do not put secrets into model IDs, rules, background text, options or URLs.
 
 | Stage | Evidence and recovery |

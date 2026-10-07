@@ -22,6 +22,7 @@ Native clients enforce elapsed time and explicit input-context bytes. They do no
 | Check | Evidence | What it does not establish |
 | --- | --- | --- |
 | Backend | 40 pytest cases passed against isolated PostgreSQL/Redis. Ruff passed. | External GitHub or model availability. |
+| OpenCode Go correction | Reproduced HTTP 400 `MissingSessionID` using the saved connection with its already-correct Responses protocol. Added scoped client/session headers. All 17 focused OCR tests and Ruff passed, including session isolation and error redaction. The normal development worker then completed a real Muse Spark 1.3 Contributor tool-call round trip, job `c5172b3b-4008-4b85-a28b-851121322174`, and persisted successful connection status. | PR review, publication or quota/recovery behavior. The probe sent only OCR's synthetic tool test, no repository content. |
 | Browser | 24 Playwright checks passed on built frontend, desktop 1440×1000 and mobile 390×844. Document and dialog overflow checked; secret input, native OSC links, console close, recovery and member visibility exercised. | Real provider authentication; these API responses are fixtures. |
 | API contract | OpenAPI exported and TypeScript regenerated; frontend production build passed. | Runtime external protocol compatibility. |
 | Real OCR | OCR 1.12.11 completed tool-call probe and trusted-base review against a deterministic local Anthropic endpoint in a network-disabled, read-only container. Delegation preview/rule scope and checkpoint reuse passed. | Real model inference or native subscription review. |
@@ -53,7 +54,7 @@ With an unconfigured development stack running, `cd frontend && bun tests/dev-sm
 
 ## Required external acceptance, still pending
 
-The user designated **wilfredinni/noodle** for review tests and reported having some provider accounts. The available open PR observed via the read-only GitHub CLI was [#259](https://github.com/wilfredinni/noodle/pull/259). No test comment has been published in this implementation session. Available account types still need confirmation; do not paste keys into chat.
+The user designated **wilfredinni/noodle** for review tests and connected OpenCode Go with Muse Spark 1.3 Contributor. The available open PR observed via the read-only GitHub CLI was [#259](https://github.com/wilfredinni/noodle/pull/259). No test comment has been published in this implementation session. Other available account types still need confirmation; do not paste keys into chat.
 
 | Scenario | Remaining evidence |
 | --- | --- |
@@ -62,7 +63,7 @@ The user designated **wilfredinni/noodle** for review tests and reported having 
 | OAuth failures | Real cancellation, expired/replayed callback and concurrent tabs. Local deterministic cases pass. |
 | OpenAI API | Connection tool round trip, manual and automatic review, published COMMENT review URL. |
 | Claude API | Same evidence using the Anthropic protocol. |
-| OpenCode API | Same evidence with the protocol appropriate to its selected model. |
+| OpenCode API | Go/Muse Spark 1.3 Contributor completed the real connection tool round trip. Manual and automatic PR reviews and published COMMENT review URLs remain pending. |
 | Compatible endpoint | Same evidence against the user's actual compatible server. |
 | ChatGPT subscription | Complete device consent, verify reconnect/renewal, manual and explicitly consented automatic reviews on server, quota/account status, comments. |
 | Claude Code subscription | Complete native terminal login, verify reconnect/renewal, manual and explicitly consented automatic reviews on server, comments. |

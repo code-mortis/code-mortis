@@ -10,6 +10,8 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -148,13 +150,23 @@ def configuration(connection: dict, credentials: dict, review_settings: dict):
                 raise ValueError("The worker OCR directory is not clean.") from exc
             if existing.get("_code_mortis_owned") is not True:
                 raise ValueError("Refusing to overwrite an existing OCR configuration.")
+        headers = dict(credentials.get("extra_headers", {}))
+        endpoint = urlsplit(connection.get("base_url", ""))
+        if endpoint.hostname == "opencode.ai" and endpoint.path.rstrip("/") == "/zen/go/v1":
+            # One session per OCR invocation, stable across its model/tool round trips.
+            headers = {
+                key: value
+                for key, value in headers.items()
+                if key.lower() not in {"user-agent", "x-opencode-session"}
+            }
+            headers.update({"User-Agent": "code-mortis/0.1.0", "x-opencode-session": str(uuid4())})
         entry = dict(connection["options"])
         entry.update(
             {
                 "protocol": connection["protocol"],
                 "model": connection["model"],
                 "api_key": credentials.get("api_key", ""),
-                "extra_headers": credentials.get("extra_headers", {}),
+                "extra_headers": headers,
             }
         )
         if connection["protocol"] != "anthropic-bedrock":
@@ -190,12 +202,15 @@ def test_connection(connection: dict, credentials: dict) -> str:
         env = child_environment()
         check_version(Path(directory), env)
         with configuration(connection, credentials, {}):
-            code, output, _ = command(
+            code, output, errors = command(
                 [settings().ocr_binary, "llm", "test"], Path(directory), env, timeout=250
             )
         if code:
+            secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
+            detail = clean_text(errors or output, secrets).strip()
             raise ValueError(
-                "The provider did not complete OCR's tool-call test. Check credentials, protocol, and model."
+                "OCR connection test failed. "
+                + (detail[-1500:] if detail else "Check credentials, protocol, and model.")
             )
         if "✓ Tool-call round trip verified" not in output.splitlines():
             raise ValueError(
