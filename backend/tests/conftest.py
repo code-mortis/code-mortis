@@ -122,7 +122,7 @@ def github_stub(monkeypatch):
     monkeypatch.setattr(
         github, "authorize_repo", lambda *args, **kwargs: {"permissions": {"pull": True, "push": True}}
     )
-    monkeypatch.setattr(github, "installation_token", lambda *args: "installation-token")
+    monkeypatch.setattr(github, "installation_token", lambda *args, **kwargs: "installation-token")
     monkeypatch.setattr(github, "app_token", lambda *args: "app-jwt")
-    monkeypatch.setattr(github, "installation_token_from_jwt", lambda *args: "installation-token")
+    monkeypatch.setattr(github, "installation_token_from_jwt", lambda *args, **kwargs: "installation-token")
     monkeypatch.setattr(github, "threads", lambda *args: [])

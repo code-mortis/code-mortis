@@ -380,6 +380,8 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         raise HTTPException(422, "Choose an existing AI connection.")
     if body.enabled and not body.connection_id:
         raise HTTPException(422, "Choose an AI connection before enabling reviews.")
+    if body.enabled and body.settings.auto_resolve:
+        github.installation_token(db, repo.installation_id, resolve=True)
     if body.connection_id:
         selected = db.get(Connection, body.connection_id)
         if selected.kind != "api":

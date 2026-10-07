@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import now, transaction
 from .models import AppConfig, User
-from .security import seal, unseal
+from .security import clean_text, seal, unseal
 
 API = "https://api.github.com"
 
@@ -78,13 +78,19 @@ def app_token(db: Session) -> str:
     )
 
 
-def installation_token(db: Session, installation_id: int, *, checks: bool = False) -> str:
-    return installation_token_from_jwt(app_token(db), installation_id, checks=checks)
+def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
+    return installation_token_from_jwt(app_token(db), installation_id, checks=checks, resolve=resolve)
 
 
-def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False) -> str:
+def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
     """Exchange a snapshotted App JWT without keeping a database transaction open."""
     data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
+    if resolve and data.get("permissions", {}).get("contents") != "write":
+        raise GitHubError(
+            403, "GitHub requires Contents: Read and write to resolve or reopen review threads. "
+            "Update the existing GitHub App permissions and approve the installation update, "
+            "then retry synchronization. The saved verification does not need to run again."
+        )
     if checks and data.get("permissions", {}).get("checks") != "write":
         raise GitHubError(
             403, "Enable Checks: Read and write on the GitHub App and approve the installation permission update."
@@ -186,7 +192,10 @@ def login_url(db: Session, state: str, verifier: str) -> str:
 def graphql(token: str, query: str, variables: dict):
     data = request("POST", "/graphql", token, json={"query": query, "variables": variables})
     if data.get("errors"):
-        raise GitHubError(502, "GitHub could not synchronize review threads. Retry synchronization.")
+        errors = data["errors"]
+        forbidden = any(error.get("type") == "FORBIDDEN" for error in errors)
+        detail = "; ".join(str(error.get("message", error.get("type", "Unknown error"))) for error in errors)
+        raise GitHubError(403 if forbidden else 502, "GitHub GraphQL: " + clean_text(detail, (token,))[:1500])
     return data["data"]
 
 

@@ -150,7 +150,7 @@ export function RepositorySettings({
       </Field>
       <Field
         label="Automatically resolve verified fixes"
-        hint="Requires Automatic reviews. Uses the remaining review allowance to verify existing findings; uncertain findings stay open."
+        hint="Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the remaining review allowance; uncertain findings stay open."
       >
         {(id) => (
           <Switch

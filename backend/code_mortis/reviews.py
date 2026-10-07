@@ -555,7 +555,7 @@ def synchronize_finding(payload: dict):
         pr = db.get(PullRequest, finding.pr_id)
         repo = db.get(Repository, pr.repository_id)
         github.authorize_repo(db, actor, repo.full_name, write=True)
-        token = github.installation_token(db, repo.installation_id)
+        token = github.installation_token(db, repo.installation_id, resolve=True)
         desired = finding.desired_status
         github.set_thread(token, finding.thread_id, desired != "open")
         finding.status, finding.desired_status, finding.sync_error = desired, None, None

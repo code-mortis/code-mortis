@@ -112,6 +112,12 @@ def prepare(db, run, repo, token):
             head_sha=run.head_sha, finding_version=finding.sync_version, thread_snapshot=snapshot,
         ))
     run.progress = {**run.progress, "verification_prepared": True}
+    try:
+        github.installation_token(db, repo.installation_id, resolve=True)
+    except github.GitHubError as exc:
+        # Missing synchronization access must not spend the remaining AI allowance.
+        db.flush()
+        skip_pending(db, run, str(exc))
 
 
 def output_schema():
@@ -124,7 +130,11 @@ def validate_result(value, context):
     try:
         result = VerificationResult.model_validate(value, strict=True).model_dump()
     except ValidationError as exc:
-        raise ValueError("The verifier returned an invalid result.") from exc
+        problems = "; ".join(
+            f"{'.'.join(map(str, error['loc'])) or 'result'}: {error['type']}"
+            for error in exc.errors(include_input=False, include_url=False)[:8]
+        )
+        raise ValueError("The verifier returned an invalid result: " + problems) from exc
     revisions = set()
     for item in result["evidence"]:
         source = context["sources"].get(item["revision"], {}).get(item["path"])
@@ -273,6 +283,33 @@ def evidence_bundle(context):
     return "\n\n".join(parts)
 
 
+def verification_tools():
+    # OCR's default tools describe only newly discovered defects. Override that contract for
+    # this internal result envelope and remove context tools: all permitted evidence is supplied.
+    properties = {key: {"type": "string", "enum": [value]} for key, value in {
+        "path": "evidence.py", "existing_code": "# Code Mortis verification evidence",
+        "category": "other", "severity": "low", "suggestion_code": "",
+    }.items()}
+    properties["content"] = {
+        "type": "string", "description": "Exactly one JSON object, no Markdown, matching: " + json.dumps(output_schema())
+    }
+    return [
+        {"name": "code_comment", "main_task": True, "definition": {
+            "name": "code_comment", "description": INSTRUCTIONS +
+            " Submit exactly one verification result using this tool even when fixed or uncertain. "
+            "This is an internal result transport, not a new review comment. Do not report other issues.",
+            "parameters": {"type": "object", "properties": {"comments": {
+                "type": "array", "minItems": 1, "maxItems": 1,
+                "items": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
+            }}, "required": ["comments"], "additionalProperties": False},
+        }},
+        {"name": "task_done", "main_task": True, "definition": {
+            "name": "task_done", "description": "Finish only after submitting the single explicit verification result through code_comment.",
+            "parameters": {"type": "object", "properties": {"state": {"type": "string", "enum": ["DONE", "FAILED"]}}, "required": ["state"]},
+        }},
+    ]
+
+
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped):
     if token_budget <= 0 or timeout <= 0:
         raise ValueError("No verification allowance remains.")
@@ -288,8 +325,10 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
             "a JSON object matching this schema, including fixed and uncertain outcomes: "
         ) + json.dumps(output_schema())}))
+        tools = root / "tools.json"
+        tools.write_text(json.dumps(verification_tools()))
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
-                "--format", "json", "--audience", "agent", "--rule", str(rule), "--concurrency", "1",
+                "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
                 "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget)]
         try:
             code, preview, _ = ocr.command([*args, "--preview"], root, env, timeout=timeout, stopped=stopped)
@@ -304,20 +343,32 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
             code, output, _ = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
-        data = json.loads(output)
+        try:
+            data = json.loads(output)
+            if not isinstance(data, dict):
+                raise ValueError("Expected an OCR result object.")
+        except ValueError as exc:
+            raise ValueError("OCR returned invalid JSON; token consumption is unknown.") from exc
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens")
         if type(usage) is not int or usage < 0:
             raise ValueError("Verification usage could not be established.")
         comments = data.get("comments", [])
         if (code or data.get("status") != "success" or summary.get("budget_exceeded")
-            or summary.get("files_reviewed") != 1 or data.get("warnings") or len(comments) != 1
-            or comments[0].get("path") != "evidence.py"):
-            raise VerificationOutputError("OCR did not complete explicit finding verification.", {"tokens": usage})
+            or summary.get("files_reviewed") != 1 or data.get("warnings") or not isinstance(comments, list)
+            or len(comments) != 1 or not isinstance(comments[0], dict) or comments[0].get("path") != "evidence.py"):
+            detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
+                                 "warnings": data.get("warnings"), "comments": comments})[:4000]
+            raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
         try:
-            return json.loads(comments[0]["content"]), {"tokens": usage}
+            raw = json.loads(comments[0]["content"])
+            validate_result(raw, context)
+            return raw, {"tokens": usage}
         except (ValueError, KeyError, TypeError) as exc:
-            raise VerificationOutputError("OCR returned an invalid verification verdict.", {"tokens": usage}) from exc
+            raise VerificationOutputError(
+                "OCR returned an invalid verification verdict: " + str(exc) +
+                "; response=" + str(comments[0].get("content"))[:2000], {"tokens": usage}
+            ) from exc
 
 
 def record_summary(db, run):
@@ -479,6 +530,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ocr.ReviewStopped)) else "Verification could not establish a safe result: " + (
                 str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError} else "Invalid structured provider output."
             )
+            error = clean_text(error, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:10000]
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             row = db.get(FindingVerification, identity)
@@ -654,7 +706,7 @@ def synchronize(payload):
 
     # Evidence and the fenced attempt are durable before network I/O. Never hold finding locks
     # while waiting for GitHub; revalidate local changes after these reads, before the write.
-    token = github.installation_token_from_jwt(app_jwt, installation_id)
+    token = github.installation_token_from_jwt(app_jwt, installation_id, resolve=True)
     authorized = repository_authorized(owner, full_name)
     current = github.request("GET", f"/repos/{full_name}/pulls/{number}", token)
     threads = github.threads(token, full_name, number)
@@ -767,7 +819,7 @@ def restore_reopening(payload):
         attempt = uid()
         row.sync_attempt = {"id": attempt, "expires": now().timestamp() + 7200, "reopening": True}
     try:
-        token = github.installation_token_from_jwt(app_jwt, installation_id)
+        token = github.installation_token_from_jwt(app_jwt, installation_id, resolve=True)
         threads = github.threads(token, full_name, number)
         with transaction() as db:
             finding = db.scalar(select(Finding).where(Finding.id == payload["finding_id"]).with_for_update())

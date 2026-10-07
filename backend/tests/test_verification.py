@@ -843,7 +843,7 @@ def test_github_sync_and_compensation_release_database_connections(scenario, mon
     def threads(*args):
         assert engine().pool.checkedout() == 0
         return old_threads(*args)
-    def token(*args):
+    def token(*args, **kwargs):
         assert engine().pool.checkedout() == 0
         return "installation-token"
     def mutation(*args):
@@ -912,3 +912,77 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
         verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
     assert caught.value.usage == {"tokens": 0}
     assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
+
+
+def test_missing_resolution_permission_skips_analysis_but_preserves_review(scenario, monkeypatch):
+    def token(*args, **kwargs):
+        if kwargs.get("resolve"):
+            raise github.GitHubError(403, "Contents: Read and write is required")
+        return "installation-token"
+    monkeypatch.setattr(github, "installation_token", token)
+    row, finding, run = perform(scenario)
+    assert scenario["calls"] == ["review"]
+    assert row.status == "skipped" and row.verdict == "uncertain" and not row.usage
+    assert "Contents" in row.error and finding.status == "open" and run.status == "completed"
+
+
+def test_resolution_permission_is_explicit_and_graphql_keeps_rejection(monkeypatch):
+    monkeypatch.setattr(github, "request", lambda *a, **k: {
+        "token": "test-token", "permissions": {"contents": "read", "pull_requests": "write"},
+    })
+    assert github.installation_token_from_jwt("jwt", 1) == "test-token"
+    with pytest.raises(github.GitHubError, match="Contents: Read and write") as caught:
+        github.installation_token_from_jwt("jwt", 1, resolve=True)
+    assert caught.value.status == 403
+    monkeypatch.setattr(github, "request", lambda *a, **k: {
+        "errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}],
+    })
+    with pytest.raises(github.GitHubError, match="Resource not accessible by integration") as caught:
+        github.set_thread("token", "thread", True)
+    assert caught.value.status == 403
+
+
+def test_verifier_diagnostics_are_actionable_and_redacted(scenario, monkeypatch):
+    raw = {**RESULT, "original_issue_present": "true"}
+    with pytest.raises(ValueError, match="original_issue_present: bool_type"):
+        verification.validate_result(raw, CONTEXT)
+    def fail(*args):
+        raise verification.VerificationOutputError("Invalid response: provider-secret", {"tokens": 17})
+    monkeypatch.setattr(verification, "api_verify", fail)
+    row, finding, _ = perform(scenario)
+    assert "provider-secret" not in row.error and "[redacted]" in row.error
+    assert row.usage == {"tokens": 17} and finding.status == "open"
+
+
+def test_enabling_resolution_requires_installed_permission(seed, client, github_stub, monkeypatch):
+    def token(*args, **kwargs):
+        assert kwargs["resolve"] is True
+        raise github.GitHubError(403, "Contents: Read and write is required")
+    monkeypatch.setattr(github, "installation_token", token)
+    response = client.put("/api/v1/repositories/22", json={
+        "enabled": True, "connection_id": "connection", "settings": {"automatic": True, "auto_resolve": True},
+    })
+    assert response.status_code == 403 and "Contents" in response.json()["detail"]
+    with transaction() as db:
+        assert not db.get(Repository, 22).settings.get("auto_resolve")
+
+
+def test_permission_revocation_keeps_saved_verdict_retryable(scenario, monkeypatch):
+    row, finding, _ = perform(scenario)
+    intent = finding.sync_intent
+    def denied(*args, **kwargs):
+        assert kwargs["resolve"] is True
+        raise github.GitHubError(403, "Contents: Read and write is required")
+    monkeypatch.setattr(github, "installation_token_from_jwt", denied)
+    with pytest.raises(github.GitHubError) as caught:
+        reviews.synchronize_finding(intent)
+    with transaction() as db:
+        verification.sync_failed(db, intent, str(caught.value))
+    failed, finding, _ = saved()
+    assert finding.status == "open" and failed.resolution == "failed" and "Contents" in finding.sync_error
+    assert failed.result == row.result and failed.usage == row.usage and not scenario["mutations"]
+    monkeypatch.setattr(github, "installation_token_from_jwt", lambda *a, **k: "installation-token")
+    reviews.synchronize_finding(intent)
+    reviews.synchronize_finding(intent)
+    assert saved()[1].status == "resolved" and scenario["mutations"] == [True]
+    assert scenario["calls"] == ["review", "verify"]

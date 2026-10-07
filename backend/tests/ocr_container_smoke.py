@@ -41,6 +41,8 @@ class Provider(BaseHTTPRequestHandler):
         elif "Code Mortis verification evidence" in text and "code_comment" in names and not any(
             message.get("role") == "assistant" for message in data["messages"]
         ):
+            assert names == {"code_comment", "task_done"}, names
+            assert "internal result transport" in text
             value = {
                 "verdict": "fixed", "original_issue_present": True,
                 "explanation": "The supplied retry loop is now bounded.",
