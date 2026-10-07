@@ -21,6 +21,7 @@ os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 from code_mortis import ocr, verification
 
 calls = []
+verification_mode = "fixed"
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -43,6 +44,14 @@ class Provider(BaseHTTPRequestHandler):
         ):
             assert names == {"code_comment", "task_done"}, names
             assert "internal result transport" in text
+            if verification_mode == "provider_error":
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"type": "error", "error": {
+                    "type": "authentication_error", "message": "Smoke provider rejected fake-test-key",
+                }}).encode())
+                return
             value = {
                 "verdict": "fixed", "original_issue_present": True,
                 "explanation": "The supplied retry loop is now bounded.",
@@ -57,6 +66,8 @@ class Provider(BaseHTTPRequestHandler):
                 "path": "evidence.py", "content": json.dumps(value), "category": "other", "severity": "low",
                 "existing_code": "# Code Mortis verification evidence", "suggestion_code": "",
             }]}}]
+            if verification_mode == "no_verdict":
+                content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
         elif "task_done" in names:
             content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
         elif "file grouping assistant" in text:
@@ -79,6 +90,7 @@ class Provider(BaseHTTPRequestHandler):
 
 
 def main():
+    global verification_mode
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     connection = {
@@ -227,9 +239,26 @@ def main():
                 ocr.command = original_command
             assert verification.validate_result(raw, context)["verdict"] == "fixed"
             assert usage["tokens"] > 0
+            for verification_mode in ("no_verdict", "provider_error"):
+                try:
+                    verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context,
+                                            options["token_budget"], 60, lambda: False)
+                except ValueError as exc:
+                    detail = str(exc)
+                    assert "fake-test-key" not in detail, detail
+                    if verification_mode == "no_verdict":
+                        assert "did not complete explicit finding verification" in detail, detail
+                        assert exc.usage["tokens"] > 0
+                    else:
+                        assert '"exit_code": 1' in detail and "Smoke provider rejected" in detail, detail
+                        assert "[redacted]" in detail and "token consumption is unknown" in detail, detail
+                        assert not hasattr(exc, "usage")
+                else:
+                    raise AssertionError(f"{verification_mode} was accepted as a verification")
         assert not (Path.home() / ".opencodereview/config.json").exists()
+        assert not (Path.home() / ".opencodereview/sessions").exists()
         print(
-            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, explicit fix verification, exclusion filtering, and cleanup passed."
+            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, explicit fix verification, failure diagnostics, exclusion filtering, and cleanup passed."
         )
     finally:
         server.shutdown()

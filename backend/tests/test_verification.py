@@ -550,6 +550,51 @@ def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, ba
         assert caught.value.usage == {"tokens": 10}
 
 
+@pytest.mark.parametrize("session", ["valid", "unavailable", "wrong_repo"])
+def test_api_process_failure_preserves_redacted_diagnostics(tmp_path, monkeypatch, session):
+    from contextlib import contextmanager
+
+    session_id = "00000000-0000-4000-8000-000000000001"
+    api_secret, header_secret = 'provider-"secret', "header-\nsecret"
+    active, calls = [], []
+    @contextmanager
+    def configuration(*args):
+        active.append(True)
+        try:
+            yield
+        finally:
+            active.clear()
+    monkeypatch.setattr(ocr, "configuration", configuration)
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    def command(args, root, *a, **k):
+        calls.append(args)
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        if "scan" in args:
+            return 1, "", f"[ocr] Session: {session_id} (retry with: --resume {session_id})\nError: scan failed: {api_secret}"
+        assert active, "Session diagnostics must be read before configuration cleanup"
+        assert args[1:] == ["session", "show", "--repo", str(root), "--json", session_id]
+        if session == "unavailable":
+            raise ValueError("Session was unavailable")
+        return 0, json.dumps({
+            "summary": {"session_id": session_id, "repo_dir": str(root) if session == "valid" else "/another/repo"},
+            "items": [{"file_path": "evidence.py", "error": f"Provider rejected context: {header_secret} " + "x" * 5000}],
+        }), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(ValueError) as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {
+            "api_key": api_secret, "extra_headers": {"X-Key": header_secret},
+        }, CONTEXT, 10000, 30, lambda: False)
+    detail = str(caught.value)
+    assert "exit_code" in detail and '"exit_code": 1' in detail
+    assert "token consumption is unknown" in detail and "[redacted]" in detail
+    assert "OCR verification process failed" in detail
+    assert json.dumps(api_secret)[1:-1] not in detail and json.dumps(header_secret)[1:-1] not in detail
+    assert ("Provider rejected context" in detail) == (session == "valid")
+    assert len(detail) < 5000 and not hasattr(caught.value, "usage")
+    assert sum("scan" in args and "--preview" not in args for args in calls) == 1
+
+
 def test_multiple_run_jobs_do_not_start_two_analyses(scenario, monkeypatch):
     with transaction() as db:
         first = db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == scenario["run"]))
