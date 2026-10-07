@@ -194,7 +194,7 @@ def manifest(body: ManifestInput, request: Request, response: Response, db: DB) 
             "setup_url": origin + "/api/v1/installations/callback",
             "public": True,
             "request_oauth_on_install": False,
-            "default_permissions": {"contents": "read", "pull_requests": "write", "metadata": "read", "checks": "write"},
+            "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write"},
             "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment", "check_run"],
         },
     }
