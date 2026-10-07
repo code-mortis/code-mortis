@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "check": "tsc -b",
     "test": "playwright test",
-    "api:types": "openapi-typescript ../docs/openapi.json -o src/api.generated.ts"
+    "api:types": "openapi-typescript node_modules/.cache/code-mortis-openapi.json -o src/api.generated.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.0",

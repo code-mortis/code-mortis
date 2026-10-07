@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import now, transaction
 from .models import AppConfig, User
-from .security import seal, unseal
+from .security import clean_text, seal, unseal
 
 API = "https://api.github.com"
 
@@ -78,8 +78,19 @@ def app_token(db: Session) -> str:
     )
 
 
-def installation_token(db: Session, installation_id: int, *, checks: bool = False) -> str:
-    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db))
+def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
+    return installation_token_from_jwt(app_token(db), installation_id, checks=checks, resolve=resolve)
+
+
+def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
+    """Exchange a snapshotted App JWT without keeping a database transaction open."""
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
+    if resolve and data.get("permissions", {}).get("contents") != "write":
+        raise GitHubError(
+            403, "GitHub requires Contents: Read and write to resolve or reopen review threads. "
+            "Update the existing GitHub App permissions and approve the installation update, "
+            "then retry synchronization. The saved verification does not need to run again."
+        )
     if checks and data.get("permissions", {}).get("checks") != "write":
         raise GitHubError(
             403, "Enable Checks: Read and write on the GitHub App and approve the installation permission update."
@@ -181,7 +192,10 @@ def login_url(db: Session, state: str, verifier: str) -> str:
 def graphql(token: str, query: str, variables: dict):
     data = request("POST", "/graphql", token, json={"query": query, "variables": variables})
     if data.get("errors"):
-        raise GitHubError(502, "GitHub could not synchronize review threads. Retry synchronization.")
+        errors = data["errors"]
+        forbidden = any(error.get("type") == "FORBIDDEN" for error in errors)
+        detail = "; ".join(str(error.get("message", error.get("type", "Unknown error"))) for error in errors)
+        raise GitHubError(403 if forbidden else 502, "GitHub GraphQL: " + clean_text(detail, (token,))[:1500])
     return data["data"]
 
 
@@ -190,8 +204,9 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     query = """query($owner:String!,$repo:String!,$number:Int!,$after:String) {
       repository(owner:$owner,name:$repo) { pullRequest(number:$number) {
         reviewThreads(first:100,after:$after) { pageInfo { hasNextPage endCursor }
-          nodes { id isResolved resolvedBy { login }
-            comments(first:1) { nodes { databaseId body url author { login } } }
+          nodes { id isResolved isOutdated resolvedBy { login databaseId }
+            comments(first:100) { pageInfo { hasNextPage }
+              nodes { databaseId body url updatedAt author { __typename login ... on Bot { databaseId } } } }
           }
         }
       } }
@@ -200,6 +215,15 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     for _ in range(100):
         data = graphql(token, query, {"owner": owner, "repo": repo, "number": number, "after": cursor})
         connection = data["repository"]["pullRequest"]["reviewThreads"]
+        for thread in connection["nodes"]:
+            for comment in thread.get("comments", {}).get("nodes", []):
+                author = comment.get("author") or {}
+                if author.get("__typename") == "Bot":
+                    # GraphQL omits the suffix REST/webhooks use for the same bot account.
+                    author["login"] = author["login"].removesuffix("[bot]") + "[bot]"
+                    resolver = thread.get("resolvedBy") or {}
+                    if author.get("databaseId") and resolver.get("databaseId") == author["databaseId"]:
+                        resolver["login"] = author["login"]
         result.extend(connection["nodes"])
         if not connection["pageInfo"]["hasNextPage"]:
             return result

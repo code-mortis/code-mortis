@@ -191,6 +191,7 @@ class Finding(Base):
     desired_status: Mapped[str | None] = mapped_column(String(20))
     sync_error: Mapped[str | None] = mapped_column(Text)
     sync_version: Mapped[int] = mapped_column(Integer, default=0)
+    sync_intent: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     path: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     severity: Mapped[str] = mapped_column(String(20), default="medium")
@@ -226,6 +227,29 @@ class Activity(Base):
     source: Mapped[str] = mapped_column(String(20))
     reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FindingVerification(Base):
+    __tablename__ = "finding_verifications"
+    __table_args__ = (UniqueConstraint("finding_id", "head_sha"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id"), index=True)
+    occurrence_id: Mapped[str] = mapped_column(ForeignKey("occurrences.id"))
+    head_sha: Mapped[str] = mapped_column(String(40))
+    finding_version: Mapped[int] = mapped_column(Integer)
+    thread_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    verdict: Mapped[str | None] = mapped_column(String(20))
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    resolution: Mapped[str] = mapped_column(String(20), default="not_applicable")
+    sync_attempt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WebhookDelivery(Base):

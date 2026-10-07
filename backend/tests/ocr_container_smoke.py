@@ -18,7 +18,7 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import ocr
+from code_mortis import ocr, verification
 
 calls = []
 
@@ -38,6 +38,25 @@ class Provider(BaseHTTPRequestHandler):
             content = [
                 {"type": "tool_use", "id": "selftest", "name": "ocr_selftest", "input": {"note": "test"}}
             ]
+        elif "Code Mortis verification evidence" in text and "code_comment" in names and not any(
+            message.get("role") == "assistant" for message in data["messages"]
+        ):
+            assert names == {"code_comment", "task_done"}, names
+            assert "internal result transport" in text
+            value = {
+                "verdict": "fixed", "original_issue_present": True,
+                "explanation": "The supplied retry loop is now bounded.",
+                "change_explanation": "The infinite loop was replaced with three attempts.",
+                "dismissal_recommended": False,
+                "evidence": [
+                    {"revision": "original", "path": "main.py", "start_line": 1, "end_line": 1, "quote": "while True: retry()"},
+                    {"revision": "current", "path": "main.py", "start_line": 1, "end_line": 1, "quote": "for attempt in range(3): retry()"},
+                ],
+            }
+            content = [{"type": "tool_use", "id": "verify", "name": "code_comment", "input": {"comments": [{
+                "path": "evidence.py", "content": json.dumps(value), "category": "other", "severity": "low",
+                "existing_code": "# Code Mortis verification evidence", "suggestion_code": "",
+            }]}}]
         elif "task_done" in names:
             content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
         elif "file grouping assistant" in text:
@@ -171,9 +190,46 @@ def main():
                 )
             finally:
                 runner_client.review = original
+            options = RepoSettings().model_dump()
+            for sources in ({"main.py": "count = 1\n"}, {"nested/main.py": "count = 2\n"}):
+                assert verification.filter_context(root, env, sources, options, lambda: False) == set(sources)
+            options["exclusions"] = "**/private.py"
+            assert not verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
+            # Reproduce the real PR: an excluded test changes alongside a fix in source.
+            options["exclusions"] = ""
+            (root / "main.py").write_text("while True: retry()\n")
+            git("add", ".")
+            git("commit", "-m", "original finding")
+            original_sha = git("rev-parse", "HEAD")
+            (root / "main.py").write_text("for attempt in range(3): retry()\n")
+            (root / "tests").mkdir()
+            (root / "tests/test_retry.py").write_text("assert True # excluded fixture\n")
+            git("add", ".")
+            git("commit", "-m", "fix with regression test")
+            actual_context = verification.build_context(root, env, env, {"path": "main.py"}, original_sha,
+                                                        git("rev-parse", "HEAD"), options, lambda: False)
+            assert actual_context["excluded_paths"] == ["tests/test_retry.py"]
+            assert "excluded fixture" not in json.dumps(actual_context)
+            context = actual_context
+            scan_output = []
+            original_command = ocr.command
+            def capture(*args, **kwargs):
+                result = original_command(*args, **kwargs)
+                if "scan" in args[0]:
+                    scan_output.append(result)
+                return result
+            ocr.command = capture
+            try:
+                raw, usage = verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context, options["token_budget"], 60, lambda: False)
+            except ValueError as exc:
+                raise AssertionError(str(scan_output)) from exc
+            finally:
+                ocr.command = original_command
+            assert verification.validate_result(raw, context)["verdict"] == "fixed"
+            assert usage["tokens"] > 0
         assert not (Path.home() / ".opencodereview/config.json").exists()
         print(
-            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, and cleanup passed."
+            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, explicit fix verification, exclusion filtering, and cleanup passed."
         )
     finally:
         server.shutdown()

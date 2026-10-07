@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
-import type { Run } from "../src/api";
+import type { Run, Schema } from "../src/api";
 
 const at = "2026-10-05T13:20:00Z";
 const repo = {
@@ -135,9 +135,11 @@ async function mock(
     personal?: boolean;
     claude?: boolean;
     run?: Partial<Run>;
+    finding?: Partial<Schema["FindingOut"]>;
+    verifications?: Schema["VerificationOut"][];
   } = {},
 ) {
-  const current = structuredClone(finding);
+  const current: Schema["FindingOut"] = { ...structuredClone(finding), sync_intent: null, ...options.finding };
   const requests: {
     path: string;
     method: string;
@@ -213,6 +215,7 @@ async function mock(
           ? current
           : {
               finding: current,
+              verifications: options.verifications ?? [],
               activities: [
                 {
                   id: "event",
@@ -224,6 +227,9 @@ async function mock(
                 },
               ],
             };
+    } else if (path === "/findings/finding/sync") {
+      current.sync_error = null;
+      data = { job_id: "sync-job" };
     } else if (path === "/runs/run")
       data = {
         run: { ...run, ...options.run },
@@ -614,3 +620,89 @@ test("OAuth errors remain recoverable inside the app", async ({ page }) => {
     page.getByRole("link", { name: "Continue with GitHub" }),
   ).toHaveAttribute("href", "/api/v1/auth/login");
 });
+
+test("verified fixes show evidence, pending sync, retry and manual override", async ({ page }, info) => {
+  const requests = await mock(page, {
+    finding: {
+      desired_status: "resolved", sync_error: "GitHub unavailable",
+      sync_intent: { verification_id: "verification", finding_id: "finding", version: 0 },
+    },
+    verifications: [{
+      id: "verification", run_id: "run", head_sha: "c".repeat(40), status: "completed", verdict: "fixed",
+      resolution: "failed", error: "GitHub unavailable", created_at: at, finished_at: at,
+      result: {
+        verdict: "fixed", original_issue_present: true, dismissal_recommended: false,
+        explanation: "The retry loop now stops after three attempts.",
+        change_explanation: "A bounded loop replaces the unbounded retry.",
+        evidence: [{ revision: "current", path: "src/retry.ts", start_line: 1, end_line: 1, quote: "for (let attempt = 0; attempt < 3; attempt++) {" }],
+      },
+    }],
+  });
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await expect(page.getByText("The retry loop now stops after three attempts.")).toBeVisible();
+  await expect(page.getByText("Automatic resolution: failed")).toBeVisible();
+  await page.getByText("Current evidence: src/retry.ts:1–1").click();
+  await expect(page.getByText("for (let attempt = 0; attempt < 3; attempt++) {", { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/verification-${info.project.name}.png`, fullPage: false });
+  await page.getByRole("button", { name: "Retry sync", exact: true }).click();
+  expect(requests.at(-1)).toMatchObject({ path: "/findings/finding/sync", method: "POST" });
+  await page.getByRole("button", { name: "Keep finding open", exact: true }).click();
+  expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "open" } });
+});
+
+test("run shows verification separately from confirmed resolutions", async ({ page }) => {
+  await mock(page, { run: { progress: { verification: {
+    selected: 3, completed: 3, fixed: 1, still_present: 1, uncertain: 1, resolved: 0, pending: 1,
+  } } } });
+  await page.goto("/runs/run");
+  await expect(page.getByText("3 of 3 findings verified. 0 automatically resolved, 1 pending synchronization.")).toBeVisible();
+  await noOverflow(page);
+});
+
+
+test("automatic resolution is opt-in and requires automatic reviews", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const automatic = page.getByRole("switch", { name: "Automatic reviews", exact: true });
+  const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
+  await expect(resolution).not.toBeChecked();
+  await automatic.uncheck();
+  await expect(resolution).toBeDisabled();
+  await automatic.check();
+  await resolution.check();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/auto-resolution-setting-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save configuration" }).click();
+  await expect.poll(() => requests.some((request) => request.path === "/repositories/22" &&
+    (request.body as { settings?: { auto_resolve?: boolean } }).settings?.auto_resolve === true)).toBe(true);
+});
+
+
+test("pending verification has one status and failed verification has an alert", async ({ page }) => {
+  await mock(page, { verifications: [
+    { id: "pending", run_id: "run", head_sha: "c".repeat(40), status: "queued", verdict: null,
+      resolution: "not_applicable", error: null, result: null, created_at: at, finished_at: null },
+    { id: "failed", run_id: "run", head_sha: "d".repeat(40), status: "failed", verdict: "uncertain",
+      resolution: "not_applicable", error: "Verification context is unavailable", result: null,
+      created_at: at, finished_at: at },
+  ] });
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const panel = page.getByRole("dialog");
+  await expect(panel.getByText("queued", { exact: true })).toHaveCount(1);
+  await expect(panel.getByRole("alert")).toContainText("Verification context is unavailable");
+  await expect(panel.getByText("Automatic resolution: not applicable")).toHaveCount(2);
+  await noOverflow(page);
+});
+
+for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { selected: 3, pending: -1 }]) {
+  test(`invalid verification counts are not presented: ${JSON.stringify(verification)}`, async ({ page }) => {
+    await mock(page, { run: { progress: { verification } } });
+    await page.goto("/runs/run");
+    await expect(page.getByText("Review run", { exact: true })).toBeVisible();
+    await expect(page.getByText(/findings verified/)).toHaveCount(0);
+  });
+}

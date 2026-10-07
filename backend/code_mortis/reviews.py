@@ -4,7 +4,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import github, ocr, runner_client
+from . import github, ocr, runner_client, verification
 from .checks import queue_check_changes as queue_check_changes
 from .config import settings
 from .db import now, transaction, uid
@@ -13,6 +13,7 @@ from .models import (
     Connection,
     ConnectionGrant,
     Finding,
+    FindingVerification,
     Installation,
     Job,
     Membership,
@@ -72,9 +73,16 @@ def create_run(
         config["connection"]["model"] = options["model"]
     key = digest(json.dumps([pr.id, pr.base_sha, pr.head_sha, config], sort_keys=True))
     if trigger == "automatic":
-        prior = db.scalar(select(ReviewRun).where(ReviewRun.dedup_key == key))
-        if prior:
-            return prior
+        # Defaults added during upgrades and resolution-only toggles do not change review scope.
+        analysis_settings = {name: value for name, value in options.items() if name != "auto_resolve"}
+        for prior in db.scalars(select(ReviewRun).where(
+            ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha, ReviewRun.head_sha == pr.head_sha,
+            ReviewRun.trigger == "automatic",
+        ).order_by(ReviewRun.created_at)):
+            prior_settings = RepoSettings.model_validate(prior.config["settings"]).model_dump()
+            prior_settings.pop("auto_resolve")
+            if prior.config["connection"] == config["connection"] and prior_settings == analysis_settings:
+                return prior
     active = db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))).all()
     for run in active:
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and run.config == config:
@@ -103,7 +111,7 @@ def create_run(
     return run
 
 
-def authorize_connection(db, connection, repo, trigger, actor=None):
+def authorize_connection(db, connection, repo, trigger, actor=None, *, check_repository=True):
     if connection.kind == "api":
         return
     owner = db.get(User, connection.owner_id)
@@ -118,7 +126,8 @@ def authorize_connection(db, connection, repo, trigger, actor=None):
             raise ValueError(
                 "The subscription owner has not authorized automatic reviews for this repository."
             )
-    github.authorize_repo(db, owner, repo.full_name, write=True)
+    if check_repository:
+        github.authorize_repo(db, owner, repo.full_name, write=True)
 
 
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
@@ -141,18 +150,23 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
         if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":
             run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
             run.finished_at = now()
+            verification.skip_pending(db, run, "A newer PR revision superseded this verification.")
     return pr
 
 
-def review_stopped(run_id: str) -> bool:
+def review_stopped(run_id: str, claim: str | None = None) -> bool:
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
+            return True
+        if claim and run.progress.get("execution") != claim:
             return True
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             run.cancel_requested = True
+            return True
+        if pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open":
             return True
         if run.owner_id:
             owner = db.get(User, run.owner_id)
@@ -161,11 +175,18 @@ def review_stopped(run_id: str) -> bool:
         return False
 
 
-def perform_review(run_id: str):
+def perform_review(run_id: str, claim: str | None = None):
+    claim = claim or uid()
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.status not in ACTIVE or run.cancel_requested:
             return
+        prior_claim = run.progress.get("execution", "")
+        if prior_claim and prior_claim != claim and ":" in prior_claim:
+            job_id, attempt = prior_claim.rsplit(":", 1)
+            prior_job = db.get(Job, job_id)
+            if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
+                return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         installation = db.get(Installation, repo.installation_id)
@@ -184,6 +205,7 @@ def perform_review(run_id: str):
             or current["state"] != "open"
         ):
             run.status, run.publication, run.finished_at = "superseded", "not_applicable", now()
+            verification.skip_pending(db, run, "The PR changed before verification could resume.")
             return
         connection = db.get(Connection, run.config["connection"]["id"])
         if not connection:
@@ -215,9 +237,28 @@ def perform_review(run_id: str):
             if connection.auth_status != "connected":
                 raise runner_client.RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
-        run.status, run.started_at, run.error, run.blocked_reason = "running", now(), None, None
+        verification.prepare(db, run, repo, token)
+        run.progress = {**run.progress, "execution": claim}
+        run.status, run.started_at, run.error, run.blocked_reason = "running", run.started_at or now(), None, None
         run.failure_reason = None
         checkpoint = run.progress
+        saved_review = None
+        if run.progress.get("analysis_saved"):
+            saved_review = (run.progress["analysis_status"], run.report, [])
+        if connection.kind == "api" and not saved_review and run.progress.get("analysis_started"):
+            # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
+            run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
+            run.failure_reason, run.error = "worker_stopped", "Review interrupted before usage was saved; consumption is unknown."
+            verification.skip_pending(db, run, run.error)
+            return
+        remaining = int(run.config["settings"]["timeout_seconds"] - (now() - run.started_at).total_seconds())
+        if remaining <= 0:
+            verification.skip_pending(db, run, "The run's original time allowance expired.")
+            if not complete_saved_review(db, run):
+                run.status, run.finished_at = "failed", now()
+                run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The run's time allowance expired."
+            return
+        run.progress = {**run.progress, "analysis_started": True}
         args = (
             repo.full_name,
             pr.number,
@@ -225,42 +266,77 @@ def perform_review(run_id: str):
             run.head_sha,
             run.config["connection"],
             credentials,
-            run.config["settings"],
+            {**run.config["settings"], "timeout_seconds": remaining},
             token,
         )
     try:
 
         def progress(value):
             with transaction() as db:
-                current = db.get(ReviewRun, run_id)
-                if current and not current.cancel_requested:
-                    current.progress = value
+                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                if current and not current.cancel_requested and current.progress.get("execution") == claim:
+                    current.progress = {**current.progress, **value}
+
+        def after_review(result, repo_path, env, fetch_env):
+            save_analysis(run_id, claim, *result)
+            verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
 
         status, report, comments = ocr.review(
             *args,
-            stopped=lambda: review_stopped(run_id),
+            stopped=lambda: review_stopped(run_id, claim),
             run_id=run_id,
             progress=progress,
             checkpoint=checkpoint,
+            saved_review=saved_review,
+            after_review=after_review,
         )
     except ocr.ReviewStopped:
         with transaction() as db:
-            run = db.get(ReviewRun, run_id)
+            run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+            if run.progress.get("execution") != claim:
+                return
             if run.status != "superseded":
                 run.status = "cancelled" if run.cancel_requested else "superseded"
             run.publication, run.finished_at = "not_applicable", now()
+            verification.skip_pending(db, run, "Verification was cancelled or superseded.")
         return
+    save_analysis(run_id, claim, status, report, comments)
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if run.cancel_requested or run.status in {"cancelled", "superseded"}:
+        if run.progress.get("execution") != claim or run.cancel_requested or run.status in {"cancelled", "superseded"}:
             return
-        run.status, run.report, run.finished_at = status, report, now()
+        run.status, run.finished_at = status, now()
+        complete_saved_review(db, run)
+
+
+def complete_saved_review(db, run, interruption=None):
+    """A failed verification phase must not discard completed new-finding analysis."""
+    status = run.progress.get("analysis_status")
+    if not run.progress.get("analysis_saved") or status not in {"completed", "partial"} or run.cancel_requested:
+        return False
+    if interruption:
+        verification.skip_pending(db, run, interruption)
+    run.status, run.finished_at = status, now()
+    enqueue(db, "publish", {"run_id": run.id})
+    for finding in db.scalars(select(Finding).join(FindingVerification).where(
+        FindingVerification.run_id == run.id, FindingVerification.resolution == "pending"
+    )):
+        if finding.desired_status == "resolved" and finding.sync_intent:
+            enqueue(db, "resolve", finding.sync_intent)
+    return True
+
+
+def save_analysis(run_id, claim, status, report, comments):
+    with transaction() as db:
+        run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+        if run.progress.get("execution") != claim or run.cancel_requested or run.progress.get("analysis_saved"):
+            return
+        run.report = report
+        run.progress = {**run.progress, "analysis_saved": True, "analysis_status": status}
         if status in {"failed", "skipped"}:
             run.publication = "not_applicable"
             if status == "failed":
-                run.error = (
-                    "OCR did not complete the selected review scope. Inspect coverage and retry the review."
-                )
+                run.error = "OCR did not complete the selected review scope. Inspect coverage and retry the review."
         seen = set()
         for comment in comments:
             key = ocr.fingerprint(comment)
@@ -297,8 +373,6 @@ def perform_review(run_id: str):
                     inline_line=comment.get("inline_line"),
                 )
             )
-        if status in {"completed", "partial"}:
-            enqueue(db, "publish", {"run_id": run.id})
 
 
 def marker(kind: str, identity: str) -> str:
@@ -317,8 +391,11 @@ def comment_body(finding_id: str, snapshot: dict) -> str:
 
 def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str):
     bot = github.app_config(db).github_slug + "[bot]"
-    by_id = {finding.id: finding for finding in db.scalars(select(Finding).where(Finding.pr_id == pr.id))}
-    for thread in github.threads(token, repo.full_name, pr.number):
+    threads = github.threads(token, repo.full_name, pr.number)
+    by_id = {finding.id: finding for finding in db.scalars(
+        select(Finding).where(Finding.pr_id == pr.id).with_for_update().execution_options(populate_existing=True)
+    )}
+    for thread in threads:
         comments = thread.get("comments", {}).get("nodes", [])
         if not comments:
             continue
@@ -336,10 +413,13 @@ def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str
         )
         if finding.desired_status:
             continue
+        if verification.recover_reopening(db, finding, thread):
+            continue
         status = (
             ("dismissed" if finding.status == "dismissed" else "resolved") if thread["isResolved"] else "open"
         )
         if status != finding.status:
+            verification.invalidate(db, finding, "GitHub resolution state changed.")
             finding.status, finding.updated_at = status, now()
             actor = (thread.get("resolvedBy") or {}).get("login", "GitHub")
             db.add(Activity(finding_id=finding.id, action=status, actor=actor, source="github"))
@@ -444,26 +524,28 @@ def publish_run(run_id: str):
 
 
 def request_finding_status(db: Session, finding: Finding, status: str, actor: User, reason: str):
-    finding.sync_version += 1
+    verification.invalidate(db, finding, "A manual finding action superseded automatic resolution.")
     finding.sync_error = None
+    finding.sync_intent = None
     if finding.thread_id:
         finding.desired_status = status
-        enqueue(
-            db,
-            "resolve",
-            {
-                "finding_id": finding.id,
-                "version": finding.sync_version,
-                "actor_id": actor.id,
-                "reason": reason,
-            },
-        )
+        finding.sync_intent = {
+            "finding_id": finding.id, "version": finding.sync_version,
+            "actor_id": actor.id, "reason": reason, "status": status,
+        }
+        enqueue(db, "resolve", finding.sync_intent)
     else:
         finding.status, finding.updated_at = status, now()
         db.add(Activity(finding_id=finding.id, action=status, actor=actor.login, source="app", reason=reason))
 
 
 def synchronize_finding(payload: dict):
+    if payload.get("reopen_verification_id"):
+        verification.restore_reopening(payload)
+        return
+    if payload.get("verification_id"):
+        verification.synchronize(payload)
+        return
     with transaction() as db:
         finding = db.scalar(select(Finding).where(Finding.id == payload["finding_id"]).with_for_update())
         if not finding or finding.sync_version != payload["version"] or not finding.desired_status:
@@ -474,10 +556,13 @@ def synchronize_finding(payload: dict):
         pr = db.get(PullRequest, finding.pr_id)
         repo = db.get(Repository, pr.repository_id)
         github.authorize_repo(db, actor, repo.full_name, write=True)
-        token = github.installation_token(db, repo.installation_id)
+        token = github.installation_token(db, repo.installation_id, resolve=True)
         desired = finding.desired_status
         github.set_thread(token, finding.thread_id, desired != "open")
         finding.status, finding.desired_status, finding.sync_error = desired, None, None
+        # Retain reopening intent to recover a late automatic write after worker loss.
+        if desired != "open":
+            finding.sync_intent = None
         finding.updated_at = now()
         db.add(
             Activity(

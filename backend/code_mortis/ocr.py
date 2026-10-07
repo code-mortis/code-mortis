@@ -325,6 +325,8 @@ def review(
     run_id: str = "",
     progress: Callable[[dict], None] = lambda value: None,
     checkpoint: dict | None = None,
+    saved_review: tuple | None = None,
+    after_review: Callable | None = None,
 ) -> tuple[str, dict, list[dict]]:
     safe_repo_name(full_name)
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base_sha, head_sha)):
@@ -363,10 +365,18 @@ def review(
         for path in (repo / ".opencodereview", repo / ".opencodereview" / "rule.json"):
             if path.exists() and not path.resolve().is_relative_to(repo.resolve()):
                 raise ValueError("Repository review rules point outside the checkout.")
+        def complete(result):
+            if after_review:
+                after_review(result, repo, env, fetch_env)
+            return result
+
+        if saved_review is not None:
+            check_version(directory, env)
+            return complete(saved_review)
         if connection.get("kind", "api") != "api":
             from .delegated import review as delegated_review
 
-            return delegated_review(
+            return complete(delegated_review(
                 repo,
                 env,
                 base_sha,
@@ -378,7 +388,7 @@ def review(
                 stopped,
                 progress,
                 checkpoint or {},
-            )
+            ))
         args = [
             settings().ocr_binary,
             "review",
@@ -448,5 +458,6 @@ def review(
                 "--",
                 comment["path"],
             )
+            comment["source_sha"] = ref
             comment["inline_line"] = comment["end_line"] if comment["end_line"] in diff_lines(patch) else None
-        return status, report, comments
+        return complete((status, report, comments))

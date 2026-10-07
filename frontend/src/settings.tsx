@@ -148,6 +148,19 @@ export function RepositorySettings({
           />
         )}
       </Field>
+      <Field
+        label="Automatically resolve verified fixes"
+        hint="Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the remaining review allowance; uncertain findings stay open."
+      >
+        {(id) => (
+          <Switch
+            id={id}
+            checked={settings.auto_resolve ?? false}
+            disabled={!settings.automatic}
+            onCheckedChange={(value) => change("auto_resolve", value)}
+          />
+        )}
+      </Field>
       <div className="grid grid-cols-2 gap-4">
         <Field label="Review effort">
           {(id) => (
