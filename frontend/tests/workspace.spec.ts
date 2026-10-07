@@ -394,7 +394,7 @@ test("partial review and publication retry remain distinct", async ({
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
 });
 
-test("GitHub check handles pending creation and a conclusion without status", async ({ page }, info) => {
+test("GitHub check handles pending, conclusion-only, and empty states", async ({ page }, info) => {
   const checkState: Partial<Run> = {
     check_status: null,
     check_conclusion: null,
@@ -416,6 +416,14 @@ test("GitHub check handles pending creation and a conclusion without status", as
   await expect(check.getByRole("status")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-conclusion-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_conclusion = null;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await expect(page.getByText("GitHub check", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/check-empty-${info.project.name}.png`, fullPage: true });
 });
 
 test("read-only members cannot change findings or instance settings", async ({

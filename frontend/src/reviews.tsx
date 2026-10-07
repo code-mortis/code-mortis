@@ -769,7 +769,7 @@ export function RunDetail() {
           <p className="mt-3 text-sm text-muted-foreground">
             Publication retries use this run’s saved findings.
           </p>
-          {run.check_enabled && (
+          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && (
             <div className="mt-5 space-y-3 border-t pt-4">
               <p className="text-xs text-muted-foreground">GitHub check</p>
               {(checkValue || run.check_url) && (
