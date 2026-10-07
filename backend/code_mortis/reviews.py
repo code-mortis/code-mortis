@@ -73,9 +73,16 @@ def create_run(
         config["connection"]["model"] = options["model"]
     key = digest(json.dumps([pr.id, pr.base_sha, pr.head_sha, config], sort_keys=True))
     if trigger == "automatic":
-        prior = db.scalar(select(ReviewRun).where(ReviewRun.dedup_key == key))
-        if prior:
-            return prior
+        # Defaults added during upgrades and resolution-only toggles do not change review scope.
+        analysis_settings = {name: value for name, value in options.items() if name != "auto_resolve"}
+        for prior in db.scalars(select(ReviewRun).where(
+            ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha, ReviewRun.head_sha == pr.head_sha,
+            ReviewRun.trigger == "automatic",
+        ).order_by(ReviewRun.created_at)):
+            prior_settings = RepoSettings.model_validate(prior.config["settings"]).model_dump()
+            prior_settings.pop("auto_resolve")
+            if prior.config["connection"] == config["connection"] and prior_settings == analysis_settings:
+                return prior
     active = db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))).all()
     for run in active:
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and run.config == config:

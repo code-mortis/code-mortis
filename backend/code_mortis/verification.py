@@ -306,6 +306,8 @@ def record_summary(db, run):
 def finish(db, row, *, result=None, status="completed", error=None, usage=None):
     from .reviews import enqueue
 
+    if result is None and not error:
+        error = "Verification did not complete."
     finding = db.scalar(select(Finding).where(Finding.id == row.finding_id).with_for_update())
     row.status, row.result, row.error, row.finished_at = status, result, error, now()
     row.verdict = result["verdict"] if result else "uncertain"

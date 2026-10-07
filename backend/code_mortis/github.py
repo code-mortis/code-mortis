@@ -190,9 +190,9 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     query = """query($owner:String!,$repo:String!,$number:Int!,$after:String) {
       repository(owner:$owner,name:$repo) { pullRequest(number:$number) {
         reviewThreads(first:100,after:$after) { pageInfo { hasNextPage endCursor }
-          nodes { id isResolved isOutdated resolvedBy { login }
+          nodes { id isResolved isOutdated resolvedBy { login databaseId }
             comments(first:100) { pageInfo { hasNextPage }
-              nodes { databaseId body url updatedAt author { login } } }
+              nodes { databaseId body url updatedAt author { __typename login ... on Bot { databaseId } } } }
           }
         }
       } }
@@ -201,6 +201,15 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     for _ in range(100):
         data = graphql(token, query, {"owner": owner, "repo": repo, "number": number, "after": cursor})
         connection = data["repository"]["pullRequest"]["reviewThreads"]
+        for thread in connection["nodes"]:
+            for comment in thread.get("comments", {}).get("nodes", []):
+                author = comment.get("author") or {}
+                if author.get("__typename") == "Bot":
+                    # GraphQL omits the suffix REST/webhooks use for the same bot account.
+                    author["login"] = author["login"].removesuffix("[bot]") + "[bot]"
+                    resolver = thread.get("resolvedBy") or {}
+                    if author.get("databaseId") and resolver.get("databaseId") == author["databaseId"]:
+                        resolver["login"] = author["login"]
         result.extend(connection["nodes"])
         if not connection["pageInfo"]["hasNextPage"]:
             return result

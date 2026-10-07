@@ -17,6 +17,7 @@ from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import github, jobs, ocr, reviews, runner_client, verification
 from code_mortis.db import now, transaction
+from code_mortis.github import threads as github_threads
 from code_mortis.models import (
     Activity,
     Connection,
@@ -694,3 +695,60 @@ def test_late_sync_failure_does_not_overwrite_confirmed_resolution(scenario):
         verification.sync_failed(db, payload, "late failure from another delivery")
     row, finding, _ = saved()
     assert row.resolution == "resolved" and finding.sync_error is None
+
+
+def test_empty_stop_message_records_uncertain_without_discarding_review(scenario, monkeypatch):
+    def stopped(*args):
+        raise ocr.ReviewStopped()
+    monkeypatch.setattr(verification, "api_verify", stopped)
+    row, finding, run = perform(scenario)
+    assert row.status == "skipped" and row.verdict == "uncertain"
+    assert row.error == "Verification did not complete."
+    assert run.status == "completed" and finding.status == "open" and not finding.desired_status
+
+
+@pytest.mark.parametrize("actor_type,resolver_id", [("Bot", 338898914), ("Bot", 7), ("User", 338898914)])
+def test_graphql_bot_identity_links_only_app_owned_threads(scenario, monkeypatch, actor_type, resolver_id):
+    thread = copy.deepcopy(scenario["thread"])
+    author = {"__typename": actor_type, "login": "mortis-test", "databaseId": 338898914}
+    thread["comments"]["nodes"][0]["author"] = author
+    thread["resolvedBy"] = {"login": "mortis-test" if resolver_id == 338898914 else "owner", "databaseId": resolver_id}
+    def response(*args):
+        return {"repository": {"pullRequest": {"reviewThreads": {
+            "nodes": [thread], "pageInfo": {"hasNextPage": False}
+        }}}}
+    monkeypatch.setattr(github, "graphql", response)
+    threads = github_threads("token", "team/project", 3)
+    monkeypatch.setattr(github, "threads", lambda *args: threads)
+    with transaction() as db:
+        finding = db.get(Finding, scenario["finding"])
+        assert bool(verification.owned_thread(db, finding, threads)) == (actor_type == "Bot")
+        finding.thread_id, finding.comment_id = None, None
+        reviews.reconcile_threads(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "token")
+        assert finding.thread_id == ("thread" if actor_type == "Bot" else None)
+        assert finding.status == "open"
+    expected = "mortis-test[bot]" if actor_type == "Bot" and resolver_id == 338898914 else ("owner" if resolver_id == 7 else "mortis-test")
+    assert threads[0]["resolvedBy"]["login"] == expected
+
+
+@pytest.mark.parametrize("change", ["legacy_default", "enable", "disable"])
+def test_resolution_setting_changes_do_not_repeat_same_commit_analysis(seed, change):
+    with transaction() as db:
+        pr, repo = db.get(PullRequest, "pr"), db.get(Repository, 22)
+        repo.settings = {"automatic": True, "auto_resolve": change == "disable"}
+        first = reviews.create_run(db, pr, repo, "automatic")
+        db.flush()
+        first.status, first.publication = "completed", "published"
+        if change == "legacy_default":
+            old_settings = dict(first.config["settings"])
+            old_settings.pop("auto_resolve")
+            first.config = {**first.config, "settings": old_settings}
+            first.dedup_key = "legacy-hash"
+        else:
+            repo.settings = {"automatic": True, "auto_resolve": change == "enable"}
+        repeated = reviews.create_run(db, pr, repo, "automatic")
+        assert repeated.id == first.id
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+        pr.head_sha = HEAD
+        pushed = reviews.create_run(db, pr, repo, "automatic")
+        assert pushed.id != first.id and pushed.config["settings"]["auto_resolve"] == (change == "enable")
