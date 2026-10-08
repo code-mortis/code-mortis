@@ -3,7 +3,7 @@ import fcntl
 import json
 import os
 import sys
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 from pathlib import Path
 
@@ -59,10 +59,21 @@ def test_old_snapshots_keep_unlimited_files_and_deduplicate_only_matching_scope(
 def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, monkeypatch):
     monkeypatch.setattr(ocr.settings(), "work_dir", tmp_path)
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    configured = False
+
+    @contextmanager
+    def configuration(*args):
+        nonlocal configured
+        configured = True
+        try:
+            yield
+        finally:
+            configured = False
+
+    monkeypatch.setattr(ocr, "configuration", configuration)
     base, head = "a" * 40, "b" * 40
     paths = [f"source{index}.py" for index in range(count)]
-    inference, previews = [], []
+    inference, previews, completed = [], [], []
 
     def git(root, env, *args, **kwargs):
         return head if args[0] == "rev-parse" else base if args[0] == "merge-base" else "value = 1\n"
@@ -91,13 +102,20 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
         inference.append(payload)
         return {"comments": []}
 
+    def after_review(result, repo, env, fetch_env):
+        assert not configured, "Release OCR configuration before saving or verifying results"
+        assert repo.is_dir(), "Keep the checkout available during completion"
+        completed.append(result)
+
     monkeypatch.setattr(ocr, "git", git)
     monkeypatch.setattr(ocr, "command", command)
     monkeypatch.setattr(runner_client, "review", native)
     options = RepoSettings(timeout_seconds=None, token_budget=None, max_files=maximum,
                            exclusions="*.lock", rules={"default_rule": "Review code"}).model_dump()
     status, saved, comments = ocr.review("owner/repo", 1, base, head,
-        {"id": "connection", "kind": kind, "model": "model"}, {}, options, "token", lambda: False)
+        {"id": "connection", "kind": kind, "model": "model"}, {}, options, "token", lambda: False,
+        after_review=after_review)
+    assert completed == [(status, saved, comments)]
     assert comments == []
     if maximum is not None and count > maximum:
         assert status == "skipped" and not inference
@@ -115,6 +133,36 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
 def test_invalid_scope_never_passes_file_gate(files, count):
     with pytest.raises(ValueError):
         ocr.preview_paths(files, count)
+
+
+@pytest.mark.parametrize("path", [None, "", 123, "../secret", "/secret", ".git/config", "src\\secret", "bad\0path"])
+def test_invalid_preview_path_has_a_uniform_error(path):
+    with pytest.raises(ValueError, match=r"^OCR returned an invalid selected path\.$"):
+        ocr.preview_paths([{"path": path}], 1)
+
+
+@pytest.mark.parametrize("code,output", [
+    (0, ""), (0, "not JSON"), (0, '{"files":'), (0, "null"), (0, "[]"),
+    (1, "not JSON"), (1, '{"files": [], "reviewable_count": 0}'),
+])
+def test_invalid_api_preview_stops_with_a_uniform_error(code, output, tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr.settings(), "work_dir", tmp_path)
+    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    base, head = "a" * 40, "b" * 40
+    monkeypatch.setattr(ocr, "git", lambda root, env, *args, **kwargs: head if args[0] == "rev-parse" else base)
+
+    def command(args, *a, **kwargs):
+        assert "--preview" in args, "Invalid previews must never reach inference"
+        return code, output, ""
+
+    def after_review(*args):
+        pytest.fail("Invalid previews must never reach completion or verification")
+
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(ValueError, match=r"^OCR could not prepare the review scope\.$"):
+        ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings().model_dump(),
+                   "token", lambda: False, after_review=after_review)
 
 
 def test_unlimited_subprocess_completes_and_remains_cancellable(tmp_path):

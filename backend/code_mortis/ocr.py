@@ -325,8 +325,12 @@ def preview_paths(files, count):
     paths = []
     for item in files:
         path = item.get("path") if isinstance(item, dict) else None
-        if not isinstance(path, str) or not path or ReviewComment.relative_path(path) != path:
+        if not isinstance(path, str) or not path:
             raise ValueError("OCR returned an invalid selected path.")
+        try:
+            ReviewComment.relative_path(path)
+        except ValueError:
+            raise ValueError("OCR returned an invalid selected path.") from None
         paths.append(path)
     if len(set(paths)) != len(paths):
         raise ValueError("OCR returned repeated selected paths.")
@@ -469,21 +473,28 @@ def review(
             rules.write_text(json.dumps(review_settings["rules"]))
             args += ["--rule", str(rules)]
         check_version(directory, env)
+        limited = None
         with configuration(connection, credentials, review_settings, stopped):
             if review_settings.get("max_files") is not None:
                 code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
-                preview = json.loads(output)
-                if code or not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
+                if code:
+                    raise ValueError("OCR could not prepare the review scope.")
+                try:
+                    preview = json.loads(output)
+                except ValueError as exc:
+                    raise ValueError("OCR could not prepare the review scope.") from exc
+                if not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
                     raise ValueError("OCR could not prepare the review scope.")
                 if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
                     raise ValueError("OCR returned invalid file eligibility.")
                 paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
                 limited = file_limit_result(paths, review_settings["max_files"])
-                if limited:
-                    return complete(limited)
-            code, output, _ = command(
-                args, repo, env, timeout=None, stopped=stopped
-            )
+            if limited is None:
+                code, output, _ = command(
+                    args, repo, env, timeout=None, stopped=stopped
+                )
+        if limited is not None:
+            return complete(limited)
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         status, report, comments = parse_report(output, code, secrets)
         deleted = (
