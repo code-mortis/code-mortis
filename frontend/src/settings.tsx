@@ -253,17 +253,18 @@ export function RepositorySettings({
               {(id) => (
                 <div className="space-y-2">
                   <Input
+                    key={settings[key] === null ? "unlimited" : "limited"}
                     id={id}
                     type="number"
                     min={min}
                     max={max}
                     required
                     disabled={settings[key] === null}
-                    value={settings[key] ?? ""}
+                    defaultValue={settings[key] ?? ""}
                     onChange={(e) => {
                       const value = e.target.valueAsNumber;
-                      if (!Number.isFinite(value)) return;
-                      if (e.target.validity.valid) limitedValues.current[key] = value;
+                      if (!Number.isFinite(value) || !e.target.validity.valid) return;
+                      limitedValues.current[key] = value;
                       change(key, value);
                     }}
                   />

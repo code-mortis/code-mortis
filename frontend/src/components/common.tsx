@@ -28,7 +28,7 @@ export function Status({ value, label }: { value: string; label?: string }) {
       variant="outline"
       className={cn(
         "gap-1.5 font-medium whitespace-nowrap",
-        label === undefined && "capitalize",
+        !label && "capitalize",
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
@@ -39,7 +39,7 @@ export function Status({ value, label }: { value: string; label?: string }) {
       {["queued", "running", "in_progress"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
-      {label ?? words(value)}
+      {label || words(value)}
     </Badge>
   );
 }

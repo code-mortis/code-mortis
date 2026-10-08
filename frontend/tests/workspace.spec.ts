@@ -673,12 +673,19 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   ] as const) {
     for (const invalid of ["", "1e309"]) {
       await field.fill(invalid);
+      await expect(field).toHaveValue("");
+      expect(await field.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
+      await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      expect(current.settings).toMatchObject({ timeout_seconds: 900, token_budget: 200000, max_files: 40 });
       await unlimited.check();
       await unlimited.uncheck();
       await expect(field).toHaveValue(value);
     }
   }
-  await time.fill("1200");
+  await time.clear();
+  await time.pressSequentially("1200");
+  await expect(time).toHaveValue("1200");
   await unlimitedTime.check();
   await expect(time).toBeDisabled();
   await expect(tokens).toBeEnabled();
@@ -690,6 +697,11 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await unlimitedFiles.check();
   await unlimitedFiles.uncheck();
   await expect(files).toHaveValue("40");
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect.poll(() => current.settings).toMatchObject({ timeout_seconds: 1200, token_budget: 200000, max_files: 40 });
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByText("Review limits and rules", { exact: true }).click();
+  await expect(time).toHaveValue("1200");
   await unlimitedTokens.check();
   await unlimitedFiles.check();
   await unlimitedTime.check();
