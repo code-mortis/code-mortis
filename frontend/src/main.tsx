@@ -7,9 +7,10 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Blocks, Github, LogOut, Settings } from "lucide-react";
+import { Blocks, Github, Inbox as InboxIcon, LogOut, Settings } from "lucide-react";
 import { api, ApiError, setCsrf, useAction, useApi, type Schema } from "./api";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -21,6 +22,7 @@ import {
   NativeSelect,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
+import { Inbox } from "./inbox";
 import { SettingsPage } from "./settings";
 import "./index.css";
 
@@ -175,6 +177,8 @@ function App() {
   );
   const action = useAction();
   const navigate = useNavigate();
+  const route = useLocation();
+  const fromInbox = typeof route.state?.inbox === "string" && /^\/(?:\?|$)/.test(route.state.inbox);
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -268,12 +272,16 @@ function App() {
           className="flex gap-1 px-3 pb-3 lg:flex-col lg:py-3"
         >
           <NavLink
-            to="/"
+            to={fromInbox ? route.state.inbox : "/"}
             end
             className={({ isActive }) =>
-              `nav-link ${isActive || location.pathname.startsWith("/pulls") || location.pathname.startsWith("/runs") ? "nav-active" : ""}`
+              `nav-link ${isActive || (fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`
             }
           >
+            <InboxIcon className="size-4" />
+            Inbox
+          </NavLink>
+          <NavLink to="/repositories" className={({ isActive }) => `nav-link ${isActive || (!fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`} >
             <Blocks className="size-4" />
             Repositories
           </NavLink>
@@ -319,12 +327,13 @@ function App() {
           </Button>
         </div>
       </aside>
-      <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-12">
-        <div className="mx-auto max-w-6xl">
+      <main className={`min-w-0 px-5 py-8 sm:px-9 ${route.pathname === "/" ? "lg:px-9 lg:py-6" : "lg:px-12 lg:py-12"}`}>
+        <div className={route.pathname === "/" ? "mx-auto" : "mx-auto max-w-6xl"}>
           <ErrorNotice error={action.error} />
           <Routes>
+            <Route path="/" element={<Inbox />} />
             <Route
-              path="/"
+              path="/repositories"
               element={<Repositories admin={session.data.role === "admin"} />}
             />
             <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
@@ -342,7 +351,7 @@ function App() {
               element={
                 <Empty title="Page not found">
                   <NavLink className="underline" to="/">
-                    Return to repositories
+                    Return to inbox
                   </NavLink>
                 </Empty>
               }

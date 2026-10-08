@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Link,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
 } from "react-router-dom";
@@ -65,7 +66,7 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
       <div className="flex flex-wrap gap-3">
         {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`}>View run details</Link>}
         {feedback.destination === "repository" && admin && (
-          <Link className="underline underline-offset-4" to={`/?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
+          <Link className="underline underline-offset-4" to={`/repositories?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
@@ -362,6 +363,8 @@ function RunList({ runs }: { runs: Run[] }) {
 export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const inboxReturn = typeof location.state?.inbox === "string" && /^\/(?:\?|$)/.test(location.state.inbox) ? location.state.inbox : null;
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
@@ -392,11 +395,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        eyebrow={
-          <Link className="hover:underline" to={`/?repo=${repository.id}`}>
+        eyebrow={<>
+          {inboxReturn && <><Link className="hover:underline" to={inboxReturn}>Inbox</Link><span> / </span></>}
+          <Link className="hover:underline" to={`/repositories?repo=${repository.id}`}>
             {repository.full_name} / Pull request #{pr.number}
           </Link>
-        }
+        </>}
         title={pr.title}
         actions={
           <>

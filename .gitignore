@@ -18,3 +18,4 @@ data/
 *.db
 *.log
 graphify-out
+.impeccable

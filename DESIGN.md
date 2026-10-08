@@ -159,6 +159,17 @@ components:
     textColor: "{colors.foreground}"
     rounded: "9999px"
     padding: "2px 8px"
+  filter-chip:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.accent-foreground}"
+    rounded: "{rounded.md}"
+    height: "36px"
+  popover:
+    backgroundColor: "{colors.popover}"
+    textColor: "{colors.popover-foreground}"
+    rounded: "{rounded.md}"
+    padding: "8px"
+    width: "288px"
   card:
     backgroundColor: "{colors.card}"
     textColor: "{colors.card-foreground}"
@@ -201,19 +212,21 @@ Status colors retain their Tailwind OKLCH source values. Good states use emerald
 
 Inter Variable is the interface family, with sans-serif fallback. There is no separate display face. Platform monospace is reserved for code, paths, branches, and identifiers.
 
-Page headlines use `headline`, changing to `headline-wide` at the small breakpoint. Standard content and buttons use body-sized type; section headings commonly use 16px semibold. Labels use medium weight and metadata uses the smaller role. Descriptive paragraphs use relaxed line height (1.625); Markdown review prose uses 1.7. Counts use tabular numerals. Do not add decorative uppercase labels.
+Page headlines use `headline`, changing to `headline-wide` at the small breakpoint. The Inbox title uses `headline-wide` at every width. Standard content and buttons use body-sized type; section headings commonly use 16px semibold, while inbox group headings use 14px semibold. Labels use medium weight and metadata uses the smaller role. Descriptive paragraphs use relaxed line height (1.625); Markdown review prose uses 1.7. Counts use tabular numerals. Do not add decorative uppercase labels.
 
 ## Layout
 
-At 1024px and wider, the shell has a sticky 220px rail and a flexible main column. Content has a 1152px maximum width. Main padding is 20px horizontally and 32px vertically, increasing to 36px horizontal at 640px and 48px in both directions at 1024px. Below the desktop breakpoint, the rail becomes a top navigation area with horizontal links and a compact appearance select.
+At 1024px and wider, the shell has a sticky 220px rail and a flexible main column. The homepage inbox uses the available main-column width, with 36px horizontal and 24px vertical padding. Other routes retain a 1152px content cap and 48px padding. Below 1024px, main padding is 20px horizontally and 32px vertically, increasing to 36px horizontal at 640px. The rail becomes a top navigation area with horizontal links and a compact appearance select.
 
 Lists group rows within one bordered surface. Typical row padding is 20px; filters and actions wrap with 8px or 12px gaps. At 640px, repository controls receive bounded widths, pull-request status moves to the row end, and connection rows become horizontal. Inputs use 16px text below 768px and 14px above it. Forms retain visible labels and hints.
+
+The inbox places a full-width search above its wrapping filter controls, followed by the result count and closed-state control. At 768px and wider, a shared grid aligns pull-request details, review status, open findings, last synced date, and a chevron. The first column flexes; the others use 160px, 104px, 96px, and 16px, with 16px gaps. Below 768px, column headings disappear, the title and repository metadata span the row, status and findings share the next line, and the date sits below. The chevron remains at the upper right. Titles wrap, repository and author identifiers can break, and selected filter summaries truncate within their controls. Rows use 16px padding on mobile and 20px horizontal/12px vertical padding from 768px.
 
 Finding details occupy a right sheet, full width on small screens and capped at 672px from 640px. Repository configuration retains the sheet primitive's 75% width and a 576px cap from 640px. Sheets scroll vertically. Dialogs keep 16px outer margins; connection editing is capped at 576px and 90dvh. Setup uses a centered 512px column.
 
 ## Elevation & Depth
 
-The workspace uses tonal surfaces and thin borders. Cards have no ambient shadow. Inputs, outline buttons, and switches use the small control shadow; active default tabs use a light shadow. Dialogs and sheets use the overlay shadow with a 50% black backdrop. Exact shadow values are in the sidecar, sourced from the installed Tailwind theme.
+The workspace uses tonal surfaces and thin borders. Cards have no ambient shadow. Inputs, outline buttons, and switches use the small control shadow; active default tabs use a light shadow. Filter popovers use the medium shadow and a 1px border-colored ring without a backdrop. Dialogs and sheets use the overlay shadow with a 50% black backdrop. Exact shadow values are in the sidecar, sourced from the installed Tailwind theme.
 
 ## Shapes
 
@@ -235,13 +248,23 @@ Inputs and native selects are 36px high, with 12px horizontal padding and input-
 
 Status chips use 12px medium text, 2px/8px padding, thin borders, and semantic tints. Text is capitalized and underscores become spaces. Queued/running states include a spinner only when motion is allowed. These chips communicate state and are not filter buttons.
 
+Filter chips are separate, medium-radius controls using the accent surface and accent foreground. A text button opens the property options; a divided icon button removes the filter. The property name remains visible, a thin vertical rule separates it from the selected values, and a chevron indicates editing. Each button has an explicit accessible label. Chips wrap with the Filter and Reset controls.
+
+Inbox search, selected filters, and loaded group pages are represented in the URL. Filters cover Repository, PR state, Review status, Author, and Open findings. Repository and Author options are searchable; checkbox choices support multiple values except Open findings, which accepts one. The default PR state chip reads Open, Merged, with Closed hidden beside a Show closed action. Removing that chip includes all states; Reset restores the default states and clears the search and other filters. Search updates after 300ms, and browser navigation restores the URL's selections.
+
 ### Cards / Containers
 
 Content cards use the card surface, large radius, a 1px border, and usually 20px padding. Lists share a single container with divided rows; interactive rows use a 50% muted hover fill. Empty states use dashed borders and centered guidance.
 
 ### Navigation
 
-Rail links combine a 16px outline icon with 13.12px text, a 11.2px gap, and 11.2px/12.8px padding. Active and hovered links share a brighter green fill and white text. The Repositories link remains active on pull and run detail routes. The compact `cm` mark is typographic, not a mascot. Appearance choices are explicitly System, Light, and Dark.
+Rail links combine a 16px outline icon with 13.12px text, a 11.2px gap, and 11.2px/12.8px padding. Active and hovered links share a brighter green fill and white text. Inbox is the homepage at `/`; repository management lives at `/repositories`, followed by Settings at `/settings`. Pull and run detail routes keep Inbox active when reached with inbox navigation context, otherwise Repositories remains active. On PR details, the Inbox sidebar link and breadcrumb restore the originating inbox URL, including its filters and loaded pages. The brand link returns to the unfiltered inbox. The compact `cm` mark is typographic, not a mascot. Appearance choices are explicitly System, Light, and Dark.
+
+### Grouped PR inbox
+
+One bordered card contains collapsible groups in order: Active & needs review, Reviewed & open, and Merged. Selecting closed PRs adds Closed; state filters determine which groups appear. Active work places running reviews first, then queued reviews, then the remaining statuses; rows within each priority sort by most recently synced. Each group heading is a full-width button with a chevron, text label, count, and an expanded state exposed to assistive technology. Groups load more independently and keep pagination failures and retry actions beside the affected group.
+
+Whole rows link to PR details and carry the inbox URL for the return path. Running reviews use a subtle accent fill; hover uses the shared muted fill. Review status, publication failures, and open finding counts remain distinct. Positive finding counts use destructive text and a restrained tint; zero uses muted styling. The reviewed group can still contain open findings. Empty results distinguish an empty inbox from filters with no matches and provide a relevant next action.
 
 ### Evidence and resolution history
 
@@ -250,6 +273,8 @@ Finding details separate Markdown explanation, original code, suggested change, 
 ### Overlays and motion
 
 Radix dialogs and sheets retain their accessible interaction behavior and close controls. Dialog transitions use 200ms; sheets open in 500ms and close in 300ms. Shared control transitions use the standard easing. Reduced-motion preference shortens animation and transition duration to 0.01ms and disables smooth scrolling. Do not add motion to static evidence.
+
+The shared shadcn-style popover wraps Radix and renders in a portal. It aligns to the trigger start with an 8px offset, keeps 16px viewport collision padding, and caps its width at the viewport minus 32px. Filter choices scroll within a 256px maximum height. Opening uses a fade and slight scale animation. Keyboard activation, Escape dismissal, outside interaction, and focus return retain Radix behavior; removing a chip returns focus to Filter. Checkbox rows are at least 40px tall and expose focus around the full label. The final selected PR state cannot be unchecked, keeping the selection meaningful.
 
 ## Do's and Don'ts
 

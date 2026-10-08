@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -404,3 +404,62 @@ class RunDetail(BaseModel):
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
     can_write: bool
+
+
+InboxGroup = Literal["active", "reviewed", "merged", "closed"]
+InboxReview = Literal[
+    "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
+    "cancelled", "superseded", "not_reviewed", "outdated",
+]
+
+
+class InboxFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    repo: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=100)
+    state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["open", "merged"], max_length=4)
+    review: list[InboxReview] = Field(default_factory=list, max_length=11)
+    author: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(default_factory=list, max_length=100)
+    findings: Literal["open", "none"] | None = None
+    group: InboxGroup | None = None
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class InboxPullOut(ORMModel):
+    id: str
+    repository_id: int
+    repository_name: str
+    number: int
+    title: str
+    author: str
+    state: str
+    draft: bool
+    updated_at: datetime
+    review_status: str
+    run_id: str | None
+    publication: str | None
+    publication_error: str | None
+    open_findings: int
+
+
+class InboxPage(BaseModel):
+    group: InboxGroup
+    items: list[InboxPullOut]
+    total: int
+    page: int
+    has_more: bool
+
+
+class InboxRepository(BaseModel):
+    id: int
+    full_name: str
+
+
+class InboxOut(BaseModel):
+    groups: list[InboxPage]
+    total: int
+    repository_count: int
+    registered_total: int
+    repositories: list[InboxRepository]
+    authors: list[str]
+    state_counts: dict[str, int]
+    page_size: int = 20

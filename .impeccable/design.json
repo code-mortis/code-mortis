@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-06T02:03:08.133055+00:00",
+  "generatedAt": "2026-10-08T21:09:21.135458+00:00",
   "title": "Design System: Code Mortis",
   "extensions": {
     "colorMeta": {
@@ -726,7 +726,7 @@
       },
       "headline-wide": {
         "displayName": "Headline wide",
-        "purpose": "Page titles at 640px and wider."
+        "purpose": "Page titles at 640px and wider; Inbox title at every width."
       },
       "body": {
         "displayName": "Body",
@@ -760,6 +760,11 @@
         "name": "overlay",
         "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
         "purpose": "Dialogs and sheets."
+      },
+      {
+        "name": "popover",
+        "value": "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+        "purpose": "Filter popovers, paired with a 1px border-colored ring and no backdrop."
       }
     ],
     "motion": [
@@ -897,6 +902,22 @@
       "description": "Flat bordered container used for installation and review information.",
       "html": "<section class=\"ds-card\"><h3 class=\"ds-card-title\">Connected installations</h3><p class=\"ds-card-copy\">Install the app on GitHub, then connect the installation below.</p></section>",
       "css": ".ds-card{font-family:'Inter Variable',sans-serif;padding:20px;border:1px solid var(--border, #dce1d9);border-radius:calc(var(--radius,8px) + 2px);background:var(--card, #ffffff);color:var(--card-foreground, #202c26);}.ds-card-title{margin:0 0 12px;font-size:14px;line-height:20px;font-weight:600;}.ds-card-copy{margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground, #606a62);}"
+    },
+    {
+      "name": "Editable filter chip",
+      "kind": "chip",
+      "refersTo": "filter-chip",
+      "description": "URL-backed selections use separate edit and remove buttons; long summaries truncate within the available width.",
+      "html": "<div class=\"ds-filter-chip\"><button class=\"ds-filter-edit\" aria-label=\"Edit PR state: Open, Merged\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span>PR state</span><span class=\"ds-filter-divider\" aria-hidden=\"true\"></span><span class=\"ds-filter-summary\">Open, Merged</span><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"/></svg></button><button class=\"ds-filter-remove\" aria-label=\"Remove PR state filter\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button></div>",
+      "css": ".ds-filter-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:var(--radius,8px);background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-filter-edit,.ds-filter-remove{display:inline-flex;align-items:center;justify-content:center;height:36px;border:0;background:transparent;color:inherit;font-family:\"Inter Variable\",sans-serif;font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-filter-edit{min-width:0;gap:8px;padding:0 12px;border-radius:var(--radius,8px) 0 0 var(--radius,8px);}.ds-filter-edit>span:first-child,.ds-filter-edit svg{flex-shrink:0;}.ds-filter-divider{height:16px;border-left:1px solid color-mix(in oklab,currentColor 20%,transparent);}.ds-filter-summary{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.ds-filter-remove{width:36px;flex-shrink:0;padding:0;border-left:1px solid color-mix(in oklab,currentColor 10%,transparent);border-radius:0 var(--radius,8px) var(--radius,8px) 0;}.ds-filter-edit:hover,.ds-filter-remove:hover{background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-filter-edit:focus-visible,.ds-filter-remove:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}@media(prefers-reduced-motion:reduce){.ds-filter-edit,.ds-filter-remove{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Filter popover",
+      "kind": "custom",
+      "refersTo": "popover",
+      "description": "Shared Radix popover surface for searchable filter choices, with an 8px trigger offset, 16px collision padding, and native checkboxes. This preview shows its content.",
+      "html": "<section class=\"ds-filter-popover\" aria-label=\"Filter by PR state\"><p class=\"ds-filter-title\">PR state</p><div class=\"ds-filter-options\" role=\"group\" aria-label=\"PR state\"><label class=\"ds-filter-option\"><input type=\"checkbox\" checked><span>Open</span></label><label class=\"ds-filter-option\"><input type=\"checkbox\" checked><span>Merged</span></label><label class=\"ds-filter-option\"><input type=\"checkbox\"><span>Closed</span></label></div></section>",
+      "css": ".ds-filter-popover{box-sizing:border-box;width:288px;max-width:calc(100vw - 2rem);padding:8px;border-radius:var(--radius,8px);background:var(--popover, #ffffff);color:var(--popover-foreground, #202c26);font-family:\"Inter Variable\",sans-serif;box-shadow:0 0 0 1px var(--border, #dce1d9),0 4px 6px -1px rgb(0 0 0 / .1),0 2px 4px -2px rgb(0 0 0 / .1);}.ds-filter-title{margin:0;padding:8px;font-size:14px;line-height:20px;font-weight:500;}.ds-filter-options{max-height:256px;overflow-y:auto;}.ds-filter-option{box-sizing:border-box;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px;border-radius:calc(var(--radius,8px) - 2px);font-size:14px;line-height:20px;cursor:pointer;}.ds-filter-option input{width:16px;height:16px;margin:0;flex-shrink:0;accent-color:var(--primary, #245944);}.ds-filter-option:hover{background:var(--accent, #e1ebe2);}.ds-filter-option:has(:focus-visible){box-shadow:0 0 0 2px var(--ring, #377c59);}.ds-filter-option input:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}"
     }
   ],
   "narrative": {
