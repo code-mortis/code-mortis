@@ -1027,6 +1027,8 @@ export interface components {
             state: string;
             /** Draft */
             draft: boolean;
+            /** Created At */
+            created_at: string | null;
             /**
              * Updated At
              * Format: date-time

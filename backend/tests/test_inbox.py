@@ -1,11 +1,13 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import event, func, select
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import event, func, select, text
 
-from code_mortis import github
+from code_mortis import github, jobs
 from code_mortis.db import engine, now, transaction
-from code_mortis.models import Finding, Installation, PullRequest, Repository, ReviewRun
+from code_mortis.models import Finding, Installation, Job, PullRequest, Repository, ReviewRun
 
 
 @pytest.fixture
@@ -14,10 +16,11 @@ def visible(seed, monkeypatch):
 
 
 def pull(db, identity, state="open", repo=22, author="owner", at=None):
+    at = at or now()
     pr = PullRequest(
         id=identity, repository_id=repo, number=100 + db.scalar(select(func.count()).select_from(PullRequest)), title=f"Change {identity}",
         author=author, url=f"https://github.com/team/project/pull/{identity}", state=state,
-        head_sha="a" * 40, base_sha="b" * 40, head_ref="feature", updated_at=at or now(),
+        head_sha="a" * 40, base_sha="b" * 40, head_ref="feature", created_at=at, updated_at=at,
     )
     db.add(pr)
     db.flush()
@@ -135,6 +138,87 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
     assert get(client, "?findings=open")["total"] == 0
 
 
+@pytest.mark.parametrize("group,state,status", [
+    ("active", "open", "failed"), ("reviewed", "open", "completed"),
+    ("merged", "merged", "completed"), ("closed", "closed", "completed"),
+])
+def test_unchanged_sync_preserves_inbox_order(visible, github_stub, client, monkeypatch, group, state, status):
+    remote = {}
+    with transaction() as db:
+        for i in range(3):
+            pr = pull(db, f"sync-{i}", state, author="sync-test", at=now() - timedelta(hours=i + 1))
+            run(db, pr, status)
+            remote[pr.number] = {
+                "number": pr.number, "title": pr.title, "user": {"login": pr.author},
+                "html_url": pr.url, "state": "open" if state == "open" else "closed",
+                "merged": state == "merged", "draft": pr.draft, "created_at": pr.created_at.isoformat(),
+                "head": {"sha": pr.head_sha, "ref": pr.head_ref, "repo": {"id": pr.repository_id}},
+                "base": {"sha": pr.base_sha},
+            }
+    monkeypatch.setattr(github, "request", lambda method, path, token: remote[int(path.rsplit("/", 1)[1])])
+    query = f"?author=sync-test&state=all&group={group}"
+    before = get(client, query)
+    assert [item["id"] for item in before["groups"][0]["items"]] == ["sync-0", "sync-1", "sync-2"]
+    for number in remote:
+        jobs.sync_pr(22, number, automatic=False)
+    assert get(client, query) == before
+    # Edits update the recorded change time without promoting older PRs.
+    number = max(remote)
+    remote[number]["title"] = "Changed title"
+    jobs.sync_pr(22, number, automatic=False)
+    after = get(client, query)["groups"][0]["items"]
+    assert [item["id"] for item in after] == ["sync-0", "sync-1", "sync-2"]
+    assert after[-1]["updated_at"] > before["groups"][0]["items"][-1]["updated_at"]
+    assert after[-1]["created_at"] == before["groups"][0]["items"][-1]["created_at"]
+
+
+def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch):
+    at = now() - timedelta(days=1)
+    with transaction() as db:
+        db.add(Repository(id=23, installation_id=10, full_name="team/other"))
+        db.flush()
+        for i in range(25):
+            pr = pull(db, f"newest-{i:02}", "merged", repo=22 if i % 2 else 23,
+                      at=at + timedelta(minutes=i))
+            pr.updated_at = at + timedelta(minutes=25 - i)
+            if i == 24:
+                pr.number = 1
+        pull(db, "unknown", "merged").created_at = None
+    monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
+    first = get(client, "?state=merged")["groups"][0]
+    second = get(client, "?state=merged&group=merged&page=2")["groups"][0]
+    assert first["total"] == 26
+    assert [pr["id"] for pr in first["items"]] == [f"newest-{i:02}" for i in range(24, 4, -1)]
+    assert [pr["id"] for pr in second["items"]] == [f"newest-{i:02}" for i in range(4, -1, -1)] + ["unknown"]
+
+
 @pytest.mark.parametrize("query", ["?state=bad", "?repo=-1", "?review=clean", "?page=0", "?group=bad", "?findings=bad"])
 def test_query_validation(visible, client, query):
     assert client.get("/api/v1/pulls" + query).status_code == 422
+
+
+def test_creation_time_migration_preserves_existing_pulls(seed):
+    with transaction() as db:
+        before = db.execute(text("SELECT id, title, updated_at FROM pull_requests")).one()
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261007_verified_resolution")
+    finally:
+        command.upgrade(config, "head")
+    with transaction() as db:
+        after = db.execute(text("SELECT id, title, updated_at, created_at FROM pull_requests")).one()
+    assert tuple(after[:3]) == tuple(before)
+    assert after.created_at is None
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_reconciliation_backfills_creation_dates_for_paused_repositories(seed, missing):
+    with transaction() as db:
+        db.get(Repository, 22).enabled = False
+        db.get(PullRequest, "pr").created_at = None if missing else now()
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        queued = list(db.scalars(select(Job).where(Job.kind == "sync_pr")))
+        assert [job.payload for job in queued] == (
+            [{"repository_id": 22, "number": 3, "automatic": False}] if missing else []
+        )

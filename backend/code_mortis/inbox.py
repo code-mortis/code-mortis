@@ -43,7 +43,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     base = select(
         PullRequest.id, PullRequest.repository_id, Repository.full_name.label("repository_name"),
         PullRequest.number, PullRequest.title, PullRequest.author, PullRequest.state,
-        PullRequest.draft, PullRequest.updated_at, review_status.label("review_status"),
+        PullRequest.draft, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
         runs.c.run_id, runs.c.publication, runs.c.publication_error,
         func.coalesce(findings.c.open_findings, 0).label("open_findings"), group.label("group"),
     ).join(Repository, Repository.id == PullRequest.repository_id).outerjoin(
@@ -88,7 +88,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
             case((and_(filtered.c.group == "active", filtered.c.review_status == "running"), 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
-            filtered.c.updated_at.desc(), filtered.c.id.desc(),
+            filtered.c.created_at.desc().nulls_last(), filtered.c.id.desc(),
         ).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)).mappings()
         pages.append(InboxPage(
             group=name, items=[InboxPullOut.model_validate(row) for row in items],

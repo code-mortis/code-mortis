@@ -433,6 +433,7 @@ class InboxPullOut(ORMModel):
     author: str
     state: str
     draft: bool
+    created_at: datetime | None
     updated_at: datetime
     review_status: str
     run_id: str | None

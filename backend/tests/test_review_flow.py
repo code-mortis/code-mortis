@@ -273,6 +273,27 @@ def new_run():
         return run.id
 
 
+def test_pull_creation_time_is_saved_for_new_and_existing_pulls(seed):
+    created = now() - timedelta(days=7)
+    data = {**remote(), "created_at": created.isoformat()}
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        before = db.get(PullRequest, "pr").updated_at
+        existing = reviews.upsert_pr(db, repo, data)
+        assert existing.created_at == created
+        assert existing.updated_at == before
+        data["number"] = 4
+        added = reviews.upsert_pr(db, repo, data)
+        assert added.created_at == created
+        assert added.updated_at >= before
+
+
+@pytest.mark.parametrize("created", ["invalid", "2026-10-08T12:00:00", 123])
+def test_pull_creation_time_requires_a_timezone(seed, created):
+    with transaction() as db, pytest.raises((TypeError, ValueError)):
+        reviews.upsert_pr(db, db.get(Repository, 22), {**remote(), "created_at": created})
+
+
 def test_auth_csrf_roles_and_repository_boundary(seed, client, monkeypatch):
     assert client.get("/api/v1/auth/me").json()["csrf"] == "csrf"
     response = client.post("/api/v1/members", json={"login": "alice"}, headers={"x-csrf-token": "wrong"})

@@ -11,7 +11,7 @@ const rows: Pull[] = titles.map((title, i) => ({
   title, number: 42 + i, author: ["maria", "leo", "sam"][i % 3], state: i > 5 ? "merged" : "open",
   review_status: ["running", "queued", "failed", "not_reviewed", "completed", "completed", "completed", "completed"][i],
   run_id: i === 3 ? null : `run-${i}`, publication: "published", publication_error: null,
-  updated_at: at, draft: false, open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
+  created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
 }));
 const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled" };
 
@@ -72,6 +72,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
   await expect(page.getByRole("status").first()).toContainText("8 pull requests · 3 repositories");
   await expect(page.getByRole("region", { name: /Active & needs review/ }).getByRole("link").first()).toContainText(titles[0]);
+  await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).not.toBeChecked();
@@ -225,11 +226,12 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
 test("long titles and filter values wrap within the viewport", async ({ page }) => {
   await mockInbox(page);
   await page.route("**/api/v1/pulls?**", async (route) => {
-    const long = { ...rows[0], title: "Preserve".repeat(35), repository_name: "organization/" + "repository".repeat(10), author: "developer".repeat(4) };
+    const long = { ...rows[0], created_at: null, title: "Preserve".repeat(35), repository_name: "organization/" + "repository".repeat(10), author: "developer".repeat(4) };
     await route.fulfill({ json: { groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [long] }], total: 1, repository_count: 1, registered_total: 1, repositories: [{ id: 22, full_name: long.repository_name }], authors: [long.author], state_counts: { open: 1, merged: 0, closed: 0 }, page_size: 20 } });
   });
   await page.goto("/?repo=22");
   await expect(page.getByRole("link", { name: /PreservePreserve/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /PreservePreserve/ })).toContainText("Pending sync");
   await noOverflow(page);
   await page.getByRole("button", { name: /Edit Repository/ }).click();
   await expect(page.getByRole("checkbox", { name: /organization/ })).toBeVisible();

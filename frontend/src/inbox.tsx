@@ -112,7 +112,7 @@ export function Inbox() {
     </Empty>}
     {data && data.total > 0 && <div className="overflow-hidden rounded-lg border bg-card">
       <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
-        <span>Pull request</span><span>Review status</span><span>Open findings</span><span>Last synced</span><span />
+        <span>Pull request</span><span>Review status</span><span>Open findings</span><span>Created</span><span />
       </div>
       {data.groups.map((group) => {
         const busy = query.isFetching && Number(params.get(`${group.group}_pages`) ?? 1) > group.page;
@@ -127,7 +127,7 @@ export function Inbox() {
               <div className="min-w-0 pr-5 md:pr-0"><p className="break-words font-medium group-hover:text-primary">{pr.title}</p><p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span className="break-all">{pr.repository_name}</span><span>#{pr.number}</span><span className="break-all">@{pr.author}</span>{pr.draft && <span>Draft</span>}</p></div>
               <div className="min-w-0"><Status value={pr.review_status} />{pr.publication === "failed" && <p className="mt-1 text-xs text-destructive">Publication failed</p>}{pr.publication === "partially_published" && <p className="mt-1 text-xs text-muted-foreground">Partially published</p>}</div>
               <div><Badge variant="outline" className={pr.open_findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{pr.open_findings} open<span className="sr-only"> findings</span></Badge></div>
-              <time dateTime={pr.updated_at} title={date(pr.updated_at)} className="text-xs tabular-nums text-muted-foreground">{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(pr.updated_at))}</time>
+              {pr.created_at ? <time dateTime={pr.created_at} title={date(pr.created_at)} className="text-xs tabular-nums text-muted-foreground">{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(pr.created_at))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
               <ChevronRight aria-hidden="true" className="absolute right-4 top-5 size-4 text-muted-foreground md:static" />
             </Link>)}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry {titles[group.group].toLowerCase()}</Button></div>}
