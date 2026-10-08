@@ -369,7 +369,7 @@ def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypa
     assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
 
 
-def test_file_limit_skips_verification_and_publication(scenario, monkeypatch):
+def test_file_limit_skips_verification_and_queues_notice(scenario, monkeypatch):
     result = ocr.file_limit_result([f"file{i}.py" for i in range(41)], 40)
     def skipped(*args, **kwargs):
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
@@ -378,11 +378,11 @@ def test_file_limit_skips_verification_and_publication(scenario, monkeypatch):
     monkeypatch.setattr(verification, "perform", lambda *a: pytest.fail("Skipped runs must not verify findings"))
     row, finding, run = perform(scenario)
     assert row.status == "skipped" and finding.status == "open" and not scenario["mutations"]
-    assert run.status == "skipped" and run.publication == "not_applicable"
+    assert run.status == "skipped" and run.publication == "pending"
     payload = checks.check_payload(run, 0)
     assert payload["conclusion"] == "skipped" and result[1]["message"] in payload["output"]["summary"]
     with transaction() as db:
-        assert not db.scalar(select(Job).where(Job.kind == "publish", Job.payload["run_id"].as_string() == run.id))
+        assert db.scalar(select(Job).where(Job.kind == "publish", Job.payload["run_id"].as_string() == run.id))
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])

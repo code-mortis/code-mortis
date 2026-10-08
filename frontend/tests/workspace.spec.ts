@@ -749,6 +749,38 @@ const limitedRun: Partial<Run> = {
   },
 };
 
+for (const [publication, label] of [
+  ["pending", "Waiting to publish skip notice"],
+  ["published", "Skip notice published"],
+  ["failed", "Skip notice publication failed"],
+] as const) {
+  test(`file-limit skip notice ${publication} preserves the review outcome`, async ({ page }, info) => {
+    const requests = await mock(page, { run: { ...limitedRun, publication } });
+    await page.goto("/pulls/pr");
+    await page.getByRole("tab", { name: /Run history/ }).click();
+    await expect(page.getByRole("link", { name: new RegExp(`GitHub: ${label}`) })).toBeVisible();
+    await page.getByRole("link", { name: "View run details", exact: true }).click();
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    await expect(outcome).toContainText("41 reviewable files exceed the limit of 40. No files were reviewed.");
+    await expect(outcome).toContainText("@codemortis review anyway");
+    await expect(outcome).toContainText("Personal connections remain owner-only.");
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
+    const retry = page.getByRole("button", { name: "Retry GitHub publication" });
+    if (publication === "failed") {
+      await retry.click();
+      expect(requests).toEqual([{ path: "/runs/run/publish", method: "POST", body: null, csrf: "csrf-from-session" }]);
+    } else {
+      await expect(retry).toHaveCount(0);
+      expect(requests).toEqual([]);
+    }
+    await noOverflow(page);
+    if (publication === "published") {
+      await page.screenshot({ path: `../.impeccable/review/file-limit-notice-${info.project.name}.png`, fullPage: true });
+    }
+  });
+}
+
 test("oversized review explains its outcome and links to editable limits throughout the app", async ({ page }, info) => {
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";

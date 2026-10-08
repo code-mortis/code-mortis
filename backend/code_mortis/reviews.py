@@ -25,6 +25,7 @@ from .models import (
     Repository,
     ReviewRun,
     User,
+    WebhookDelivery,
 )
 from .schemas import RepoSettings
 from .security import digest, unseal
@@ -70,9 +71,19 @@ def create_run(
     trigger: str,
     actor: User | None = None,
     connection_id: str | None = None,
+    *,
+    ignore_file_limit: bool = False,
+    request_key: str | None = None,
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
     db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
+    if request_key:
+        prior = db.scalar(select(ReviewRun).where(
+            ReviewRun.pr_id == pr.id,
+            ReviewRun.progress["comment_requests"][request_key].as_boolean().is_(True),
+        ))
+        if prior:
+            return prior
     if not repo.active or not repo.enabled or not (connection_id or repo.connection_id):
         raise ValueError("Enable this repository and select an AI connection first.")
     connection = db.get(Connection, connection_id or repo.connection_id)
@@ -80,6 +91,8 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.model_validate(repo.settings).model_dump()
+    if ignore_file_limit:
+        options["max_files"] = None
     config = {"connection": connection_snapshot(connection), "settings": options}
     if options["model"]:
         config["connection"]["model"] = options["model"]
@@ -97,9 +110,15 @@ def create_run(
             prior_settings.pop("auto_resolve")
             if prior.config["connection"] == config["connection"] and prior_settings == analysis_settings:
                 return prior
-    active = db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))).all()
+    active = db.scalars(select(ReviewRun).where(
+        ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
+    ).with_for_update().execution_options(populate_existing=True)).all()
     for run in active:
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and run.config == config:
+            if request_key:
+                run.progress = {**run.progress, "comment_requests": {
+                    **run.progress.get("comment_requests", {}), request_key: True,
+                }}
             return run
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha:
             continue
@@ -112,17 +131,91 @@ def create_run(
         pr_id=pr.id,
         actor_id=actor.id if actor else None,
         trigger=trigger,
-        dedup_key=key if trigger == "automatic" else uid(),
+        dedup_key=request_key or (key if trigger == "automatic" else uid()),
         base_sha=pr.base_sha,
         head_sha=pr.head_sha,
         config=config,
         connection_id=connection.id,
         owner_id=connection.owner_id,
         engine="ocr" if connection.kind == "api" else connection.kind,
+        progress={"comment_requests": {request_key: True}} if request_key else {},
     )
     db.add(run)
     enqueue(db, "review", {"run_id": run.id})
     return run
+
+
+def file_limit_exceeded(run: ReviewRun) -> bool:
+    return (run.report or {}).get("manifest", {}).get("schema_version") == "code-mortis.file-limit/v1"
+
+
+def can_publish(run: ReviewRun, status: str | None = None) -> bool:
+    status = status or run.status
+    return status in {"completed", "partial"} or (status == "skipped" and file_limit_exceeded(run))
+
+
+def review_anyway(db: Session, body: dict, delivery_id: str):
+    if body.get("action") != "created":
+        return
+    comment, issue, sender, repository, installation = (
+        body.get(key) for key in ("comment", "issue", "sender", "repository", "installation")
+    )
+    if not all(isinstance(item, dict) for item in (comment, issue, sender, repository, installation)):
+        return
+    author = comment.get("user")
+    if (
+        not isinstance(author, dict)
+        or author.get("type") != "User"
+        or sender.get("type") != "User"
+        or not isinstance(comment.get("body"), str)
+        or comment["body"].strip().casefold() != "@codemortis review anyway"
+        or not isinstance(issue.get("pull_request"), dict)
+        or not all(type(value) is int and value > 0 for value in (
+            author.get("id"), sender.get("id"), comment.get("id"), issue.get("number"),
+            repository.get("id"), installation.get("id"),
+        ))
+        or author["id"] != sender["id"]
+    ):
+        return
+    delivery = db.scalar(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id).with_for_update())
+    if not delivery or delivery.event != "issue_comment":
+        raise ValueError("The review command is missing its verified delivery identity.")
+    if delivery.handled_at:
+        return
+    repo = db.get(Repository, repository["id"])
+    installed = db.get(Installation, installation["id"])
+    if not repo or not installed or repo.installation_id != installed.id:
+        raise ValueError("The review command does not match this repository installation.")
+    if not repo.active or not repo.enabled or not installed.active:
+        raise ValueError("Enable the repository and installation before requesting another review.")
+    actor = db.get(User, author["id"])
+    if not actor or not actor.enabled or not db.get(Membership, actor.id):
+        raise ValueError("Sign in as an enabled Code Mortis member before using the review command.")
+    github.authorize_repo(db, actor, repo.full_name, write=True)
+    pr = db.scalar(select(PullRequest).where(
+        PullRequest.repository_id == repo.id, PullRequest.number == issue["number"],
+    ).with_for_update())
+    if not pr:
+        raise ValueError("This revision has no review skipped because of the file limit.")
+    token = github.installation_token(db, repo.installation_id)
+    remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
+    if remote["state"] != "open":
+        raise ValueError("Reopen the pull request before requesting another review.")
+    pr = upsert_pr(db, repo, remote)
+    source = next((run for run in db.scalars(select(ReviewRun).where(
+        ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha, ReviewRun.head_sha == pr.head_sha,
+        ReviewRun.status == "skipped",
+    ).order_by(ReviewRun.created_at.desc())) if file_limit_exceeded(run)), None)
+    if not source:
+        raise ValueError("This revision has no review skipped because of the file limit.")
+    if not source.connection_id or not db.get(Connection, source.connection_id):
+        raise ValueError("The original AI connection is no longer available. Select a connection in Code Mortis.")
+    request_key = f"issue-comment:{repo.id}:{comment['id']}"
+    run = create_run(db, pr, repo, "manual", actor, source.connection_id,
+                     ignore_file_limit=True, request_key=request_key)
+    if run.dedup_key == request_key and "file_limit_override" not in run.progress:
+        run.progress = {**run.progress, "file_limit_override": {"source_run_id": source.id, "comment_id": comment["id"]}}
+    delivery.handled_at = now()
 
 
 def authorize_connection(db, connection, repo, trigger, actor=None, *, check_repository=True):
@@ -215,7 +308,7 @@ def perform_review(run_id: str, claim: str | None = None):
             raise ValueError("The repository or GitHub installation has been disabled.")
         if run.actor_id:
             actor = db.get(User, run.actor_id)
-            if not actor or not actor.enabled:
+            if not actor or not actor.enabled or not db.get(Membership, actor.id):
                 raise ValueError("The user who requested this run no longer has access.")
             github.authorize_repo(db, actor, repo.full_name, write=True)
         token = github.installation_token(db, repo.installation_id)
@@ -340,12 +433,17 @@ def perform_review(run_id: str, claim: str | None = None):
 def complete_saved_review(db, run, interruption=None):
     """A failed verification phase must not discard completed new-finding analysis."""
     status = run.progress.get("analysis_status")
-    if not run.progress.get("analysis_saved") or status not in {"completed", "partial"} or run.cancel_requested:
+    if not run.progress.get("analysis_saved") or not can_publish(run, status) or run.cancel_requested:
         return False
     if interruption:
         verification.skip_pending(db, run, interruption)
     run.status, run.finished_at = status, now()
+    if run.publication == "not_applicable":
+        run.publication = "pending"
     enqueue(db, "publish", {"run_id": run.id})
+    if status == "skipped":
+        verification.skip_pending(db, run, run.report.get("message") or "Review skipped.")
+        return True
     for finding in db.scalars(select(Finding).join(FindingVerification).where(
         FindingVerification.run_id == run.id, FindingVerification.resolution == "pending"
     )):
@@ -474,6 +572,21 @@ def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str
 
 
 def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
+    if run.status == "skipped" and file_limit_exceeded(run):
+        count = len(run.report["manifest"]["coverage"]["selected"])
+        maximum = run.config["settings"]["max_files"]
+        return [{
+            "commit_id": run.head_sha, "event": "COMMENT", "comments": [],
+            "body": (
+                f"**Review skipped:** {count} reviewable files exceed the limit of {maximum}. No files were reviewed.\n\n"
+                "To bypass the file limit for one review of this revision, post:\n"
+                "`@codemortis review anyway`\n\n"
+                "Requires an enabled Code Mortis member with repository write access. "
+                "Personal connections remain owner-only. Other review limits still apply.\n\n"
+                f"[View run details]({settings().public_url}/runs/{run.id})\n\n"
+                + marker("run", f"{run.id}:0")
+            ),
+        }]
     rows = db.execute(
         select(Occurrence, Finding)
         .join(Finding, Occurrence.finding_id == Finding.id)
@@ -517,7 +630,7 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
 def publish_run(run_id: str):
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if not run or run.status not in {"completed", "partial"} or run.publication == "published":
+        if not run or not can_publish(run) or run.publication == "published":
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)

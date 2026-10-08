@@ -26,6 +26,7 @@ from .reviews import (
     perform_review,
     publish_run,
     reconcile_threads,
+    review_anyway,
     synchronize_finding,
     upsert_pr,
 )
@@ -123,8 +124,11 @@ def scan_repository(repository_id: int):
 
 def process_webhook(payload: dict):
     event, body = payload["event"], payload["body"]
-    installation_id = (body.get("installation") or {}).get("id")
     with transaction() as db:
+        if event == "issue_comment":
+            review_anyway(db, body, payload.get("delivery", ""))
+            return
+        installation_id = (body.get("installation") or {}).get("id")
         installation = db.get(Installation, installation_id) if installation_id else None
         if not installation:
             return
