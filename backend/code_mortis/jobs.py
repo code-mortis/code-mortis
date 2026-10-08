@@ -5,7 +5,7 @@ from datetime import timedelta
 from celery import Celery
 from sqlalchemy import or_, select
 
-from . import checks, github, ocr, runner_client, verification
+from . import background, checks, github, ocr, runner_client, verification
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -181,6 +181,8 @@ def process_webhook(payload: dict):
 def execute(kind: str, payload: dict):
     if kind == "review":
         perform_review(payload["run_id"], payload.get("_claim"))
+    elif kind == "generate_background":
+        background.perform(payload["_job_id"], payload["_attempt"])
     elif kind == "publish":
         publish_run(payload["run_id"])
     elif kind == "sync_check":
@@ -216,17 +218,22 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
-        job.status, job.lease_until = "running", now() + timedelta(seconds=7200)
+        lease_seconds = ((job.payload.get("limits", {}).get("timeout_seconds", 900) or 300) + 60
+                         if job.kind == "generate_background" else 7200)
+        job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
-        execute(kind, {**payload, "_claim": f"{job_id}:{attempt}"} if kind == "review" else payload)
+        execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
+        execute(kind, execution if kind in {"review", "generate_background"} else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
                 return
             waiting = exc.reason in {"busy", "unavailable"}
+            if kind == "generate_background":
+                waiting = exc.reason == "busy" and now().timestamp() < payload["expires_at"]
             job.status, job.lease_until, job.dispatched_at = "queued" if waiting else "failed", None, None
             job.available_at, job.error = now() + timedelta(seconds=30), str(exc)
             job.attempts -= 1
@@ -249,6 +256,10 @@ def execute_job(job_id: str):
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
                 return
+            if kind == "generate_background" and job.payload.get("inference_started"):
+                retry = False
+            if kind == "generate_background" and isinstance(exc, background.GenerationError):
+                job.payload = {**job.payload, "diagnostics": exc.diagnostics}
             job.status, job.error, job.lease_until = ("queued" if retry else "failed"), message[:2000], None
             delay = max(min(30 * 2**attempt, 300), getattr(exc, "retry_after", 0))
             job.available_at, job.dispatched_at = now() + timedelta(seconds=delay), None
@@ -300,6 +311,11 @@ def dispatch():
             .where(Job.status == "running", Job.lease_until < now())
             .with_for_update(skip_locked=True)
         ):
+            if job.kind == "generate_background" and (job.payload.get("background") or job.payload.get("inference_started")):
+                job.status = "done" if job.payload.get("background") else "failed"
+                job.error = None if job.status == "done" else background.INTERRUPTED
+                job.lease_until = None
+                continue
             if job.attempts < 3:
                 job.status, job.dispatched_at = "queued", None
             else:
@@ -341,8 +357,11 @@ def dispatch():
             )
         )
         for job in candidates:
+            if job.kind == "generate_background" and now().timestamp() >= job.payload["expires_at"]:
+                job.status, job.error = "failed", "Background generation expired. Generate again to retry."
+                continue
             execute_job.apply_async(
-                args=[job.id], queue="reviews" if job.kind in {"review", "test_connection"} else "sync"
+                args=[job.id], queue="reviews" if job.kind in {"review", "test_connection", "generate_background"} else "sync"
             )
             job.dispatched_at = now()
 

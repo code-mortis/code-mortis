@@ -157,6 +157,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/background": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate Background */
+        post: operations["generate_background_api_v1_repositories__repository_id__background_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/background/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Background Status */
+        get: operations["background_status_api_v1_repositories__repository_id__background__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/pulls": {
         parameters: {
             query?: never;
@@ -712,6 +746,31 @@ export interface components {
              */
             created_at: string;
         };
+        /** BackgroundInput */
+        BackgroundInput: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            limits?: components["schemas"]["RunLimits"] | null;
+        };
+        /** BackgroundJobOut */
+        BackgroundJobOut: {
+            /** Id */
+            id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "done" | "failed";
+            /** Background */
+            background?: string | null;
+            /** Error */
+            error?: string | null;
+        };
         /** ConnectionInput */
         ConnectionInput: {
             /**
@@ -1019,6 +1078,16 @@ export interface components {
         /** RepoSettings */
         RepoSettings: {
             /**
+             * Timeout Seconds
+             * @default 900
+             */
+            timeout_seconds: number | null;
+            /**
+             * Token Budget
+             * @default 200000
+             */
+            token_budget: number | null;
+            /**
              * Automatic
              * @default true
              */
@@ -1054,16 +1123,6 @@ export interface components {
              * @default
              */
             background: string;
-            /**
-             * Timeout Seconds
-             * @default 900
-             */
-            timeout_seconds: number | null;
-            /**
-             * Token Budget
-             * @default 200000
-             */
-            token_budget: number | null;
             /**
              * Max Files
              * @default 40
@@ -1124,6 +1183,19 @@ export interface components {
             occurrences: components["schemas"]["OccurrenceOut"][];
             /** Can Write */
             can_write: boolean;
+        };
+        /** RunLimits */
+        RunLimits: {
+            /**
+             * Timeout Seconds
+             * @default 900
+             */
+            timeout_seconds: number | null;
+            /**
+             * Token Budget
+             * @default 200000
+             */
+            token_budget: number | null;
         };
         /** RunOut */
         RunOut: {
@@ -1532,6 +1604,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_background_api_v1_repositories__repository_id__background_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackgroundInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackgroundJobOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    background_status_api_v1_repositories__repository_id__background__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackgroundJobOut"];
                 };
             };
             /** @description Validation Error */

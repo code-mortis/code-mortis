@@ -18,7 +18,7 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import ocr, verification
+from code_mortis import background, ocr, verification
 
 calls = []
 verification_mode = "fixed"
@@ -39,11 +39,22 @@ class Provider(BaseHTTPRequestHandler):
             content = [
                 {"type": "tool_use", "id": "selftest", "name": "ocr_selftest", "input": {"note": "test"}}
             ]
+        elif "Code Mortis project background evidence" in text and "code_comment" in names and not any(
+            message.get("role") == "assistant" for message in data["messages"]
+        ):
+            assert names == {"code_comment", "task_done"}, names
+            assert "The required output is a project overview" in text, "OCR must load the generation rule"
+            content = [{"type": "tool_use", "id": "background", "name": "code_comment", "input": {"comments": [{
+                "path": "evidence.py", "content": json.dumps({"background": "A Python service with a worker."}),
+                "category": "other", "severity": "low",
+                "existing_code": "# Code Mortis project background evidence", "suggestion_code": "",
+            }]}}]
         elif "Code Mortis verification evidence" in text and "code_comment" in names and not any(
             message.get("role") == "assistant" for message in data["messages"]
         ):
             assert names == {"code_comment", "task_done"}, names
             assert "internal result transport" in text
+            assert "including fixed and uncertain outcomes" in text, "OCR must load the verification rule"
             if verification_mode == "provider_error":
                 self.send_response(401)
                 self.send_header("Content-Type", "application/json")
@@ -102,6 +113,19 @@ def main():
     try:
         assert "tool-call round trip" in ocr.test_connection(connection, {"api_key": "fake-test-key"})
         assert len(calls) == 2
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = {"repository": "team/project", "sources": {
+                f"src/service_{index}.py": {"text": (
+                    "def deliver(payload):\n    return queue.enqueue(payload)\n" * 100
+                )[:3500], "truncated": True} for index in range(16)
+            }}
+            prompt = background.INSTRUCTIONS + "\n\n" + json.dumps(evidence)
+            assert 50_000 < len(prompt.encode()) < background.CONTEXT_BYTES
+            draft = background.api_generate(Path(tmp), connection, {"api_key": "fake-test-key"},
+                                            prompt, 60, lambda: False, 200000)
+            assert background.validate_result(draft) == "A Python service with a worker."
+            assert len(calls) > 2, "Realistic repository context must reach the mock provider."
+        print("Pinned OCR generated project background through a restricted result envelope (mock provider).")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = ocr.child_environment()

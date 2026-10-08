@@ -120,15 +120,22 @@ export function Field({
   label,
   children,
   hint,
+  action,
 }: {
   label: string;
   children: (id: string) => ReactNode;
   hint?: string;
+  action?: ReactNode;
 }) {
   const id = useId();
   return (
     <div className="space-y-2">
-      <Label htmlFor={id}>{label}</Label>
+      {action ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Label htmlFor={id}>{label}</Label>
+          {action}
+        </div>
+      ) : <Label htmlFor={id}>{label}</Label>}
       {children(id)}
       {hint && (
         <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>

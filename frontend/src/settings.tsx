@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { PersonalConnection } from "./subscriptions";
 import { ModelPicker } from "./components/model-picker";
+import { BackgroundField } from "./components/background-field";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -223,19 +224,17 @@ export function RepositorySettings({
           />
         )}
       </Field>
-      <Field
-        label="Project background"
-        hint="Context that helps reviewers understand the codebase."
-      >
-        {(id) => (
-          <Textarea
-            id={id}
-            rows={4}
-            value={settings.background}
-            onChange={(e) => change("background", e.target.value)}
-          />
-        )}
-      </Field>
+      <BackgroundField
+        repositoryId={repo.id}
+        connectionId={connection}
+        model={settings.model}
+        defaultModel={selectedConnection?.model ?? ""}
+        tokenBudget={settings.token_budget}
+        timeoutSeconds={settings.timeout_seconds}
+        personal={personal}
+        value={settings.background}
+        onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
+      />
       <details className="space-y-4" open={showLimits || undefined}>
         <summary className="cursor-pointer text-sm font-medium">
           Review limits and rules
@@ -243,9 +242,9 @@ export function RepositorySettings({
         <div className="grid gap-4 pt-4 sm:grid-cols-2">
           {([
             { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
-              hint: "Unlimited removes the review deadline. Provider and connection timeouts still apply." },
+              hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
             { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
-              hint: "Unlimited removes the review token budget. Provider and account limits still apply." },
+              hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
             { key: "max_files", label: "Maximum files", min: 1, max: undefined,
               hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
           ] as const).filter(({ key }) => !personal || key !== "token_budget").map(({ key, label, min, max, hint }) => (

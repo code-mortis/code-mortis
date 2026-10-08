@@ -138,6 +138,7 @@ async function mock(
     run?: Partial<Run>;
     finding?: Partial<Schema["FindingOut"]>;
     verifications?: Schema["VerificationOut"][];
+    background?: Schema["BackgroundJobOut"];
   } = {},
 ) {
   const current: Schema["FindingOut"] = { ...structuredClone(finding), sync_intent: null, ...options.finding };
@@ -174,6 +175,10 @@ async function mock(
         csrf: "csrf-from-session",
       };
     else if (path === "/repositories") data = [repo];
+    else if (path === "/repositories/22/background" && options.background)
+      data = { ...options.background, status: "queued", background: null, error: null };
+    else if (path.startsWith("/repositories/22/background/") && options.background)
+      data = options.background;
     else if (path === "/repositories/22/pulls")
       data = [
         { ...pr, latest_run: currentRun },
@@ -644,6 +649,146 @@ test("repository model choices follow its selected connection", async ({ page },
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await page.getByLabel("AI connection", { exact: true }).selectOption("");
   await expect(model).toBeDisabled();
+});
+
+test("project background generates an editable draft with unsaved selections and Undo", async ({ page }, info) => {
+  const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
+  const requests = await mock(page, { background });
+  await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const field = page.getByLabel("Project background", { exact: true });
+  await field.fill("Existing context");
+  await page.getByLabel("AI connection", { exact: true }).selectOption("second");
+  await page.getByLabel("Model override (optional)").selectOption("next-model");
+  await page.getByRole("button", { name: "Generate background", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+  await expect(field).toHaveValue("Existing context");
+  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
+  background.background = "A payment service built with TypeScript. Workers deliver webhooks and handle retries.";
+  background.status = "done";
+  await expect(field).toHaveValue(background.background);
+  await expect(page.getByRole("status").filter({ hasText: "Background generated." })).toBeVisible();
+  await noOverflow(page);
+  await field.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/project-background-${info.project.name}.png`, fullPage: true });
+  expect(requests).toHaveLength(1);
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(field).toHaveValue("Existing context");
+  await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
+  background.id = "second-background-job";
+  await page.getByRole("button", { name: "Generate background", exact: true }).click();
+  await expect(field).toHaveValue(background.background);
+  await field.fill("Edited generated context");
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  expect(requests.at(-1)).toMatchObject({ path: "/repositories/22", method: "PUT", body: {
+    connection_id: "second", settings: { model: "next-model", background: "Edited generated context" },
+  } });
+});
+
+for (const change of ["background", "model", "connection"]) {
+  test(`project background discards a late result after changing ${change}`, async ({ page }) => {
+    const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
+    const requests = await mock(page, { background });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    const field = page.getByLabel("Project background", { exact: true });
+    await field.fill("Original context");
+    await page.getByRole("button", { name: "Generate background", exact: true }).click();
+    if (change === "background") await field.fill("Keep this edit");
+    if (change === "model") await page.getByLabel("Model override (optional)").selectOption("next-model");
+    if (change === "connection") await page.getByLabel("AI connection", { exact: true }).selectOption("");
+    background.background = "Stale generated context";
+    background.status = "done";
+    await expect(page.getByRole("status").filter({ hasText: "Your selections or background changed." })).toBeVisible();
+    await expect(field).toHaveValue(change === "background" ? "Keep this edit" : "Original context");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body).toEqual({ connection_id: "connection", model: "", limits: { token_budget: 200000, timeout_seconds: 900 } });
+  });
+}
+
+test("project background preserves text on failure and explains missing selections", async ({ page }) => {
+  const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "failed", background: null, error: "Reconnect your account before retrying." };
+  await mock(page, { background });
+  await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "no-model", name: "No model", model: "" }] }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const field = page.getByLabel("Project background", { exact: true });
+  const generate = page.getByRole("button", { name: "Generate background", exact: true });
+  await field.fill("Keep my context");
+  await generate.click();
+  await expect(page.getByRole("alert")).toContainText("Reconnect your account before retrying.");
+  await expect(field).toHaveValue("Keep my context");
+  await expect(generate).toBeEnabled();
+  await page.getByLabel("AI connection", { exact: true }).selectOption("");
+  await expect(generate).toBeDisabled();
+  await expect(page.getByText("Choose an AI connection to generate background.")).toBeVisible();
+  await page.getByLabel("AI connection", { exact: true }).selectOption("no-model");
+  await expect(generate).toBeDisabled();
+  await expect(page.getByText("Choose a model to generate background.")).toBeVisible();
+  await page.getByLabel("Model override (optional)").selectOption("next-model");
+  await expect(generate).toBeEnabled();
+});
+
+test("project background preserves text when starting or polling fails", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 422, json: { detail: "Authorize this repository first." } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const field = page.getByLabel("Project background", { exact: true });
+  await field.fill("Keep my context");
+  await page.getByRole("button", { name: "Generate background", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Authorize this repository first.");
+  await expect(field).toHaveValue("Keep my context");
+  await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 202, json: { id: "job", status: "queued" } }));
+  await page.route("**/api/v1/repositories/22/background/job", (route) => route.fulfill({ status: 403, json: { detail: "Repository access revoked." } }));
+  await page.getByRole("button", { name: "Generate background", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Repository access revoked.");
+  await expect(field).toHaveValue("Keep my context");
+});
+
+for (const unlimited of [false, true]) {
+  test(`project background uses unsaved ${unlimited ? "unlimited" : "custom"} review limits`, async ({ page }) => {
+    const background: Schema["BackgroundJobOut"] = { id: "limits-job", status: "running", background: null, error: null };
+    const requests = await mock(page, { background });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.getByText("Review limits and rules", { exact: true }).click();
+    if (unlimited) {
+      await page.getByLabel("Unlimited token budget", { exact: true }).check();
+      await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
+    } else {
+      await page.getByLabel("Token budget", { exact: true }).fill("450000");
+      await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
+    }
+    await expect(page.getByText(/Uses the current Review limits and rules settings:/)).toContainText(
+      unlimited ? "unlimited tokens, no overall timeout" : "450,000 tokens, 1,200-second timeout",
+    );
+    await page.getByRole("button", { name: "Generate background", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: "POST", body: { limits: {
+      token_budget: unlimited ? null : 450000, timeout_seconds: unlimited ? null : 1200,
+    } } });
+  });
+}
+
+test("project background explains missing output and displays its generation reference", async ({ page }, info) => {
+  const error = "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result. Your background was not changed.";
+  const background: Schema["BackgroundJobOut"] = { id: "ab31f162-abb3-4ce5-bc85-e6af43be6ba6", status: "failed", background: null, error };
+  const requests = await mock(page, { background });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const field = page.getByLabel("Project background", { exact: true });
+  await field.fill("Keep my existing project background.");
+  await page.getByRole("button", { name: "Generate background", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(error);
+  await expect(page.getByText(`Generation reference: ${background.id}`)).toBeVisible();
+  await expect(field).toHaveValue("Keep my existing project background.");
+  expect(requests).toHaveLength(1);
+  await noOverflow(page);
+  await page.getByRole("alert").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/project-background-error-${info.project.name}.png`, fullPage: true });
 });
 
 test("review limits save and reopen independent unlimited choices", async ({ page }, info) => {
