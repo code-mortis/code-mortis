@@ -256,7 +256,7 @@ def remote(head="a" * 40):
     return {
         "number": 3,
         "title": "Fix retry logic",
-        "user": {"login": "owner"},
+        "user": {"login": "owner", "type": "User"},
         "html_url": "https://github.com/team/project/pull/3",
         "state": "open",
         "head": {"sha": head, "ref": "fix/retries", "repo": {"id": 22}},
@@ -518,6 +518,52 @@ def test_automatic_reviews_skip_forks_and_drafts(seed, github_stub, monkeypatch)
     jobs.sync_pr(22, 3)
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+
+
+@pytest.mark.parametrize("login", ["dependabot[bot]", "automation"])
+def test_repository_scans_skip_bot_prs_but_allow_manual_reviews(seed, github_stub, monkeypatch, client, login):
+    data = remote("c" * 40)
+    data["user"] = {"login": login, "type": "Bot"}
+    monkeypatch.setattr(github, "request", lambda *a, **k: data)
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [data])
+    reconciled = []
+    monkeypatch.setattr(jobs, "reconcile_threads", lambda db, pr, *a: reconciled.append(pr.head_sha))
+    jobs.scan_repository(22)
+    with transaction() as db:
+        payload = db.scalar(select(Job).where(Job.kind == "sync_pr")).payload
+    jobs.execute("sync_pr", payload)
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        assert pr.author == login and pr.head_sha == data["head"]["sha"]
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 0
+    assert reconciled == [data["head"]["sha"]]
+    response = client.post("/api/v1/pulls/pr/runs")
+    assert response.status_code == 202, response.text
+    assert response.json()["trigger"] == "manual" and response.json()["actor_id"] == 7
+
+
+@pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review", "synchronize"])
+@pytest.mark.parametrize("sender_type,author_type,expected", [
+    ("User", "User", 1), ("Bot", "User", 0), ("User", "Bot", 0), ("Bot", "Bot", 0),
+])
+def test_pr_webhooks_only_automatically_review_human_prs(
+    seed, github_stub, monkeypatch, action, sender_type, author_type, expected,
+):
+    data = remote()
+    data["user"]["type"] = author_type
+    monkeypatch.setattr(github, "request", lambda *a, **k: data)
+    jobs.process_webhook({"event": "pull_request", "body": {
+        "action": action, "installation": {"id": 10}, "repository": {"id": 22},
+        "sender": {"type": sender_type}, "pull_request": data,
+    }})
+    with transaction() as db:
+        payload = db.scalar(select(Job).where(Job.kind == "sync_pr")).payload
+        assert payload["automatic"] is (sender_type == "User")
+    jobs.execute("sync_pr", payload)
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == expected
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == expected
 
 
 def test_queued_review_cannot_send_rotated_credentials_to_old_endpoint(seed, github_stub, monkeypatch):

@@ -94,6 +94,7 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
             and pr.state == "open"
             and not pr.draft
             and not pr.fork
+            and data["user"].get("type") == "User"
         ):
             connection = db.get(Connection, repo.connection_id)
             if connection and connection.kind != "api":
@@ -167,12 +168,13 @@ def process_webhook(payload: dict):
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
             return
         if event in {"pull_request", "pull_request_review_thread", "pull_request_review_comment"}:
-            automatic = event == "pull_request" and body.get("action") in {
-                "opened",
-                "reopened",
-                "ready_for_review",
-                "synchronize",
-            }
+            sender = body.get("sender")
+            automatic = (
+                event == "pull_request"
+                and body.get("action") in {"opened", "reopened", "ready_for_review", "synchronize"}
+                and isinstance(sender, dict)
+                and sender.get("type") == "User"
+            )
             enqueue(db, "sync_pr", {"repository_id": repo.id, "number": pr["number"], "automatic": automatic})
 
 
