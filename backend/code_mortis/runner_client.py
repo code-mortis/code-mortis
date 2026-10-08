@@ -60,7 +60,7 @@ def review(connection_id: str, run_id: str, payload: dict, stopped):
                 raise RunnerBlocked(state["reason"])
             time.sleep(1)
     finally:
-        # Cancel on worker-side failure too. The runner also enforces its own deadline.
+        # The runner also enforces finite deadlines and expires unpolled unlimited work.
         try:
             request("DELETE", path)
         except RunnerBlocked:

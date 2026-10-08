@@ -109,8 +109,9 @@ class RepoSettings(StrictModel):
     language: str = Field(default="English", min_length=1, max_length=100)
     exclusions: str = Field(default="", max_length=4000)
     background: str = Field(default="", max_length=20000)
-    timeout_seconds: int = Field(default=900, ge=60, le=3600)
-    token_budget: int = Field(default=200000, ge=1000, le=5000000)
+    timeout_seconds: int | None = Field(default=900, ge=60, le=3600)
+    token_budget: int | None = Field(default=200000, ge=1000, le=5000000)
+    max_files: int | None = Field(default=40, ge=1, strict=True)
     delegated_context_bytes: int = Field(default=800000, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None

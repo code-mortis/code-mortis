@@ -835,6 +835,9 @@ export function RunDetail() {
         </div>
       </div>
       <div className="space-y-3">
+        {run.status === "skipped" && typeof run.report?.message === "string" && (
+          <p role="status" className="text-sm text-muted-foreground">{run.report.message}</p>
+        )}
         <ErrorNotice error={run.error} />
         <ErrorNotice error={run.publication_error} />
         {!!verification?.selected && (

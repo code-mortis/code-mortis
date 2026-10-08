@@ -145,6 +145,10 @@ def main():
                         "agent",
                         "--effort",
                         "low",
+                        "--max-tokens-budget",
+                        "0",
+                        "--timeout",
+                        "0",
                     ],
                     root,
                     env,
@@ -200,6 +204,26 @@ def main():
                     )[0]
                     == "completed"
                 )
+                git("checkout", "--detach", head)
+                for index in range(40):
+                    (root / f"source{index}.py").write_text("value = 1\n")
+                git("add", ".")
+                git("commit", "-m", "oversized review")
+                large_head = git("rev-parse", "HEAD")
+                code, preview, _ = ocr.command([
+                    "ocr", "review", "--repo", str(root), "--from", base, "--to", large_head,
+                    "--format", "json", "--preview",
+                ], root, env)
+                preview = json.loads(preview)
+                assert code == 0
+                paths = ocr.preview_paths([item for item in preview["files"] if item["will_review"]], preview["reviewable_count"])
+                assert len(paths) == 41 and ocr.file_limit_result(paths, 40)[0] == "skipped"
+                before = len(calls)
+                result = delegated.review(root, env, base, large_head, base, native,
+                                          RepoSettings().model_dump(), "large", lambda: False, events.append, {})
+                assert result[0] == "skipped" and len(calls) == before
+                assert result[1]["message"] == "41 reviewable files exceeds the maximum of 40."
+                git("checkout", "--detach", base)
             finally:
                 runner_client.review = original
             options = RepoSettings().model_dump()
@@ -232,7 +256,7 @@ def main():
                 return result
             ocr.command = capture
             try:
-                raw, usage = verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context, options["token_budget"], 60, lambda: False)
+                raw, usage = verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context, None, None, lambda: False)
             except ValueError as exc:
                 raise AssertionError(str(scan_output)) from exc
             finally:

@@ -329,7 +329,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
 
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped):
-    if token_budget <= 0 or timeout <= 0:
+    if (token_budget is not None and token_budget <= 0) or (timeout is not None and timeout <= 0):
         raise ValueError("No verification allowance remains.")
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
     with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
@@ -347,7 +347,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         tools.write_text(json.dumps(verification_tools()))
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
                 "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
-                "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget)]
+                "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
+                "--timeout", "0"]
         try:
             code, preview, _ = ocr.command([*args, "--preview"], root, env, timeout=timeout, stopped=stopped)
             accepted = any(item.get("path") == "evidence.py" and item.get("will_review") is True
@@ -357,7 +358,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             raise VerificationOutputError("OCR could not complete the evidence preflight.", {"tokens": 0}, status) from exc
         if code or not accepted:
             raise VerificationOutputError("The evidence bundle exceeds OCR scope or context limits.", {"tokens": 0}, "skipped")
-        with ocr.configuration(connection, credentials, {}):
+        with ocr.configuration(connection, credentials, {}, stopped):
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
             code, output, errors = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
@@ -459,10 +460,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
         ).order_by(FindingVerification.created_at, FindingVerification.id)))
         options = run.config["settings"]
-        deadline = run.started_at.timestamp() + options["timeout_seconds"]
+        deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     for identity in ids:
         def stopped():
-            if now().timestamp() >= deadline or review_stopped(run_id, claim):
+            if review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline):
                 return True
             with transaction() as db:
                 current = db.get(ReviewRun, run_id)
@@ -483,7 +484,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             finding = db.get(Finding, row.finding_id)
-            remaining = int(deadline - now().timestamp())
+            remaining = int(deadline - now().timestamp()) if deadline is not None else None
             if (not enabled(run, repo) or run.cancel_requested or pr.head_sha != run.head_sha
                 or pr.base_sha != run.base_sha or pr.state != "open" or finding.status != "open"
                 or finding.desired_status or finding.sync_version != row.finding_version):
@@ -494,10 +495,14 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             used_context = (run.report or {}).get("limits", {}).get("context_bytes", 0)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
             if connection["kind"] == "api":
-                budget = options["token_budget"] - used_tokens - sum(u.get("tokens", 0) for u in prior_usage) if type(used_tokens) is int and used_tokens >= 0 else 0
+                budget = options["token_budget"]
+                if budget is not None:
+                    tokens = [used_tokens, *(u.get("tokens", 0) for u in prior_usage)]
+                    budget = budget - sum(tokens) if all(type(value) is int and value >= 0 for value in tokens) else 0
             else:
                 budget = options["delegated_context_bytes"] - used_context - sum(u.get("context_bytes", 0) for u in prior_usage)
-            if remaining < 10 or budget <= 0 or run.progress.get("analysis_status") not in {"completed", "partial"}:
+            if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
+                or run.progress.get("analysis_status") not in {"completed", "partial"}):
                 finish(db, row, status="skipped", error="Review did not leave a verified budget and time allowance.")
                 continue
             current_connection = db.get(Connection, run.connection_id)
@@ -524,8 +529,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             input_bytes = len(prompt.encode()) + 4096
             if connection["kind"] != "api" and input_bytes > budget:
                 raise ValueError("Verification exceeds the remaining subscription context allowance.")
-            remaining = int(deadline - now().timestamp())
-            if remaining < 10 or stopped():
+            remaining = int(deadline - now().timestamp()) if deadline is not None else None
+            if (remaining is not None and remaining < 10) or stopped():
                 raise ocr.ReviewStopped()
             with transaction() as db:
                 current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())

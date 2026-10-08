@@ -20,6 +20,7 @@ const repo = {
     background: "",
     timeout_seconds: 900,
     token_budget: 200000,
+    max_files: 40,
     concurrency: 2,
     rules: null,
   },
@@ -642,6 +643,81 @@ test("repository model choices follow its selected connection", async ({ page },
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await page.getByLabel("AI connection", { exact: true }).selectOption("");
   await expect(model).toBeDisabled();
+});
+
+test("review limits save and reopen independent unlimited choices", async ({ page }, info) => {
+  await mock(page);
+  let current = structuredClone(repo) as Schema["RepositoryOut"];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [current] }));
+  await page.route("**/api/v1/repositories/22", async (route) => {
+    current = { ...current, ...route.request().postDataJSON() };
+    await route.fulfill({ json: current });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByText("Review limits and rules", { exact: true }).click();
+  const time = page.getByLabel("Timeout (seconds)", { exact: true });
+  const tokens = page.getByLabel("Token budget", { exact: true });
+  const files = page.getByLabel("Maximum files", { exact: true });
+  const unlimitedTime = page.getByRole("checkbox", { name: "Unlimited timeout (seconds)", exact: true });
+  const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited token budget", exact: true });
+  const unlimitedFiles = page.getByRole("checkbox", { name: "Unlimited maximum files", exact: true });
+  await expect(time).toHaveValue("900");
+  await expect(tokens).toHaveValue("200000");
+  await expect(files).toHaveValue("40");
+  await time.fill("1200");
+  await unlimitedTime.check();
+  await expect(time).toBeDisabled();
+  await expect(tokens).toBeEnabled();
+  await expect(files).toBeEnabled();
+  await unlimitedTime.uncheck();
+  await expect(time).toHaveValue("1200");
+  await files.fill("0");
+  expect(await files.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
+  await files.fill("40");
+  await unlimitedTokens.check();
+  await unlimitedFiles.check();
+  await unlimitedTime.check();
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect.poll(() => current.settings).toMatchObject({ timeout_seconds: null, token_budget: null, max_files: null });
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByText("Review limits and rules", { exact: true }).click();
+  await expect(unlimitedTime).toBeChecked();
+  await expect(unlimitedTokens).toBeChecked();
+  await expect(unlimitedFiles).toBeChecked();
+  await unlimitedFiles.uncheck();
+  await expect(files).toHaveValue("40");
+  await noOverflow(page);
+  await time.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/review-limits-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect.poll(() => current.settings).toMatchObject({ timeout_seconds: null, token_budget: null, max_files: 40 });
+});
+
+test("personal review limits retain their separate context budget", async ({ page }) => {
+  await mock(page, { personal: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByLabel("AI connection", { exact: true }).selectOption("personal");
+  await page.getByText("Review limits and rules", { exact: true }).click();
+  await expect(page.getByLabel("Token budget", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Native context budget (bytes)")).toHaveValue("800000");
+  await page.getByRole("checkbox", { name: "Unlimited timeout (seconds)" }).check();
+  await page.getByRole("checkbox", { name: "Unlimited maximum files" }).check();
+  await expect(page.getByLabel("Native context budget (bytes)")).toBeEnabled();
+  await noOverflow(page);
+});
+
+test("oversized review explains why it was skipped", async ({ page }, info) => {
+  await mock(page, { run: { status: "skipped", publication: "not_applicable", publication_error: null,
+    report: { message: "41 reviewable files exceeds the maximum of 40.", manifest: { coverage: {
+      selected: [{ path: "source.py" }], completed: [], reused: [], failed: [], waived: [{ path: "source.py" }],
+    } } } } });
+  await page.goto("/runs/run");
+  await expect(page.getByRole("status").filter({ hasText: "41 reviewable files exceeds the maximum of 40." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/file-limit-skipped-${info.project.name}.png`, fullPage: true });
 });
 
 test("personal setup saves without a model then signs in and selects one", async ({ page }, info) => {

@@ -125,6 +125,8 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         lines.append(
             "Review completed and comments published. Findings are informational; this is not approval to merge."
         )
+    if run.status == "skipped" and isinstance((run.report or {}).get("message"), str):
+        lines.append(clean_text(run.report["message"])[:2000])
     for value in (run.error, run.publication_error, run.blocked_reason):
         if value:
             lines.append(clean_text(value)[:2000])

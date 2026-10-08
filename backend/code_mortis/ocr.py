@@ -68,7 +68,7 @@ def command(
     args: list[str],
     directory: Path,
     env: dict,
-    timeout: int = 60,
+    timeout: int | None = 60,
     stopped: Callable[[], bool] = lambda: False,
 ) -> tuple[int, str, str]:
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
@@ -81,12 +81,12 @@ def command(
             stderr=errors,
             start_new_session=True,
         )
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout is not None else None
         try:
             while process.poll() is None:
                 if stopped():
                     raise ReviewStopped("Review cancelled or superseded by a newer commit.")
-                if time.monotonic() > deadline:
+                if deadline is not None and time.monotonic() > deadline:
                     raise TimeoutError("The operation exceeded its configured time limit.")
                 if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                     raise ValueError("Review output exceeded the 20 MB safety limit.")
@@ -135,13 +135,20 @@ def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
 
 
 @contextmanager
-def configuration(connection: dict, credentials: dict, review_settings: dict):
+def configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False):
     if not settings().ocr_isolated_runtime:
         raise ValueError("OCR execution requires the isolated Docker worker (CM_OCR_ISOLATED_RUNTIME=true).")
     folder = Path.home() / ".opencodereview"
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (folder / ".mortis.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        while True:
+            if stopped():
+                raise ReviewStopped("Review cancelled while waiting for OCR configuration.")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(0.2)
         path = folder / "config.json"
         if path.exists():
             # Never overwrite an operator's pre-existing OCR configuration.
@@ -312,6 +319,36 @@ def diff_lines(patch: str) -> set[int]:
     return result
 
 
+def preview_paths(files, count):
+    if not isinstance(files, list) or type(count) is not int or len(files) != count:
+        raise ValueError("OCR returned inconsistent selected-file coverage.")
+    paths = []
+    for item in files:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path or ReviewComment.relative_path(path) != path:
+            raise ValueError("OCR returned an invalid selected path.")
+        paths.append(path)
+    if len(set(paths)) != len(paths):
+        raise ValueError("OCR returned repeated selected paths.")
+    return paths
+
+
+def file_limit_result(paths, maximum):
+    if maximum is None or len(paths) <= maximum:
+        return None
+    message = f"{len(paths)} reviewable files exceeds the maximum of {maximum}."
+    entries = [{"item_id": digest(path), "path": path} for path in paths]
+    return "skipped", {
+        "manifest": {
+            "schema_version": "code-mortis.file-limit/v1", "terminal_state": "skipped",
+            "coverage": {"selected": entries, "completed": [], "reused": [], "failed": [],
+                         "waived": [{**item, "reason": message} for item in entries]},
+        },
+        "message": message,
+        "summary": {"findings": 0, "total_tokens": 0},
+    }, []
+
+
 def review(
     full_name: str,
     number: int,
@@ -328,6 +365,16 @@ def review(
     saved_review: tuple | None = None,
     after_review: Callable | None = None,
 ) -> tuple[str, dict, list[dict]]:
+    deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
+    cancelled = stopped
+
+    def stopped():
+        if cancelled():
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("The run's time allowance expired.")
+        return False
+
     safe_repo_name(full_name)
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base_sha, head_sha)):
         raise ValueError("Invalid commit identity.")
@@ -407,7 +454,9 @@ def review(
             "--concurrency",
             str(review_settings["concurrency"]),
             "--max-tokens-budget",
-            str(review_settings["token_budget"]),
+            str(review_settings["token_budget"] or 0),
+            "--timeout",
+            "0",
         ]
         if review_settings.get("exclusions"):
             args += ["--exclude", review_settings["exclusions"]]
@@ -420,9 +469,20 @@ def review(
             rules.write_text(json.dumps(review_settings["rules"]))
             args += ["--rule", str(rules)]
         check_version(directory, env)
-        with configuration(connection, credentials, review_settings):
+        with configuration(connection, credentials, review_settings, stopped):
+            if review_settings.get("max_files") is not None:
+                code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
+                preview = json.loads(output)
+                if code or not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
+                    raise ValueError("OCR could not prepare the review scope.")
+                if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
+                    raise ValueError("OCR returned invalid file eligibility.")
+                paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
+                limited = file_limit_result(paths, review_settings["max_files"])
+                if limited:
+                    return complete(limited)
             code, output, _ = command(
-                args, repo, env, timeout=review_settings["timeout_seconds"], stopped=stopped
+                args, repo, env, timeout=None, stopped=stopped
             )
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         status, report, comments = parse_report(output, code, secrets)

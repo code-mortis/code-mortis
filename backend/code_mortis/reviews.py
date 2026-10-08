@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import timedelta
 from difflib import unified_diff
 from pathlib import PurePosixPath
 
@@ -92,7 +93,7 @@ def create_run(
             ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha, ReviewRun.head_sha == pr.head_sha,
             ReviewRun.trigger == "automatic",
         ).order_by(ReviewRun.created_at)):
-            prior_settings = RepoSettings.model_validate(prior.config["settings"]).model_dump()
+            prior_settings = RepoSettings.model_validate({"max_files": None, **prior.config["settings"]}).model_dump()
             prior_settings.pop("auto_resolve")
             if prior.config["connection"] == config["connection"] and prior_settings == analysis_settings:
                 return prior
@@ -174,6 +175,13 @@ def review_stopped(run_id: str, claim: str | None = None) -> bool:
             return True
         if claim and run.progress.get("execution") != claim:
             return True
+        if claim and ":" in claim:
+            job_id, attempt = claim.rsplit(":", 1)
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if not job or job.status != "running" or str(job.attempts) != attempt or job.lease_until <= now():
+                return True
+            if job.lease_until <= now() + timedelta(seconds=7140):
+                job.lease_until = now() + timedelta(seconds=7200)
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
@@ -264,8 +272,9 @@ def perform_review(run_id: str, claim: str | None = None):
             run.failure_reason, run.error = "worker_stopped", "Review interrupted before usage was saved; consumption is unknown."
             verification.skip_pending(db, run, run.error)
             return
-        remaining = int(run.config["settings"]["timeout_seconds"] - (now() - run.started_at).total_seconds())
-        if remaining <= 0:
+        allowance = run.config["settings"]["timeout_seconds"]
+        remaining = int(allowance - (now() - run.started_at).total_seconds()) if allowance is not None else None
+        if remaining is not None and remaining <= 0:
             verification.skip_pending(db, run, "The run's original time allowance expired.")
             if not complete_saved_review(db, run):
                 run.status, run.finished_at = "failed", now()
@@ -292,6 +301,12 @@ def perform_review(run_id: str, claim: str | None = None):
 
         def after_review(result, repo_path, env, fetch_env):
             save_analysis(run_id, claim, *result)
+            if result[0] == "skipped":
+                with transaction() as db:
+                    current = db.get(ReviewRun, run_id)
+                    if current.progress.get("execution") == claim:
+                        verification.skip_pending(db, current, result[1].get("message") or "Review skipped.")
+                return
             verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
 
         status, report, comments = ocr.review(
