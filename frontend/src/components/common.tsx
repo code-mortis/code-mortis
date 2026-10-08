@@ -27,7 +27,8 @@ export function Status({ value, label }: { value: string; label?: string }) {
     <Badge
       variant="outline"
       className={cn(
-        "capitalize gap-1.5 font-medium whitespace-nowrap",
+        "gap-1.5 font-medium whitespace-nowrap",
+        label === undefined && "capitalize",
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",

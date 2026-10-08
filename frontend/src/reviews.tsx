@@ -229,52 +229,55 @@ export function Repositories({ admin }: { admin: boolean }) {
             <Loading />
           ) : rows.length ? (
             <div className="overflow-hidden rounded-lg border bg-card divide-y">
-              {rows.map((pr) => (
-                <Link
-                  key={pr.id}
-                  to={`/pulls/${pr.id}`}
-                  className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
-                >
-                  <GitPullRequest
-                    aria-hidden="true"
-                    className="mt-1 size-4 shrink-0 text-primary"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="break-words text-sm font-medium group-hover:underline">
-                      {pr.title}
+              {rows.map((pr) => {
+                const feedback = pr.latest_run ? runFeedback(pr.latest_run) : null;
+                return (
+                  <Link
+                    key={pr.id}
+                    to={`/pulls/${pr.id}`}
+                    className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
+                  >
+                    <GitPullRequest
+                      aria-hidden="true"
+                      className="mt-1 size-4 shrink-0 text-primary"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="break-words text-sm font-medium group-hover:underline">
+                        {pr.title}
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>
+                          #{pr.number} · {pr.author}
+                        </span>
+                        <span className="max-w-60 truncate font-mono">
+                          {pr.head_ref}
+                        </span>
+                        {pr.draft && <span>Draft</span>}
+                        {pr.fork && <span>Fork · manual review</span>}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
+                        <Status value={pr.latest_run?.status ?? "not_reviewed"} />
+                        <span className="text-xs text-muted-foreground">
+                          {pr.open_findings} open findings
+                        </span>
+                      </div>
+                      {feedback?.needsAttention && (
+                        <p className="mt-2 text-xs text-muted-foreground break-words">{feedback.summary}</p>
+                      )}
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        #{pr.number} · {pr.author}
-                      </span>
-                      <span className="max-w-60 truncate font-mono">
-                        {pr.head_ref}
-                      </span>
-                      {pr.draft && <span>Draft</span>}
-                      {pr.fork && <span>Fork · manual review</span>}
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
-                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                      <span className="text-xs text-muted-foreground">
+                    <div className="hidden items-center gap-6 sm:flex">
+                      <span className="text-xs text-muted-foreground tabular">
                         {pr.open_findings} open findings
                       </span>
+                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
                     </div>
-                    {pr.latest_run && runFeedback(pr.latest_run).needsAttention && (
-                      <p className="mt-2 text-xs text-muted-foreground break-words">{runFeedback(pr.latest_run).summary}</p>
-                    )}
-                  </div>
-                  <div className="hidden items-center gap-6 sm:flex">
-                    <span className="text-xs text-muted-foreground tabular">
-                      {pr.open_findings} open findings
-                    </span>
-                    <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                  </div>
-                  <ChevronRight
-                    aria-hidden="true"
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </Link>
-              ))}
+                    <ChevronRight
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </Link>
+                );
+              })}
             </div>
           ) : (
             <Empty
@@ -322,33 +325,36 @@ function RunList({ runs }: { runs: Run[] }) {
     );
   return (
     <div className="divide-y rounded-lg border bg-card">
-      {runs.map((run) => (
-        <Link
-          className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
-          key={run.id}
-          to={`/runs/${run.id}`}
-        >
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">{date(run.created_at)}</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              <span className="capitalize">{run.trigger}</span> ·{" "}
-              <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
-              {String(
-                (run.config.connection as Record<string, unknown> | undefined)
-                  ?.model ?? "",
+      {runs.map((run) => {
+        const feedback = runFeedback(run);
+        return (
+          <Link
+            className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
+            key={run.id}
+            to={`/runs/${run.id}`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">{date(run.created_at)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                <span className="capitalize">{run.trigger}</span> ·{" "}
+                <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
+                {String(
+                  (run.config.connection as Record<string, unknown> | undefined)
+                    ?.model ?? "",
+                )}
+              </div>
+              {feedback.needsAttention && (
+                <p className="mt-2 text-sm text-muted-foreground break-words">{feedback.summary}</p>
               )}
             </div>
-            {runFeedback(run).needsAttention && (
-              <p className="mt-2 text-sm text-muted-foreground break-words">{runFeedback(run).summary}</p>
-            )}
-          </div>
-          <Status value={run.status} />
-          <span className="text-xs text-muted-foreground">
-            GitHub: {runFeedback(run).publicationLabel}
-          </span>
-          <ChevronRight className="size-4 text-muted-foreground" />
-        </Link>
-      ))}
+            <Status value={run.status} />
+            <span className="text-xs text-muted-foreground">
+              GitHub: {feedback.publicationLabel}
+            </span>
+            <ChevronRight className="size-4 text-muted-foreground" />
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -792,7 +798,7 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
         actions={
           can_write && (
             <>
-              {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && (
+              {run.status === "blocked" && (run.owner_id === null || run.owner_id === undefined || run.owner_id === user.id) && (
                 <Button
                   disabled={action.isPending}
                   onClick={() => action.mutate({ path: `/runs/${id}/retry` })}

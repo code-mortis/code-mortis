@@ -54,9 +54,13 @@ export function runFeedback(run: Run) {
     [summary, nextStep] = reasons[run.blocked_reason ?? ""] ?? [run.error || "This review needs attention.", "Check the selected AI connection before resuming."];
     if (!["busy", "unavailable"].includes(run.blocked_reason ?? "")) destination = "connections";
   } else if (run.status === "failed" || run.status === "partial") {
-    summary = run.status === "partial"
-      ? selected === null ? "The review finished with incomplete coverage." : `${completed} of ${selected} review items completed. Coverage is incomplete.`
-      : "The review could not complete. This is not a clean review.";
+    if (run.status === "partial") {
+      summary = selected === null
+        ? "The review finished with incomplete coverage."
+        : `${completed} of ${selected} review items completed. Coverage is incomplete.`;
+    } else {
+      summary = "The review could not complete. This is not a clean review.";
+    }
     nextStep = "Inspect the error and file results in the run details, fix the cause, then start a new review.";
     destination = "pull";
     if (run.failure_reason === "timeout" || failures.some((item) => item.classification === "timeout")) {
@@ -67,7 +71,7 @@ export function runFeedback(run: Run) {
       summary = `${summary} The token budget was reached.`;
       nextStep = "Increase Token budget, choose Unlimited, or reduce the review scope, then start a new review.";
       destination = "repository";
-    } else if (rows(report.errors).some((item) => item.message === "Delegated context budget exceeded; increase the repository limit.")) {
+    } else if (rows(report.errors).some((item) => text(item.message).startsWith("Delegated context budget"))) {
       summary = `${summary} The native context budget was reached.`;
       nextStep = "Increase Native context budget or reduce the review scope, then start a new review.";
       destination = "repository";
@@ -102,7 +106,7 @@ export function runFeedback(run: Run) {
     nextStep = `${nextStep} Retry GitHub publication from the run details to send saved results without rerunning the review.`;
   }
   const needsAttention = ["failed", "partial", "skipped", "blocked", "cancelled", "superseded"].includes(run.status)
-    || !!run.blocked_reason || ["failed", "partially_published", "not_applicable"].includes(run.publication);
+    || !!run.blocked_reason || ["failed", "partially_published"].includes(run.publication);
   return { summary, nextStep, destination, publicationLabel, publicationDetail, needsAttention };
 }
 

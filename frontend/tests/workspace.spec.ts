@@ -666,6 +666,18 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await expect(time).toHaveValue("900");
   await expect(tokens).toHaveValue("200000");
   await expect(files).toHaveValue("40");
+  for (const [field, unlimited, value] of [
+    [time, unlimitedTime, "900"],
+    [tokens, unlimitedTokens, "200000"],
+    [files, unlimitedFiles, "40"],
+  ] as const) {
+    for (const invalid of ["", "1e309"]) {
+      await field.fill(invalid);
+      await unlimited.check();
+      await unlimited.uncheck();
+      await expect(field).toHaveValue(value);
+    }
+  }
   await time.fill("1200");
   await unlimitedTime.check();
   await expect(time).toBeDisabled();
@@ -675,7 +687,9 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await expect(time).toHaveValue("1200");
   await files.fill("0");
   expect(await files.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
-  await files.fill("40");
+  await unlimitedFiles.check();
+  await unlimitedFiles.uncheck();
+  await expect(files).toHaveValue("40");
   await unlimitedTokens.check();
   await unlimitedFiles.check();
   await unlimitedTime.check();
@@ -744,6 +758,11 @@ test("oversized review explains its outcome and links to editable limits through
   await expect(settings).toBeVisible();
   await expect(settings.getByLabel("Maximum files", { exact: true })).toBeVisible();
   await expect(settings.getByRole("checkbox", { name: "Unlimited maximum files" })).toBeVisible();
+  const limits = settings.locator("details").filter({ hasText: "Review limits and rules" });
+  await limits.locator("summary").click();
+  await expect(limits).not.toHaveAttribute("open");
+  await settings.getByLabel("Project background", { exact: true }).fill("A settings change must preserve the collapsed disclosure.");
+  await expect(limits).not.toHaveAttribute("open");
   expect(requests).toEqual([]);
   await noOverflow(page);
 });
@@ -788,10 +807,10 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
   },
   {
     name: "native context limit",
-    state: { report: { manifest: { coverage: { selected: [{ path: "source.py" }], failed: [{ path: "source.py" }] } }, errors: [{ path: "source.py", message: "Delegated context budget exceeded; increase the repository limit." }] } },
+    state: { report: { manifest: { coverage: { selected: [{ path: "source.py" }], failed: [{ path: "source.py" }] } }, errors: [{ path: "source.py", message: "Delegated context budget exceeded; reduce the supplied context." }] } },
     summary: "The native context budget was reached.",
     nextStep: "Increase Native context budget or reduce the review scope",
-    fileReason: "Delegated context budget exceeded; increase the repository limit.",
+    fileReason: "Delegated context budget exceeded; reduce the supplied context.",
   },
   {
     name: "authentication",
@@ -873,6 +892,46 @@ test("publication failure after a completed review offers a publication retry", 
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.map((request) => request.path)).toEqual(["/runs/run/publish"]);
 });
+
+test("completed reviews without comments need no attention in lists or previews", async ({ page }) => {
+  await mock(page, { run: { status: "completed", publication: "not_applicable", publication_error: null } });
+  await page.goto("/");
+  const row = page.getByRole("link", { name: /Add retry handling/ });
+  await expect(row).not.toContainText("The selected review scope completed.");
+  await row.click();
+  await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Run history" }).click();
+  const history = page.getByRole("link", { name: /GitHub: No comments published/ });
+  await expect(history).not.toContainText("The selected review scope completed.");
+  await history.click();
+  await expect(page.getByText("No comments published", { exact: true })).toHaveCSS("text-transform", "none");
+  await expect(page.locator('[data-slot="badge"]').filter({ hasText: /^completed$/ })).toHaveCSS("text-transform", "capitalize");
+});
+
+for (const status of ["partial", "skipped"]) {
+  test(`file disclosure preserves the user's choice during ${status} run polling`, async ({ page }) => {
+    await page.clock.install();
+    let reads = 0;
+    const currentRun: Partial<Run> = { status };
+    await mock(page, { run: currentRun });
+    await page.route("**/api/v1/runs/run", (route) => {
+      reads += 1;
+      currentRun.progress = { selected: 10, completed: reads };
+      return route.fallback();
+    });
+    await page.goto("/runs/run");
+    const files = page.locator("details").filter({ hasText: "Files not reviewed (1)" });
+    await expect(files).toBeVisible();
+    await files.locator("summary").click();
+    const open = await files.getAttribute("open");
+    const before = reads;
+    await page.clock.fastForward(10_000);
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    await expect(page.getByText(`${reads} of 10 assigned files completed.`, { exact: true })).toBeVisible();
+    if (open === null) await expect(files).not.toHaveAttribute("open");
+    else await expect(files).toHaveAttribute("open", "");
+  });
+}
 
 test("personal setup saves without a model then signs in and selects one", async ({ page }, info) => {
   await mock(page);

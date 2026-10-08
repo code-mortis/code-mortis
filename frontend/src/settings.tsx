@@ -261,8 +261,9 @@ export function RepositorySettings({
                     disabled={settings[key] === null}
                     value={settings[key] ?? ""}
                     onChange={(e) => {
-                      const value = Number(e.target.value);
-                      limitedValues.current[key] = value;
+                      const value = e.target.valueAsNumber;
+                      if (!Number.isFinite(value)) return;
+                      if (e.target.validity.valid) limitedValues.current[key] = value;
                       change(key, value);
                     }}
                   />
