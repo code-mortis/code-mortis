@@ -739,7 +739,7 @@ export function RunDetail() {
   )?.coverage ?? {}) as Coverage;
   const duration =
     run.started_at && run.finished_at
-      ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
+      ? `${Math.max(0, Math.round(+new Date(run.finished_at) - +new Date(run.started_at)))}s`
       : null;
   const checkValue = run.check_conclusion || run.check_status;
   const verification = verificationSummary(run.progress?.verification);
