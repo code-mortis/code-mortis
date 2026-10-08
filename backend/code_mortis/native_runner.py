@@ -420,7 +420,7 @@ async def model_catalog(connection_id: str, kind: str):
     if lock.locked():
         return ModelCatalog(source="client", status="unavailable", message="This personal connection is busy. Retry loading models when it is idle.")
     try:
-        async with lock, asyncio.timeout(60):
+        async with asyncio.timeout(60), lock:
             if (await auth_status(connection_id, kind))["status"] != "connected":
                 return ModelCatalog(source="client", status="disconnected", message="Sign in to this personal connection to load models.")
             if kind == "claude_code":

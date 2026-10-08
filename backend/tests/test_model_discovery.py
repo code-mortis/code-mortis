@@ -1,5 +1,7 @@
 import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -204,6 +206,25 @@ def test_missing_key_bedrock_custom_auth_and_endpoint_validation(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    "base_url,detail",
+    [
+        ("not-a-url", "Use a complete HTTP(S) provider URL"),
+        (
+            "https://user:private-secret@example.com/v1",
+            "Provider URLs cannot contain credentials, query parameters, or fragments",
+        ),
+    ],
+)
+def test_invalid_draft_endpoint_returns_validation_error(seed, client, monkeypatch, base_url, detail):
+    monkeypatch.setattr(
+        model_discovery.httpx, "Client", lambda **kwargs: pytest.fail("Invalid endpoints must not be called")
+    )
+    result = client.post("/api/v1/connections/models", json=draft(base_url=base_url, api_key="private-key"))
+    assert result.status_code == 422
+    assert result.json() == {"detail": detail}
+
+
 def test_model_visibility_drafts_and_revoked_auth(seed, client, github_stub, monkeypatch):
     identity = client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"}).json()["id"]
     calls = []
@@ -323,5 +344,72 @@ def test_native_catalogs_are_isolated_and_never_start_a_review(monkeypatch, tmp_
         async with native_runner.locks[identity]:
             assert (await native_runner.model_catalog(identity, "chatgpt")).status == "unavailable"
         assert len(calls) == 2
+
+    asyncio.run(check())
+
+
+def test_native_catalog_timeout_includes_waiting_for_lock(monkeypatch, tmp_path):
+    identity = "00000000-0000-4000-8000-000000000010"
+    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
+    monkeypatch.setattr(native_runner, "locks", {})
+    auth = AsyncMock()
+    monkeypatch.setattr(native_runner, "auth_status", auth)
+    timeout = asyncio.timeout
+
+    def expire_immediately(delay):
+        assert delay == 60
+        return timeout(0)
+
+    monkeypatch.setattr(native_runner.asyncio, "timeout", expire_immediately)
+
+    async def check():
+        lock = native_runner.locks[identity] = asyncio.Lock()
+        await lock.acquire()
+        release = asyncio.Event()
+
+        async def competing_operation():
+            async with lock:
+                await release.wait()
+
+        holder = asyncio.create_task(competing_operation())
+        await asyncio.sleep(0)
+        lock.release()
+        # A queued waiter takes priority even before it resumes and locks this again.
+        assert not lock.locked()
+        try:
+            async with timeout(1):
+                result = await native_runner.model_catalog(identity, "chatgpt")
+            assert result.status == "unavailable" and not result.models
+            assert lock.locked()
+            auth.assert_not_awaited()
+        finally:
+            release.set()
+            await holder
+        assert not lock.locked()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("newline", [b"", b"\n"])
+def test_oversized_claude_model_line_is_unavailable_and_stops_process(monkeypatch, tmp_path, newline):
+    identity = "00000000-0000-4000-8000-000000000010"
+    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
+    monkeypatch.setattr(native_runner, "locks", {})
+    monkeypatch.setattr(native_runner, "auth_status", AsyncMock(return_value={"status": "connected"}))
+    stopped = AsyncMock()
+    monkeypatch.setattr(native_runner, "stop", stopped)
+
+    async def check():
+        stdout = asyncio.StreamReader(limit=native_runner.MAX_BYTES)
+        stdout.feed_data(b"x" * (native_runner.MAX_BYTES + 1) + newline)
+        stdout.feed_eof()
+        process = SimpleNamespace(stdout=stdout, stdin=SimpleNamespace(write=lambda data: None, drain=AsyncMock()))
+        spawn = AsyncMock(return_value=process)
+        monkeypatch.setattr(native_runner.asyncio, "create_subprocess_exec", spawn)
+        result = await native_runner.model_catalog(identity, "claude_code")
+        assert result.status == "unavailable" and not result.models
+        assert spawn.call_args.kwargs["limit"] == native_runner.MAX_BYTES
+        stopped.assert_awaited_once_with(process)
+        assert not native_runner.locks[identity].locked()
 
     asyncio.run(check())
