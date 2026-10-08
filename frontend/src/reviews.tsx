@@ -117,7 +117,7 @@ export function Repositories({ admin }: { admin: boolean }) {
         actions={
           admin && (
             <Button asChild variant="outline">
-              <Link to="/settings?tab=github">Connect repository</Link>
+              <Link to="/settings?tab=github">{repos.data?.length ? "Manage repositories" : "Connect repository"}</Link>
             </Button>
           )
         }

@@ -214,6 +214,26 @@ class UserOut(ORMModel):
     csrf: str = ""
 
 
+class InstallationOut(StrictModel):
+    id: int
+    account: str
+    connected: bool
+    active: bool
+    status: Literal["active", "suspended", "uninstalled"]
+    settings_url: str | None = None
+    repository_selection: Literal["all", "selected"] | None = None
+    can_connect: bool = False
+    can_uninstall: bool = False
+    unavailable_reason: str | None = None
+    job_id: str | None = None
+    operation_status: str | None = None
+    operation_error: str | None = None
+
+
+class InstallationOperation(StrictModel):
+    job_id: str
+
+
 class ConnectionOut(ORMModel):
     id: str
     name: str

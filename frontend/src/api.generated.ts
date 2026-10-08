@@ -483,6 +483,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Installations */
+        get: operations["list_installations_api_v1_installations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installations/{installation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connect Installation */
+        post: operations["connect_installation_api_v1_installations__installation_id__post"];
+        /** Uninstall Installation */
+        delete: operations["uninstall_installation_api_v1_installations__installation_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/installations/start": {
         parameters: {
             query?: never;
@@ -528,23 +563,6 @@ export interface paths {
         get: operations["available_installations_api_v1_installations_available_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/installations/{installation_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Connect Installation */
-        post: operations["connect_installation_api_v1_installations__installation_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -933,6 +951,49 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** InstallationOperation */
+        InstallationOperation: {
+            /** Job Id */
+            job_id: string;
+        };
+        /** InstallationOut */
+        InstallationOut: {
+            /** Id */
+            id: number;
+            /** Account */
+            account: string;
+            /** Connected */
+            connected: boolean;
+            /** Active */
+            active: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "suspended" | "uninstalled";
+            /** Settings Url */
+            settings_url?: string | null;
+            /** Repository Selection */
+            repository_selection?: ("all" | "selected") | null;
+            /**
+             * Can Connect
+             * @default false
+             */
+            can_connect: boolean;
+            /**
+             * Can Uninstall
+             * @default false
+             */
+            can_uninstall: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /** Job Id */
+            job_id?: string | null;
+            /** Operation Status */
+            operation_status?: string | null;
+            /** Operation Error */
+            operation_error?: string | null;
         };
         /** ManifestInput */
         ManifestInput: {
@@ -2314,6 +2375,90 @@ export interface operations {
             };
         };
     };
+    list_installations_api_v1_installations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallationOut"][];
+                };
+            };
+        };
+    };
+    connect_installation_api_v1_installations__installation_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                installation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    uninstall_installation_api_v1_installations__installation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                installation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallationOperation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_installation_api_v1_installations_start_get: {
         parameters: {
             query?: never;
@@ -2384,39 +2529,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     }[];
-                };
-            };
-        };
-    };
-    connect_installation_api_v1_installations__installation_id__post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                installation_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

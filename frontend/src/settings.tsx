@@ -12,6 +12,7 @@ import {
 import { PersonalConnection } from "./subscriptions";
 import { ModelPicker } from "./components/model-picker";
 import { BackgroundField } from "./components/background-field";
+import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -606,11 +607,6 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const query = useApi<Instance>("/settings", true, isAdmin);
   const connections = useApi<Connection[]>("/connections", true);
   const providers = useApi<Provider[]>("/providers");
-  const available = useApi<{ id: number; account: string }[]>(
-    "/installations/available",
-    false,
-    isAdmin && tab === "github",
-  );
   const action = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
@@ -762,73 +758,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               Install on GitHub
             </ExternalLink>
           </div>
-          <div className="mb-8 rounded-lg border bg-card p-5">
-            <h3 className="mb-3 text-sm font-semibold">
-              Connected installations
-            </h3>
-            {instance.installations.length ? (
-              <ul className="divide-y">
-                {instance.installations.map((item) => (
-                  <li
-                    key={item.id}
-                    className="flex justify-between py-3 text-sm"
-                  >
-                    <span>{item.account}</span>
-                    <span className="text-muted-foreground">
-                      {item.active ? "Active" : "Inactive"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Install the app on GitHub, then connect the installation below.
-              </p>
-            )}
-          </div>
-          <div className="mb-4 flex items-center gap-3">
-            <h3 className="font-semibold">Available installations</h3>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => available.refetch()}
-            >
-              Refresh
-            </Button>
-          </div>
-          <ErrorNotice error={available.error} />
-          {available.isPending ? (
-            <Loading />
-          ) : available.data?.length ? (
-            <div className="divide-y rounded-lg border bg-card">
-              {available.data.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between p-4 text-sm"
-                >
-                  <span>{item.account}</span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={action.isPending}
-                    onClick={() =>
-                      action.mutate({ path: `/installations/${item.id}` })
-                    }
-                  >
-                    {instance.installations.some(
-                      (i) => i.id === item.id && i.active,
-                    )
-                      ? "Resync repositories"
-                      : "Connect"}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <Empty title="No installations available">
-              Install the app using the button above, then refresh this list.
-            </Empty>
-          )}
+          <GitHubInstallations />
           <p className="mt-6 break-words text-xs text-muted-foreground">
             Webhook endpoint:{" "}
             {instance.webhook_url ??

@@ -49,7 +49,7 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
     assert response.status_code == 200
     state = parse_qs(urlsplit(response.json()["action"]).query)["state"][0]
     assert response.json()["manifest"]["default_permissions"] == {
-        "contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read",
+        "contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read", "members": "read",
     }
     assert "issue_comment" in response.json()["manifest"]["default_events"]
     assert response.json()["manifest"]["request_oauth_on_install"] is False
@@ -481,6 +481,27 @@ def test_stale_publication_and_cancelled_review_do_no_work(seed, github_stub, mo
     reviews.publish_run(run_id)
     with transaction() as db:
         assert db.get(ReviewRun, run_id).publication == "not_applicable"
+
+
+@pytest.mark.parametrize("error,status", [
+    (ValueError("Publication failed"), "failed"),
+    (github.GitHubError(503, "GitHub unavailable"), "queued"),
+])
+def test_publish_failure_with_missing_run_preserves_job_error(monkeypatch, error, status):
+    with transaction() as db:
+        job_id = reviews.enqueue(db, "publish", {"run_id": "missing"}).id
+
+    def fail_publication(run_id):
+        assert run_id == "missing"
+        raise error
+
+    monkeypatch.setattr(jobs, "publish_run", fail_publication)
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        assert job.status == status and job.error == str(error)
+        assert job.lease_until is None and job.dispatched_at is None
+        assert job.attempts == 1
 
 
 def test_jobs_claim_once_and_recover_lost_dispatch(seed, monkeypatch):
