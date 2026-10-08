@@ -101,7 +101,7 @@ export function Inbox() {
       <h1 className="text-3xl font-semibold tracking-tight">Inbox</h1>
       <p className="mt-1 text-sm text-muted-foreground">Pull requests across your repositories.</p>
     </header>
-    <InboxFilters params={params} data={options} onChange={change} onSearch={search} onReset={() => setParams({})} />
+    <InboxFilters params={params} data={options} onChange={change} onSearch={search} />
     <p role="status" aria-live="polite" className="my-4 text-xs text-muted-foreground">{data ? `${data.total} pull ${data.total === 1 ? "request" : "requests"} · ${data.repository_count} ${data.repository_count === 1 ? "repository" : "repositories"}` : "Loading pull requests…"}</p>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}
     {(query.isPending || (query.isPlaceholderData && !data)) && <Loading />}

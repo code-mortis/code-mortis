@@ -9,12 +9,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
+export function InboxFilters({ params, data, onChange, onSearch }: {
   params: URLSearchParams;
   data?: Schema["InboxOut"];
   onChange: (property: Property | "ordering", values: string[]) => void;
   onSearch: (value: string) => void;
-  onReset: () => void;
 }) {
   const query = params.get("q") ?? "";
   const [draft, setDraft] = useState({ query, value: query });
@@ -97,7 +96,6 @@ export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
           {active && <Button variant="ghost" size="icon" className="h-[34px] w-8 rounded-l-none" aria-label={`Remove ${properties[key]} filter`} onClick={() => clear(key)}><X className="size-3.5 text-muted-foreground" /></Button>}
         </div>;
       })}
-      <Button variant="ghost" className="px-2" onClick={() => { setDraft({ query: "", value: "" }); onReset(); }}>Reset</Button>
     </div>
     <div className="flex shrink-0 items-center gap-2" role="group" aria-label="Ordering">
       <DropdownMenu>

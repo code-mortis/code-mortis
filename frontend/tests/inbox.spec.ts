@@ -87,6 +87,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await mockInbox(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset", exact: true })).toHaveCount(0);
   await expect(page.getByRole("status").first()).toContainText("6 pull requests · 3 repositories");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link").first()).toContainText(titles[0]);
   await expect(page.getByRole("heading", { level: 2 })).toHaveCount(0);
@@ -107,7 +108,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Closed1"]);
   await page.reload();
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toBeVisible();
-  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.goto("/");
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/state=all/);
@@ -192,7 +193,7 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
-  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.goto("/");
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   const merged = page.getByRole("checkbox", { name: /^Merged/ });
@@ -268,7 +269,7 @@ test("an open-only empty inbox makes history discoverable", async ({ page }) => 
   await expect(page.getByRole("region", { name: /^Closed/ }).getByRole("link")).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Merged2", "Closed1"]);
   await expect(page.getByRole("region").getByRole("button")).toHaveCount(0);
-  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "No open pull requests" })).toBeVisible();
   await expect(page.getByRole("region", { name: /^Merged/ })).toHaveCount(0);
 });
@@ -283,7 +284,7 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
   expect(requests.at(-1)?.has("state")).toBe(false);
   await page.getByRole("textbox", { name: "Search pull requests", exact: true }).fill("does not exist");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
-  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.getByRole("button", { name: "reset your filters", exact: true }).click();
   await expect(page.getByRole("status").first()).toContainText("6 pull requests");
   await noOverflow(page);
 });
@@ -337,7 +338,7 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await expect(page.getByRole("button", { name: "Sort by Created", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
   await expect(page).toHaveURL(/\?ordering=created_at$/);
-  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.goto("/");
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Newest first");
   await noOverflow(page);
@@ -372,7 +373,7 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await expect(page.getByRole("region", { name: /^Closed/ })).toBeVisible();
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
-    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    await page.goto("/");
   }
   if (info.project.name === "desktop") {
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption("light");
