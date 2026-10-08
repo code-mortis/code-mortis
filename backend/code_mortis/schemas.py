@@ -420,6 +420,10 @@ class InboxFilters(StrictModel):
     review: list[InboxReview] = Field(default_factory=list, max_length=11)
     author: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(default_factory=list, max_length=100)
     findings: Literal["open", "none"] | None = None
+    ordering: Literal[
+        "created_at", "-created_at", "updated_at", "-updated_at", "title", "-title",
+        "repository", "-repository", "author", "-author",
+    ] = "-created_at"
     group: InboxGroup | None = None
     page: int = Field(default=1, ge=1, le=1000000)
 

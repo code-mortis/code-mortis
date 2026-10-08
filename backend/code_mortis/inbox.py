@@ -79,6 +79,12 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     enabled = [name for name, state in [
         ("active", "open"), ("reviewed", "open"), ("merged", "merged"), ("closed", "closed")
     ] if state in states]
+    sort_column = {
+        "created_at": filtered.c.created_at, "updated_at": filtered.c.updated_at,
+        "title": func.lower(filtered.c.title), "repository": func.lower(filtered.c.repository_name),
+        "author": func.lower(filtered.c.author),
+    }[filters.ordering.removeprefix("-")]
+    order = sort_column.desc() if filters.ordering.startswith("-") else sort_column.asc()
     pages = []
     for name in enabled:
         if filters.group and name != filters.group:
@@ -88,7 +94,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
             case((and_(filtered.c.group == "active", filtered.c.review_status == "running"), 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
-            filtered.c.created_at.desc().nulls_last(), filtered.c.id.desc(),
+            order.nulls_last(), filtered.c.id.desc(),
         ).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)).mappings()
         pages.append(InboxPage(
             group=name, items=[InboxPullOut.model_validate(row) for row in items],

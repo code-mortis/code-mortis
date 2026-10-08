@@ -1918,6 +1918,7 @@ export interface operations {
                 review?: ("queued" | "running" | "blocked" | "completed" | "partial" | "failed" | "skipped" | "cancelled" | "superseded" | "not_reviewed" | "outdated")[];
                 author?: string[];
                 findings?: ("open" | "none") | null;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
                 group?: ("active" | "reviewed" | "merged" | "closed") | null;
                 page?: number;
             };

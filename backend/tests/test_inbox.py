@@ -172,7 +172,8 @@ def test_unchanged_sync_preserves_inbox_order(visible, github_stub, client, monk
     assert after[-1]["created_at"] == before["groups"][0]["items"][-1]["created_at"]
 
 
-def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch):
+@pytest.mark.parametrize("ordering,newest_first", [("-created_at", True), ("created_at", False), ("-updated_at", False), ("updated_at", True)])
+def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch, ordering, newest_first):
     at = now() - timedelta(days=1)
     with transaction() as db:
         db.add(Repository(id=23, installation_id=10, full_name="team/other"))
@@ -183,16 +184,40 @@ def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch
             pr.updated_at = at + timedelta(minutes=25 - i)
             if i == 24:
                 pr.number = 1
-        pull(db, "unknown", "merged").created_at = None
+        unknown = pull(db, "unknown", "merged")
+        unknown.created_at = None
+        unknown.updated_at = at - timedelta(days=1) if ordering.startswith("-") else at + timedelta(days=1)
     monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
-    first = get(client, "?state=merged")["groups"][0]
-    second = get(client, "?state=merged&group=merged&page=2")["groups"][0]
+    first = get(client, f"?state=merged&ordering={ordering}")["groups"][0]
+    second = get(client, f"?state=merged&ordering={ordering}&group=merged&page=2")["groups"][0]
     assert first["total"] == 26
-    assert [pr["id"] for pr in first["items"]] == [f"newest-{i:02}" for i in range(24, 4, -1)]
-    assert [pr["id"] for pr in second["items"]] == [f"newest-{i:02}" for i in range(4, -1, -1)] + ["unknown"]
+    expected = [f"newest-{i:02}" for i in (range(24, -1, -1) if newest_first else range(25))] + ["unknown"]
+    assert [pr["id"] for pr in first["items"]] == expected[:20]
+    assert [pr["id"] for pr in second["items"]] == expected[20:]
 
 
-@pytest.mark.parametrize("query", ["?state=bad", "?repo=-1", "?review=clean", "?page=0", "?group=bad", "?findings=bad"])
+@pytest.mark.parametrize("field", ["title", "repository", "author"])
+@pytest.mark.parametrize("descending", [False, True])
+def test_text_ordering_keeps_review_priority_and_stable_ties(visible, client, monkeypatch, field, descending):
+    with transaction() as db:
+        db.add(Repository(id=23, installation_id=10, full_name="Alpha/project"))
+        db.flush()
+        for identity, name, repo, status in [
+            ("zulu", "zulu", 22, "failed"), ("alpha-a", "Alpha", 23, "failed"),
+            ("alpha-b", "alpha", 23, "failed"), ("running", "Zulu", 22, "running"),
+            ("queued", "Alpha", 23, "queued"),
+        ]:
+            pr = pull(db, identity, repo=repo, author=name)
+            pr.title = name
+            run(db, pr, status)
+    monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
+    result = get(client, f"?review=running&review=queued&review=failed&ordering={'-' if descending else ''}{field}")
+    expected = ["zulu", "alpha-b", "alpha-a"] if descending else ["alpha-b", "alpha-a", "zulu"]
+    assert [pr["id"] for pr in result["groups"][0]["items"]] == ["running", "queued", *expected]
+    assert result["total"] == 5
+
+
+@pytest.mark.parametrize("query", ["?state=bad", "?repo=-1", "?review=clean", "?page=0", "?group=bad", "?findings=bad", "?ordering=unknown", "?ordering=--title"])
 def test_query_validation(visible, client, query):
     assert client.get("/api/v1/pulls" + query).status_code == 422
 

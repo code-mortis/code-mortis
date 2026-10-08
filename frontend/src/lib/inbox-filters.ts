@@ -6,6 +6,8 @@ export const states = ["open", "merged", "closed"];
 export const reviews = ["running", "queued", "blocked", "not_reviewed", "outdated", "completed", "partial", "failed", "skipped", "cancelled", "superseded"];
 export const properties = { repo: "Repository", state: "PR state", review: "Review status", author: "Author", findings: "Open findings" };
 export type Property = keyof typeof properties;
+export const orderings = { created_at: "Created", updated_at: "Updated", title: "Title", repository: "Repository", author: "Author" };
+export type OrderingField = keyof typeof orderings;
 export const label = (value: string) => value.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
 
 export function normalizeFilters(input: URLSearchParams) {
@@ -25,6 +27,8 @@ export function normalizeFilters(input: URLSearchParams) {
     if (key === "findings") values = values.filter((v) => v === "open" || v === "none").slice(0, 1);
     for (const value of [...new Set(values)].slice(0, 100)) result.append(key, value);
   }
+  const ordering = input.get("ordering");
+  if (ordering && ordering !== "-created_at" && Object.hasOwn(orderings, ordering.replace(/^-/, ""))) result.set("ordering", ordering);
   for (const group of groups) {
     const value = input.get(`${group}_pages`) ?? "1";
     if (/^\d+$/.test(value) && +value > 1) result.set(`${group}_pages`, String(Math.min(+value, 1000000)));

@@ -50,6 +50,13 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean 
       data = {
         groups: groupNames.filter((g) => !params.has("group") || params.get("group") === g).map((group) => {
           const items = filtered.filter((r) => (r.state !== "open" ? r.state : r.review_status === "completed" ? "reviewed" : "active") === group);
+          if (params.has("ordering")) {
+            const ordering = params.get("ordering")!;
+            const field = ordering.replace(/^-/, "");
+            const key = (field === "repository" ? "repository_name" : field) as "created_at" | "updated_at" | "title" | "repository_name" | "author";
+            const priority = (r: Pull) => group !== "active" ? 2 : r.review_status === "running" ? 0 : r.review_status === "queued" ? 1 : 2;
+            items.sort((a, b) => priority(a) - priority(b) || (a[key] ?? "").localeCompare(b[key] ?? "") * (ordering.startsWith("-") ? -1 : 1) || b.id.localeCompare(a.id));
+          }
           const index = Math.min(+(params.get("page") ?? 1), Math.max(1, Math.ceil(items.length / 20)));
           return { group, items: items.slice((index - 1) * 20, index * 20), total: items.length, page: index, has_more: index * 20 < items.length };
         }),
@@ -97,8 +104,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
 test("searchable multi-select filters and debounced search preserve browser history", async ({ page }) => {
   const { requests } = await mockInbox(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Filter", exact: true }).click();
-  await page.getByRole("button", { name: "Repository", exact: true }).click();
+  await page.getByRole("button", { name: /Edit Repository/ }).click();
   await page.getByRole("textbox", { name: "Search repository options" }).fill("noodle");
   await page.getByRole("checkbox", { name: "acme/noodle", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "acme/noodle", exact: true })).toBeChecked();
@@ -117,8 +123,17 @@ test("searchable multi-select filters and debounced search preserve browser hist
   await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("headers");
   await page.getByRole("button", { name: "Remove Repository filter" }).click();
   await expect(page).not.toHaveURL(/repo=/);
+  await expect(page.getByRole("button", { name: /Edit Repository/ })).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL(/repo=23&repo=24/);
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(page).not.toHaveURL(/q=/);
+  await expect(page).toHaveURL(/repo=23&repo=24/);
+  await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: /Edit Repository/ }).click();
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(page).not.toHaveURL(/repo=/);
+  await expect(page.getByRole("button", { name: /Edit Repository/ })).toBeFocused();
 });
 
 test("independent loading, sharing, detail return and bounds", async ({ page }) => {
@@ -150,7 +165,7 @@ test("independent loading, sharing, detail return and bounds", async ({ page }) 
 
 test("normalization, closed-only selection and keyboard focus", async ({ page }) => {
   await mockInbox(page);
-  await page.goto("/?repo=nope&repo=22&repo=22&state=closed&review=bad&merged_pages=-1&q=%20%20");
+  await page.goto("/?repo=nope&repo=22&repo=22&state=closed&review=bad&merged_pages=-1&q=%20%20&ordering=--title");
   await expect(page).toHaveURL(/\?repo=22&state=closed$/);
   await page.getByRole("button", { name: /Edit PR state/ }).focus();
   await page.keyboard.press("Enter");
@@ -158,7 +173,7 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
   await page.getByRole("button", { name: "Reset", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Edit PR state/ })).toContainText("Open, Merged");
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open, Merged");
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   const merged = page.getByRole("checkbox", { name: /^Merged/ });
   await merged.focus();
@@ -238,11 +253,55 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
   await noOverflow(page);
 });
 
+test("ordering survives sharing, history and details and resets loaded pages", async ({ page }) => {
+  const { requests } = await mockInbox(page, { many: true });
+  await page.goto("/?ordering=title&active_pages=2");
+  const active = page.getByRole("region", { name: /Active & needs review/ });
+  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link").nth(2)).toContainText("Additional change 0");
+  expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");
+  await page.getByRole("button", { name: "Sort descending", exact: true }).click();
+  await expect(page).toHaveURL(/\?ordering=-title$/);
+  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link").nth(2)).toContainText("Improve keyboard navigation");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Sort by Title", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Z to A");
+  await active.getByRole("link").first().click();
+  await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+  await expect(page).toHaveURL(/\?ordering=-title$/);
+  const sort = page.getByRole("button", { name: "Sort by Title", exact: true });
+  await sort.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menuitemradio", { name: "Title", exact: true })).toBeChecked();
+  await page.getByRole("menuitemradio", { name: "Updated", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\?ordering=-updated_at$/);
+  await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL(/\?ordering=-title$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\?ordering=-updated_at$/);
+  await page.getByRole("button", { name: "Reset ordering", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("button", { name: "Sort by Created", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await expect(page).toHaveURL(/\?ordering=created_at$/);
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Newest first");
+  await noOverflow(page);
+});
+
 test("inbox visual states in light and dark", async ({ page }, info) => {
   await mockInbox(page);
   await page.goto("/");
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
+  if (info.project.name === "mobile") {
+    const search = await page.getByRole("textbox", { name: "Search pull requests", exact: true }).boundingBox();
+    expect(search!.width).toBeGreaterThan(page.viewportSize()!.width * 0.8);
+  }
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption(theme);
@@ -253,10 +312,15 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-filters-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Sort by Created", exact: true }).click();
+    await expect(page.getByRole("menuitemradio", { name: "Created", exact: true })).toBeChecked();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/inbox-ordering-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.keyboard.press("Escape");
   }
   if (info.project.name === "desktop") {
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption("light");
-    for (const width of [1536, 1388]) {
+    for (const width of [1536, 1388, 768]) {
       await page.setViewportSize({ width, height: width === 1536 ? 1024 : 938 });
       await noOverflow(page);
       await page.screenshot({ path: `../.impeccable/review/inbox-${width}.png`, fullPage: true, animations: "disabled" });

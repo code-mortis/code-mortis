@@ -86,7 +86,7 @@ export function Inbox() {
     if (value.trim()) next.set("q", value); else next.delete("q");
     setParams(normalizeFilters(next), { replace: true });
   }, [canonical, setParams]);
-  function change(key: Property, values: string[]) {
+  function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
