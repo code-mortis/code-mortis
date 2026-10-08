@@ -382,11 +382,65 @@ test("resolution waits for GitHub and preserves the confirmed status", async ({
   ).toBeDisabled();
 });
 
+test("finding code shows a unified diff and safe Markdown highlighting in both themes", async ({ page }, info) => {
+  const source = 'def deliver():\n    return "<img src=x onerror=alert(1)>"\n';
+  await mock(page, { finding: { content: `The retry loop has no upper bound. Keep \`MAX_ATTEMPTS\` bounded.\n\n\`\`\`python\n${source}\`\`\`` } });
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const panel = page.getByRole("dialog");
+  const patch = panel.getByRole("region", { name: "Suggested change diff" });
+  await expect(patch).toContainText("--- original\n+++ suggested\n@@ -1,3 +1,3 @@");
+  await expect(patch.locator(".hljs-deletion").first()).toHaveText("-while (!delivered) {");
+  await expect(patch.locator(".hljs-addition").first()).toContainText("+for (let attempt = 0;");
+  expect(await patch.textContent()).toContain("-  delivered = await sendWebhook(payload);\n");
+  await patch.focus();
+  await expect(patch).toBeFocused();
+  const markdown = panel.locator(".markdown pre");
+  expect(await markdown.textContent()).toBe(source);
+  await expect(markdown.locator(".hljs-keyword").first()).toHaveText("def");
+  await expect(markdown.locator("img, script, pre")).toHaveCount(0);
+  await expect(panel.locator(".markdown p > code")).toHaveText("MAX_ATTEMPTS");
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/code-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+  }
+});
+
+for (const example of [
+  { name: "suggestion only", original: "", suggested: "const limit = 3;\n", path: "retry.tsx", language: "typescript", count: 1 },
+  { name: "identical", original: "return True\n", suggested: "return True\n", path: "retry.py", language: "python", count: 1 },
+  { name: "no suggestion", original: "FROM alpine\n", suggested: "", path: "Dockerfile", language: "dockerfile", count: 1 },
+  { name: "unknown language", original: "", suggested: '<script>alert(1)</script>\n\n' + "long line ".repeat(80), path: "file.unknown", language: null, count: 1 },
+  { name: "no snippets", original: "", suggested: "", path: "retry.ts", language: null, count: 0 },
+  { name: "large comparison", original: "a\n".repeat(16000), suggested: "b\n".repeat(16000), path: "file.txt", language: null, count: 2 },
+]) {
+  test(`finding code fallback: ${example.name}`, async ({ page }) => {
+    await mock(page, { finding: { existing_code: example.original, suggestion: example.suggested, path: example.path } });
+    await page.goto("/pulls/pr");
+    await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+    const panel = page.getByRole("dialog");
+    await expect(panel.getByRole("region", { name: "Suggested change diff" })).toHaveCount(0);
+    await expect(panel.locator("pre")).toHaveCount(example.count);
+    if (example.count) {
+      const code = panel.locator("pre").last();
+      expect(await code.textContent()).toBe(example.suggested || example.original);
+      await expect(code.locator(".hljs")).toHaveCount(example.language ? 1 : 0);
+      if (example.language) await expect(code.locator("code")).toHaveClass(`hljs language-${example.language}`);
+      await expect(code.locator("script, img")).toHaveCount(0);
+    }
+    await noOverflow(page);
+  });
+}
+
 test("partial review and publication retry remain distinct", async ({
   page,
 }, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
+  await expect(page.locator("main header")).toContainText("· 90s");
   await expect(
     page.getByText("This review is incomplete.", { exact: false }),
   ).toBeVisible();
@@ -398,6 +452,12 @@ test("partial review and publication retry remain distinct", async ({
   await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
+  await page.getByText("Configuration used", { exact: true }).click();
+  const config = page.locator("pre .language-json").last();
+  await expect(config.locator(".hljs-attr").first()).toHaveText('"connection"');
+  expect(await config.textContent()).toBe(JSON.stringify(run.config, null, 2));
+  await page.getByText("Inspect coverage report", { exact: true }).click();
+  await expect(page.locator("pre .language-json .hljs-attr").first()).toHaveText('"manifest"');
 });
 
 test("GitHub check handles pending, conclusion-only, and empty states", async ({ page }, info) => {
@@ -644,6 +704,7 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   await expect(page.getByText("Automatic resolution: failed")).toBeVisible();
   await page.getByText("Current evidence: src/retry.ts:1–1").click();
   await expect(page.getByText("for (let attempt = 0; attempt < 3; attempt++) {", { exact: true })).toBeVisible();
+  await expect(page.locator("pre .language-typescript .hljs-keyword").first()).toHaveText("for");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/verification-${info.project.name}.png`, fullPage: false });
   await page.getByRole("button", { name: "Retry sync", exact: true }).click();
