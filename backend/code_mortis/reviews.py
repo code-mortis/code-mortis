@@ -77,6 +77,7 @@ def create_run(
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
     db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
+    db.refresh(repo)
     if request_key:
         prior = db.scalar(select(ReviewRun).where(
             ReviewRun.pr_id == pr.id,
@@ -635,7 +636,7 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
 def publish_run(run_id: str):
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if not run or not can_publish(run) or run.publication == "published":
+        if not run or run.cancel_requested or not can_publish(run) or run.publication == "published":
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
@@ -651,6 +652,10 @@ def publish_run(run_id: str):
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
+            if run.cancel_requested or not repo.active or not db.get(Installation, repo.installation_id).active:
+                run.publication = "partially_published" if run.review_ids else "not_applicable"
+                run.publication_error = "GitHub access was removed or publication was cancelled."
+                return
             token = github.installation_token(db, repo.installation_id)
             current = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
             if (
@@ -721,6 +726,8 @@ def synchronize_finding(payload: dict):
             raise ValueError("The requesting user no longer has access.")
         pr = db.get(PullRequest, finding.pr_id)
         repo = db.get(Repository, pr.repository_id)
+        if not repo.active or not db.get(Installation, repo.installation_id).active:
+            raise ValueError("GitHub access was removed. The finding status has not changed.")
         github.authorize_repo(db, actor, repo.full_name, write=True)
         token = github.installation_token(db, repo.installation_id, resolve=True)
         desired = finding.desired_status

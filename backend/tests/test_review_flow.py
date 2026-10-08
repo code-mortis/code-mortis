@@ -49,7 +49,7 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
     assert response.status_code == 200
     state = parse_qs(urlsplit(response.json()["action"]).query)["state"][0]
     assert response.json()["manifest"]["default_permissions"] == {
-        "contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read",
+        "contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read", "members": "read",
     }
     assert "issue_comment" in response.json()["manifest"]["default_events"]
     assert response.json()["manifest"]["request_oauth_on_install"] is False

@@ -3,6 +3,12 @@ import { mkdir } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
 
 const at = "2026-10-05T13:20:00Z";
+const installation: Schema["InstallationOut"] = {
+  id: 10, account: "acme", connected: true, active: true, status: "active",
+  settings_url: "https://github.com/organizations/acme/settings/installations/10",
+  repository_selection: "selected", can_connect: true, can_uninstall: true,
+  unavailable_reason: null, job_id: null, operation_status: null, operation_error: null,
+};
 const repo = {
   id: 22,
   installation_id: 10,
@@ -309,6 +315,8 @@ async function mock(
       };
     else if (path === "/installations/available")
       data = [{ id: 10, account: "acme" }];
+    else if (path === "/installations")
+      data = [installation];
     else if (method !== "GET") data = { ok: true, job_id: "job" };
     else
       return route.fulfill({
@@ -1511,3 +1519,123 @@ for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { sel
     await expect(page.getByText(/findings verified/)).toHaveCount(0);
   });
 }
+
+test("GitHub installations manage repositories and confirm uninstall", async ({ page }, info) => {
+  const requests = await mock(page);
+  let current = { ...installation };
+  let deletes = 0;
+  await page.route("**/api/v1/installations", (route) => route.fulfill({ json: [
+    current,
+    { ...installation, id: 11, account: "personal-account", connected: false,
+      settings_url: "https://github.com/settings/installations/11", can_uninstall: false },
+  ] }));
+  await page.route("**/api/v1/installations/10", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-from-session");
+    deletes++;
+    current = { ...current, operation_status: "queued", job_id: "uninstall", can_connect: false, can_uninstall: false };
+    await route.fulfill({ status: 202, json: { job_id: "uninstall" } });
+  });
+  await page.goto("/");
+  await page.getByRole("link", { name: "Manage repositories", exact: true }).click();
+  const account = page.getByRole("article", { name: "acme", exact: true });
+  await expect(page.getByRole("heading", { name: "acme", exact: true })).toHaveCount(1);
+  await expect(account.getByRole("link", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);
+  await expect(page.getByText("personal-account", { exact: true })).toBeVisible();
+  await account.getByRole("button", { name: "Resync repositories" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Repository sync queued" })).toBeVisible();
+  expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/github-installations-${info.project.name}.png`, fullPage: true });
+
+  await account.getByRole("button", { name: "Uninstall", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Uninstall from acme?" })).toBeVisible();
+  await expect(dialog).toContainText("every repository in the installation");
+  await expect(dialog).toContainText("Saved review history");
+  await page.screenshot({ path: `../.impeccable/review/github-uninstall-${info.project.name}.png`, fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(deletes).toBe(0);
+  await expect(account.getByRole("button", { name: "Uninstall", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await dialog.getByRole("button", { name: "Uninstall GitHub App" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(account).toContainText("Waiting for GitHub to confirm removal");
+  await expect(account.getByRole("button", { name: "Uninstall", exact: true })).toBeDisabled();
+  await expect(account.getByRole("button", { name: "Resync repositories" })).toBeDisabled();
+  expect(deletes).toBe(1);
+  current = { ...current, active: false, status: "uninstalled", operation_status: "done", settings_url: null };
+  await expect(account).toContainText("Uninstalled from GitHub. Saved review history is retained.");
+  await expect(account.getByRole("button", { name: "Uninstall", exact: true })).toHaveCount(0);
+});
+
+test("GitHub installations show recoverable failures and unavailable actions", async ({ page }) => {
+  await mock(page);
+  let current = { ...installation, active: false, can_connect: false, operation_status: "failed",
+    operation_error: "GitHub has not confirmed uninstall. Reviews remain paused." };
+  let refreshError = false;
+  await page.route("**/api/v1/installations", (route) => route.fulfill(refreshError
+    ? { status: 502, json: { detail: "GitHub could not be reached. Refresh to retry." } }
+    : { json: [current, { ...installation, id: 12, account: "restricted-team", can_uninstall: false,
+      status: "suspended", can_connect: false, unavailable_reason: "Uninstall requires an organization owner." },
+      { ...installation, id: 13, account: "permission-update", can_uninstall: false,
+        unavailable_reason: "GitHub organization ownership could not be verified. To verify organization ownership, enable Organization permissions → Members: Read-only in the GitHub App settings, approve the permission update for this installation, then refresh." }] }));
+  await page.route("**/api/v1/installations/10", (route) => route.fulfill({ status: 403, json: { detail: "GitHub ownership changed. Refresh and retry." } }));
+  await page.goto("/settings?tab=github");
+  const account = page.getByRole("article", { name: "acme", exact: true });
+  await expect(account).toContainText("Uninstall did not complete");
+  await expect(account.getByRole("alert")).toContainText("Reviews remain paused");
+  const restricted = page.getByRole("article", { name: "restricted-team" });
+  await expect(restricted.getByRole("button", { name: "Uninstall", exact: true })).toBeDisabled();
+  await expect(restricted.getByRole("button", { name: "Resync repositories" })).toBeDisabled();
+  await expect(restricted).toContainText("requires an organization owner");
+  const permissionUpdate = page.getByRole("article", { name: "permission-update" });
+  await expect(permissionUpdate).toContainText("Members: Read-only");
+  await expect(permissionUpdate).toContainText("approve the permission update");
+  await expect(permissionUpdate.getByRole("button", { name: "Uninstall", exact: true })).toBeDisabled();
+  await expect(permissionUpdate.getByRole("button", { name: "Resync repositories" })).toBeEnabled();
+  await expect(permissionUpdate.getByRole("link", { name: "Manage repositories" })).toBeVisible();
+  await account.getByRole("button", { name: "Retry uninstall" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Uninstall GitHub App" }).click();
+  await expect(page.getByRole("dialog")).toContainText("GitHub ownership changed");
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  refreshError = true;
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "GitHub could not be reached" })).toBeVisible();
+  await expect(account.getByRole("button", { name: "Retry uninstall" })).toBeDisabled();
+  await expect(account.getByText("Uninstalled from GitHub", { exact: false })).toHaveCount(0);
+  refreshError = false;
+  current = { ...current, operation_status: "done", status: "uninstalled", can_uninstall: false };
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(account).toContainText("Uninstalled from GitHub");
+  await noOverflow(page);
+});
+
+test("GitHub installations refresh on return and connect available accounts", async ({ page }) => {
+  const requests = await mock(page);
+  let connected = false;
+  let reads = 0;
+  await page.route("**/api/v1/installations", (route) => {
+    reads++;
+    return route.fulfill({ json: [{ ...installation, connected,
+      settings_url: "https://github.com/settings/installations/10", repository_selection: reads > 1 ? "all" : "selected" }] });
+  });
+  await page.goto("/settings?tab=github");
+  await expect(page.getByRole("heading", { name: "No connected installations" })).toBeVisible();
+  connected = true;
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
+  expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
+  const before = reads;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    window.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    window.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => reads).toBeGreaterThan(before);
+  await expect(page.getByRole("article", { name: "acme" }).getByRole("link", { name: "Manage repositories" }))
+    .toHaveAttribute("href", "https://github.com/settings/installations/10");
+});

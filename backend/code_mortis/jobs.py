@@ -5,7 +5,7 @@ from datetime import timedelta
 from celery import Celery
 from sqlalchemy import or_, select
 
-from . import background, checks, github, ocr, runner_client, verification
+from . import background, checks, github, installations, ocr, runner_client, verification
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -53,9 +53,16 @@ celery.conf.update(
 
 def sync_repositories(installation_id: int):
     with transaction() as db:
-        installation = db.get(Installation, installation_id)
-        if not installation or not installation.active:
+        installation = db.scalar(select(Installation).where(Installation.id == installation_id).with_for_update())
+        if not installation:
             return
+        remote_installation = installations.remote_installation(db, installation_id)
+        if remote_installation is None or remote_installation.suspended_at:
+            installations.deactivate(db, installation, "GitHub installation access was removed or suspended.")
+            return
+        if installations.removing(installations.uninstall_job(db, installation_id)):
+            return
+        installation.active, installation.account = True, remote_installation.account.login
         token = github.installation_token(db, installation.id)
         remote = github.pages("/installation/repositories", token, "repositories")
         active_ids = set()
@@ -72,9 +79,9 @@ def sync_repositories(installation_id: int):
                 db.add(repo)
             repo.active, repo.full_name, repo.private = True, data["full_name"], data["private"]
             repo.installation_id = installation.id
-        for repo in db.scalars(select(Repository).where(Repository.installation_id == installation.id)):
-            if repo.id not in active_ids:
-                repo.active = False
+        installations.deactivate_repositories(db, db.scalars(select(Repository).where(
+            Repository.installation_id == installation.id, Repository.id.not_in(active_ids),
+        )), "GitHub App access to this repository was removed.")
 
 
 def sync_pr(repository_id: int, number: int, automatic: bool = True):
@@ -107,7 +114,7 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
 def scan_repository(repository_id: int):
     with transaction() as db:
         repo = db.get(Repository, repository_id)
-        if not repo or not repo.active:
+        if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
             return
         token = github.installation_token(db, repo.installation_id)
         remote = github.pages(f"/repos/{repo.full_name}/pulls?state=open", token)
@@ -130,19 +137,13 @@ def process_webhook(payload: dict):
             review_anyway(db, body, payload.get("delivery", ""))
             return
         installation_id = (body.get("installation") or {}).get("id")
+        if type(installation_id) is not int or installation_id < 1:
+            return
         installation = db.get(Installation, installation_id) if installation_id else None
         if not installation:
             return
         if event == "installation":
-            if body.get("action") in {"deleted", "suspend"}:
-                installation.active = False
-                for repo in db.scalars(
-                    select(Repository).where(Repository.installation_id == installation.id)
-                ):
-                    repo.active = False
-                return
-            if body.get("action") == "unsuspend":
-                installation.active = True
+            # Read current GitHub state in the sync job instead of replaying stale event state.
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
             if body.get("action") in {"new_permissions_accepted", "unsuspend"}:
                 for run in db.scalars(select(ReviewRun).join(PullRequest).join(Repository).where(
@@ -151,10 +152,10 @@ def process_webhook(payload: dict):
                 )):
                     checks.enqueue_sync(db, run)
             return
-        if not installation.active:
-            return
         if event == "installation_repositories":
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
+            return
+        if not installation.active:
             return
         repository_id = (body.get("repository") or {}).get("id")
         repo = db.get(Repository, repository_id) if repository_id else None
@@ -193,6 +194,8 @@ def execute(kind: str, payload: dict):
         process_webhook(payload)
     elif kind == "sync_repositories":
         sync_repositories(payload["installation_id"])
+    elif kind == "uninstall_installation":
+        installations.uninstall(payload)
     elif kind == "scan_repository":
         scan_repository(payload["repository_id"])
     elif kind == "sync_pr":
@@ -225,7 +228,7 @@ def execute_job(job_id: str):
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "generate_background"} else payload)
+        execute(kind, execution if kind in {"review", "generate_background", "uninstall_installation"} else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -278,8 +281,9 @@ def execute_job(job_id: str):
                     run.check_error, run.check_pending = message[:2000], True
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
-                run.publication = "partially_published" if run.review_ids else "failed"
-                run.publication_error = message[:2000]
+                if not run.cancel_requested:
+                    run.publication = "partially_published" if run.review_ids else "failed"
+                    run.publication_error = message[:2000]
             elif kind == "resolve":
                 verification.sync_failed(db, payload, message[:2000])
             elif kind == "test_connection":
@@ -373,7 +377,7 @@ def schedule_reconciliation():
             ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
         )):
             checks.enqueue_sync(db, run)
-        for installation in db.scalars(select(Installation).where(Installation.active.is_(True))):
+        for installation in db.scalars(select(Installation)):
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
         for repo in db.scalars(
             select(Repository).where(Repository.active.is_(True), Repository.enabled.is_(True))
