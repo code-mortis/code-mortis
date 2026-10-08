@@ -281,7 +281,7 @@ def execute_job(job_id: str):
                     run.check_error, run.check_pending = message[:2000], True
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
-                if not run.cancel_requested:
+                if run and not run.cancel_requested:
                     run.publication = "partially_published" if run.review_ids else "failed"
                     run.publication_error = message[:2000]
             elif kind == "resolve":

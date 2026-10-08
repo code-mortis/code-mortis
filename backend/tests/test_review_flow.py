@@ -483,6 +483,27 @@ def test_stale_publication_and_cancelled_review_do_no_work(seed, github_stub, mo
         assert db.get(ReviewRun, run_id).publication == "not_applicable"
 
 
+@pytest.mark.parametrize("error,status", [
+    (ValueError("Publication failed"), "failed"),
+    (github.GitHubError(503, "GitHub unavailable"), "queued"),
+])
+def test_publish_failure_with_missing_run_preserves_job_error(monkeypatch, error, status):
+    with transaction() as db:
+        job_id = reviews.enqueue(db, "publish", {"run_id": "missing"}).id
+
+    def fail_publication(run_id):
+        assert run_id == "missing"
+        raise error
+
+    monkeypatch.setattr(jobs, "publish_run", fail_publication)
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        assert job.status == status and job.error == str(error)
+        assert job.lease_until is None and job.dispatched_at is None
+        assert job.attempts == 1
+
+
 def test_jobs_claim_once_and_recover_lost_dispatch(seed, monkeypatch):
     with transaction() as db:
         job = reviews.enqueue(db, "scan_repository", {"repository_id": 22})

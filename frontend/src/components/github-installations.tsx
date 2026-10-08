@@ -8,6 +8,27 @@ import { Empty, ErrorNotice, ExternalLink, Loading, Status } from "./common";
 type Installation = Schema["InstallationOut"];
 const pending = (item: Installation) => ["queued", "running"].includes(item.operation_status ?? "");
 
+function installationStatus(item: Installation) {
+  if (item.status === "uninstalled") return "uninstalled";
+  if (pending(item)) return "uninstalling";
+  if (item.operation_status === "failed") return "failed";
+  return item.status;
+}
+
+function installationDescription(item: Installation, status: string) {
+  const paused = item.active ? "" : " Reviews are paused.";
+  switch (status) {
+    case "uninstalled":
+      return "Uninstalled from GitHub. Saved review history is retained.";
+    case "uninstalling":
+      return "Uninstall requested. Waiting for GitHub to confirm removal.";
+    case "failed":
+      return `Uninstall did not complete. Retry to check GitHub and finish removal.${paused}`;
+    default:
+      return `${item.repository_selection === "all" ? "All repositories" : "Selected repositories"} on GitHub.${paused}`;
+  }
+}
+
 export function GitHubInstallations() {
   const query = useQuery({
     queryKey: ["/installations"],
@@ -44,10 +65,10 @@ export function GitHubInstallations() {
       {query.isPending ? <Loading /> : connected.length ? (
         <div className="mb-8 divide-y rounded-lg border bg-card">
           {connected.map((item) => {
-            const busy = pending(item);
-            const removed = item.status === "uninstalled";
-            const failed = item.operation_status === "failed" && !removed;
-            const status = removed ? "uninstalled" : busy ? "uninstalling" : failed ? "failed" : item.status;
+            const status = installationStatus(item);
+            const busy = status === "uninstalling";
+            const removed = status === "uninstalled";
+            const failed = status === "failed";
             return (
               <article key={item.id} aria-label={item.account} className="space-y-3 p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -55,10 +76,7 @@ export function GitHubInstallations() {
                   <Status value={status} />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {removed ? "Uninstalled from GitHub. Saved review history is retained."
-                    : busy ? "Uninstall requested. Waiting for GitHub to confirm removal."
-                    : failed ? `Uninstall did not complete. Retry to check GitHub and finish removal.${item.active ? "" : " Reviews are paused."}`
-                    : `${item.repository_selection === "all" ? "All repositories" : "Selected repositories"} on GitHub.${item.active ? "" : " Reviews are paused."}`}
+                  {installationDescription(item, status)}
                 </p>
                 {failed && item.operation_error && <p role="alert" className="break-words text-sm text-destructive">{item.operation_error}</p>}
                 {!removed && (
