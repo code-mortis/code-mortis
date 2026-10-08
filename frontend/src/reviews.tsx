@@ -34,6 +34,7 @@ import {
 import {
   active,
   Code,
+  CodeComparison,
   date,
   Empty,
   ErrorNotice,
@@ -575,18 +576,7 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
         {f.path}:{f.start_line}–{f.end_line}
       </p>
       <Markdown>{f.content}</Markdown>
-      {f.existing_code && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">Code at detection</h3>
-          <Code>{f.existing_code}</Code>
-        </div>
-      )}
-      {f.suggestion && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">Suggested change</h3>
-          <Code>{f.suggestion}</Code>
-        </div>
-      )}
+      <CodeComparison original={f.existing_code} suggested={f.suggestion} path={f.path} />
       <ErrorNotice error={action.error || f.sync_error || query.error} />
       {f.desired_status && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -667,7 +657,7 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
                 <summary className="cursor-pointer break-all">
                   {evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}
                 </summary>
-                <div className="mt-2"><Code>{evidence.quote}</Code></div>
+                <div className="mt-2"><Code path={evidence.path}>{evidence.quote}</Code></div>
               </details>
             ))}
             <p className="text-sm text-muted-foreground">
@@ -907,7 +897,7 @@ export function RunDetail() {
                   Inspect coverage report
                 </summary>
                 <div className="mt-3">
-                  <Code>{JSON.stringify(run.report, null, 2)}</Code>
+                  <Code language="json">{JSON.stringify(run.report, null, 2)}</Code>
                 </div>
               </details>
             </>
@@ -959,7 +949,7 @@ export function RunDetail() {
           Configuration used
         </summary>
         <div className="mt-3">
-          <Code>{JSON.stringify(run.config, null, 2)}</Code>
+          <Code language="json">{JSON.stringify(run.config, null, 2)}</Code>
         </div>
       </details>
     </>

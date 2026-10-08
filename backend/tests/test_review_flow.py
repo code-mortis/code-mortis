@@ -149,6 +149,108 @@ COMMENT = {
 }
 
 
+@pytest.mark.parametrize("severity,icon", [("critical", "🔴"), ("high", "🟠"), ("medium", "🟡"), ("low", "🔵")])
+def test_comment_header_without_suggestion(severity, icon):
+    snapshot = {**COMMENT, "severity": severity}
+    expected = f"**{icon} {severity.title()} · bug**\n\n{COMMENT['content']}\n\n{reviews.marker('finding', 'finding-id')}"
+    assert reviews.comment_body("finding-id", snapshot) == expected
+    del snapshot["suggestion_code"]
+    assert reviews.comment_body("finding-id", snapshot) == expected
+
+
+def test_comment_diff_preserves_indentation_blank_lines_and_multiple_hunks():
+    original = ["def run():", "    retry()", "", *[f"    step_{i}()" for i in range(12)], "    return False"]
+    suggested = [*original]
+    suggested[1] = "    retry(limit=3)"
+    suggested[-1] = "    return True"
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "existing_code": "\n".join(original), "suggestion_code": "\n".join(suggested),
+    })
+    assert "**Suggested change**\n\n```diff\n--- original\n+++ suggested\n" in body
+    assert "@@ -1,5 +1,5 @@\n def run():\n-    retry()\n+    retry(limit=3)\n \n    " in body
+    assert "@@ -13,4 +13,4 @@\n     step_9()\n     step_10()\n     step_11()\n-    return False\n+    return True" in body
+    assert "step_5" not in body
+    assert body.endswith("\n```\n\n" + reviews.marker("finding", "finding-id"))
+
+
+@pytest.mark.parametrize("path,language", [
+    ("src/main.py", "python"), ("types.pyi", "python"),
+    ("app.js", "javascript"), ("app.mjs", "javascript"), ("app.cjs", "javascript"), ("view.jsx", "jsx"),
+    ("src/app.TS", "typescript"), ("app.mts", "typescript"), ("app.cts", "typescript"), ("view.tsx", "tsx"),
+    ("data.json", "json"), ("config.yaml", "yaml"), ("config.yml", "yaml"), ("config.toml", "toml"),
+    ("index.html", "html"), ("index.htm", "html"), ("style.css", "css"), ("query.sql", "sql"),
+    ("run.sh", "bash"), ("run.bash", "bash"), ("run.zsh", "zsh"),
+    ("main.go", "go"), ("main.rs", "rust"), ("build/Dockerfile", "dockerfile"), ("build.dockerfile", "dockerfile"),
+    ("data.unknown", "text"), ("README", "text"),
+])
+def test_comment_replacement_language(path, language):
+    code = "    first\n\n    second\n"
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "path": path, "existing_code": "", "suggestion_code": code,
+    })
+    assert f"**Suggested change**\n\n```{language}\n{code}\n```\n\n" in body
+
+
+@pytest.mark.parametrize("existing", ["return 1", "return 1\n"])
+def test_comment_identical_lines_show_highlighted_replacement(existing):
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "existing_code": existing, "suggestion_code": "return 1",
+    })
+    assert "```python\nreturn 1\n```" in body
+    assert "```diff" not in body
+
+
+@pytest.mark.parametrize("existing", ["", "````\nold\n````"])
+def test_comment_fences_protect_both_snippets(existing):
+    suggestion = "```\nreplacement\n```"
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "existing_code": existing, "suggestion_code": suggestion,
+    })
+    fence, language = ("`````", "diff") if existing else ("````", "python")
+    assert f"**Suggested change**\n\n{fence}{language}\n" in body
+    assert body.endswith(f"\n{fence}\n\n" + reviews.marker("finding", "finding-id"))
+
+
+@pytest.mark.parametrize("existing", ["", "old\n" * 15000])
+def test_comment_oversized_code_is_omitted_whole(existing):
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "existing_code": existing, "suggestion_code": "new\n" * 15000,
+    })
+    assert len(body) <= 60000
+    assert COMMENT["content"] in body
+    assert "Suggested change omitted because it exceeds the comment size limit." in body
+    assert "```" not in body
+    assert body.endswith(reviews.marker("finding", "finding-id"))
+
+
+@pytest.mark.parametrize("suggestion", ["", "return 1"])
+def test_comment_oversized_explanation_has_notice_and_marker(suggestion):
+    body = reviews.comment_body("finding-id", {
+        **COMMENT, "content": "x" * 60000, "suggestion_code": suggestion,
+    })
+    assert len(body) == 60000
+    assert body.startswith("**🟠 High · bug**\n\n")
+    assert "Review text truncated because it exceeds the comment size limit." in body
+    assert ("Suggested change omitted" in body) == bool(suggestion)
+    assert "```" not in body
+    assert body.endswith(reviews.marker("finding", "finding-id"))
+
+
+def test_comment_exact_size_limit_keeps_complete_code_and_marker():
+    snapshot = {**COMMENT, "content": "", "existing_code": "", "suggestion_code": "return 1"}
+    overhead = len(reviews.comment_body("finding-id", snapshot))
+    snapshot["content"] = "x" * (60000 - overhead)
+    body = reviews.comment_body("finding-id", snapshot)
+    assert len(body) == 60000
+    assert "```python\nreturn 1\n```" in body
+    assert body.endswith(reviews.marker("finding", "finding-id"))
+    snapshot["content"] += "x"
+    body = reviews.comment_body("finding-id", snapshot)
+    assert len(body) <= 60000
+    assert "Suggested change omitted" in body and "```" not in body
+    assert body.endswith(reviews.marker("finding", "finding-id"))
+
+
 def remote(head="a" * 40):
     return {
         "number": 3,
@@ -277,7 +379,8 @@ def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
 
 def test_publication_recovers_unknown_response_without_duplicate_or_review(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("partial", {}, [copy.deepcopy(COMMENT)]))
+    snapshot = {**COMMENT, "suggestion_code": "for attempt in range(3):"}
+    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("partial", {}, [copy.deepcopy(snapshot)]))
     run_id = new_run()
     reviews.perform_review(run_id)
     published = []
@@ -289,17 +392,28 @@ def test_publication_recovers_unknown_response_without_duplicate_or_review(seed,
         published.append({"id": 99, "body": kwargs["json"]["body"], "user": {"login": "mortis-test[bot]"}})
         assert kwargs["json"]["event"] == "COMMENT"
         assert kwargs["json"]["comments"][0]["line"] == 7
+        body = kwargs["json"]["comments"][0]["body"]
+        assert body.startswith("**🟠 High · bug**\n\n" + COMMENT["content"])
+        assert "```diff\n--- original\n+++ suggested\n@@ -1 +1 @@\n-while True:\n+for attempt in range(3):\n```" in body
+        with transaction() as db:
+            finding = db.scalar(select(Finding))
+            assert body.endswith(reviews.marker("finding", finding.id))
+            assert db.get(ReviewRun, run_id).publication_plan[0] == kwargs["json"]
         raise github.GitHubError(503, "Response lost")
 
     monkeypatch.setattr(github, "request", request)
     with pytest.raises(github.GitHubError):
         reviews.publish_run(run_id)
+    with transaction() as db:
+        saved_plan = copy.deepcopy(db.get(ReviewRun, run_id).publication_plan)
     monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Publication must not rerun OCR"))
+    monkeypatch.setattr(reviews, "comment_body", lambda *a, **k: pytest.fail("Publication must reuse saved comments"))
     reviews.publish_run(run_id)
     assert len(published) == 1
     with transaction() as db:
         assert db.get(ReviewRun, run_id).publication == "published"
         assert db.get(ReviewRun, run_id).review_ids == [99]
+        assert db.get(ReviewRun, run_id).publication_plan == saved_plan
 
 
 def test_resolution_sync_is_canonical_and_versioned(seed, github_stub, monkeypatch):

@@ -1,10 +1,13 @@
-import { useId, type ReactNode } from "react";
+import { isValidElement, useId, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import { AlertCircle, ArrowUpRight, LoaderCircle } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
+import { Code } from "./code";
+
+export { Code, CodeComparison } from "./code";
 
 export const active = (status: string) =>
   ["queued", "running"].includes(status);
@@ -153,6 +156,11 @@ export function Markdown({ children }: { children: string }) {
         skipHtml
         components={{
           img: () => null,
+          pre: ({ children }) => {
+            if (!isValidElement<{ children?: ReactNode; className?: string }>(children)) return <pre>{children}</pre>;
+            const language = children.props.className?.match(/\blanguage-([\w+-]+)/)?.[1];
+            return <Code language={language}>{String(children.props.children ?? "")}</Code>;
+          },
           a: ({ href, children }) => (
             <a href={href} target="_blank" rel="noreferrer">
               {children}
@@ -179,12 +187,5 @@ export function ExternalLink({
         <ArrowUpRight className="size-3.5" />
       </a>
     </Button>
-  );
-}
-export function Code({ children }: { children: string }) {
-  return (
-    <pre className="max-w-full overflow-x-auto rounded-md border bg-muted p-4 text-xs leading-relaxed">
-      <code>{children}</code>
-    </pre>
   );
 }

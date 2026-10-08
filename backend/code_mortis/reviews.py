@@ -1,5 +1,7 @@
 import json
 import re
+from difflib import unified_diff
+from pathlib import PurePosixPath
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,6 +29,15 @@ from .schemas import RepoSettings
 from .security import digest, unseal
 
 ACTIVE = {"queued", "running", "blocked"}
+CODE_LANGUAGES = {
+    ".py": "python", ".pyi": "python",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "jsx",
+    ".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "tsx",
+    ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
+    ".html": "html", ".htm": "html", ".css": "css", ".sql": "sql",
+    ".sh": "bash", ".bash": "bash", ".zsh": "zsh",
+    ".go": "go", ".rs": "rust", ".dockerfile": "dockerfile",
+}
 
 
 def enqueue(db: Session, kind: str, payload: dict) -> Job:
@@ -380,13 +391,33 @@ def marker(kind: str, identity: str) -> str:
 
 
 def comment_body(finding_id: str, snapshot: dict) -> str:
-    body = f"**{snapshot['severity'].title()} · {snapshot['category']}**\n\n{snapshot['content']}"
+    severity = snapshot["severity"]
+    icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}[severity]
+    body = f"**{icon} {severity.title()} · {snapshot['category']}**\n\n{snapshot['content']}"
+    suffix = "\n\n" + marker("finding", finding_id)
+    section = ""
     suggestion = snapshot.get("suggestion_code")
     if suggestion:
         # Suggestions are shown as code, never executable patches or automatic fixes.
-        fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", suggestion)), default=0) + 1)
-        body += f"\n\nSuggested change:\n{fence}\n{suggestion}\n{fence}"
-    return body[:60000] + "\n\n" + marker("finding", finding_id)
+        existing = snapshot.get("existing_code") or ""
+        code = "\n".join(unified_diff(
+            existing.splitlines(), suggestion.splitlines(),
+            fromfile="original", tofile="suggested", n=3, lineterm="",
+        )) if existing else ""
+        language = "diff"
+        if not code:
+            code = suggestion
+            path = PurePosixPath(snapshot["path"])
+            language = "dockerfile" if path.name.lower() == "dockerfile" else CODE_LANGUAGES.get(path.suffix.lower(), "text")
+        fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", code)), default=0) + 1)
+        section = f"\n\n**Suggested change**\n\n{fence}{language}\n{code}\n{fence}"
+        if len(body) + len(section) + len(suffix) > 60000:
+            section = "\n\nSuggested change omitted because it exceeds the comment size limit."
+    budget = 60000 - len(section) - len(suffix)
+    if len(body) > budget:
+        notice = "\n\nReview text truncated because it exceeds the comment size limit."
+        body = body[:budget - len(notice)] + notice
+    return body + section + suffix
 
 
 def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str):
