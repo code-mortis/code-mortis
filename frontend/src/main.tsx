@@ -327,8 +327,8 @@ function App() {
               path="/"
               element={<Repositories admin={session.data.role === "admin"} />}
             />
-            <Route path="/pulls/:id" element={<PullDetail />} />
-            <Route path="/runs/:id" element={<RunDetail />} />
+            <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
+            <Route path="/runs/:id" element={<RunDetail user={session.data} />} />
             <Route
               path="/settings"
               element={<SettingsPage user={session.data} />}

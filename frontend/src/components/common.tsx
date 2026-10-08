@@ -17,7 +17,7 @@ export const date = (value: string) =>
     timeStyle: "short",
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
-export function Status({ value }: { value: string }) {
+export function Status({ value, label }: { value: string; label?: string }) {
   const good = ["completed", "published", "resolved", "connected", "success"].includes(
     value,
   );
@@ -27,7 +27,8 @@ export function Status({ value }: { value: string }) {
     <Badge
       variant="outline"
       className={cn(
-        "capitalize gap-1.5 font-medium whitespace-nowrap",
+        "gap-1.5 font-medium whitespace-nowrap",
+        !label && "capitalize",
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
@@ -38,7 +39,7 @@ export function Status({ value }: { value: string }) {
       {["queued", "running", "in_progress"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
-      {words(value)}
+      {label || words(value)}
     </Badge>
   );
 }

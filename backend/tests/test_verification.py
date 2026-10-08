@@ -15,7 +15,7 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import github, jobs, ocr, reviews, runner_client, verification
+from code_mortis import checks, github, jobs, ocr, reviews, runner_client, verification
 from code_mortis.db import now, transaction
 from code_mortis.github import threads as github_threads
 from code_mortis.models import (
@@ -336,8 +336,58 @@ def test_existing_limits_never_reset(scenario, limit):
     assert "verify" not in scenario["calls"] and not scenario["mutations"]
 
 
+@pytest.mark.parametrize("tokens,timeout", [(None, None), (None, 900), (200000, None)])
+def test_unlimited_verification_preserves_other_allowances(scenario, monkeypatch, tokens, timeout):
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": tokens, "timeout_seconds": timeout}}
+        run.started_at = now() - timedelta(seconds=10 if timeout else 7300)
+    def verify(repo, env, connection, credentials, context, budget, remaining, stopped):
+        assert budget == (None if tokens is None else tokens - 100)
+        assert remaining is None if timeout is None else 0 < remaining <= 890
+        assert not stopped()
+        return RESULT, {"tokens": 75}
+    monkeypatch.setattr(verification, "api_verify", verify)
+    row, _, run = perform(scenario)
+    assert row.status == "completed" and row.usage == {"tokens": 75} and run.status == "completed"
+
+
+def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypatch):
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": None, "timeout_seconds": None}}
+    calls = []
+    def fail(*args):
+        calls.append(True)
+        raise ValueError("Consumption unknown")
+    monkeypatch.setattr(verification, "api_verify", fail)
+    row, _, _ = perform(scenario)
+    assert row.status == "failed" and row.usage == {"tokens": None}
+    with transaction() as db:
+        db.get(ReviewRun, scenario["run"]).status = "running"
+    reviews.perform_review(scenario["run"])
+    assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
+
+
+def test_file_limit_skips_verification_and_publication(scenario, monkeypatch):
+    result = ocr.file_limit_result([f"file{i}.py" for i in range(41)], 40)
+    def skipped(*args, **kwargs):
+        kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
+        return result
+    monkeypatch.setattr(ocr, "review", skipped)
+    monkeypatch.setattr(verification, "perform", lambda *a: pytest.fail("Skipped runs must not verify findings"))
+    row, finding, run = perform(scenario)
+    assert row.status == "skipped" and finding.status == "open" and not scenario["mutations"]
+    assert run.status == "skipped" and run.publication == "not_applicable"
+    payload = checks.check_payload(run, 0)
+    assert payload["conclusion"] == "skipped" and result[1]["message"] in payload["output"]["summary"]
+    with transaction() as db:
+        assert not db.scalar(select(Job).where(Job.kind == "publish", Job.payload["run_id"].as_string() == run.id))
+
+
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-def test_native_verification_uses_same_connection_and_schema(scenario, monkeypatch, kind):
+@pytest.mark.parametrize("unlimited", [False, True])
+def test_native_verification_uses_same_connection_and_schema(scenario, monkeypatch, kind, unlimited):
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
@@ -345,10 +395,14 @@ def test_native_verification_uses_same_connection_and_schema(scenario, monkeypat
         run = db.get(ReviewRun, scenario["run"])
         run.owner_id = 7
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+        if unlimited:
+            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None}}
+            run.started_at = now() - timedelta(seconds=7300)
     calls = []
     def native(connection, identity, payload, stopped):
         calls.append(payload)
         assert connection == "connection" and identity.startswith("verify-") and not stopped()
+        assert payload["timeout"] is None if unlimited else payload["timeout"] > 0
         return RESULT
     monkeypatch.setattr(runner_client, "review", native)
     row, _, _ = perform(scenario)

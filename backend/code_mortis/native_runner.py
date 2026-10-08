@@ -291,7 +291,12 @@ async def lifespan(app):
     if len(os.environ.get("CM_RUNNER_TOKEN", "")) < 24:
         raise RuntimeError("CM_RUNNER_TOKEN must contain at least 24 characters")
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
-    yield
+    watchdog = asyncio.create_task(cancel_orphaned_reviews())
+    try:
+        yield
+    finally:
+        watchdog.cancel()
+        await asyncio.gather(watchdog, return_exceptions=True)
     for task in list(consoles.values()):
         task.cancel()
     await asyncio.gather(*list(consoles.values()), return_exceptions=True)
@@ -554,6 +559,15 @@ async def auth_console(websocket: WebSocket, connection_id: str):
                 await websocket.close()
 
 
+async def cancel_orphaned_reviews():
+    while True:
+        await asyncio.sleep(30)
+        for entry in list(tasks.values()):
+            last_polled = entry.get("last_polled")
+            if last_polled is not None and time.monotonic() - last_polled >= 120 and not entry["task"].done():
+                entry["task"].cancel()
+
+
 class ReviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     task: str = Field(default="review", pattern="^(review|verification)$")
@@ -562,7 +576,7 @@ class ReviewBody(BaseModel):
     effort: str = Field(pattern="^(low|medium|high)$")
     prompt: str = Field(min_length=1, max_length=4_000_000)
     output_schema: dict
-    timeout: int = Field(ge=10, le=3600)
+    timeout: int | None = Field(ge=1, le=3600)
 
 
 def task_instructions(body):
@@ -724,7 +738,8 @@ async def review_start(connection_id: str, identity: str, body: ReviewBody):
     if key not in tasks:
         if len(tasks) >= 500:
             raise HTTPException(503, "busy")
-        entry = {"status": "running", "created": time.time()}
+        entry = {"status": "running", "created": time.time(),
+                 "last_polled": time.monotonic() if body.timeout is None else None}
         entry["task"] = asyncio.create_task(execute(connection_id, body, entry))
         tasks[key] = entry
     return {"status": tasks[key]["status"]}
@@ -735,7 +750,9 @@ async def review_status(connection_id: str, identity: str):
     entry = tasks.get((connection_id, identity))
     if not entry:
         raise HTTPException(404, "unavailable")
-    return {key: value for key, value in entry.items() if key not in {"task", "created"}}
+    if entry.get("last_polled") is not None:
+        entry["last_polled"] = time.monotonic()
+    return {key: value for key, value in entry.items() if key not in {"task", "created", "last_polled"}}
 
 
 @app.delete("/connections/{connection_id}/reviews/{identity}")

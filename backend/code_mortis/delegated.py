@@ -47,7 +47,7 @@ def validate_result(data, path, line_count, patch):
 
 def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint):
     ocr.check_version(repo, env)
-    deadline = time.monotonic() + options["timeout_seconds"]
+    deadline = time.monotonic() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     args = ["--repo", str(repo), "--from", base, "--to", head, "--format", "json"]
     if options.get("exclusions"):
         args += ["--exclude", options["exclusions"]]
@@ -80,14 +80,10 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
 
     preview = delegate("preview")
     selected = preview.get("reviewable_files")
-    if not isinstance(selected, list) or len(selected) != preview.get("reviewable_count"):
-        raise ValueError("OCR returned inconsistent selected-file coverage.")
-    paths = []
-    for item in selected:
-        path = item.get("path", "")
-        if not path or ocr.ReviewComment.relative_path(path) != path or path in paths:
-            raise ValueError("OCR returned an invalid or repeated selected path.")
-        paths.append(path)
+    paths = ocr.preview_paths(selected, preview.get("reviewable_count"))
+    limited = ocr.file_limit_result(paths, options.get("max_files"))
+    if limited:
+        return limited
     # Existing checkpoints belong to this immutable run and its exact commit/config snapshot.
     previous = checkpoint.get("items", {})
     items, comments = {}, []
@@ -113,7 +109,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             comments.extend(previous[path]["comments"])
             save()
             continue
-        if time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             items[path] = {"status": "failed", "error": "Review time limit reached."}
             save()
             continue
@@ -173,7 +169,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                     "effort": options["effort"],
                     "prompt": prompt,
                     "output_schema": output_schema(),
-                    "timeout": max(10, int(deadline - time.monotonic())),
+                    "timeout": max(1, int(deadline - time.monotonic())) if deadline is not None else None,
                 },
                 stopped,
             )

@@ -66,9 +66,11 @@ function parseObject(value: string, label: string) {
 export function RepositorySettings({
   repository: repo,
   onSaved,
+  showLimits = false,
 }: {
   repository: Repository;
   onSaved: () => void;
+  showLimits?: boolean;
 }) {
   const connections = useApi<Connection[]>(
     `/connections?repository_id=${repo.id}`,
@@ -77,6 +79,11 @@ export function RepositorySettings({
   const [enabled, setEnabled] = useState(repo.enabled);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState(repo.settings);
+  const limitedValues = useRef({
+    timeout_seconds: repo.settings.timeout_seconds ?? 900,
+    token_budget: repo.settings.token_budget ?? 200000,
+    max_files: repo.settings.max_files ?? 40,
+  });
   const [rules, setRules] = useState(
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
@@ -229,43 +236,52 @@ export function RepositorySettings({
           />
         )}
       </Field>
-      <details className="space-y-4">
+      <details className="space-y-4" open={showLimits || undefined}>
         <summary className="cursor-pointer text-sm font-medium">
           Review limits and rules
         </summary>
-        <div className="grid grid-cols-2 gap-4 pt-4">
-          <Field label="Timeout (seconds)">
-            {(id) => (
-              <Input
-                id={id}
-                type="number"
-                min={60}
-                max={3600}
-                required
-                value={settings.timeout_seconds}
-                onChange={(e) =>
-                  change("timeout_seconds", Number(e.target.value))
-                }
-              />
-            )}
-          </Field>
-          {!personal && (
-            <Field label="Token budget">
+        <div className="grid gap-4 pt-4 sm:grid-cols-2">
+          {([
+            { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
+              hint: "Unlimited removes the review deadline. Provider and connection timeouts still apply." },
+            { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
+              hint: "Unlimited removes the review token budget. Provider and account limits still apply." },
+            { key: "max_files", label: "Maximum files", min: 1, max: undefined,
+              hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
+          ] as const).filter(({ key }) => !personal || key !== "token_budget").map(({ key, label, min, max, hint }) => (
+            <Field key={key} label={label} hint={hint}>
               {(id) => (
-                <Input
-                  id={id}
-                  type="number"
-                  min={1000}
-                  max={5000000}
-                  required
-                  value={settings.token_budget}
-                  onChange={(e) =>
-                    change("token_budget", Number(e.target.value))
-                  }
-                />
+                <div className="space-y-2">
+                  <Input
+                    key={settings[key] === null ? "unlimited" : "limited"}
+                    id={id}
+                    type="number"
+                    min={min}
+                    max={max}
+                    required
+                    disabled={settings[key] === null}
+                    defaultValue={settings[key] ?? ""}
+                    onChange={(e) => {
+                      const value = e.target.valueAsNumber;
+                      if (!Number.isFinite(value) || !e.target.validity.valid) return;
+                      limitedValues.current[key] = value;
+                      change(key, value);
+                    }}
+                  />
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      aria-label={`Unlimited ${label.toLowerCase()}`}
+                      checked={settings[key] === null}
+                      onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
+                    />
+                    Unlimited
+                  </label>
+                </div>
               )}
             </Field>
-          )}
+          ))}
           {personal && (
             <Field
               label="Native context budget (bytes)"

@@ -48,6 +48,35 @@ import {
   words,
 } from "./components/common";
 import { RepositorySettings } from "./settings";
+import { fileFeedback, runFeedback } from "./lib/run-feedback";
+
+function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
+  run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
+}) {
+  const feedback = runFeedback(run);
+  if (!detail && !feedback.needsAttention) return null;
+  return (
+    <section aria-label="Review outcome" className="mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm">
+      <p role="status" className="font-medium break-words">{feedback.summary}</p>
+      <p className="text-muted-foreground break-words">
+        {feedback.destination === "repository" && !admin ? "Ask your administrator to adjust the repository settings. " : ""}
+        {feedback.nextStep}
+      </p>
+      <div className="flex flex-wrap gap-3">
+        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`}>View run details</Link>}
+        {feedback.destination === "repository" && admin && (
+          <Link className="underline underline-offset-4" to={`/?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
+        )}
+        {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
+        {detail && feedback.needsAttention && (
+          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`}>
+            {canWrite && ["failed", "partial", "skipped", "cancelled"].includes(run.status) ? "Open pull request to run a new review" : "View pull request"}
+          </Link>
+        )}
+      </div>
+    </section>
+  );
+}
 
 export function Repositories({ admin }: { admin: boolean }) {
   const repos = useApi<Repository[]>("/repositories", true);
@@ -62,7 +91,15 @@ export function Repositories({ admin }: { admin: boolean }) {
   );
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("open");
-  const [edit, setEdit] = useState(false);
+  const edit = admin && params.has("configure");
+  function setEdit(open: boolean) {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (open) next.set("configure", "true");
+      else next.delete("configure");
+      return next;
+    });
+  }
   const action = useAction();
   if (repos.isPending) return <Loading />;
   const rows =
@@ -192,49 +229,55 @@ export function Repositories({ admin }: { admin: boolean }) {
             <Loading />
           ) : rows.length ? (
             <div className="overflow-hidden rounded-lg border bg-card divide-y">
-              {rows.map((pr) => (
-                <Link
-                  key={pr.id}
-                  to={`/pulls/${pr.id}`}
-                  className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
-                >
-                  <GitPullRequest
-                    aria-hidden="true"
-                    className="mt-1 size-4 shrink-0 text-primary"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="break-words text-sm font-medium group-hover:underline">
-                      {pr.title}
+              {rows.map((pr) => {
+                const feedback = pr.latest_run ? runFeedback(pr.latest_run) : null;
+                return (
+                  <Link
+                    key={pr.id}
+                    to={`/pulls/${pr.id}`}
+                    className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
+                  >
+                    <GitPullRequest
+                      aria-hidden="true"
+                      className="mt-1 size-4 shrink-0 text-primary"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="break-words text-sm font-medium group-hover:underline">
+                        {pr.title}
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>
+                          #{pr.number} · {pr.author}
+                        </span>
+                        <span className="max-w-60 truncate font-mono">
+                          {pr.head_ref}
+                        </span>
+                        {pr.draft && <span>Draft</span>}
+                        {pr.fork && <span>Fork · manual review</span>}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
+                        <Status value={pr.latest_run?.status ?? "not_reviewed"} />
+                        <span className="text-xs text-muted-foreground">
+                          {pr.open_findings} open findings
+                        </span>
+                      </div>
+                      {feedback?.needsAttention && (
+                        <p className="mt-2 text-xs text-muted-foreground break-words">{feedback.summary}</p>
+                      )}
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        #{pr.number} · {pr.author}
-                      </span>
-                      <span className="max-w-60 truncate font-mono">
-                        {pr.head_ref}
-                      </span>
-                      {pr.draft && <span>Draft</span>}
-                      {pr.fork && <span>Fork · manual review</span>}
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
-                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                      <span className="text-xs text-muted-foreground">
+                    <div className="hidden items-center gap-6 sm:flex">
+                      <span className="text-xs text-muted-foreground tabular">
                         {pr.open_findings} open findings
                       </span>
+                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
                     </div>
-                  </div>
-                  <div className="hidden items-center gap-6 sm:flex">
-                    <span className="text-xs text-muted-foreground tabular">
-                      {pr.open_findings} open findings
-                    </span>
-                    <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                  </div>
-                  <ChevronRight
-                    aria-hidden="true"
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </Link>
-              ))}
+                    <ChevronRight
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </Link>
+                );
+              })}
             </div>
           ) : (
             <Empty
@@ -260,6 +303,7 @@ export function Repositories({ admin }: { admin: boolean }) {
                   <RepositorySettings
                     key={selected.id}
                     repository={selected}
+                    showLimits={params.get("configure") === "limits"}
                     onSaved={() => setEdit(false)}
                   />
                 </div>
@@ -281,35 +325,41 @@ function RunList({ runs }: { runs: Run[] }) {
     );
   return (
     <div className="divide-y rounded-lg border bg-card">
-      {runs.map((run) => (
-        <Link
-          className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
-          key={run.id}
-          to={`/runs/${run.id}`}
-        >
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">{date(run.created_at)}</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              <span className="capitalize">{run.trigger}</span> ·{" "}
-              <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
-              {String(
-                (run.config.connection as Record<string, unknown> | undefined)
-                  ?.model ?? "",
+      {runs.map((run) => {
+        const feedback = runFeedback(run);
+        return (
+          <Link
+            className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
+            key={run.id}
+            to={`/runs/${run.id}`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">{date(run.created_at)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                <span className="capitalize">{run.trigger}</span> ·{" "}
+                <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
+                {String(
+                  (run.config.connection as Record<string, unknown> | undefined)
+                    ?.model ?? "",
+                )}
+              </div>
+              {feedback.needsAttention && (
+                <p className="mt-2 text-sm text-muted-foreground break-words">{feedback.summary}</p>
               )}
             </div>
-          </div>
-          <Status value={run.status} />
-          <span className="text-xs text-muted-foreground">
-            GitHub: {run.publication.replaceAll("_", " ")}
-          </span>
-          <ChevronRight className="size-4 text-muted-foreground" />
-        </Link>
-      ))}
+            <Status value={run.status} />
+            <span className="text-xs text-muted-foreground">
+              GitHub: {feedback.publicationLabel}
+            </span>
+            <ChevronRight className="size-4 text-muted-foreground" />
+          </Link>
+        );
+      })}
     </div>
   );
 }
 
-export function PullDetail() {
+export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
@@ -401,6 +451,7 @@ export function PullDetail() {
         </div>
       </PageTitle>
       <ErrorNotice error={action.error || query.error} />
+      {runs[0] && <RunFeedback run={runs[0]} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
       <div className="mb-8 grid grid-cols-3 border-y py-5">
         <div>
           <p className="text-2xl font-semibold tabular">{count("open")}</p>
@@ -711,7 +762,7 @@ type Coverage = {
   failed?: unknown[];
   waived?: unknown[];
 };
-export function RunDetail() {
+export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
   const action = useAction();
@@ -733,6 +784,8 @@ export function RunDetail() {
       : null;
   const checkValue = run.check_conclusion || run.check_status;
   const verification = verificationSummary(run.progress?.verification);
+  const feedback = runFeedback(run);
+  const files = fileFeedback(run);
   return (
     <>
       <PageTitle
@@ -745,7 +798,7 @@ export function RunDetail() {
         actions={
           can_write && (
             <>
-              {run.status === "blocked" && (
+              {run.status === "blocked" && (run.owner_id === null || run.owner_id === undefined || run.owner_id === user.id) && (
                 <Button
                   disabled={action.isPending}
                   onClick={() => action.mutate({ path: `/runs/${id}/retry` })}
@@ -781,13 +834,11 @@ export function RunDetail() {
         </span>
       </PageTitle>
       <ErrorNotice error={action.error || query.error} />
+      <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
       <div className="mb-6 grid gap-4 sm:grid-cols-2">
         <div className="rounded-lg border bg-card p-5">
           <p className="mb-3 text-xs text-muted-foreground">Review execution</p>
           <Status value={run.status} />
-          {run.blocked_reason && (
-            <p className="mt-2 text-sm">Waiting: {run.blocked_reason}</p>
-          )}
           <p className="mt-3 text-sm text-muted-foreground">
             {String(
               (run.config.connection as Record<string, unknown> | undefined)
@@ -807,10 +858,11 @@ export function RunDetail() {
         </div>
         <div className="rounded-lg border bg-card p-5">
           <p className="mb-3 text-xs text-muted-foreground">GitHub comments</p>
-          <Status value={run.publication} />
+          <Status value={run.publication} label={feedback.publicationLabel} />
           <p className="mt-3 text-sm text-muted-foreground">
-            Publication retries use this run’s saved findings.
+            {feedback.publicationDetail}
           </p>
+          <ErrorNotice error={run.publication_error} />
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && (
             <div className="mt-5 space-y-3 border-t pt-4">
               <p className="text-xs text-muted-foreground">GitHub check</p>
@@ -836,7 +888,6 @@ export function RunDetail() {
       </div>
       <div className="space-y-3">
         <ErrorNotice error={run.error} />
-        <ErrorNotice error={run.publication_error} />
         {!!verification?.selected && (
           <div className="space-y-2 rounded-lg border p-4 text-sm">
             <p className="font-medium">Fix verification</p>
@@ -852,22 +903,7 @@ export function RunDetail() {
           </p>
         )}
       </div>
-      {run.status === "partial" && (
-        <div className="my-5 rounded-lg border border-amber-600/30 bg-amber-600/5 p-4 text-sm">
-          This review is incomplete. Findings are available, but some selected
-          review items did not finish.
-        </div>
-      )}
-      {active(run.status) ? (
-        <div
-          role="status"
-          className="my-6 rounded-lg border border-dashed p-6 text-sm text-muted-foreground"
-        >
-          {run.status === "queued"
-            ? "Waiting for the review worker. This page updates automatically."
-            : "Reviewing the requested commit. This page updates as assigned files complete."}
-        </div>
-      ) : (
+      {!active(run.status) && (
         <section className="my-8">
           <h2 className="mb-4 font-semibold">Coverage</h2>
           {run.report ? (
@@ -892,6 +928,17 @@ export function RunDetail() {
                   </div>
                 ))}
               </div>
+              {!!files.length && (
+                <details className="mt-4 text-sm" open={run.status === "skipped"}>
+                  <summary className="cursor-pointer font-medium">Files not reviewed ({files.length})</summary>
+                  <ul className="mt-3 max-h-72 space-y-3 overflow-auto">
+                    {files.map((file) => <li key={file.path} className="space-y-1">
+                      <code className="break-all text-xs">{file.path}</code>
+                      <p className="text-muted-foreground break-words">{file.reason}</p>
+                    </li>)}
+                  </ul>
+                </details>
+              )}
               <details className="mt-4 text-sm">
                 <summary className="cursor-pointer text-muted-foreground">
                   Inspect coverage report

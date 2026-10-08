@@ -1058,12 +1058,17 @@ export interface components {
              * Timeout Seconds
              * @default 900
              */
-            timeout_seconds: number;
+            timeout_seconds: number | null;
             /**
              * Token Budget
              * @default 200000
              */
-            token_budget: number;
+            token_budget: number | null;
+            /**
+             * Max Files
+             * @default 40
+             */
+            max_files: number | null;
             /**
              * Delegated Context Bytes
              * @default 800000
