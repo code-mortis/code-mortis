@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import {
+  api,
   useAction,
   useApi,
   type Connection,
@@ -9,6 +10,7 @@ import {
   type Schema,
 } from "./api";
 import { PersonalConnection } from "./subscriptions";
+import { ModelPicker } from "./components/model-picker";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -79,8 +81,9 @@ export function RepositorySettings({
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
   const [error, setError] = useState<unknown>();
+  const selectedConnection = connections.data?.find((item) => item.id === connection);
   const personal = ["chatgpt", "claude_code"].includes(
-    connections.data?.find((item) => item.id === connection)?.kind ?? "api",
+    selectedConnection?.kind ?? "api",
   );
   function change<K extends keyof typeof settings>(
     key: K,
@@ -125,12 +128,15 @@ export function RepositorySettings({
             id={id}
             value={connection}
             required={enabled}
-            onChange={(e) => setConnection(e.target.value)}
+            onChange={(e) => {
+              setConnection(e.target.value);
+              change("model", "");
+            }}
           >
             <option value="">Choose a connection</option>
             {connections.data?.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name} · {item.model}
+                {item.name}
               </option>
             ))}
           </NativeSelect>
@@ -188,16 +194,16 @@ export function RepositorySettings({
           )}
         </Field>
       </div>
-      <Field label="Model override (optional)">
-        {(id) => (
-          <Input
-            id={id}
-            value={settings.model}
-            onChange={(e) => change("model", e.target.value)}
-            placeholder="Use connection model"
-          />
-        )}
-      </Field>
+      <ModelPicker
+        key={connection}
+        label="Model override (optional)"
+        value={settings.model}
+        onChange={(value) => change("model", value)}
+        path={connection ? `/connections/${connection}/models?repository_id=${repo.id}` : undefined}
+        enabled={!!connection}
+        emptyLabel={selectedConnection?.model || "Use connection model"}
+        hint="Choose an AI connection to load its models."
+      />
       <Field
         label="Exclude files"
         hint="Comma-separated OCR glob patterns, such as **/*.lock,dist/**."
@@ -336,7 +342,7 @@ function ConnectionForm({
   connection?: Connection;
   providers: Provider[];
   canCreateApi: boolean;
-  onSaved: () => void;
+  onSaved: (connection: Connection) => void;
 }) {
   const [kind, setKind] = useState(
     connection?.kind ?? (canCreateApi ? "api" : "chatgpt"),
@@ -359,7 +365,18 @@ function ConnectionForm({
     JSON.stringify(connection?.options ?? {}, null, 2),
   );
   const [error, setError] = useState<unknown>();
-  const action = useAction();
+  const action = useAction<Connection>();
+  // Draft credentials stay in component memory, never in query keys or browser storage.
+  const context = JSON.stringify([kind, provider, protocol, url, key, headers, options]);
+  const initialContext = useRef(context);
+  function apiBody() {
+    return {
+      kind, provider, protocol, base_url: url,
+      ...(key ? { api_key: key } : {}),
+      ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
+      options: parseObject(options, "Options"),
+    };
+  }
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);
     setProvider(value);
@@ -378,25 +395,13 @@ function ConnectionForm({
           const body =
             kind !== "api"
               ? { name, kind, model }
-              : {
-                  kind,
-                  name,
-                  provider,
-                  protocol,
-                  model,
-                  base_url: url,
-                  ...(key ? { api_key: key } : {}),
-                  ...(headers.trim()
-                    ? { extra_headers: parseObject(headers, "Headers") }
-                    : {}),
-                  options: parseObject(options, "Options"),
-                };
-          await action.mutateAsync({
+              : { name, model, ...apiBody() };
+          const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
             method: connection ? "PUT" : "POST",
             body,
           });
-          onSaved();
+          onSaved(saved);
         } catch (e) {
           setError(e);
         }
@@ -480,21 +485,6 @@ function ConnectionForm({
           )}
         </>
       )}
-      <Field
-        label="Model identifier"
-        hint="Use a model available to your account that supports tool calls."
-      >
-        {(id) => (
-          <Input
-            id={id}
-            required
-            maxLength={150}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="Provider model ID"
-          />
-        )}
-      </Field>
       {kind === "api" && (
         <>
           <Field
@@ -564,6 +554,18 @@ function ConnectionForm({
           </details>
         </>
       )}
+      <ModelPicker
+        value={model}
+        onChange={setModel}
+        required={kind === "api"}
+        context={context}
+        path={connection && (kind !== "api" || context === initialContext.current)
+          ? `/connections/${connection.id}/models` : undefined}
+        loadDraft={kind === "api" ? () => api<Schema["ModelCatalog"]>("/connections/models", "POST", {
+          ...apiBody(), ...(connection ? { connection_id: connection.id } : {}),
+        }) : undefined}
+        hint={kind !== "api" ? "Save and sign in to load models. You can choose a model afterward." : undefined}
+      />
       {kind !== "api" && (
         <p className="text-sm text-muted-foreground">
           Save your personal connection, then complete sign-in with the official
@@ -630,7 +632,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             <div>
               <h2 className="font-semibold">Review connections</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Models available for manual and automatic reviews.
+                Connections and default models for manual and automatic reviews.
               </p>
             </div>
             <Button
@@ -659,7 +661,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   <div className="min-w-0 w-full flex-1">
                     <h3 className="text-sm font-semibold">{connection.name}</h3>
                     <p className="mt-1 break-words text-xs text-muted-foreground">
-                      {connection.provider} · {connection.model} ·{" "}
+                      {connection.provider} · Default model: {connection.model || "Choose a model"} ·{" "}
                       {(connection.kind ?? "api") === "api"
                         ? connection.protocol
                         : `Personal · ${connection.auth_status}`}
@@ -925,7 +927,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               connection={editing === "new" ? undefined : editing}
               providers={providers.data}
               canCreateApi={isAdmin}
-              onSaved={() => setEditing(null)}
+              onSaved={(saved) => {
+                setEditing(null);
+                if (saved.kind !== "api" && !saved.model) setPersonal(saved);
+              }}
             />
           )}
         </DialogContent>

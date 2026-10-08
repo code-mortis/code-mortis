@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import github, verification
+from . import github, model_discovery, runner_client, verification
 from .config import settings
 from .db import get_db, now
 from .models import (
@@ -44,6 +44,8 @@ from .schemas import (
     FindingDetail,
     FindingOut,
     MemberInput,
+    ModelCatalog,
+    ModelDiscoveryInput,
     OccurrenceOut,
     PRDetail,
     PullRequestOut,
@@ -384,6 +386,8 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         github.installation_token(db, repo.installation_id, resolve=True)
     if body.connection_id:
         selected = db.get(Connection, body.connection_id)
+        if body.enabled and not (body.settings.model.strip() or selected.model.strip()):
+            raise HTTPException(422, "Choose a model before enabling reviews.")
         if selected.kind != "api":
             grant = db.get(ConnectionGrant, (selected.id, repo.id))
             if not grant or (body.settings.automatic and not grant.automatic):
@@ -622,6 +626,39 @@ def manage_connection(db: Session, user: User, identity: str) -> Connection:
             "Only the connection owner can manage this personal account; API connections require an administrator.",
         )
     return connection
+
+
+@router.get("/connections/{connection_id}/models", response_model=ModelCatalog)
+def connection_models(connection_id: str, db: DB, user: USER, repository_id: int | None = None):
+    connection = db.get(Connection, connection_id)
+    if not connection:
+        raise HTTPException(404, "Connection not found.")
+    if repository_id is not None:
+        repo_access(db, user, repository_id)
+    if connection.kind != "api" and connection.owner_id != user.id:
+        if repository_id is None or not db.get(ConnectionGrant, (connection.id, repository_id)):
+            raise HTTPException(403, "This personal connection is not available to you.")
+    if connection.kind == "api":
+        return model_discovery.api_models(connection, json.loads(unseal(connection.secret)))
+    if connection.auth_status == "revoked":
+        return ModelCatalog(source="client", status="disconnected", message="Sign in to this personal connection to load models.")
+    try:
+        return ModelCatalog.model_validate(runner_client.request(
+            "GET", f"/connections/{connection.id}/models?kind={connection.kind}", timeout=65,
+        ))
+    except (runner_client.RunnerBlocked, ValueError):
+        return ModelCatalog(source="client", status="unavailable", message="The official client could not load models. Check account status and retry, or enter a custom model ID.")
+
+
+@router.post("/connections/models", response_model=ModelCatalog)
+def draft_models(body: ModelDiscoveryInput, db: DB, user: ADMIN):
+    connection = manage_connection(db, user, body.connection_id) if body.connection_id else None
+    if connection and connection.kind != "api":
+        raise HTTPException(422, "Use the saved personal connection to load its models.")
+    if body.protocol == "anthropic-bedrock":
+        return model_discovery.api_models(body, {})
+    credentials = model_discovery.credentials_for(body, connection)
+    return model_discovery.api_models(body, credentials)
 
 
 def save_connection(db: Session, body: ConnectionInput, connection: Connection | None = None, owner_id=None):

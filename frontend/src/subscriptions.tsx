@@ -8,6 +8,7 @@ import {
 } from "./api";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { ModelPicker } from "./components/model-picker";
 import { Switch } from "./components/ui/switch";
 import {
   ErrorNotice,
@@ -162,6 +163,8 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [repository, setRepository] = useState("");
   const [automatic, setAutomatic] = useState(false);
+  const [model, setModel] = useState(connection.model);
+  const [savedModel, setSavedModel] = useState(connection.model);
   const attempt = auth.data?.attempt;
   const connected = auth.data?.status === "connected";
   return (
@@ -288,6 +291,28 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           </details>
         )}
       </div>
+      <form className="space-y-4 border-t pt-5" onSubmit={async (event) => {
+        event.preventDefault();
+        try {
+          const saved = await action.mutateAsync({
+            path: `/connections/${identity}`, method: "PUT",
+            body: { name: connection.name, kind: connection.kind, model },
+          }) as Connection;
+          setSavedModel(saved.model);
+          setModel(saved.model);
+        } catch { /* The action error is displayed above. */ }
+      }}>
+        <ModelPicker
+          value={model} onChange={setModel} required
+          path={connected ? `/connections/${identity}/models` : undefined}
+          context={`${identity}:${connected}`}
+          hint="Sign in to load this connection’s models, or enter a custom model ID."
+        />
+        {!savedModel && <p className="text-sm text-muted-foreground">Choose a model to finish setup and enable reviews.</p>}
+        <Button type="submit" disabled={action.isPending || !model.trim() || model === savedModel}>
+          {action.isPending ? "Saving…" : "Save model"}
+        </Button>
+      </form>
       <section className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
         <p className="text-sm text-muted-foreground">

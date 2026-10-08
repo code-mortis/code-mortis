@@ -9,12 +9,10 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ConnectionInput(StrictModel):
-    name: str = Field(min_length=1, max_length=100)
+class ConnectionConfig(StrictModel):
     kind: Literal["api", "chatgpt", "claude_code"] = "api"
     provider: str = Field(default="", max_length=100, pattern=r"^[a-z0-9-]*$")
     protocol: Literal["openai", "openai-responses", "anthropic", "anthropic-bedrock", "native"] = "native"
-    model: str = Field(min_length=1, max_length=150)
     base_url: str = Field(default="", max_length=1000)
     api_key: str | None = Field(default=None, max_length=20000)
     extra_headers: dict[str, str] | None = None
@@ -74,6 +72,35 @@ class ConnectionInput(StrictModel):
         return value
 
 
+class ConnectionInput(ConnectionConfig):
+    name: str = Field(min_length=1, max_length=100)
+    model: str = Field(default="", max_length=150)
+
+    @model_validator(mode="after")
+    def selected_model(self):
+        self.model = self.model.strip()
+        if self.kind == "api" and not self.model:
+            raise ValueError("Choose a model for this API connection")
+        return self
+
+
+class ModelDiscoveryInput(ConnectionConfig):
+    kind: Literal["api"] = "api"
+    connection_id: str | None = None
+
+
+class ModelChoice(StrictModel):
+    id: str = Field(min_length=1, max_length=150)
+    name: str = Field(min_length=1, max_length=250)
+
+
+class ModelCatalog(StrictModel):
+    models: list[ModelChoice] = Field(default_factory=list)
+    source: Literal["provider", "client"]
+    status: Literal["ready", "unsupported", "disconnected", "unavailable"] = "ready"
+    message: str | None = None
+
+
 class RepoSettings(StrictModel):
     automatic: bool = True
     auto_resolve: bool = False
@@ -87,6 +114,11 @@ class RepoSettings(StrictModel):
     delegated_context_bytes: int = Field(default=800000, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None
+
+    @field_validator("model")
+    @classmethod
+    def trim_model(cls, value):
+        return value.strip()
 
 
 class RepositoryInput(StrictModel):
