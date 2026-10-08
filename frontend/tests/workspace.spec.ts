@@ -762,7 +762,8 @@ for (const [publication, label] of [
     await page.getByRole("link", { name: "View run details", exact: true }).click();
     const outcome = page.getByRole("region", { name: "Review outcome" });
     await expect(outcome).toContainText("41 reviewable files exceed the limit of 40. No files were reviewed.");
-    await expect(outcome).toContainText("@codemortis review anyway");
+    await expect(outcome).toContainText("post the command shown in the GitHub skip notice");
+    await expect(outcome).not.toContainText("@codemortis");
     await expect(outcome).toContainText("Personal connections remain owner-only.");
     await expect(page.getByText(label, { exact: true })).toBeVisible();
     await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);

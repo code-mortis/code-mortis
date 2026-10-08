@@ -12,6 +12,7 @@ from test_review_flow import new_run, remote
 from code_mortis import checks, github, jobs, ocr, reviews
 from code_mortis.db import transaction
 from code_mortis.models import (
+    AppConfig,
     Connection,
     Installation,
     Job,
@@ -38,7 +39,7 @@ def command_body(comment_id=123):
         "action": "created", "installation": {"id": 10}, "repository": {"id": 22},
         "sender": {"id": 7, "type": "User"}, "issue": {"number": 3, "pull_request": {}},
         "comment": {"id": comment_id, "user": {"id": 7, "type": "User"},
-                    "body": "@codemortis review anyway"},
+                    "body": "@mortis-test[bot] review anyway"},
     }
 
 
@@ -64,7 +65,7 @@ def test_notice_recovers_lost_response_without_analysis(seed, github_stub, monke
         assert plan["body"] == (
             "**Review skipped:** 41 reviewable files exceed the limit of 40. No files were reviewed.\n\n"
             "To bypass the file limit for one review of this revision, post:\n"
-            "`@codemortis review anyway`\n\n"
+            "`@mortis-test[bot] review anyway`\n\n"
             "Requires an enabled Code Mortis member with repository write access. "
             "Personal connections remain owner-only. Other review limits still apply.\n\n"
             f"[View run details](http://testserver/runs/{source})\n\n" + reviews.marker("run", f"{source}:0")
@@ -139,9 +140,19 @@ def test_notice_retry_api_and_check_reuse_analysis(seed, github_stub, monkeypatc
         assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 1
 
 
-def test_command_is_one_review_and_keeps_current_limits_and_original_connection(seed, github_stub, monkeypatch, client):
+@pytest.mark.parametrize("slug,command", [
+    ("mortis-test", " \n@Mortis-Test[BOT] REVIEW ANYWAY\n "),
+    ("mortis-test", "@mortis-test review anyway"),
+    ("custom-app-123", "@custom-app-123[bot] review anyway"),
+    ("custom-app-123", "@custom-app-123 review anyway"),
+    ("mortis-test", "@codemortis review anyway"),
+])
+def test_command_is_one_review_and_keeps_current_limits_and_original_connection(
+    seed, github_stub, monkeypatch, client, slug, command,
+):
     source = skipped_run(monkeypatch)
     with transaction() as db:
+        db.get(AppConfig, 1).github_slug = slug
         original = copy.deepcopy(db.get(ReviewRun, source).config)
         repo = db.get(Repository, 22)
         repo.connection_id = None
@@ -149,7 +160,7 @@ def test_command_is_one_review_and_keeps_current_limits_and_original_connection(
                                      exclusions="*.lock", delegated_context_bytes=400000).model_dump()
         settings = copy.deepcopy(repo.settings)
     body = command_body()
-    body["comment"]["body"] = " \n@CodeMortis REVIEW ANYWAY\n "
+    body["comment"]["body"] = command
     raw = json.dumps(body).encode()
     headers = {"x-github-delivery": "command", "x-github-event": "issue_comment",
                "x-hub-signature-256": "sha256=" + hmac.new(b"webhook-secret", raw, hashlib.sha256).hexdigest()}
@@ -210,6 +221,13 @@ def test_concurrent_commands_reuse_active_run_and_remember_both_comments(seed, g
     (("comment", "body"), "`@codemortis review anyway`"),
     (("comment", "body"), "Please @codemortis review anyway"),
     (("comment", "body"), "@codemortis review anyway\nExtra text"),
+    (("comment", "body"), "@another-app[bot] review anyway"),
+    (("comment", "body"), "@another-app review anyway"),
+    (("comment", "body"), "@mortis-test[bot] review anyway please"),
+    (("comment", "body"), "@mortis-test[bot] review anyway\nExtra text"),
+    (("comment", "body"), "> @mortis-test[bot] review anyway"),
+    (("comment", "body"), "`@mortis-test[bot] review anyway`"),
+    (("comment", "body"), "mortis-test[bot] review anyway"),
 ])
 def test_irrelevant_and_malformed_comments_are_ignored(seed, github_stub, monkeypatch, path, value):
     skipped_run(monkeypatch)

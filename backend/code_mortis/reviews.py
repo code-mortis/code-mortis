@@ -168,7 +168,6 @@ def review_anyway(db: Session, body: dict, delivery_id: str):
         or author.get("type") != "User"
         or sender.get("type") != "User"
         or not isinstance(comment.get("body"), str)
-        or comment["body"].strip().casefold() != "@codemortis review anyway"
         or not isinstance(issue.get("pull_request"), dict)
         or not all(type(value) is int and value > 0 for value in (
             author.get("id"), sender.get("id"), comment.get("id"), issue.get("number"),
@@ -176,6 +175,12 @@ def review_anyway(db: Session, body: dict, delivery_id: str):
         ))
         or author["id"] != sender["id"]
     ):
+        return
+    slug = github.app_config(db).github_slug.casefold()
+    # Keep commands in already-published notices usable.
+    if comment["body"].strip().casefold() not in {
+        f"@{slug}[bot] review anyway", f"@{slug} review anyway", "@codemortis review anyway",
+    }:
         return
     delivery = db.scalar(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id).with_for_update())
     if not delivery or delivery.event != "issue_comment":
@@ -580,7 +585,7 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
             "body": (
                 f"**Review skipped:** {count} reviewable files exceed the limit of {maximum}. No files were reviewed.\n\n"
                 "To bypass the file limit for one review of this revision, post:\n"
-                "`@codemortis review anyway`\n\n"
+                f"`@{github.app_config(db).github_slug}[bot] review anyway`\n\n"
                 "Requires an enabled Code Mortis member with repository write access. "
                 "Personal connections remain owner-only. Other review limits still apply.\n\n"
                 f"[View run details]({settings().public_url}/runs/{run.id})\n\n"
