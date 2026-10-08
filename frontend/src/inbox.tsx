@@ -8,7 +8,6 @@ import { InboxFilters } from "./components/inbox-filters";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { groups, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
-import { cn } from "./lib/utils";
 
 const titles: Record<Group, string> = { active: "Open", merged: "Merged", closed: "Closed" };
 type InboxData = Schema["InboxOut"] & { filterKey: string; errors: Partial<Record<Group, string>> };
@@ -120,7 +119,7 @@ export function Inbox() {
             <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
               <span>Pull request</span><span>Review status</span><span>Open findings</span><span>Created</span><span />
             </div>
-            {group.items.map((pr) => <Link key={pr.id} to={`/pulls/${pr.id}`} state={{ inbox: `${location.pathname}${location.search}` }} className={cn("inbox-row-grid group relative grid gap-y-3 border-b last:border-b-0 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:-outline-offset-2 md:items-center md:px-5 md:py-3", pr.has_running_review && "bg-accent/40")}>
+            {group.items.map((pr) => <Link key={pr.id} to={`/pulls/${pr.id}`} state={{ inbox: `${location.pathname}${location.search}` }} className="inbox-row-grid group relative grid gap-y-3 border-b last:border-b-0 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:-outline-offset-2 md:items-center md:px-5 md:py-3">
               <div className="min-w-0 pr-5 md:pr-0"><p className="break-words font-medium group-hover:text-primary">{pr.title}</p><p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span className="break-all">{pr.repository_name}</span><span>#{pr.number}</span><span className="break-all">@{pr.author}</span>{pr.draft && <span>Draft</span>}</p></div>
               <div className="min-w-0 space-y-1"><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}{pr.publication === "failed" && <p className="text-xs text-destructive">Publication failed</p>}{pr.publication === "partially_published" && <p className="text-xs text-muted-foreground">Partially published</p>}</div>
               <div><Badge variant="outline" className={pr.open_findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{pr.open_findings} open<span className="sr-only"> findings</span></Badge></div>
