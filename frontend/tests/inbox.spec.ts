@@ -75,7 +75,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).not.toBeChecked();
-  await page.getByRole("checkbox", { name: /^Closed/ }).click();
+  await page.getByText("Closed", { exact: true }).click();
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).toBeChecked();
   await expect(page).toHaveURL(/state=all/);
   await page.keyboard.press("Escape");
@@ -158,6 +158,15 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
   await page.getByRole("button", { name: "Reset", exact: true }).click();
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toContainText("Open, Merged");
+  await page.getByRole("button", { name: /Edit PR state/ }).click();
+  const merged = page.getByRole("checkbox", { name: /^Merged/ });
+  await merged.focus();
+  await page.keyboard.press("Space");
+  await expect(merged).not.toBeChecked();
+  await expect(page).toHaveURL(/state=open$/);
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
 });
 
 test("errors retain loaded rows, retry individually and clear denied data", async ({ page }) => {

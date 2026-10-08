@@ -3,6 +3,7 @@ import { ArrowLeft, ChevronDown, Search, SlidersHorizontal, X } from "lucide-rea
 import type { Schema } from "../api";
 import { label, properties, reviews, selected, states, type Property } from "../lib/inbox-filters";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
@@ -42,9 +43,9 @@ export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
     return <>
       {(key === "repo" || key === "author") && <Input autoFocus aria-label={`Search ${properties[key].toLowerCase()} options`} placeholder={`Find ${key === "repo" ? "a repository" : "an author"}…`} value={optionQuery} onChange={(e) => setOptionQuery(e.target.value)} className="mb-2" />}
       <div className="max-h-64 overflow-y-auto" role="group" aria-label={properties[key]}>
-        {choices.filter((c) => c.name.toLowerCase().includes(optionQuery.toLowerCase())).map((choice) => <label key={choice.value} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-sm px-2 py-2 text-sm hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
-          <input type="checkbox" className="size-4 shrink-0 accent-primary" checked={values.includes(choice.value)} disabled={key === "state" && values.length === 1 && values.includes(choice.value)} onChange={(e) => {
-            const next = key === "findings" ? e.target.checked ? [choice.value] : [] : e.target.checked ? [...values, choice.value] : values.filter((v) => v !== choice.value);
+        {choices.filter((c) => c.name.toLowerCase().includes(optionQuery.toLowerCase())).map((choice) => <label key={choice.value} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-sm px-2 py-2 text-sm hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-inset">
+          <Checkbox checked={values.includes(choice.value)} disabled={key === "state" && values.length === 1 && values.includes(choice.value)} onCheckedChange={(checked) => {
+            const next = key === "findings" ? checked === true ? [choice.value] : [] : checked === true ? [...values, choice.value] : values.filter((v) => v !== choice.value);
             onChange(key, next);
             if (!next.length) { setOpen(null); filterButton.current?.focus(); }
           }} />
@@ -67,7 +68,7 @@ export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
     <div className="flex flex-wrap items-center gap-2">
       <Popover open={open === "add"} onOpenChange={(value) => opened("add", value)}>
         <PopoverTrigger asChild><Button ref={filterButton} variant="outline" className="bg-card"><SlidersHorizontal />Filter</Button></PopoverTrigger>
-        <PopoverContent aria-label={property ? `Filter by ${properties[property]}` : "Add filter"}>
+        <PopoverContent align="start" sideOffset={8} collisionPadding={16} className="max-w-[calc(100vw-2rem)] border-0 p-2 ring-1 ring-border" aria-label={property ? `Filter by ${properties[property]}` : "Add filter"}>
           {property ? <><Button variant="ghost" size="sm" className="mb-2" onClick={() => { setProperty(null); setOptionQuery(""); }}><ArrowLeft />{properties[property]}</Button>{options(property)}</> : <>
             <Input aria-label="Find filter" placeholder="Find a filter…" value={optionQuery} onChange={(e) => setOptionQuery(e.target.value)} className="mb-2" />
             {(Object.keys(properties) as Property[]).filter((key) => properties[key].toLowerCase().includes(optionQuery.toLowerCase())).map((key) => <Button key={key} variant="ghost" className="w-full justify-start" onClick={() => { setProperty(key); setOptionQuery(""); }}>{properties[key]}</Button>)}
@@ -79,7 +80,7 @@ export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
           <PopoverTrigger asChild><Button variant="ghost" className="min-w-0 gap-2 rounded-r-none px-3" aria-label={`Edit ${properties[key]}: ${summary(key)}`}>
             <span className="shrink-0">{properties[key]}</span><span className="h-4 border-l border-current/20" /><span className="truncate">{summary(key)}</span><ChevronDown className="size-3" />
           </Button></PopoverTrigger>
-          <PopoverContent aria-label={`Filter by ${properties[key]}`}><p className="px-2 py-2 text-sm font-medium">{properties[key]}</p>{options(key)}</PopoverContent>
+          <PopoverContent align="start" sideOffset={8} collisionPadding={16} className="max-w-[calc(100vw-2rem)] border-0 p-2 ring-1 ring-border" aria-label={`Filter by ${properties[key]}`}><p className="px-2 py-2 text-sm font-medium">{properties[key]}</p>{options(key)}</PopoverContent>
         </Popover>
         <Button variant="ghost" size="icon" className="rounded-l-none border-l border-current/10" aria-label={`Remove ${properties[key]} filter`} onClick={() => { onChange(key, key === "state" ? ["all"] : []); filterButton.current?.focus(); }}><X className="size-3.5" /></Button>
       </div>)}
