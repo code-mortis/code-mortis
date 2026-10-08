@@ -66,18 +66,50 @@ def test_groups_current_revision_reruns_and_publication(visible, client):
         pull(db, "closed", "closed")
     result = get(client)
     groups = {group["group"]: group for group in result["groups"]}
-    assert list(groups) == ["active", "reviewed", "merged"]
+    assert list(groups) == ["active"]
     active = groups["active"]["items"]
     assert [item["review_status"] for item in active[:3]] == ["running", "running", "queued"]
     assert {item["id"] for item in active if item["review_status"] == "outdated"} == {"head_sha", "base_sha"}
     assert next(item for item in active if item["id"] == "pr")["review_status"] == "not_reviewed"
-    completed = groups["reviewed"]["items"][0]
+    completed = next(item for item in active if item["id"] == "reviewed")
     assert completed["open_findings"] == 1
     assert completed["publication"] == "failed"
     assert "report" not in completed and "config" not in completed
     assert result["state_counts"]["closed"] == 1
-    assert get(client, "?state=closed")["groups"][0]["items"][0]["id"] == "closed"
-    assert len(get(client, "?state=all")["groups"]) == 4
+    assert next(g for g in get(client, "?state=closed")["groups"] if g["group"] == "closed")["items"][0]["id"] == "closed"
+    assert len(get(client, "?state=all")["groups"]) == 3
+
+
+@pytest.mark.parametrize("state", ["merged", "closed"])
+@pytest.mark.parametrize("revision", ["current", "head_sha", "base_sha", "newer_completed"])
+def test_running_reviews_stay_visible_until_finished(visible, client, state, revision):
+    with transaction() as db:
+        pr = pull(db, "in-progress", state, author="runner")
+        overrides = {revision: "c" * 40} if revision in ["head_sha", "base_sha"] else {}
+        if revision == "newer_completed":
+            overrides = {"head_sha": "c" * 40}
+            run(db, pr, "completed", "current-completed")
+        run(db, pr, "running", "still-running", **overrides)
+    default = get(client)
+    assert [g["group"] for g in default["groups"]] == ["active"]
+    item = default["groups"][0]["items"][0]
+    assert item["id"] == "in-progress" and item["state"] == state and item["has_running_review"]
+    assert item["review_status"] == ("running" if revision == "current" else "completed" if revision == "newer_completed" else "outdated")
+    assert default["state_counts"][state] == 1
+    for query in ["?state=all", f"?state={state}"]:
+        result = get(client, query)
+        assert sum(pr["id"] == "in-progress" for g in result["groups"] for pr in g["items"]) == 1
+        assert next(g for g in result["groups"] if g["group"] == state)["total"] == 0
+    assert get(client, "?review=running")["total"] == 1
+    for query in ["?author=someone-else", "?repo=999", "?q=does-not-match", "?findings=open", "?review=failed"]:
+        assert get(client, query)["total"] == 0
+    with transaction() as db:
+        db.get(ReviewRun, "still-running").status = "completed"
+    assert get(client)["total"] == 1
+    history = get(client, f"?state={state}")
+    assert [g["group"] for g in history["groups"]] == [state]
+    assert history["groups"][0]["items"][0]["id"] == "in-progress"
+    assert not history["groups"][0]["items"][0]["has_running_review"]
 
 
 def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, seed, client, monkeypatch):
@@ -89,7 +121,7 @@ def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, 
             db.add(Repository(id=identity, installation_id=installation, full_name=f"secret/{identity}", active=active))
         db.flush()
         for identity in [23, 24, 25]:
-            pull(db, f"private-{identity}", repo=identity, author="hidden")
+            run(db, pull(db, f"private-{identity}", "merged", repo=identity, author="hidden"), "running")
     monkeypatch.setattr(github, "pages", lambda *args: [{"id": n} for n in [22, 24, 25]])
     result = get(client)
     assert result["total"] == result["registered_total"] == 1
@@ -117,16 +149,16 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
         statements.append(args[2])
     event.listen(engine(), "before_cursor_execute", record)
     try:
-        first = get(client)
+        first = get(client, "?review=completed")
     finally:
         event.remove(engine(), "before_cursor_execute", record)
-    reviewed = next(g for g in first["groups"] if g["group"] == "reviewed")
+    reviewed = next(g for g in first["groups"] if g["group"] == "active")
     assert reviewed["total"] == 42 and len(reviewed["items"]) == 20 and reviewed["has_more"]
     assert len(statements) < 20
-    second = get(client, "?group=reviewed&page=2")["groups"][0]
+    second = get(client, "?review=completed&group=active&page=2")["groups"][0]
     assert len(second["items"]) == 20
     assert not ({p["id"] for p in second["items"]} & {p["id"] for p in reviewed["items"]})
-    last = get(client, "?group=reviewed&page=999")["groups"][0]
+    last = get(client, "?review=completed&group=active&page=999")["groups"][0]
     assert last["page"] == 3 and len(last["items"]) == 2 and not last["has_more"]
     filtered = get(client, "?author=alice&review=completed&review=not_reviewed&findings=none&state=open")
     assert filtered["total"] == 21 and filtered["state_counts"]["closed"] == 1
@@ -139,7 +171,7 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
 
 
 @pytest.mark.parametrize("group,state,status", [
-    ("active", "open", "failed"), ("reviewed", "open", "completed"),
+    ("active", "open", "failed"), ("active", "open", "completed"),
     ("merged", "merged", "completed"), ("closed", "closed", "completed"),
 ])
 def test_unchanged_sync_preserves_inbox_order(visible, github_stub, client, monkeypatch, group, state, status):

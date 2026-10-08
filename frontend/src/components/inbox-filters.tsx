@@ -64,6 +64,7 @@ export function InboxFilters({ params, data, onChange, onSearch, onReset }: {
         </label>)}
         {!choices.some((c) => c.name.toLowerCase().includes(optionQuery.toLowerCase())) && <p className="p-3 text-sm text-muted-foreground">No options found.</p>}
       </div>
+      {key === "state" && <p className="px-2 pt-2 text-xs text-muted-foreground">Running reviews stay visible in every PR state.</p>}
       {values.length > 0 && !(key === "state" && values.length === states.length) && <div className="mt-2 border-t pt-2"><Button variant="ghost" className="w-full" onClick={() => clear(key)}>{key === "state" ? "Include all states" : "Clear filters"}</Button></div>}
     </>;
   }

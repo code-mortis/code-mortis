@@ -406,7 +406,7 @@ class RunDetail(BaseModel):
     can_write: bool
 
 
-InboxGroup = Literal["active", "reviewed", "merged", "closed"]
+InboxGroup = Literal["active", "merged", "closed"]
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",
@@ -416,7 +416,7 @@ InboxReview = Literal[
 class InboxFilters(StrictModel):
     q: str = Field(default="", max_length=256)
     repo: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=100)
-    state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["open", "merged"], max_length=4)
+    state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["open"], max_length=4)
     review: list[InboxReview] = Field(default_factory=list, max_length=11)
     author: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(default_factory=list, max_length=100)
     findings: Literal["open", "none"] | None = None
@@ -440,6 +440,7 @@ class InboxPullOut(ORMModel):
     created_at: datetime | None
     updated_at: datetime
     review_status: str
+    has_running_review: bool
     run_id: str | None
     publication: str | None
     publication_error: str | None

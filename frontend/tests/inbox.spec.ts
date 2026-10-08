@@ -10,14 +10,15 @@ const rows: Pull[] = titles.map((title, i) => ({
   id: `pr-${i}`, repository_id: repositories[i % 3].id, repository_name: repositories[i % 3].full_name,
   title, number: 42 + i, author: ["maria", "leo", "sam"][i % 3], state: i > 5 ? "merged" : "open",
   review_status: ["running", "queued", "failed", "not_reviewed", "completed", "completed", "completed", "completed"][i],
+  has_running_review: i === 0,
   run_id: i === 3 ? null : `run-${i}`, publication: "published", publication_error: null,
   created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
 }));
-const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled" };
+const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled", has_running_review: false };
 
-async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean } = {}) {
+async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean; historyOnly?: boolean } = {}) {
   const requests: URLSearchParams[] = [];
-  const controls = { failMore: false, fail: 0, complete: false };
+  const controls = { failMore: false, fail: 0, complete: false, state: "open" };
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace("/api/v1", "");
@@ -36,25 +37,26 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean 
       requests.push(params);
       if (controls.fail || (controls.failMore && params.has("group"))) return route.fulfill({ status: controls.fail || 502, json: { detail: "Inbox temporarily unavailable" } });
       let all = options.empty ? [] : [...rows, closed];
-      if (controls.complete) all = all.map((r) => r.id === "pr-0" ? { ...r, review_status: "completed" } : r);
+      all = all.map((r) => r.id === "pr-0" ? { ...r, state: controls.state, ...(controls.complete ? { review_status: "completed", has_running_review: false } : {}) } : r);
+      if (options.historyOnly) all = all.filter((r) => r.state !== "open");
       if (options.many) all = [...all, ...Array.from({ length: 40 }, (_, i) => ({ ...rows[3], id: `extra-${i}`, title: `Additional change ${i}`, number: 100 + i }))];
       let filtered = all.filter((r) => (!params.has("q") || `${r.title} ${r.number} ${r.author} ${r.repository_name}`.toLowerCase().includes(params.get("q")!.toLowerCase()))
         && (!params.has("repo") || params.getAll("repo").includes(String(r.repository_id)))
-        && (!params.has("review") || params.getAll("review").includes(r.review_status))
+        && (!params.has("review") || params.getAll("review").includes(r.review_status) || (params.getAll("review").includes("running") && r.has_running_review))
         && (!params.has("author") || params.getAll("author").includes(r.author))
         && (!params.has("findings") || (params.get("findings") === "open" ? r.open_findings > 0 : r.open_findings === 0)));
       const state_counts = Object.fromEntries(["open", "merged", "closed"].map((state) => [state, filtered.filter((r) => r.state === state).length]));
-      const states = params.has("state") ? params.getAll("state") : ["open", "merged"];
-      filtered = filtered.filter((r) => states.includes("all") || states.includes(r.state));
-      const groupNames = (["active", "reviewed", "merged", "closed"] as const).filter((g) => states.includes("all") || states.includes(g === "active" || g === "reviewed" ? "open" : g));
+      const states = params.has("state") ? params.getAll("state") : ["open"];
+      filtered = filtered.filter((r) => states.includes("all") || states.includes(r.state) || r.has_running_review);
+      const groupNames = (["active", "merged", "closed"] as const).filter((g) => states.includes("all") || states.includes(g === "active" ? "open" : g) || (g === "active" && filtered.some((r) => r.has_running_review)));
       data = {
         groups: groupNames.filter((g) => !params.has("group") || params.get("group") === g).map((group) => {
-          const items = filtered.filter((r) => (r.state !== "open" ? r.state : r.review_status === "completed" ? "reviewed" : "active") === group);
+          const items = filtered.filter((r) => (r.state === "open" || r.has_running_review ? "active" : r.state) === group);
           if (params.has("ordering")) {
             const ordering = params.get("ordering")!;
             const field = ordering.replace(/^-/, "");
             const key = (field === "repository" ? "repository_name" : field) as "created_at" | "updated_at" | "title" | "repository_name" | "author";
-            const priority = (r: Pull) => group !== "active" ? 2 : r.review_status === "running" ? 0 : r.review_status === "queued" ? 1 : 2;
+            const priority = (r: Pull) => group !== "active" ? 2 : r.has_running_review ? 0 : r.review_status === "queued" ? 1 : 2;
             items.sort((a, b) => priority(a) - priority(b) || (a[key] ?? "").localeCompare(b[key] ?? "") * (ordering.startsWith("-") ? -1 : 1) || b.id.localeCompare(a.id));
           }
           const index = Math.min(+(params.get("page") ?? 1), Math.max(1, Math.ceil(items.length / 20)));
@@ -73,19 +75,31 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
+async function includeState(page: Page, state: "Merged" | "Closed") {
+  await page.getByRole("button", { name: /Edit PR state/ }).click();
+  const option = page.getByRole("checkbox", { name: new RegExp(`^${state}`) });
+  await option.click();
+  await expect(option).toBeChecked();
+  await page.keyboard.press("Escape");
+}
+
 test("grouped inbox and modern state filters round trip through the URL", async ({ page }) => {
   await mockInbox(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
-  await expect(page.getByRole("status").first()).toContainText("8 pull requests · 3 repositories");
-  await expect(page.getByRole("region", { name: /Active & needs review/ }).getByRole("link").first()).toContainText(titles[0]);
+  await expect(page.getByRole("status").first()).toContainText("6 pull requests · 3 repositories");
+  await expect(page.getByRole("region", { name: /Open & running/ }).getByRole("link").first()).toContainText(titles[0]);
   await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: /^Merged/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: /Reviewed & open/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Add repository context/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Show (merged|closed)/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).not.toBeChecked();
   await page.getByText("Closed", { exact: true }).click();
   await expect(page.getByRole("checkbox", { name: /^Closed/ })).toBeChecked();
-  await expect(page).toHaveURL(/state=all/);
+  await expect(page).toHaveURL(/state=open&state=closed/);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toBeVisible();
   await page.reload();
@@ -95,7 +109,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/state=all/);
   await page.goBack();
-  await expect(page.getByRole("button", { name: "Show closed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await page.goForward();
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toBeVisible();
   await noOverflow(page);
@@ -138,27 +152,30 @@ test("searchable multi-select filters and debounced search preserve browser hist
 
 test("independent loading, sharing, detail return and bounds", async ({ page }) => {
   await mockInbox(page, { many: true });
-  await page.goto("/");
-  const active = page.getByRole("region", { name: /Active & needs review/ });
-  const reviewed = page.getByRole("region", { name: /Reviewed & open/ });
+  await page.goto("/?state=open&state=merged");
+  const active = page.getByRole("region", { name: /Open & running/ });
+  const merged = page.getByRole("region", { name: /^Merged/ });
   await expect(active.getByRole("link")).toHaveCount(20);
-  await expect(reviewed.getByRole("link")).toHaveCount(2);
+  await expect(merged.getByRole("link")).toHaveCount(2);
   await active.getByRole("button", { name: /Load more/ }).click();
   await expect(page).toHaveURL(/active_pages=2/);
   await expect(active.getByRole("link")).toHaveCount(40);
-  await expect(reviewed.getByRole("link")).toHaveCount(2);
+  await expect(merged.getByRole("link")).toHaveCount(2);
   await page.reload();
   await expect(active.getByRole("link")).toHaveCount(40);
   await active.getByRole("link").first().click();
   await expect(page.getByRole("heading", { name: titles[0], exact: true })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?active_pages=2");
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?state=open&state=merged&active_pages=2");
   await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
   await expect(page).toHaveURL(/active_pages=2/);
   await expect(active.getByRole("link")).toHaveCount(40);
   await page.goto("/?active_pages=999&merged_pages=200");
   await expect(page).toHaveURL(/active_pages=3$/);
-  await expect(active.getByRole("link")).toHaveCount(44);
-  await page.getByRole("button", { name: "Show closed" }).click();
+  await expect(active.getByRole("link")).toHaveCount(46);
+  await page.goto("/?reviewed_pages=2");
+  await expect(page).toHaveURL(/\?active_pages=2$/);
+  await expect(active.getByRole("link")).toHaveCount(40);
+  await includeState(page, "Closed");
   await expect(page).not.toHaveURL(/pages=/);
   await expect(active.getByRole("link")).toHaveCount(20);
 });
@@ -173,13 +190,17 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
   await page.getByRole("button", { name: "Reset", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open, Merged");
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await page.getByRole("button", { name: /Edit PR state/ }).click();
   const merged = page.getByRole("checkbox", { name: /^Merged/ });
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeDisabled();
   await merged.focus();
   await page.keyboard.press("Space");
+  await expect(merged).toBeChecked();
+  await expect(page).toHaveURL(/state=open&state=merged$/);
+  await page.keyboard.press("Space");
   await expect(merged).not.toBeChecked();
-  await expect(page).toHaveURL(/state=open$/);
+  await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toBeFocused();
@@ -188,7 +209,7 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
 test("errors retain loaded rows, retry individually and clear denied data", async ({ page }) => {
   const { controls } = await mockInbox(page, { many: true });
   await page.goto("/");
-  const active = page.getByRole("region", { name: /Active & needs review/ });
+  const active = page.getByRole("region", { name: /Open & running/ });
   await expect(active.getByRole("link")).toHaveCount(20);
   controls.failMore = true;
   await active.getByRole("button", { name: /Load more/ }).click();
@@ -213,14 +234,37 @@ test("empty workspace, no matches, and legacy repository links", async ({ page }
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
 });
 
-test("live reviews move groups and preserve collapsed groups", async ({ page }) => {
+test("merged running reviews stay visible once, then move into history", async ({ page }) => {
   const { controls } = await mockInbox(page);
   await page.goto("/");
-  await expect(page.getByRole("region", { name: /Active & needs review/ }).getByRole("link")).toHaveCount(4);
+  const active = page.getByRole("region", { name: /Open & running/ });
+  await expect(active.getByRole("link")).toHaveCount(6);
+  controls.state = "merged";
+  await expect(active.getByRole("link", { name: /Bound model discovery/ })).toContainText("merged", { timeout: 10000 });
+  await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(1);
+  await includeState(page, "Merged");
+  await expect(active.getByRole("link")).toHaveCount(6);
+  await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link")).toHaveCount(2);
   await page.getByRole("button", { name: "Merged (2)", exact: true }).click();
   controls.complete = true;
-  await expect(page.getByRole("region", { name: /Reviewed & open/ }).getByRole("link")).toHaveCount(3, { timeout: 10000 });
-  await expect(page.getByRole("button", { name: "Merged (2)", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(active.getByRole("link")).toHaveCount(5, { timeout: 10000 });
+  await expect(page.getByRole("button", { name: "Merged (3)", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "Merged (3)", exact: true }).click();
+  await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(1);
+});
+
+test("an open-only empty inbox makes history discoverable", async ({ page }) => {
+  await mockInbox(page, { historyOnly: true });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "No open pull requests" })).toBeVisible();
+  await includeState(page, "Merged");
+  await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link")).toHaveCount(2);
+  await includeState(page, "Closed");
+  await expect(page.getByRole("region", { name: /^Closed/ }).getByRole("link")).toHaveCount(1);
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No open pull requests" })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^Merged/ })).toHaveCount(0);
 });
 
 test("shared combined filters and a search with no matches", async ({ page }) => {
@@ -230,11 +274,11 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toContainText("Running");
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("@maria");
   await expect(page.getByRole("button", { name: /Edit Open findings/ })).toContainText("Has open findings");
-  expect(requests.at(-1)?.get("state")).toBe("open");
+  expect(requests.at(-1)?.has("state")).toBe(false);
   await page.getByRole("textbox", { name: "Search pull requests", exact: true }).fill("does not exist");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
   await page.getByRole("button", { name: "Reset", exact: true }).click();
-  await expect(page.getByRole("status").first()).toContainText("8 pull requests");
+  await expect(page.getByRole("status").first()).toContainText("6 pull requests");
   await noOverflow(page);
 });
 
@@ -256,14 +300,14 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
 test("ordering survives sharing, history and details and resets loaded pages", async ({ page }) => {
   const { requests } = await mockInbox(page, { many: true });
   await page.goto("/?ordering=title&active_pages=2");
-  const active = page.getByRole("region", { name: /Active & needs review/ });
+  const active = page.getByRole("region", { name: /Open & running/ });
   await expect(active.getByRole("link")).toHaveCount(40);
-  await expect(active.getByRole("link").nth(2)).toContainText("Additional change 0");
+  await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
   expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");
   await page.getByRole("button", { name: "Sort descending", exact: true }).click();
   await expect(page).toHaveURL(/\?ordering=-title$/);
   await expect(active.getByRole("link")).toHaveCount(20);
-  await expect(active.getByRole("link").nth(2)).toContainText("Improve keyboard navigation");
+  await expect(active.getByRole("link").nth(2)).toContainText("Persist request filters");
   await page.reload();
   await expect(page.getByRole("button", { name: "Sort by Title", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Z to A");
@@ -317,6 +361,12 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-ordering-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.keyboard.press("Escape");
+    await includeState(page, "Merged");
+    await includeState(page, "Closed");
+    await expect(page.getByRole("region", { name: /^Closed/ })).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/inbox-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
   }
   if (info.project.name === "desktop") {
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption("light");

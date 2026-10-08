@@ -999,7 +999,7 @@ export interface components {
              * Group
              * @enum {string}
              */
-            group: "active" | "reviewed" | "merged" | "closed";
+            group: "active" | "merged" | "closed";
             /** Items */
             items: components["schemas"]["InboxPullOut"][];
             /** Total */
@@ -1036,6 +1036,8 @@ export interface components {
             updated_at: string;
             /** Review Status */
             review_status: string;
+            /** Has Running Review */
+            has_running_review: boolean;
             /** Run Id */
             run_id: string | null;
             /** Publication */
@@ -1919,7 +1921,7 @@ export interface operations {
                 author?: string[];
                 findings?: ("open" | "none") | null;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
-                group?: ("active" | "reviewed" | "merged" | "closed") | null;
+                group?: ("active" | "merged" | "closed") | null;
                 page?: number;
             };
             header?: never;

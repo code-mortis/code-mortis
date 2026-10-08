@@ -1,6 +1,6 @@
 import type { Schema } from "../api";
 
-export const groups = ["active", "reviewed", "merged", "closed"] as const;
+export const groups = ["active", "merged", "closed"] as const;
 export type Group = Schema["InboxPage"]["group"];
 export const states = ["open", "merged", "closed"];
 export const reviews = ["running", "queued", "blocked", "not_reviewed", "outdated", "completed", "partial", "failed", "skipped", "cancelled", "superseded"];
@@ -20,7 +20,7 @@ export function normalizeFilters(input: URLSearchParams) {
     if (key === "state") {
       values = values.includes("all") ? ["all"] : states.filter((v) => values.includes(v));
       if (values.length === 3) values = ["all"];
-      if (values.join(",") === "open,merged") values = [];
+      if (values.join(",") === "open") values = [];
     }
     if (key === "review") values = reviews.filter((v) => values.includes(v));
     if (key === "author") values = values.map((v) => v.trim().toLowerCase()).filter((v) => v.length > 0 && v.length <= 100);
@@ -30,7 +30,7 @@ export function normalizeFilters(input: URLSearchParams) {
   const ordering = input.get("ordering");
   if (ordering && ordering !== "-created_at" && Object.hasOwn(orderings, ordering.replace(/^-/, ""))) result.set("ordering", ordering);
   for (const group of groups) {
-    const value = input.get(`${group}_pages`) ?? "1";
+    const value = input.get(`${group}_pages`) ?? (group === "active" ? input.get("reviewed_pages") : null) ?? "1";
     if (/^\d+$/.test(value) && +value > 1) result.set(`${group}_pages`, String(Math.min(+value, 1000000)));
   }
   return result;
@@ -38,7 +38,7 @@ export function normalizeFilters(input: URLSearchParams) {
 
 export function selected(params: URLSearchParams, property: Property) {
   const values = params.getAll(property);
-  return property === "state" ? values.includes("all") ? states : values.length ? values : ["open", "merged"] : values;
+  return property === "state" ? values.includes("all") ? states : values.length ? values : ["open"] : values;
 }
 
 export function withoutPages(params: URLSearchParams) {

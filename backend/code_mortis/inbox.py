@@ -13,6 +13,9 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     runs = select(
         ReviewRun.pr_id, ReviewRun.id.label("run_id"), ReviewRun.status,
         ReviewRun.publication, ReviewRun.publication_error, current.label("current"),
+        func.bool_or(ReviewRun.status == "running").over(
+            partition_by=ReviewRun.pr_id,
+        ).label("has_running_review"),
         func.row_number().over(
             partition_by=ReviewRun.pr_id,
             order_by=(
@@ -34,16 +37,18 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         (runs.c.current.is_(False), "outdated"),
         else_=runs.c.status,
     )
+    has_running_review = func.coalesce(runs.c.has_running_review, False)
     group = case(
+        (has_running_review, "active"),
         (PullRequest.state == "merged", "merged"),
         (PullRequest.state == "closed", "closed"),
-        (review_status == "completed", "reviewed"),
         else_="active",
     )
     base = select(
         PullRequest.id, PullRequest.repository_id, Repository.full_name.label("repository_name"),
         PullRequest.number, PullRequest.title, PullRequest.author, PullRequest.state,
         PullRequest.draft, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
+        has_running_review.label("has_running_review"),
         runs.c.run_id, runs.c.publication, runs.c.publication_error,
         func.coalesce(findings.c.open_findings, 0).label("open_findings"), group.label("group"),
     ).join(Repository, Repository.id == PullRequest.repository_id).outerjoin(
@@ -55,7 +60,8 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     if filters.repo:
         conditions.append(base.c.repository_id.in_(filters.repo))
     if filters.review:
-        conditions.append(base.c.review_status.in_(filters.review))
+        conditions.append(or_(base.c.review_status.in_(filters.review),
+                              and_("running" in filters.review, base.c.has_running_review)))
     if filters.author:
         conditions.append(func.lower(base.c.author).in_([value.lower() for value in filters.author]))
     if filters.findings:
@@ -72,13 +78,13 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         select(base.c.state, func.count()).where(*conditions).group_by(base.c.state)
     ).all()))
     if "all" not in filters.state:
-        conditions.append(base.c.state.in_(filters.state))
+        conditions.append(or_(base.c.state.in_(filters.state), base.c.has_running_review))
     filtered = select(base).where(*conditions).cte("inbox_filtered")
     totals = dict(db.execute(select(filtered.c.group, func.count()).group_by(filtered.c.group)).all())
     states = {"open", "merged", "closed"} if "all" in filters.state else set(filters.state)
     enabled = [name for name, state in [
-        ("active", "open"), ("reviewed", "open"), ("merged", "merged"), ("closed", "closed")
-    ] if state in states]
+        ("active", "open"), ("merged", "merged"), ("closed", "closed")
+    ] if state in states or (name == "active" and totals.get(name, 0))]
     sort_column = {
         "created_at": filtered.c.created_at, "updated_at": filtered.c.updated_at,
         "title": func.lower(filtered.c.title), "repository": func.lower(filtered.c.repository_name),
@@ -92,7 +98,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         total = totals.get(name, 0)
         page = min(filters.page if filters.group else 1, max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE))
         items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
-            case((and_(filtered.c.group == "active", filtered.c.review_status == "running"), 0),
+            case((filtered.c.has_running_review, 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
             order.nulls_last(), filtered.c.id.desc(),
         ).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)).mappings()
