@@ -83,6 +83,52 @@ async function includeState(page: Page, state: "Merged" | "Closed") {
   await page.keyboard.press("Escape");
 }
 
+test("Filters menu enables conditions, restores them from the URL, and returns focus", async ({ page }) => {
+  await mockInbox(page);
+  await page.goto("/?state=all");
+  await expect(page.getByRole("status").first()).toContainText("9 pull requests");
+  const filters = page.getByRole("button", { name: "Filters", exact: true });
+  await expect(page.getByRole("button", { name: /^Edit / })).toHaveCount(0);
+  await filters.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menuitem")).toHaveText(["Repository", "PR state", "Review status", "Author", "Open findings"]);
+  await page.getByRole("menuitem", { name: "Repository", exact: true }).press("Enter");
+  await expect(page.getByRole("textbox", { name: "Search repository options" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(filters).toBeFocused();
+  await expect(page.getByRole("button", { name: /Edit Repository/ })).toHaveCount(0);
+  await filters.click();
+  await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
+  const running = page.getByRole("checkbox", { name: "Running", exact: true });
+  await expect(running).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(running).toBeChecked();
+  await expect(page).toHaveURL(/state=all&review=running/);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /Edit Review status/ })).toBeFocused();
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Edit Review status/ })).toContainText("Running");
+  await filters.click();
+  await expect(page.getByRole("menuitem", { name: "Review status", exact: true })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "PR state", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Merged/ }).click();
+  await expect(page).toHaveURL(/state=open&state=closed&review=running/);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Remove Review status filter" }).click();
+  await expect(filters).toBeFocused();
+  await expect(page).not.toHaveURL(/review=/);
+  await expect(page.getByRole("button", { name: /Edit Review status/ })).toHaveCount(0);
+  await page.goBack();
+  await expect(page.getByRole("button", { name: /Edit Review status/ })).toBeVisible();
+  await page.goto("/?repo=22&review=running&author=maria&findings=open");
+  await filters.click();
+  await expect(page.getByText("All filters are in use.")).toBeVisible();
+  await noOverflow(page);
+  await page.keyboard.press("Escape");
+  await expect(filters).toBeFocused();
+});
+
 test("grouped inbox and modern state filters round trip through the URL", async ({ page }) => {
   await mockInbox(page);
   await page.goto("/");
@@ -122,7 +168,8 @@ test("grouped inbox and modern state filters round trip through the URL", async 
 test("searchable multi-select filters and debounced search preserve browser history", async ({ page }) => {
   const { requests } = await mockInbox(page);
   await page.goto("/");
-  await page.getByRole("button", { name: /Edit Repository/ }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Repository", exact: true }).click();
   await page.getByRole("textbox", { name: "Search repository options" }).fill("noodle");
   await page.getByRole("checkbox", { name: "acme/noodle", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "acme/noodle", exact: true })).toBeChecked();
@@ -141,7 +188,8 @@ test("searchable multi-select filters and debounced search preserve browser hist
   await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("headers");
   await page.getByRole("button", { name: "Remove Repository filter" }).click();
   await expect(page).not.toHaveURL(/repo=/);
-  await expect(page.getByRole("button", { name: /Edit Repository/ })).toBeFocused();
+  await expect(page.getByRole("button", { name: /Edit Repository/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL(/repo=23&repo=24/);
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
@@ -151,7 +199,8 @@ test("searchable multi-select filters and debounced search preserve browser hist
   await page.getByRole("button", { name: /Edit Repository/ }).click();
   await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(page).not.toHaveURL(/repo=/);
-  await expect(page.getByRole("button", { name: /Edit Repository/ })).toBeFocused();
+  await expect(page.getByRole("button", { name: /Edit Repository/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
 });
 
 test("independent loading, sharing, detail return and bounds", async ({ page }) => {
@@ -358,6 +407,11 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption(theme);
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: "Repository", exact: true })).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/inbox-filter-menu-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: /Edit PR state/ }).click();
     await expect(page.getByRole("checkbox", { name: /^Closed/ })).toBeVisible();
     await noOverflow(page);

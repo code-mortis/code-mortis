@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, PlusCircle, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ListFilter, PlusCircle, Search, X } from "lucide-react";
 import type { Schema } from "../api";
 import { label, orderings, properties, reviews, selected, states, type OrderingField, type Property } from "../lib/inbox-filters";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
@@ -27,7 +27,8 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
   }, [draft, query, onSearch]);
   const [open, setOpen] = useState<Property | null>(null);
   const [optionQuery, setOptionQuery] = useState("");
-  const filterButtons = useRef<Partial<Record<Property, HTMLButtonElement | null>>>({});
+  const filtersButton = useRef<HTMLButtonElement>(null);
+  const pendingFilter = useRef<Property | null>(null);
   const sortButton = useRef<HTMLButtonElement>(null);
   const ordering = params.get("ordering") ?? "-created_at";
   const field = ordering.replace(/^-/, "") as OrderingField;
@@ -36,10 +37,15 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
   const summary = (key: Property) => selected(params, key).map((value) => key === "repo"
     ? data?.repositories.find((r) => String(r.id) === value)?.full_name ?? `Repository ${value}`
     : key === "author" ? `@${value}` : key === "findings" ? value === "open" ? "Has open findings" : "No open findings" : label(value));
+  function isActive(key: Property) {
+    const values = selected(params, key);
+    return values.length > 0 && !(key === "state" && values.length === states.length);
+  }
+  const available = (Object.keys(properties) as Property[]).filter((key) => !isActive(key));
   function clear(key: Property) {
     onChange(key, key === "state" ? ["all"] : []);
     setOpen(null);
-    filterButtons.current[key]?.focus();
+    filtersButton.current?.focus();
   }
   function options(key: Property) {
     let choices: { value: string; name: string; count?: number }[];
@@ -74,12 +80,27 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
         <Input ref={searchInput} aria-label="Search pull requests" placeholder="Search pull requests…" className="h-9 bg-card pl-9 pr-9" value={draft.value} maxLength={256} onChange={(e) => setDraft({ query, value: e.target.value })} />
         {draft.value && <Button variant="ghost" size="icon" className="absolute right-0 top-0" aria-label="Clear search" onClick={() => { setDraft({ query: "", value: "" }); onSearch(""); searchInput.current?.focus(); }}><X className="size-3.5" /></Button>}
       </div>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild><Button ref={filtersButton} variant="outline" className="bg-card"><ListFilter className="text-muted-foreground" />Filters</Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="start" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => {
+          if (!pendingFilter.current) return;
+          // Open after the menu releases focus so it cannot dismiss the popover.
+          event.preventDefault();
+          setOptionQuery("");
+          setOpen(pendingFilter.current);
+          pendingFilter.current = null;
+        }}>
+          {available.map((key) => <DropdownMenuItem key={key} onSelect={() => { pendingFilter.current = key; }}>{properties[key]}</DropdownMenuItem>)}
+          {available.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">All filters are in use.</p>}
+        </DropdownMenuContent>
+      </DropdownMenu>
       {(Object.keys(properties) as Property[]).map((key) => {
         const names = summary(key);
-        const active = names.length > 0 && !(key === "state" && names.length === states.length);
-        return <div key={key} className="flex max-w-full min-w-0 items-center rounded-md border border-dashed bg-card">
+        const active = isActive(key);
+        if (!active && open !== key) return null;
+        return <div key={key} className="flex max-w-full min-w-0 items-center rounded-md border bg-card shadow-xs dark:border-input">
           <Popover open={open === key} onOpenChange={(value) => { setOpen(value ? key : null); setOptionQuery(""); }}>
-            <PopoverTrigger asChild><Button ref={(node) => { filterButtons.current[key] = node; }} variant="ghost" className="h-[34px] min-w-0 shrink gap-2 px-3" aria-label={`Edit ${properties[key]}: ${names.join(", ") || "Any"}`}>
+            <PopoverTrigger asChild><Button variant="ghost" className={`h-[34px] min-w-0 shrink gap-2 px-3 ${active ? "rounded-r-none" : ""}`} aria-label={`Edit ${properties[key]}: ${names.join(", ") || "Any"}`}>
               <PlusCircle className="size-4 text-muted-foreground" /><span className="shrink-0">{properties[key]}</span>
               {active && <>
                 <span className="h-4 border-l" aria-hidden="true" />
@@ -89,7 +110,7 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
                 </span>
               </>}
             </Button></PopoverTrigger>
-            <PopoverContent align="start" sideOffset={8} collisionPadding={16} className="max-w-[calc(100vw-2rem)] border-0 p-2 ring-1 ring-border" aria-label={`Filter by ${properties[key]}`}>
+            <PopoverContent align="start" sideOffset={8} collisionPadding={16} className="max-w-[calc(100vw-2rem)] border-0 p-2 ring-1 ring-border" aria-label={`Filter by ${properties[key]}`} onCloseAutoFocus={(event) => { if (!active) { event.preventDefault(); filtersButton.current?.focus(); } }}>
               <p className="px-2 py-2 text-sm font-medium">{properties[key]}</p>{options(key)}
             </PopoverContent>
           </Popover>
