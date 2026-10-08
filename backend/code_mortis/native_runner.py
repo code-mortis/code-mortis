@@ -24,6 +24,9 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field
 
+from .model_discovery import MAX_BYTES, MAX_MODELS, choices
+from .schemas import ModelCatalog
+
 CODEX_VERSION = "0.160.1"
 CLAUDE_VERSION = "2.1.292"
 ROOT = Path(os.environ.get("CM_RUNNER_PROFILES", "/profiles"))
@@ -371,6 +374,73 @@ async def auth_status(connection_id: str, kind: str):
         "account": {k: data[k] for k in ("email", "subscriptionType") if k in data},
         "limits": None,
     }
+
+
+async def claude_models(connection_id):
+    path = profile(connection_id)
+    process = await asyncio.create_subprocess_exec(
+        "claude", "--restricted", "--safe-mode", "--strict-mcp-config",
+        "--mcp-config", '{"mcpServers":{}}', "--tools", "", "--setting-sources", "",
+        "--no-session-persistence", "--input-format", "stream-json",
+        "--output-format", "stream-json", "--verbose", "--print",
+        cwd=path / "empty", env=environment(path), stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True, limit=MAX_BYTES,
+    )
+    try:
+        async with asyncio.timeout(25):
+            process.stdin.write(json.dumps({
+                "type": "control_request", "request_id": "models",
+                "request": {"subtype": "initialize", "hooks": None, "skills": []},
+            }).encode() + b"\n")
+            await process.stdin.drain()
+            size = 0
+            while line := await process.stdout.readline():
+                size += len(line)
+                if size > MAX_BYTES:
+                    raise ValueError("Model discovery exceeded its output limit")
+                event = json.loads(line)
+                if event.get("type") == "control_response":
+                    response = event.get("response", {})
+                    if response.get("request_id") == "models":
+                        if response.get("subtype") != "success":
+                            raise NativeError("unavailable")
+                        return choices(response.get("response", {}).get("models"), "value", "displayName")
+            raise NativeError("unavailable")
+    finally:
+        await stop(process)
+
+
+@app.get("/connections/{connection_id}/models", response_model=ModelCatalog)
+async def model_catalog(connection_id: str, kind: str):
+    if kind not in {"chatgpt", "claude_code"}:
+        raise HTTPException(422, "invalid_kind")
+    profile(connection_id)
+    lock = locks.setdefault(connection_id, asyncio.Lock())
+    if lock.locked():
+        return ModelCatalog(source="client", status="unavailable", message="This personal connection is busy. Retry loading models when it is idle.")
+    try:
+        async with asyncio.timeout(60), lock:
+            if (await auth_status(connection_id, kind))["status"] != "connected":
+                return ModelCatalog(source="client", status="disconnected", message="Sign in to this personal connection to load models.")
+            if kind == "claude_code":
+                return ModelCatalog(source="client", models=await claude_models(connection_id))
+            client = await codex(connection_id)
+            models, cursors, cursor = {}, set(), None
+            for _ in range(20):
+                page = await client.call("model/list", {"limit": 100, "includeHidden": False, "cursor": cursor})
+                models.update((model.id, model) for model in choices(page.get("data"), "model", "displayName"))
+                if len(models) > MAX_MODELS:
+                    raise ValueError("Too many models")
+                cursor = page.get("nextCursor")
+                if cursor is None:
+                    return ModelCatalog(source="client", models=list(models.values()))
+                if not isinstance(cursor, str) or not cursor or len(cursor) > 1000 or cursor in cursors:
+                    raise ValueError("Invalid model cursor")
+                cursors.add(cursor)
+    except (NativeError, OSError, ValueError, TimeoutError, AttributeError, TypeError):
+        pass
+    return ModelCatalog(source="client", status="unavailable", message="The official client could not load models. Retry or enter a custom model ID.")
 
 
 @app.delete("/connections/{connection_id}/auth")

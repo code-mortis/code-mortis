@@ -363,6 +363,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connections/{connection_id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Connection Models */
+        get: operations["connection_models_api_v1_connections__connection_id__models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Draft Models */
+        post: operations["draft_models_api_v1_connections_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections/{connection_id}": {
         parameters: {
             query?: never;
@@ -680,8 +714,6 @@ export interface components {
         };
         /** ConnectionInput */
         ConnectionInput: {
-            /** Name */
-            name: string;
             /**
              * Kind
              * @default api
@@ -699,8 +731,6 @@ export interface components {
              * @enum {string}
              */
             protocol: "openai" | "openai-responses" | "anthropic" | "anthropic-bedrock" | "native";
-            /** Model */
-            model: string;
             /**
              * Base Url
              * @default
@@ -716,6 +746,13 @@ export interface components {
             options?: {
                 [key: string]: unknown;
             };
+            /** Name */
+            name: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
         };
         /** ConnectionOut */
         ConnectionOut: {
@@ -856,6 +893,68 @@ export interface components {
              * @enum {string}
              */
             role: "admin" | "member";
+        };
+        /** ModelCatalog */
+        ModelCatalog: {
+            /** Models */
+            models?: components["schemas"]["ModelChoice"][];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "provider" | "client";
+            /**
+             * Status
+             * @default ready
+             * @enum {string}
+             */
+            status: "ready" | "unsupported" | "disconnected" | "unavailable";
+            /** Message */
+            message?: string | null;
+        };
+        /** ModelChoice */
+        ModelChoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
+        /** ModelDiscoveryInput */
+        ModelDiscoveryInput: {
+            /**
+             * Kind
+             * @default api
+             * @constant
+             */
+            kind: "api";
+            /**
+             * Provider
+             * @default
+             */
+            provider: string;
+            /**
+             * Protocol
+             * @default native
+             * @enum {string}
+             */
+            protocol: "openai" | "openai-responses" | "anthropic" | "anthropic-bedrock" | "native";
+            /**
+             * Base Url
+             * @default
+             */
+            base_url: string;
+            /** Api Key */
+            api_key?: string | null;
+            /** Extra Headers */
+            extra_headers?: {
+                [key: string]: string;
+            } | null;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+            /** Connection Id */
+            connection_id?: string | null;
         };
         /** OccurrenceOut */
         OccurrenceOut: {
@@ -1869,6 +1968,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connection_models_api_v1_connections__connection_id__models_get: {
+        parameters: {
+            query?: {
+                repository_id?: number | null;
+            };
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalog"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_models_api_v1_connections_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelDiscoveryInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalog"];
                 };
             };
             /** @description Validation Error */

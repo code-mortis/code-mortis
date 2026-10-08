@@ -240,6 +240,13 @@ async function mock(
         ],
         can_write: options.canWrite !== false,
       };
+    else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
+      data = {
+        source: "provider", status: "ready", message: null,
+        models: [{ id: "review-model", name: "Review model" }, { id: "next-model", name: "Next model" }],
+      };
+    else if (path === "/connections/connection" && method === "PUT")
+      data = { ...connection, ...request.postDataJSON() };
     else if (path === "/connections/personal/auth")
       data = {
         status: "disconnected",
@@ -528,7 +535,147 @@ test("connection editing never preloads saved credentials", async ({
   });
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await expect(page.getByLabel("Replace API key (optional)")).toHaveValue("");
-  await expect(page.getByLabel("Model identifier")).toHaveValue("review-model");
+  await expect(page.getByLabel("Model", { exact: true })).toHaveValue("review-model");
+});
+
+test("saved model selection refreshes without replacing custom IDs", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await expect(model.locator("option", { hasText: "Next model" })).toHaveCount(1);
+  await model.selectOption("next-model");
+  await page.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
+  expect(requests.find((request) => request.path === "/connections/models")?.body).toEqual({
+    kind: "api", provider: "openai", protocol: "openai", base_url: "https://api.openai.com/v1",
+    options: {}, connection_id: "connection",
+  });
+  await expect(model).toHaveValue("next-model");
+  await model.selectOption({ label: "Enter a custom model ID" });
+  await page.getByLabel("Custom model ID").fill("private-model");
+  await page.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Custom model ID")).toHaveValue("private-model");
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/model-picker-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(requests.find((request) => request.path === "/connections/connection")?.body).toMatchObject({ model: "private-model" });
+});
+
+test("API drafts load models before saving and support keyboard selection", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("Connection name").fill("New connection");
+  await page.getByLabel("API key", { exact: true }).fill("draft-key");
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await expect(model.locator("option", { hasText: "Review model" })).toHaveCount(1);
+  expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
+  expect(requests.find((request) => request.path === "/connections/models")?.body).toMatchObject({ api_key: "draft-key" });
+  await model.focus();
+  await model.press("r");
+  await model.press("Tab");
+  await expect(model).toHaveValue("review-model");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "review-model", api_key: "draft-key" });
+});
+
+test("changed draft discards late models and keeps manual entry on errors", async ({ page }) => {
+  await mock(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections/models", async (route) => {
+    const old = route.request().postDataJSON().base_url === "https://api.openai.com/v1";
+    if (old) await held;
+    await route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: old ? "old-model" : "new-model", name: old ? "Old model" : "New model" }] } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("API key", { exact: true }).fill("key");
+  const first = page.waitForRequest("**/api/v1/connections/models");
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  await first;
+  await page.getByLabel("API base URL").fill("https://new.example/v1");
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await expect(model.locator('option[value="new-model"]')).toHaveCount(1);
+  const late = page.waitForResponse((response) => response.url().endsWith("/connections/models") && response.request().postDataJSON().base_url === "https://api.openai.com/v1");
+  release();
+  await late;
+  await expect(model.locator('option[value="old-model"]')).toHaveCount(0);
+  await expect(model.locator('option[value="new-model"]')).toHaveCount(1);
+  await model.selectOption("new-model");
+  await page.route("**/api/v1/connections/models", (route) => route.fulfill({ json: { source: "provider", status: "unsupported", message: "This endpoint does not support model discovery. Enter a custom model ID.", models: [] } }));
+  await page.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await expect(page.getByText("This endpoint does not support model discovery. Enter a custom model ID.")).toBeVisible();
+  await expect(model).toHaveValue("new-model");
+  await model.selectOption({ label: "Enter a custom model ID" });
+  await page.getByLabel("Custom model ID").fill("fallback");
+  await expect(page.getByLabel("Custom model ID")).toHaveValue("fallback");
+});
+
+test("repository model choices follow its selected connection", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection", model: "second-model" }] }));
+  await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const model = page.getByLabel("Model override (optional)");
+  await expect(model.locator("option:checked")).toHaveText("review-model");
+  await expect(model.locator('option[value="next-model"]')).toHaveCount(1);
+  await model.selectOption("next-model");
+  await page.getByLabel("AI connection", { exact: true }).selectOption("second");
+  await expect(model).toHaveValue("");
+  await expect(model.locator("option:checked")).toHaveText("second-model");
+  await expect(model.locator('option[value="second-model"]')).toHaveCount(1);
+  await expect(model.locator('option[value="next-model"]')).toHaveCount(0);
+  await model.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/connection-default-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    connection_id: "second", settings: { model: "" },
+  });
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.getByLabel("AI connection", { exact: true }).selectOption("");
+  await expect(model).toBeDisabled();
+});
+
+test("personal setup saves without a model then signs in and selects one", async ({ page }, info) => {
+  await mock(page);
+  let connected = false;
+  let savedModel = "";
+  await page.route("**/api/v1/connections", (route) => route.request().method() === "POST"
+    ? route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", model: "", owner_id: 7, auth_status: "disconnected" } })
+    : route.fallback());
+  await page.route("**/api/v1/connections/personal/auth", (route) => {
+    if (route.request().method() === "POST") connected = true;
+    return route.fulfill({ json: { status: connected ? "connected" : "disconnected" } });
+  });
+  await page.route("**/api/v1/connections/personal/models", (route) => route.fulfill({ json: { source: "client", status: "ready", models: [{ id: "personal-model", name: "Personal model" }] } }));
+  await page.route("**/api/v1/connections/personal", (route) => {
+    savedModel = route.request().postDataJSON().model;
+    return route.fulfill({ json: { ...connection, kind: "chatgpt", id: "personal", model: savedModel } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("Connection type").selectOption("chatgpt");
+  await page.getByLabel("Connection name").fill("Personal setup");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Personal setup" })).toBeVisible();
+  await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toBeVisible();
+  await page.getByRole("button", { name: "Connect ChatGPT", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await expect(model.locator('option[value="personal-model"]')).toHaveCount(1);
+  await model.selectOption("personal-model");
+  await page.getByRole("button", { name: "Save model", exact: true }).click();
+  await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toHaveCount(0);
+  expect(savedModel).toBe("personal-model");
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/personal-model-picker-${info.project.name}.png`, fullPage: true });
 });
 
 test("new instance sends the bootstrap token in the request header", async ({

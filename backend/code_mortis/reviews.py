@@ -82,6 +82,8 @@ def create_run(
     config = {"connection": connection_snapshot(connection), "settings": options}
     if options["model"]:
         config["connection"]["model"] = options["model"]
+    if not config["connection"]["model"].strip():
+        raise ValueError("Choose a model before starting reviews.")
     key = digest(json.dumps([pr.id, pr.base_sha, pr.head_sha, config], sort_keys=True))
     if trigger == "automatic":
         # Defaults added during upgrades and resolution-only toggles do not change review scope.

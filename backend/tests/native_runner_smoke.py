@@ -11,6 +11,7 @@ from code_mortis.native_runner import (
     auth_console,
     auth_status,
     cancel_login,
+    claude_models,
     codex,
     consoles,
     locks,
@@ -62,6 +63,10 @@ async def main():
     client = await codex("00000000-0000-4000-8000-000000000001")
     try:
         assert (await client.call("account/read"))["account"] is None
+        models = await client.call("model/list", {"limit": 100, "includeHidden": False})
+        assert models["data"] and all(row["model"] and row["displayName"] for row in models["data"])
+        claude_catalog = await claude_models("00000000-0000-4000-8000-000000000002")
+        assert claude_catalog and all(row.id and row.name for row in claude_catalog)
         if "--auth-start" in sys.argv:
             result = await client.call("account/login/start", {"type": "chatgptDeviceCode"})
             assert (
@@ -80,7 +85,7 @@ async def main():
     finally:
         await client.close()
     print(
-        "Pinned Codex RPC initialization and Claude native auth status passed with isolated empty profiles."
+        "Pinned Codex and Claude model discovery and auth status passed with isolated empty profiles, without inference."
     )
 
 
