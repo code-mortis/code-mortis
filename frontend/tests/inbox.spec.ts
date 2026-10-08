@@ -88,7 +88,9 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
   await expect(page.getByRole("status").first()).toContainText("6 pull requests · 3 repositories");
-  await expect(page.getByRole("region", { name: /Open & running/ }).getByRole("link").first()).toContainText(titles[0]);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link").first()).toContainText(titles[0]);
+  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("button")).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toHaveCount(0);
   await expect(page.getByRole("region", { name: /^Merged/ })).toHaveCount(0);
@@ -102,6 +104,7 @@ test("grouped inbox and modern state filters round trip through the URL", async 
   await expect(page).toHaveURL(/state=open&state=closed/);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Closed1"]);
   await page.reload();
   await expect(page.getByRole("link", { name: /Abandoned change/ })).toBeVisible();
   await page.getByRole("button", { name: "Reset", exact: true }).click();
@@ -153,7 +156,7 @@ test("searchable multi-select filters and debounced search preserve browser hist
 test("independent loading, sharing, detail return and bounds", async ({ page }) => {
   await mockInbox(page, { many: true });
   await page.goto("/?state=open&state=merged");
-  const active = page.getByRole("region", { name: /Open & running/ });
+  const active = page.getByRole("region", { name: "Open", exact: true });
   const merged = page.getByRole("region", { name: /^Merged/ });
   await expect(active.getByRole("link")).toHaveCount(20);
   await expect(merged.getByRole("link")).toHaveCount(2);
@@ -209,7 +212,7 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
 test("errors retain loaded rows, retry individually and clear denied data", async ({ page }) => {
   const { controls } = await mockInbox(page, { many: true });
   await page.goto("/");
-  const active = page.getByRole("region", { name: /Open & running/ });
+  const active = page.getByRole("region", { name: "Open", exact: true });
   await expect(active.getByRole("link")).toHaveCount(20);
   controls.failMore = true;
   await active.getByRole("button", { name: /Load more/ }).click();
@@ -237,7 +240,7 @@ test("empty workspace, no matches, and legacy repository links", async ({ page }
 test("merged running reviews stay visible once, then move into history", async ({ page }) => {
   const { controls } = await mockInbox(page);
   await page.goto("/");
-  const active = page.getByRole("region", { name: /Open & running/ });
+  const active = page.getByRole("region", { name: "Open", exact: true });
   await expect(active.getByRole("link")).toHaveCount(6);
   controls.state = "merged";
   await expect(active.getByRole("link", { name: /Bound model discovery/ })).toContainText("merged", { timeout: 10000 });
@@ -245,11 +248,10 @@ test("merged running reviews stay visible once, then move into history", async (
   await includeState(page, "Merged");
   await expect(active.getByRole("link")).toHaveCount(6);
   await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link")).toHaveCount(2);
-  await page.getByRole("button", { name: "Merged (2)", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Merged 2", exact: true })).toBeVisible();
   controls.complete = true;
   await expect(active.getByRole("link")).toHaveCount(5, { timeout: 10000 });
-  await expect(page.getByRole("button", { name: "Merged (3)", exact: true })).toHaveAttribute("aria-expanded", "false");
-  await page.getByRole("button", { name: "Merged (3)", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Merged 3", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(1);
 });
@@ -260,8 +262,12 @@ test("an open-only empty inbox makes history discoverable", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "No open pull requests" })).toBeVisible();
   await includeState(page, "Merged");
   await expect(page.getByRole("region", { name: /^Merged/ }).getByRole("link")).toHaveCount(2);
+  await expect(page.getByRole("region", { name: "Open", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(0);
   await includeState(page, "Closed");
   await expect(page.getByRole("region", { name: /^Closed/ }).getByRole("link")).toHaveCount(1);
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Merged2", "Closed1"]);
+  await expect(page.getByRole("region").getByRole("button")).toHaveCount(0);
   await page.getByRole("button", { name: "Reset", exact: true }).click();
   await expect(page.getByRole("heading", { name: "No open pull requests" })).toBeVisible();
   await expect(page.getByRole("region", { name: /^Merged/ })).toHaveCount(0);
@@ -300,7 +306,7 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
 test("ordering survives sharing, history and details and resets loaded pages", async ({ page }) => {
   const { requests } = await mockInbox(page, { many: true });
   await page.goto("/?ordering=title&active_pages=2");
-  const active = page.getByRole("region", { name: /Open & running/ });
+  const active = page.getByRole("region", { name: "Open", exact: true });
   await expect(active.getByRole("link")).toHaveCount(40);
   await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
   expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");

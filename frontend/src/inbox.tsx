@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, LoaderCircle } from "lucide-react";
+import { ChevronRight, LoaderCircle } from "lucide-react";
 import { api, ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, Status, date } from "./components/common";
 import { InboxFilters } from "./components/inbox-filters";
@@ -10,7 +10,7 @@ import { Badge } from "./components/ui/badge";
 import { groups, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
 import { cn } from "./lib/utils";
 
-const titles: Record<Group, string> = { active: "Open & running", merged: "Merged", closed: "Closed" };
+const titles: Record<Group, string> = { active: "Open", merged: "Merged", closed: "Closed" };
 type InboxData = Schema["InboxOut"] & { filterKey: string; errors: Partial<Record<Group, string>> };
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
@@ -54,7 +54,6 @@ export function Inbox() {
   const canonical = params.toString();
   const filters = withoutPages(params).toString();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState<Partial<Record<Group, boolean>>>({});
   const legacy = raw.has("repo") && raw.has("configure");
   const query = useQuery<InboxData, ApiError>({
     queryKey: ["inbox", filters, canonical],
@@ -95,6 +94,7 @@ export function Inbox() {
   if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
   const options = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
   const data = options?.filterKey === filters ? options : undefined;
+  const visibleGroups = data?.groups.filter((group) => group.total > 0) ?? [];
   const defaultOpen = !["q", "repo", "state", "review", "author", "findings"].some((key) => params.has(key));
   return <>
     <header className="mb-5">
@@ -109,18 +109,17 @@ export function Inbox() {
       {data.registered_total ? defaultOpen ? <>Use the PR state filter to browse merged and closed pull requests.</> : <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</> : <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
     </Empty>}
     {data && data.total > 0 && <div className="space-y-6">
-      {data.groups.map((group) => {
+      {visibleGroups.map((group) => {
         const busy = query.isFetching && Number(params.get(`${group.group}_pages`) ?? 1) > group.page;
         const error = data.errors[group.group];
-        return <section key={group.group} aria-labelledby={`${group.group}-heading`} className="overflow-hidden rounded-lg border bg-card">
-          <h2 id={`${group.group}-heading`}><button className="flex w-full items-center gap-2 border-b bg-muted/50 px-4 py-2.5 text-left text-sm font-semibold hover:bg-accent focus-visible:-outline-offset-2" aria-expanded={!collapsed[group.group]} aria-controls={`${group.group}-items`} onClick={() => setCollapsed({ ...collapsed, [group.group]: !collapsed[group.group] })}>
-            <ChevronDown className={cn("size-4 transition-transform", collapsed[group.group] && "-rotate-90")} /><span>{titles[group.group]}</span><span className="font-normal tabular-nums text-muted-foreground">({group.total})</span>
-          </button></h2>
-          <div id={`${group.group}-items`} hidden={collapsed[group.group]}>
-            {group.total > 0 && <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
+        return <section key={group.group} aria-label={titles[group.group]}>
+          {visibleGroups.length > 1 && <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">
+            {titles[group.group]}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.total}</span>
+          </h2>}
+          <div className="overflow-hidden rounded-lg border bg-card">
+            <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
               <span>Pull request</span><span>Review status</span><span>Open findings</span><span>Created</span><span />
-            </div>}
-            {!group.total && <p className="px-10 py-5 text-sm text-muted-foreground">No matching pull requests in this group.</p>}
+            </div>
             {group.items.map((pr) => <Link key={pr.id} to={`/pulls/${pr.id}`} state={{ inbox: `${location.pathname}${location.search}` }} className={cn("inbox-row-grid group relative grid gap-y-3 border-b last:border-b-0 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:-outline-offset-2 md:items-center md:px-5 md:py-3", pr.has_running_review && "bg-accent/40")}>
               <div className="min-w-0 pr-5 md:pr-0"><p className="break-words font-medium group-hover:text-primary">{pr.title}</p><p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span className="break-all">{pr.repository_name}</span><span>#{pr.number}</span><span className="break-all">@{pr.author}</span>{pr.draft && <span>Draft</span>}</p></div>
               <div className="min-w-0 space-y-1"><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}{pr.publication === "failed" && <p className="text-xs text-destructive">Publication failed</p>}{pr.publication === "partially_published" && <p className="text-xs text-muted-foreground">Partially published</p>}</div>
