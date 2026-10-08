@@ -338,11 +338,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         evidence = root / "evidence.py"
         evidence.write_text(evidence_bundle(context))
         rule = root / "rules.json"
-        rule.write_text(json.dumps({"default_rule": INSTRUCTIONS + (
+        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": INSTRUCTIONS + (
             " Return exactly one code_comment for evidence.py, category other, severity low. "
             "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
             "a JSON object matching this schema, including fixed and uncertain outcomes: "
-        ) + json.dumps(output_schema())}))
+        ) + json.dumps(output_schema())}]}))
         tools = root / "tools.json"
         tools.write_text(json.dumps(verification_tools()))
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",

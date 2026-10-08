@@ -101,7 +101,12 @@ class ModelCatalog(StrictModel):
     message: str | None = None
 
 
-class RepoSettings(StrictModel):
+class RunLimits(StrictModel):
+    timeout_seconds: int | None = Field(default=900, ge=60, le=3600)
+    token_budget: int | None = Field(default=200000, ge=1000, le=5000000)
+
+
+class RepoSettings(RunLimits):
     automatic: bool = True
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
@@ -109,8 +114,6 @@ class RepoSettings(StrictModel):
     language: str = Field(default="English", min_length=1, max_length=100)
     exclusions: str = Field(default="", max_length=4000)
     background: str = Field(default="", max_length=20000)
-    timeout_seconds: int | None = Field(default=900, ge=60, le=3600)
-    token_budget: int | None = Field(default=200000, ge=1000, le=5000000)
     max_files: int | None = Field(default=40, ge=1, strict=True)
     delegated_context_bytes: int = Field(default=800000, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
@@ -126,6 +129,30 @@ class RepositoryInput(StrictModel):
     enabled: bool
     connection_id: str | None = None
     settings: RepoSettings = Field(default_factory=RepoSettings)
+
+
+class BackgroundInput(StrictModel):
+    connection_id: str = Field(min_length=1, max_length=36)
+    model: str = Field(default="", max_length=150)
+    limits: RunLimits | None = None
+
+
+class BackgroundResult(StrictModel):
+    background: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("background")
+    @classmethod
+    def nonempty(cls, value):
+        if not value.strip():
+            raise ValueError("The model returned an empty project background.")
+        return value.strip()
+
+
+class BackgroundJobOut(StrictModel):
+    id: str
+    status: Literal["queued", "running", "done", "failed"]
+    background: str | None = None
+    error: str | None = None
 
 
 class FindingAction(StrictModel):

@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import github, model_discovery, runner_client, verification
+from . import background, github, model_discovery, runner_client, verification
 from .config import settings
 from .db import get_db, now
 from .models import (
@@ -38,6 +38,8 @@ from .models import (
 from .reviews import can_publish, create_run, enqueue, request_finding_status, upsert_pr
 from .schemas import (
     ActivityOut,
+    BackgroundInput,
+    BackgroundJobOut,
     ConnectionInput,
     ConnectionOut,
     FindingAction,
@@ -404,6 +406,24 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)
+
+
+@router.post("/repositories/{repository_id}/background", response_model=BackgroundJobOut, status_code=202)
+def generate_background(repository_id: int, body: BackgroundInput, db: DB, user: ADMIN):
+    repo, _ = repo_access(db, user, repository_id, write=True)
+    connection = db.get(Connection, body.connection_id)
+    background.authorize(db, repo, user, connection, check_repository=False)
+    return background.job_out(background.enqueue(db, repo, user, connection, body.model, body.limits))
+
+
+@router.get("/repositories/{repository_id}/background/{job_id}", response_model=BackgroundJobOut)
+def background_status(repository_id: int, job_id: str, db: DB, user: ADMIN):
+    repo_access(db, user, repository_id, write=True)
+    job = db.get(Job, job_id)
+    if (not job or job.kind != "generate_background"
+        or job.payload.get("repository_id") != repository_id or job.payload.get("actor_id") != user.id):
+        raise HTTPException(404, "Background generation not found.")
+    return background.job_out(job)
 
 
 @router.get("/repositories/{repository_id}/pulls", response_model=list[PullRequestOut])
