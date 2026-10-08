@@ -751,8 +751,10 @@ const limitedRun: Partial<Run> = {
 
 for (const [publication, label] of [
   ["pending", "Waiting to publish skip notice"],
+  ["publishing", "Publishing skip notice"],
   ["published", "Skip notice published"],
   ["failed", "Skip notice publication failed"],
+  ["partially_published", "Skip notice publication failed"],
 ] as const) {
   test(`file-limit skip notice ${publication} preserves the review outcome`, async ({ page }, info) => {
     const requests = await mock(page, { run: { ...limitedRun, publication } });
@@ -768,7 +770,11 @@ for (const [publication, label] of [
     await expect(page.getByText(label, { exact: true })).toBeVisible();
     await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
     const retry = page.getByRole("button", { name: "Retry GitHub publication" });
-    if (publication === "failed") {
+    if (publication === "failed" || publication === "partially_published") {
+      await expect(outcome).toContainText("send the saved file-limit notice without running AI analysis");
+      await expect(outcome).not.toContainText("send saved results");
+      await expect(page.getByText("Retry publication to send the saved file-limit notice without running AI analysis.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Some comments published", { exact: true })).toHaveCount(0);
       await retry.click();
       expect(requests).toEqual([{ path: "/runs/run/publish", method: "POST", body: null, csrf: "csrf-from-session" }]);
     } else {
@@ -776,9 +782,30 @@ for (const [publication, label] of [
       expect(requests).toEqual([]);
     }
     await noOverflow(page);
-    if (publication === "published") {
-      await page.screenshot({ path: `../.impeccable/review/file-limit-notice-${info.project.name}.png`, fullPage: true });
+    if (publication === "published" || publication === "failed") {
+      await page.screenshot({ path: `../.impeccable/review/file-limit-notice-${publication}-${info.project.name}.png`, fullPage: true });
     }
+  });
+}
+
+for (const [name, coverage, settings] of [
+  ["missing selected files", {}, { max_files: 40 }],
+  ["missing file limit", { selected: [{ path: "source.py" }] }, {}],
+  ["invalid file limit", { selected: [{ path: "source.py" }] }, { max_files: "40" }],
+] as const) {
+  test(`malformed file-limit report with ${name} uses consistent fallback copy`, async ({ page }) => {
+    await mock(page, { run: {
+      ...limitedRun, publication: "failed", config: { ...run.config, settings },
+      report: { manifest: { schema_version: "code-mortis.file-limit/v1", coverage } },
+    } });
+    await page.goto("/runs/run");
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    await expect(outcome).toContainText("This review was skipped. No specific reason was saved. Publication failed.");
+    await expect(outcome).toContainText("Inspect the coverage report and repository settings before starting a new review.");
+    await expect(outcome).not.toContainText("skip notice");
+    await expect(page.getByText("Publication failed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Skip notice publication failed", { exact: true })).toHaveCount(0);
+    await noOverflow(page);
   });
 }
 
