@@ -749,6 +749,66 @@ const limitedRun: Partial<Run> = {
   },
 };
 
+for (const [publication, label] of [
+  ["pending", "Waiting to publish skip notice"],
+  ["publishing", "Publishing skip notice"],
+  ["published", "Skip notice published"],
+  ["failed", "Skip notice publication failed"],
+  ["partially_published", "Skip notice publication failed"],
+] as const) {
+  test(`file-limit skip notice ${publication} preserves the review outcome`, async ({ page }, info) => {
+    const requests = await mock(page, { run: { ...limitedRun, publication } });
+    await page.goto("/pulls/pr");
+    await page.getByRole("tab", { name: /Run history/ }).click();
+    await expect(page.getByRole("link", { name: new RegExp(`GitHub: ${label}`) })).toBeVisible();
+    await page.getByRole("link", { name: "View run details", exact: true }).click();
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    await expect(outcome).toContainText("41 reviewable files exceed the limit of 40. No files were reviewed.");
+    await expect(outcome).toContainText("post the command shown in the GitHub skip notice");
+    await expect(outcome).not.toContainText("@codemortis");
+    await expect(outcome).toContainText("Personal connections remain owner-only.");
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
+    const retry = page.getByRole("button", { name: "Retry GitHub publication" });
+    if (publication === "failed" || publication === "partially_published") {
+      await expect(outcome).toContainText("send the saved file-limit notice without running AI analysis");
+      await expect(outcome).not.toContainText("send saved results");
+      await expect(page.getByText("Retry publication to send the saved file-limit notice without running AI analysis.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Some comments published", { exact: true })).toHaveCount(0);
+      await retry.click();
+      expect(requests).toEqual([{ path: "/runs/run/publish", method: "POST", body: null, csrf: "csrf-from-session" }]);
+    } else {
+      await expect(retry).toHaveCount(0);
+      expect(requests).toEqual([]);
+    }
+    await noOverflow(page);
+    if (publication === "published" || publication === "failed") {
+      await page.screenshot({ path: `../.impeccable/review/file-limit-notice-${publication}-${info.project.name}.png`, fullPage: true });
+    }
+  });
+}
+
+for (const [name, coverage, settings] of [
+  ["missing selected files", {}, { max_files: 40 }],
+  ["missing file limit", { selected: [{ path: "source.py" }] }, {}],
+  ["invalid file limit", { selected: [{ path: "source.py" }] }, { max_files: "40" }],
+] as const) {
+  test(`malformed file-limit report with ${name} uses consistent fallback copy`, async ({ page }) => {
+    await mock(page, { run: {
+      ...limitedRun, publication: "failed", config: { ...run.config, settings },
+      report: { manifest: { schema_version: "code-mortis.file-limit/v1", coverage } },
+    } });
+    await page.goto("/runs/run");
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    await expect(outcome).toContainText("This review was skipped. No specific reason was saved. Publication failed.");
+    await expect(outcome).toContainText("Inspect the coverage report and repository settings before starting a new review.");
+    await expect(outcome).not.toContainText("skip notice");
+    await expect(page.getByText("Publication failed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Skip notice publication failed", { exact: true })).toHaveCount(0);
+    await noOverflow(page);
+  });
+}
+
 test("oversized review explains its outcome and links to editable limits throughout the app", async ({ page }, info) => {
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";

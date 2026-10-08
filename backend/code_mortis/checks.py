@@ -208,7 +208,7 @@ def sync_check(run_id: str):
 
 
 def rerequest(db: Session, body: dict, delivery_id: str):
-    from .reviews import authorize_connection, create_run, enqueue, upsert_pr
+    from .reviews import authorize_connection, can_publish, create_run, enqueue, upsert_pr
 
     delivery = db.scalar(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id).with_for_update())
     if not delivery:
@@ -244,10 +244,10 @@ def rerequest(db: Session, body: dict, delivery_id: str):
     ):
         raise ValueError("This check is obsolete. Open the current PR in Code Mortis to start a review.")
     pr = upsert_pr(db, repo, remote)
-    if run.status == "completed" and run.publication in {"failed", "partially_published"}:
+    if can_publish(run) and run.publication in {"failed", "partially_published"}:
         run.publication, run.publication_error = "pending", None
         enqueue(db, "publish", {"run_id": run.id})
-    elif run.status == "completed" and run.publication in {"pending", "publishing"}:
+    elif can_publish(run) and run.publication in {"pending", "publishing"}:
         pass  # An equivalent publication is already active.
     else:
         connection = db.get(Connection, run.connection_id) if run.connection_id else None

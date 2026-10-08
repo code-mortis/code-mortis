@@ -35,7 +35,7 @@ from .models import (
     User,
     WebhookDelivery,
 )
-from .reviews import create_run, enqueue, request_finding_status, upsert_pr
+from .reviews import can_publish, create_run, enqueue, request_finding_status, upsert_pr
 from .schemas import (
     ActivityOut,
     ConnectionInput,
@@ -196,8 +196,8 @@ def manifest(body: ManifestInput, request: Request, response: Response, db: DB) 
             "setup_url": origin + "/api/v1/installations/callback",
             "public": True,
             "request_oauth_on_install": False,
-            "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write"},
-            "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment", "check_run"],
+            "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read"},
+            "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment", "check_run", "issue_comment"],
         },
     }
 
@@ -527,7 +527,7 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id, write=True)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-    if run.status not in {"completed", "partial"} or run.publication not in {"failed", "partially_published"}:
+    if not can_publish(run) or run.publication not in {"failed", "partially_published"}:
         raise HTTPException(409, "This run has no failed publication to retry.")
     run.publication, run.publication_error = "pending", None
     job = enqueue(db, "publish", {"run_id": run.id})

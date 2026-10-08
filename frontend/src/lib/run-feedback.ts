@@ -14,15 +14,17 @@ export function runFeedback(run: Run) {
   const exclusions = rows(report.excluded_files);
   const selected = Array.isArray(coverage.selected) ? coverage.selected.length : null;
   const completed = rows(coverage.completed).length + rows(coverage.reused).length;
+  const fileLimitSkip = run.status === "skipped" && manifest.schema_version === "code-mortis.file-limit/v1"
+    && selected !== null && typeof settings.max_files === "number";
   let summary = "Review status is unavailable.";
   let nextStep = "Open the run details to inspect the saved result.";
   let destination: "repository" | "connections" | "pull" | undefined;
 
   if (run.status === "skipped") {
     destination = "repository";
-    if (manifest.schema_version === "code-mortis.file-limit/v1" && selected !== null && typeof settings.max_files === "number") {
+    if (fileLimitSkip) {
       summary = `${selected} reviewable files exceed the limit of ${settings.max_files}. No files were reviewed.`;
-      nextStep = "Increase Maximum files, choose Unlimited, or exclude files, then start a new review.";
+      nextStep = "An enabled Code Mortis member with repository write access can post the command shown in the GitHub skip notice to bypass the file limit for one review. Personal connections remain owner-only. Or adjust the review settings and start a new review.";
     } else if (selected === 0) {
       summary = "No changed files were eligible for review.";
       if (exclusions.length && exclusions.every((item) => item.exclude_reason === "unsupported_ext")) {
@@ -100,10 +102,19 @@ export function runFeedback(run: Run) {
       ? "This review was skipped, so there were no new review results to publish."
       : "No review comments were published for this run. See the review outcome for the reason."],
   };
+  if (fileLimitSkip) {
+    publications.pending = ["Waiting to publish skip notice", "The file-limit notice is waiting to be sent to GitHub."];
+    publications.publishing = ["Publishing skip notice", "The file-limit notice is being sent to GitHub."];
+    publications.published = ["Skip notice published", "The file-limit notice was published on GitHub. No files were reviewed."];
+    publications.failed = ["Skip notice publication failed", "Retry publication to send the saved file-limit notice without running AI analysis."];
+    publications.partially_published = publications.failed;
+  }
   const [publicationLabel, publicationDetail] = publications[run.publication] ?? ["Publication status unavailable", "Inspect the saved run for details."];
   if (["failed", "partially_published"].includes(run.publication)) {
     summary = `${summary} ${publicationLabel}.`;
-    nextStep = `${nextStep} Retry GitHub publication from the run details to send saved results without rerunning the review.`;
+    nextStep += fileLimitSkip
+      ? " Retry GitHub publication from the run details to send the saved file-limit notice without running AI analysis."
+      : " Retry GitHub publication from the run details to send saved results without rerunning the review.";
   }
   const needsAttention = ["failed", "partial", "skipped", "blocked", "cancelled", "superseded"].includes(run.status)
     || !!run.blocked_reason || ["failed", "partially_published"].includes(run.publication);
