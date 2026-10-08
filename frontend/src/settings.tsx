@@ -66,9 +66,11 @@ function parseObject(value: string, label: string) {
 export function RepositorySettings({
   repository: repo,
   onSaved,
+  showLimits = false,
 }: {
   repository: Repository;
   onSaved: () => void;
+  showLimits?: boolean;
 }) {
   const connections = useApi<Connection[]>(
     `/connections?repository_id=${repo.id}`,
@@ -234,7 +236,7 @@ export function RepositorySettings({
           />
         )}
       </Field>
-      <details className="space-y-4">
+      <details className="space-y-4" open={showLimits || undefined}>
         <summary className="cursor-pointer text-sm font-medium">
           Review limits and rules
         </summary>

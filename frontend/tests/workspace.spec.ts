@@ -151,6 +151,7 @@ async function mock(
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/v1", "");
     const method = request.method();
+    const currentRun = { ...run, ...options.run };
     if (method !== "GET")
       requests.push({
         path,
@@ -175,7 +176,7 @@ async function mock(
     else if (path === "/repositories") data = [repo];
     else if (path === "/repositories/22/pulls")
       data = [
-        pr,
+        { ...pr, latest_run: currentRun },
         {
           ...pr,
           id: "pr-other",
@@ -190,7 +191,7 @@ async function mock(
       data = {
         pull_request: pr,
         repository: repo,
-        runs: [run],
+        runs: [currentRun],
         findings: [
           current,
           {
@@ -233,10 +234,10 @@ async function mock(
       data = { job_id: "sync-job" };
     } else if (path === "/runs/run")
       data = {
-        run: { ...run, ...options.run },
+        run: currentRun,
         pull_request: pr,
         repository: repo,
-        occurrences: [
+        occurrences: currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
         ],
         can_write: options.canWrite !== false,
@@ -450,8 +451,8 @@ test("partial review and publication retry remain distinct", async ({
   await page.goto("/runs/run");
   await expect(page.locator("main header")).toContainText("· 90s");
   await expect(
-    page.getByText("This review is incomplete.", { exact: false }),
-  ).toBeVisible();
+    page.getByRole("region", { name: "Review outcome" }),
+  ).toContainText("Coverage is incomplete.");
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
@@ -708,16 +709,169 @@ test("personal review limits retain their separate context budget", async ({ pag
   await noOverflow(page);
 });
 
-test("oversized review explains why it was skipped", async ({ page }, info) => {
-  await mock(page, { run: { status: "skipped", publication: "not_applicable", publication_error: null,
-    report: { message: "41 reviewable files exceeds the maximum of 40.", manifest: { coverage: {
-      selected: [{ path: "source.py" }], completed: [], reused: [], failed: [], waived: [{ path: "source.py" }],
-    } } } } });
-  await page.goto("/runs/run");
-  await expect(page.getByRole("status").filter({ hasText: "41 reviewable files exceeds the maximum of 40." })).toBeVisible();
+const limitedRun: Partial<Run> = {
+  status: "skipped", publication: "not_applicable", publication_error: null,
+  check_status: "completed", check_conclusion: "skipped", check_pending: false, check_error: null,
+  config: { ...run.config, settings: { max_files: 40 } },
+  report: {
+    message: "41 reviewable files exceeds the maximum of 40.",
+    manifest: { schema_version: "code-mortis.file-limit/v1", coverage: {
+      selected: Array.from({ length: 41 }, (_, index) => ({ path: `src/file-${index}.py` })),
+      completed: [], reused: [], failed: [],
+      waived: Array.from({ length: 41 }, (_, index) => ({ path: `src/file-${index}.py`, reason: "41 reviewable files exceeds the maximum of 40." })),
+    } },
+  },
+};
+
+test("oversized review explains its outcome and links to editable limits throughout the app", async ({ page }, info) => {
+  const requests = await mock(page, { run: limitedRun });
+  const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(reason);
+  await page.getByRole("link", { name: /Add retry handling/ }).click();
+  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  await expect(page.getByRole("link", { name: /GitHub: No comments published/ })).toContainText(reason);
+  await page.getByRole("link", { name: "View run details", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: reason })).toBeVisible();
+  await expect(page.getByText("No comments published", { exact: true })).toBeVisible();
+  await expect(page.getByText("not applicable", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/file-limit-skipped-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("link", { name: "Adjust review settings" }).click();
+  const settings = page.getByRole("dialog");
+  await expect(settings).toBeVisible();
+  await expect(settings.getByLabel("Maximum files", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("checkbox", { name: "Unlimited maximum files" })).toBeVisible();
+  expect(requests).toEqual([]);
+  await noOverflow(page);
+});
+
+test("viewers receive an administrator next step without settings or retry actions", async ({ page }) => {
+  await mock(page, { run: limitedRun, role: "member", canWrite: false });
+  await page.goto("/runs/run");
+  const outcome = page.getByRole("region", { name: "Review outcome" });
+  await expect(outcome).toContainText("Ask your administrator to adjust the repository settings.");
+  await expect(outcome.getByRole("link", { name: "Adjust review settings" })).toHaveCount(0);
+  await expect(outcome.getByRole("link", { name: "View pull request", exact: true })).toHaveAttribute("href", "/pulls/pr");
+  await expect(page.getByRole("button", { name: /Resume review|Retry GitHub publication/ })).toHaveCount(0);
+});
+
+const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextStep: string; fileReason?: string }[] = [
+  {
+    name: "unsupported files",
+    state: { status: "skipped", report: { manifest: { coverage: { selected: [] } }, excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] } },
+    summary: "The changed file types are not supported by the review engine.",
+    nextStep: "These changes need a manual review.",
+    fileReason: "File type is not supported by the review engine.",
+  },
+  {
+    name: "empty scope",
+    state: { status: "skipped", report: { manifest: { coverage: { selected: [] } }, excluded_files: [{ path: "src/vendor.ts", exclude_reason: "user_exclude" }] } },
+    summary: "No changed files were eligible for review.",
+    nextStep: "Check file exclusions and review rules.",
+    fileReason: "Excluded by the review rules or repository settings.",
+  },
+  {
+    name: "time limit",
+    state: { status: "failed", failure_reason: "timeout", report: null },
+    summary: "The review reached its time limit.",
+    nextStep: "Increase Timeout, choose Unlimited, or reduce the review scope",
+  },
+  {
+    name: "token budget",
+    state: { report: { manifest: { coverage: { ...run.report.manifest.coverage, waived: [{ path: "src/config.ts", classification: "budget", reason: "Token budget reached" }] } } } },
+    summary: "Coverage is incomplete. The token budget was reached.",
+    nextStep: "Increase Token budget, choose Unlimited",
+    fileReason: "Token budget reached",
+  },
+  {
+    name: "native context limit",
+    state: { report: { manifest: { coverage: { selected: [{ path: "source.py" }], failed: [{ path: "source.py" }] } }, errors: [{ path: "source.py", message: "Delegated context budget exceeded; increase the repository limit." }] } },
+    summary: "The native context budget was reached.",
+    nextStep: "Increase Native context budget or reduce the review scope",
+    fileReason: "Delegated context budget exceeded; increase the repository limit.",
+  },
+  {
+    name: "authentication",
+    state: { status: "blocked", blocked_reason: "authentication", owner_id: 7 },
+    summary: "The AI connection needs to sign in again.",
+    nextStep: "The connection owner must reconnect the account, then resume this review.",
+  },
+  {
+    name: "quota",
+    state: { status: "blocked", blocked_reason: "quota", owner_id: 8 },
+    summary: "The AI connection reached its usage limit.",
+    nextStep: "The connection owner can resume this review when usage becomes available.",
+  },
+  {
+    name: "busy connection",
+    state: { status: "queued", blocked_reason: "busy" },
+    summary: "The selected personal connection is reviewing another pull request.",
+    nextStep: "This review will retry automatically when the connection is available.",
+  },
+  {
+    name: "interrupted worker",
+    state: { status: "failed", failure_reason: "worker_stopped", report: null },
+    summary: "The review worker stopped before the run could finish.",
+    nextStep: "Interrupted AI usage may already have been charged.",
+  },
+  {
+    name: "cancelled review",
+    state: { status: "cancelled" },
+    summary: "This review was cancelled before it finished.",
+    nextStep: "Start a new review from the pull request",
+  },
+  {
+    name: "superseded review",
+    state: { status: "superseded" },
+    summary: "The pull request changed or closed",
+    nextStep: "Open the pull request to inspect the latest commit",
+  },
+  {
+    name: "older saved reason",
+    state: { status: "skipped", report: { message: "A saved reason from an older run." } },
+    summary: "A saved reason from an older run.",
+    nextStep: "Inspect the coverage report and repository settings",
+  },
+  {
+    name: "older partial run without coverage",
+    state: { status: "partial", report: null },
+    summary: "The review finished with incomplete coverage.",
+    nextStep: "Inspect the error and file results in the run details",
+  },
+];
+
+for (const example of feedbackCases) {
+  test(`review feedback: ${example.name}`, async ({ page }) => {
+    await mock(page, { run: { publication: "not_applicable", publication_error: null, ...example.state } });
+    await page.goto("/runs/run");
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    await expect(outcome).toContainText(example.summary);
+    await expect(outcome).toContainText(example.nextStep);
+    if (example.fileReason) {
+      const files = page.locator("details").filter({ has: page.getByText("Files not reviewed (1)", { exact: true }) });
+      if (await files.getAttribute("open") === null) await files.locator("summary").click();
+      await expect(files.getByText(example.fileReason, { exact: true })).toBeVisible();
+    }
+    if (example.state.status === "blocked") {
+      await expect(page.getByRole("button", { name: "Resume review" })).toHaveCount(example.state.owner_id === 7 ? 1 : 0);
+      await expect(outcome.getByRole("link", { name: "Manage AI connections" })).toHaveAttribute("href", "/settings?tab=connections");
+    }
+    await noOverflow(page);
+  });
+}
+
+test("publication failure after a completed review offers a publication retry", async ({ page }) => {
+  const requests = await mock(page, { run: { status: "completed" } });
+  await page.goto("/pulls/pr");
+  const outcome = page.getByRole("region", { name: "Review outcome" });
+  await expect(outcome).toContainText("The selected review scope completed. Publication failed.");
+  await expect(outcome).toContainText("Retry GitHub publication from the run details to send saved results without rerunning the review.");
+  await outcome.getByRole("link", { name: "View run details" }).click();
+  await page.getByRole("button", { name: "Retry GitHub publication" }).click();
+  await expect.poll(() => requests.map((request) => request.path)).toEqual(["/runs/run/publish"]);
 });
 
 test("personal setup saves without a model then signs in and selects one", async ({ page }, info) => {

@@ -17,7 +17,7 @@ export const date = (value: string) =>
     timeStyle: "short",
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
-export function Status({ value }: { value: string }) {
+export function Status({ value, label }: { value: string; label?: string }) {
   const good = ["completed", "published", "resolved", "connected", "success"].includes(
     value,
   );
@@ -38,7 +38,7 @@ export function Status({ value }: { value: string }) {
       {["queued", "running", "in_progress"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
-      {words(value)}
+      {label ?? words(value)}
     </Badge>
   );
 }
