@@ -204,6 +204,9 @@ class Finding(Base):
     thread_id: Mapped[str | None] = mapped_column(String(100), unique=True)
     comment_id: Mapped[int | None] = mapped_column(BigInteger)
     github_url: Mapped[str | None] = mapped_column(Text)
+    publication_run_id: Mapped[str | None] = mapped_column(ForeignKey("review_runs.id"))
+    publication_batch: Mapped[int | None] = mapped_column(Integer)
+    published_review_id: Mapped[int | None] = mapped_column(BigInteger)
     last_seen_run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -217,6 +220,24 @@ class Occurrence(Base):
     finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"))
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     inline_line: Mapped[int | None] = mapped_column(Integer)
+
+
+class ReviewCandidate(Base):
+    __tablename__ = "review_candidates"
+    __table_args__ = (UniqueConstraint("run_id", "position"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    finding_id: Mapped[str | None] = mapped_column(ForeignKey("findings.id"), index=True)
+    is_new: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Activity(Base):

@@ -13,7 +13,16 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import background, github, inbox, installations, model_discovery, runner_client, verification
+from . import (
+    assessment,
+    background,
+    github,
+    inbox,
+    installations,
+    model_discovery,
+    runner_client,
+    verification,
+)
 from .config import settings
 from .db import get_db, now
 from .models import (
@@ -31,6 +40,7 @@ from .models import (
     Occurrence,
     PullRequest,
     Repository,
+    ReviewCandidate,
     ReviewRun,
     User,
     WebhookDelivery,
@@ -40,6 +50,7 @@ from .schemas import (
     ActivityOut,
     BackgroundInput,
     BackgroundJobOut,
+    CandidateOut,
     ConnectionInput,
     ConnectionOut,
     FindingAction,
@@ -489,6 +500,12 @@ def run_detail(run_id: str, db: DB, user: USER):
         run=RunOut.model_validate(run),
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
+        assessment=assessment.summary(db, run),
+        candidates=[
+            CandidateOut.model_validate(item)
+            for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)
+                                   .order_by(ReviewCandidate.position))
+        ],
         occurrences=[
             OccurrenceOut.model_validate(item)
             for item in db.scalars(select(Occurrence).where(Occurrence.run_id == run.id))
@@ -513,6 +530,7 @@ def cancel_run(run_id: str, db: DB, user: USER):
         now(),
     )
     verification.skip_pending(db, run, "The run was cancelled.")
+    assessment.withhold_pending(db, run, "The run was cancelled.")
     return RunOut.model_validate(run)
 
 

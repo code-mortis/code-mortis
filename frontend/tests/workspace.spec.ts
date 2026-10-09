@@ -145,6 +145,8 @@ async function mock(
     run?: Partial<Run>;
     finding?: Partial<Schema["FindingOut"]>;
     verifications?: Schema["VerificationOut"][];
+    candidates?: Schema["CandidateOut"][];
+    assessment?: Schema["AssessmentSummary"] | null;
     background?: Schema["BackgroundJobOut"];
   } = {},
 ) {
@@ -252,6 +254,8 @@ async function mock(
         occurrences: currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
         ],
+        candidates: options.candidates ?? [],
+        assessment: options.assessment ?? null,
         can_write: options.canWrite !== false,
       };
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
@@ -1446,6 +1450,44 @@ test("oversized review explains its outcome and links to editable limits through
   await expect(limits).not.toHaveAttribute("open");
   expect(requests).toEqual([]);
   await noOverflow(page);
+});
+
+test("candidate assessment separates withheld claims from repeated findings", async ({ page }, info) => {
+  await mock(page, {
+    run: { status: "completed", publication: "no_new_comments", publication_error: null,
+      check_status: "completed", check_conclusion: "neutral", check_pending: false, check_error: null },
+    assessment: { candidates: 2, new_findings: 0, repeated_observations: 1, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+    candidates: [
+      { id: "repeat", snapshot: { ...finding, content: "Same defect with different wording." },
+        status: "completed", result: null, finding_id: "finding", is_new: false, error: null },
+      { id: "uncertain", snapshot: { path: "frontend/src/index.css", start_line: 315,
+          content: "Tailwind might fail to process this rule." }, status: "completed", finding_id: null,
+        is_new: false, error: null, result: {
+          verdict: "uncertain", relationship: "new", finding_id: null,
+          explanation: "No evidence establishes a build failure at this revision.",
+          cause: "", trigger: "", consequence: "", history_explanation: "", contradicts_prior: false,
+          changed_conditions: "", suggestion_supported: false, evidence: [],
+        } },
+    ],
+  });
+  await page.goto("/runs/run");
+  await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
+  await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
+  await expect(page.getByText(/Assessment is incomplete for 1 candidate/)).toBeVisible();
+  const withheld = page.locator("details").filter({ has: page.locator("summary", { hasText: "index.css:315 · Withheld" }) });
+  await withheld.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(withheld).toContainText("No evidence establishes a build failure at this revision.");
+  await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/candidate-assessment-${info.project.name}.png`, fullPage: true });
+});
+
+test("legacy review findings are not labeled as validated", async ({ page }) => {
+  await mock(page);
+  await page.goto("/runs/run");
+  await expect(page.getByText("This run predates candidate assessment. Its findings have not been assessed by this policy.")).toBeVisible();
 });
 
 test("viewers receive an administrator next step without settings or retry actions", async ({ page }) => {

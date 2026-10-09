@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import github, ocr, runner_client, verification
+from . import assessment, github, ocr, runner_client, verification
 from .checks import queue_check_changes as queue_check_changes
 from .config import settings
 from .db import now, transaction, uid
@@ -23,6 +23,7 @@ from .models import (
     Occurrence,
     PullRequest,
     Repository,
+    ReviewCandidate,
     ReviewRun,
     User,
     WebhookDelivery,
@@ -94,7 +95,8 @@ def create_run(
     options = RepoSettings.model_validate(repo.settings).model_dump()
     if ignore_file_limit:
         options["max_files"] = None
-    config = {"connection": connection_snapshot(connection), "settings": options}
+    config = {"connection": connection_snapshot(connection), "settings": options,
+              "assessment_policy": assessment.POLICY_VERSION}
     if options["model"]:
         config["connection"]["model"] = options["model"]
     if not config["connection"]["model"].strip():
@@ -109,7 +111,8 @@ def create_run(
         ).order_by(ReviewRun.created_at)):
             prior_settings = RepoSettings.model_validate({"max_files": None, **prior.config["settings"]}).model_dump()
             prior_settings.pop("auto_resolve")
-            if prior.config["connection"] == config["connection"] and prior_settings == analysis_settings:
+            if (prior.config["connection"] == config["connection"] and prior_settings == analysis_settings
+                and prior.config.get("assessment_policy") == config["assessment_policy"]):
                 return prior
     active = db.scalars(select(ReviewRun).where(
         ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
@@ -273,6 +276,7 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
             run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
             run.finished_at = now()
             verification.skip_pending(db, run, "A newer PR revision superseded this verification.")
+            assessment.withhold_pending(db, run, "A newer PR revision superseded this assessment.")
     return pr
 
 
@@ -335,6 +339,7 @@ def perform_review(run_id: str, claim: str | None = None):
         ):
             run.status, run.publication, run.finished_at = "superseded", "not_applicable", now()
             verification.skip_pending(db, run, "The PR changed before verification could resume.")
+            assessment.withhold_pending(db, run, "The PR changed before assessment could resume.")
             return
         connection = db.get(Connection, run.config["connection"]["id"])
         if not connection:
@@ -415,6 +420,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     if current.progress.get("execution") == claim:
                         verification.skip_pending(db, current, result[1].get("message") or "Review skipped.")
                 return
+            assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
             verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
 
         status, report, comments = ocr.review(
@@ -435,6 +441,7 @@ def perform_review(run_id: str, claim: str | None = None):
                 run.status = "cancelled" if run.cancel_requested else "superseded"
             run.publication, run.finished_at = "not_applicable", now()
             verification.skip_pending(db, run, "Verification was cancelled or superseded.")
+            assessment.withhold_pending(db, run, "Assessment was cancelled or superseded.")
         return
     save_analysis(run_id, claim, status, report, comments)
     with transaction() as db:
@@ -452,6 +459,7 @@ def complete_saved_review(db, run, interruption=None):
         return False
     if interruption:
         verification.skip_pending(db, run, interruption)
+    assessment.withhold_pending(db, run, interruption or "Assessment did not finish; candidate withheld.")
     run.status, run.finished_at = status, now()
     if run.publication == "not_applicable":
         run.publication = "pending"
@@ -478,6 +486,12 @@ def save_analysis(run_id, claim, status, report, comments):
             run.publication = "not_applicable"
             if status == "failed":
                 run.error = "OCR did not complete the selected review scope. Inspect coverage and retry the review."
+        if assessment.enabled(run):
+            for position, comment in enumerate(comments):
+                db.add(ReviewCandidate(run_id=run.id, position=position, snapshot=comment))
+            db.flush()
+            assessment.record_summary(db, run)
+            return
         seen = set()
         for comment in comments:
             key = ocr.fingerprint(comment)
@@ -602,6 +616,8 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
                 + marker("run", f"{run.id}:0")
             ),
         }]
+    if assessment.enabled(run):
+        return assessed_publication_plan(db, run)
     rows = db.execute(
         select(Occurrence, Finding)
         .join(Finding, Occurrence.finding_id == Finding.id)
@@ -610,7 +626,8 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
     ).all()
     comments, unanchored = [], []
     for occurrence, finding in rows:
-        if finding.comment_id or finding.status != "open":
+        if (finding.comment_id or finding.published_review_id or finding.status != "open"
+            or (finding.publication_run_id and finding.publication_run_id != run.id)):
             continue
         if occurrence.inline_line:
             comments.append(
@@ -642,10 +659,106 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
     ]
 
 
+def assessed_publication_plan(db, run):
+    assessment.withhold_pending(db, run, "Assessment did not finish; candidate withheld.")
+    rows = db.execute(select(Occurrence, Finding).join(Finding, Occurrence.finding_id == Finding.id)
+                      .where(Occurrence.run_id == run.id).order_by(Occurrence.id)).all()
+    batches, comments, unanchored, identities = [], [], [], []
+    counts = assessment.summary(db, run)
+
+    def save_batch():
+        if not identities:
+            return
+        body = (
+            f"Code Mortis review: **{run.status}**. {counts.new_findings} new validated finding(s), "
+            f"{counts.repeated_observations} repeated observation(s), "
+            f"{counts.withheld_candidates} withheld candidate(s).\n\n"
+            f"This batch contains {len(comments)} inline comment(s) and {len(unanchored)} summary finding(s).\n\n"
+            f"[View evidence and coverage]({settings().public_url}/runs/{run.id})"
+        )
+        if run.status == "partial" or counts.incomplete:
+            body += "\n\nCoverage or assessment is incomplete. This is not a clean review of the entire PR."
+        if unanchored:
+            body += "\n\nFindings without a valid inline location:\n" + "\n\n".join(unanchored)
+        index = len(batches)
+        batches.append({"commit_id": run.head_sha, "event": "COMMENT", "comments": list(comments),
+                        "body": body + "\n\n" + marker("run", f"{run.id}:{index}")})
+        for identity in identities:
+            finding = db.get(Finding, identity)
+            finding.publication_run_id, finding.publication_batch = run.id, index
+        comments.clear()
+        unanchored.clear()
+        identities.clear()
+
+    for occurrence, finding in rows:
+        if finding.comment_id or finding.published_review_id or finding.status != "open" or finding.desired_status:
+            continue
+        if finding.publication_run_id and finding.publication_run_id != run.id:
+            continue
+        confirmed = db.scalar(select(ReviewCandidate.id).where(
+            ReviewCandidate.run_id == run.id, ReviewCandidate.finding_id == finding.id,
+            ReviewCandidate.status == "completed", ReviewCandidate.result["verdict"].as_string() == "confirmed",
+        ).limit(1))
+        if not confirmed:
+            continue
+        if len(identities) >= 30 or sum(len(text) for text in unanchored) > 45000:
+            save_batch()
+        if occurrence.inline_line:
+            comments.append({"path": occurrence.snapshot["path"], "line": occurrence.inline_line,
+                             "side": "RIGHT", "body": comment_body(finding.id, occurrence.snapshot)})
+        else:
+            unanchored.append(f"- `{occurrence.snapshot['path']}`: {occurrence.snapshot['content'][:1200]}\n" + marker("finding", finding.id))
+        identities.append(finding.id)
+    save_batch()
+    return batches
+
+
+def reconcile_publications(db, run, remote_reviews, bot):
+    """Recover claims, including summary-only findings, before another run may publish."""
+    for finding in db.scalars(select(Finding).where(Finding.pr_id == run.pr_id)):
+        owner = db.get(ReviewRun, finding.publication_run_id) if finding.publication_run_id else None
+        if owner and finding.published_review_id is None:
+            expected = marker("run", f"{owner.id}:{finding.publication_batch}")
+            published = next((item for item in remote_reviews if item.get("user", {}).get("login") == bot
+                              and expected in (item.get("body") or "")), None)
+            if published:
+                finding.published_review_id = published["id"]
+                assessment.record_summary(db, owner)
+            elif owner.status in {"cancelled", "superseded"} or owner.publication == "not_applicable":
+                finding.publication_run_id, finding.publication_batch = None, None
+        if finding.comment_id or finding.publication_run_id:
+            continue
+        # Legacy summaries have no finding marker. Recognize their exact saved, acknowledged body.
+        for occurrence, old in db.execute(select(Occurrence, ReviewRun).join(ReviewRun).where(
+            Occurrence.finding_id == finding.id, ReviewRun.publication_plan.is_not(None),
+        )):
+            for index, payload in enumerate(old.publication_plan or []):
+                inline = any(marker("finding", finding.id) in comment["body"] for comment in payload.get("comments", []))
+                summary_entry = f"- `{finding.path}`: {finding.content[:1200]}"
+                if not inline and (occurrence.inline_line or summary_entry not in payload.get("body", "")):
+                    continue
+                published = next((item for item in remote_reviews if item.get("user", {}).get("login") == bot
+                                  and marker("run", f"{old.id}:{index}") in (item.get("body") or "")), None)
+                if published:
+                    finding.publication_run_id, finding.publication_batch = old.id, index
+                    finding.published_review_id = published["id"]
+                    break
+                if old.publication not in {"not_applicable", "no_new_comments"} and not old.cancel_requested:
+                    finding.publication_run_id, finding.publication_batch = old.id, index
+                    break
+            if finding.publication_run_id:
+                break
+
+
 def publish_run(run_id: str):
     with transaction() as db:
-        run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if not run or run.cancel_requested or not can_publish(run) or run.publication == "published":
+        candidate = db.get(ReviewRun, run_id)
+        if not candidate:
+            return
+        db.scalar(select(PullRequest).where(PullRequest.id == candidate.pr_id).with_for_update())
+        run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                        .execution_options(populate_existing=True))
+        if not run or run.cancel_requested or not can_publish(run) or run.publication in {"published", "no_new_comments"}:
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
@@ -653,15 +766,23 @@ def publish_run(run_id: str):
             raise ValueError("The GitHub installation is no longer active.")
         token = github.installation_token(db, repo.installation_id)
         reconcile_threads(db, pr, repo, token)
+        if assessment.enabled(run):
+            bot = github.app_config(db).github_slug + "[bot]"
+            reconcile_publications(db, run, list(github.pages(f"/repos/{repo.full_name}/pulls/{pr.number}/reviews", token)), bot)
         if run.publication_plan is None:
             run.publication_plan = publication_plan(db, run)
+        if not run.publication_plan:
+            run.publication, run.publication_error = "no_new_comments", None
+            assessment.record_summary(db, run)
+            return
         run.publication, run.publication_error = "publishing", None
     for index in range(len(run.publication_plan)):
         with transaction() as db:
+            db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
-            if run.cancel_requested or not repo.active or not db.get(Installation, repo.installation_id).active:
+            if run.cancel_requested or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
                 run.publication = "partially_published" if run.review_ids else "not_applicable"
                 run.publication_error = "GitHub access was removed or publication was cancelled."
                 return
@@ -688,6 +809,26 @@ def publish_run(run_id: str):
                 None,
             )
             if existing is None:
+                if assessment.enabled(run):
+                    actor = db.get(User, run.actor_id) if run.actor_id else None
+                    if run.actor_id:
+                        if not actor or not actor.enabled or not db.get(Membership, actor.id):
+                            raise ValueError("The requesting user no longer has access to publish this review.")
+                        github.authorize_repo(db, actor, repo.full_name, write=True)
+                    connection = db.get(Connection, run.connection_id) if run.connection_id else None
+                    if not connection:
+                        raise ValueError("The selected connection is no longer available.")
+                    authorize_connection(db, connection, repo, run.trigger, actor)
+                    claimed = list(db.scalars(select(Finding).where(
+                        Finding.publication_run_id == run.id, Finding.publication_batch == index,
+                    ).with_for_update()))
+                    expected_ids = set(re.findall(r"<!-- code-mortis:finding:([0-9a-f-]{36}) -->",
+                                                  json.dumps(run.publication_plan[index])))
+                    if ({finding.id for finding in claimed} != expected_ids
+                        or any(finding.status != "open" or finding.desired_status for finding in claimed)):
+                        run.publication = "partially_published" if run.review_ids else "not_applicable"
+                        run.publication_error = "Finding state changed; the saved batch was not published."
+                        return
                 existing = github.request(
                     "POST",
                     f"/repos/{repo.full_name}/pulls/{pr.number}/reviews",
@@ -695,6 +836,11 @@ def publish_run(run_id: str):
                     json=run.publication_plan[index],
                 )
             run.review_ids = list(dict.fromkeys([*run.review_ids, existing["id"]]))
+            for finding in db.scalars(select(Finding).where(
+                Finding.publication_run_id == run.id, Finding.publication_batch == index,
+            )):
+                finding.published_review_id = existing["id"]
+            assessment.record_summary(db, run)
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         pr = db.get(PullRequest, run.pr_id)

@@ -774,6 +774,8 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
     run,
     repository,
     occurrences,
+    candidates = [],
+    assessment,
     can_write,
   } = query.data;
   const coverage = ((
@@ -951,6 +953,45 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
           )}
         </section>
       )}
+      <section className="mt-8">
+        <h2 className="mb-4 font-semibold">Candidate assessment</h2>
+        {assessment ? (
+          <>
+            <p className="text-sm">
+              {assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published
+            </p>
+            {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
+            {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. No new comments does not mean the review is clean.</p>}
+            <div className="mt-4 space-y-3">
+              {candidates.map((candidate) => (
+                <details key={candidate.id} className="rounded-lg border p-4 text-sm">
+                  <summary className="cursor-pointer break-words">
+                    {String(candidate.snapshot.path)}:{String(candidate.snapshot.start_line)} · {candidate.finding_id ? candidate.is_new ? "New validated finding" : "Repeated observation" : candidate.result?.verdict === "rejected" ? "Not supported" : candidate.status === "queued" || candidate.status === "running" ? "Awaiting assessment" : "Withheld"}
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <Markdown>{String(candidate.snapshot.content)}</Markdown>
+                    {candidate.error && <p>{candidate.error}</p>}
+                    {candidate.result && (
+                      <>
+                        <p>{candidate.result.explanation}</p>
+                        {candidate.result.history_explanation && <p>{candidate.result.history_explanation}</p>}
+                        {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
+                        {candidate.result.evidence.map((evidence, index) => (
+                          <div key={index}>
+                            <p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}</p>
+                            <Code>{evidence.quote}</Code>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {candidate.finding_id && <p className="break-all text-xs text-muted-foreground">Existing finding: {candidate.finding_id}. Resolution state is preserved.</p>}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </>
+        ) : <p className="text-sm text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
+      </section>
       <section className="mt-8">
         <h2 className="mb-4 font-semibold">
           Findings at this run{" "}

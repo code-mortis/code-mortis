@@ -19,6 +19,7 @@ from .models import (
     Occurrence,
     PullRequest,
     Repository,
+    ReviewCandidate,
     ReviewRun,
     User,
 )
@@ -283,7 +284,7 @@ def evidence_bundle(context):
     return "\n\n".join(parts)
 
 
-def verification_tools():
+def verification_tools(instructions=INSTRUCTIONS, schema=None):
     # OCR's default tools describe only newly discovered defects. Override that contract for
     # this internal result envelope and remove context tools: all permitted evidence is supplied.
     properties = {key: {"type": "string", "enum": [value]} for key, value in {
@@ -291,12 +292,12 @@ def verification_tools():
         "category": "other", "severity": "low", "suggestion_code": "",
     }.items()}
     properties["content"] = {
-        "type": "string", "description": "Exactly one JSON object, no Markdown, matching: " + json.dumps(output_schema())
+        "type": "string", "description": "Exactly one JSON object, no Markdown, matching: " + json.dumps(schema or output_schema())
     }
     return [
         {"name": "code_comment", "main_task": True, "definition": {
-            "name": "code_comment", "description": INSTRUCTIONS +
-            " Submit exactly one verification result using this tool even when fixed or uncertain. "
+            "name": "code_comment", "description": instructions +
+            " Submit exactly one evidence result using this tool, including non-confirming outcomes. "
             "This is an internal result transport, not a new review comment. Do not report other issues.",
             "parameters": {"type": "object", "properties": {"comments": {
                 "type": "array", "minItems": 1, "maxItems": 1,
@@ -328,7 +329,8 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
     return json.dumps(detail)[:4000]
 
 
-def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped):
+def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
+               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result):
     if (token_budget is not None and token_budget <= 0) or (timeout is not None and timeout <= 0):
         raise ValueError("No verification allowance remains.")
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
@@ -338,13 +340,13 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         evidence = root / "evidence.py"
         evidence.write_text(evidence_bundle(context))
         rule = root / "rules.json"
-        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": INSTRUCTIONS + (
+        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + (
             " Return exactly one code_comment for evidence.py, category other, severity low. "
             "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
-            "a JSON object matching this schema, including fixed and uncertain outcomes: "
-        ) + json.dumps(output_schema())}]}))
+            "a JSON object matching this schema, including non-confirming outcomes: "
+        ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
-        tools.write_text(json.dumps(verification_tools()))
+        tools.write_text(json.dumps(verification_tools(instructions, schema)))
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
                 "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
                 "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
@@ -386,8 +388,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
         try:
             raw = json.loads(comments[0]["content"])
-            validate_result(raw, context)
-            return raw, {"tokens": usage}
+            validated = validator(raw, context)
+            return validated, {"tokens": usage}
         except (ValueError, KeyError, TypeError) as exc:
             raise VerificationOutputError(
                 "OCR returned an invalid verification verdict: " + str(exc) +
@@ -494,6 +496,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             used_tokens = summary.get("total_tokens")
             used_context = (run.report or {}).get("limits", {}).get("context_bytes", 0)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
+            prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
             if connection["kind"] == "api":
                 budget = options["token_budget"]
                 if budget is not None:
