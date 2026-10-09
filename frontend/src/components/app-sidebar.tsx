@@ -90,7 +90,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
                   <Link to={`/repositories/${repo.id}`} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
                     <FolderGit2 aria-hidden="true" className="text-muted-foreground" />
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{name}</span><span className="block truncate text-xs text-muted-foreground">{owner}</span></span>
-                    {running && <span className="flex shrink-0 items-center gap-1 text-xs text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" />Running</span>}
+                    {running && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>;
