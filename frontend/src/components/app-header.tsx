@@ -3,7 +3,7 @@ import { Link, useLocation, useMatch } from "react-router-dom";
 import { Moon, Sun } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
-import { getDetailPath } from "../lib/navigation";
+import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
 import { SidebarToggle } from "./app-sidebar";
 import { Button } from "./ui/button";
 import {
@@ -14,7 +14,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 
-type Crumb = { label: string; to: string; state?: { inbox: string } };
+type Crumb = { label: string; to: string; state?: { inbox: string | null; repository: string | null } };
 
 export function AppHeader({ admin, dark, onToggleTheme }: {
   admin: boolean;
@@ -25,6 +25,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const path = route.pathname.replace(/\/$/, "") || "/";
   const params = new URLSearchParams(route.search);
   const inboxReturn = getInboxReturn(route.state);
+  const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
   const repositoryRoute = useMatch("/repositories/:repositoryId");
@@ -37,8 +38,9 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   } else if (detailPath) {
     if (detail.data && !detail.error) {
       const { repository, pull_request: pull } = detail.data;
-      crumbs.push({ label: repository.full_name, to: `/repositories/${repository.id}` });
-      crumbs.push({ label: `Pull request #${pull.number}`, to: `/pulls/${pull.id}`, state: inboxReturn ? { inbox: inboxReturn } : undefined });
+      const repositoryPath = `/repositories/${repository.id}`;
+      crumbs.push({ label: repository.full_name, to: repositoryReturn?.split("?")[0] === repositoryPath ? repositoryReturn : repositoryPath });
+      crumbs.push({ label: `Pull request #${pull.number}`, to: `/pulls/${pull.id}`, state: { inbox: inboxReturn, repository: repositoryReturn } });
     } else if (path.startsWith("/pulls/")) {
       crumbs.push({ label: "Pull request", to: path });
     }

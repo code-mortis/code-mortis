@@ -657,6 +657,136 @@ test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ p
   }
 });
 
+test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {
+  await mock(page);
+  const completed = { ...run, status: "completed", publication: "published" };
+  const items = [pr, ...Array.from({ length: 12 }, (_, index) => ({
+    ...pr, id: `merged-${index}`, number: 147 - index, title: `Merged change ${index}`,
+    state: "merged", author: "sam", latest_run: completed, open_findings: 0,
+  })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
+  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: items }));
+  await page.goto("/repositories/22");
+  await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
+  await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
+  const merged = page.getByRole("region", { name: "Merged", exact: true });
+  await expect(merged.getByRole("link")).toHaveCount(10);
+  await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
+  await merged.getByRole("button", { name: "Load more merged" }).click();
+  await expect(merged.getByRole("link")).toHaveCount(12);
+  await expect(page).toHaveURL(/merged_pages=2/);
+  await page.reload();
+  await expect(merged.getByRole("link")).toHaveCount(12);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings"]);
+  await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Completed", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page).not.toHaveURL(/merged_pages/);
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
+  await expect(merged.getByRole("link")).toHaveCount(10);
+  await page.getByRole("button", { name: "Remove Review status filter" }).click();
+  await page.getByRole("button", { name: "Sort by Updated" }).click();
+  await expect(page.getByRole("menuitemradio")).toHaveText(["Updated", "Title", "Author"]);
+  await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
+  await expect(page).toHaveURL(/ordering=title/);
+  await page.getByLabel("Search pull requests").fill("#148");
+  await expect(page.getByRole("region", { name: "Merged", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await page.getByLabel("Search pull requests").fill("unmatched");
+  await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
+  await page.getByRole("button", { name: "reset your filters" }).click();
+  await expect(page.getByLabel("Search pull requests")).toHaveValue("");
+  await expect(merged.getByRole("link")).toHaveCount(10);
+  await noOverflow(page);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.screenshot({ path: `../.impeccable/review/repository-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "Switch to dark mode" }).click();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/repository-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
+});
+
+test("repository filters survive configuration and the pull request run round trip", async ({ page }) => {
+  await mock(page);
+  await page.goto("/repositories/22?q=148&author=maria&findings=open");
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Repository configuration" })).toBeVisible();
+  await noOverflow(page);
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/q=148&author=maria&findings=open$/);
+  await page.getByRole("link", { name: /Add retry handling/ }).click();
+  await page.getByRole("tab", { name: "Run history" }).click();
+  await page.getByRole("link", { name: /automatic.*aaaaaaa/ }).click();
+  await openNavigation(page);
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("href", "/repositories/22?q=148&author=maria&findings=open");
+  await closeNavigation(page);
+  const back = await breadcrumbAncestor(page, repo.full_name);
+  await expect(back).toHaveAttribute("href", "/repositories/22?q=148&author=maria&findings=open");
+  await back.click();
+  await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+  await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("Author");
+});
+
+test("repository list distinguishes failed requests, empty data, and revoked access", async ({ page }) => {
+  await mock(page);
+  let status = 502;
+  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill(status
+    ? { status, json: { detail: status === 403 ? "Repository access revoked" : "GitHub unavailable" } }
+    : { json: [] }));
+  await page.goto("/repositories/22");
+  await expect(page.getByRole("alert")).toContainText("GitHub unavailable");
+  await expect(page.getByRole("heading", { name: "No pull requests here yet" })).toHaveCount(0);
+  await expect(page.getByText("Loading pull requests…")).toHaveCount(0);
+  status = 0;
+  await page.getByRole("button", { name: "Retry pull requests" }).click();
+  await expect(page.getByRole("heading", { name: "No pull requests here yet" })).toBeVisible();
+  status = 403;
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Repository access revoked");
+  await expect(page.getByRole("button", { name: "Retry pull requests" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "No pull requests here yet" })).toHaveCount(0);
+});
+
+test("repository outdated reviews remain distinct from running reviews and page limits are explicit", async ({ page }) => {
+  await mock(page);
+  const items = [
+    { ...pr, latest_run: { ...run, status: "completed", publication: "published", head_sha: "old" } },
+    { ...pr, id: "running", title: "Still running on an earlier commit", state: "merged", latest_run: { ...run, status: "running", head_sha: "old" } },
+  ];
+  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: items }));
+  await page.goto("/repositories/22?review=outdated");
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(/outdated/i);
+  await expect(page.getByRole("link", { name: /Still running/ })).toContainText("A review is still running");
+  await page.goto("/repositories/22?state=closed&review=running");
+  await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
+  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: Array.from({ length: 101 }, (_, index) => ({ ...pr, id: `many-${index}`, number: index + 1, title: `Change ${index + 1}`, latest_run: null })) }));
+  await page.goto("/repositories/22?active_pages=999999");
+  const open = page.getByRole("region", { name: "Open", exact: true });
+  await expect(open.getByRole("link")).toHaveCount(100);
+  await expect(open.getByText("Use filters to narrow the remaining pull requests.")).toBeVisible();
+  await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await page.getByLabel("Search pull requests").fill("#101");
+  await expect(open.getByRole("link")).toHaveCount(1);
+  await expect(open.getByRole("link")).toContainText("Change 101");
+});
+
+test("repository state filters retain running reviews and reset when switching repository", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/other", enabled: false }] }));
+  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: [pr, { ...pr, id: "running", title: "Running review", latest_run: { ...run, status: "running" } }] }));
+  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories/22?state=closed");
+  await expect(page.getByRole("link", { name: /Running review/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
+  await openNavigation(page);
+  await page.getByRole("link", { name: "acme/other", exact: true }).click();
+  await expect(page).toHaveURL(/repositories\/23$/);
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Reviews paused");
+});
+
 test("repository navigation, filtering, and review workspace", async ({
   page,
 }, info) => {

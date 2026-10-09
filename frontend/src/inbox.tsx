@@ -1,16 +1,16 @@
 import { useCallback, useEffect } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, GitPullRequest, LoaderCircle } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { api, ApiError, type Schema } from "./api";
-import { Empty, ErrorNotice, Loading, Status, date } from "./components/common";
+import { Empty, ErrorNotice, Loading, Status } from "./components/common";
+import { PullRequestListHeading, PullRequestRow } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
 
 const titles: Record<Group, string> = { active: "Open", merged: "Merged", closed: "Closed" };
-const createdFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 type InboxData = Schema["InboxOut"] & { errors: Partial<Record<Group, string>> };
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
@@ -124,19 +124,11 @@ export function Inbox() {
             {titles[group.group]}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.total}</span>
           </h2>}
           <div className="overflow-hidden rounded-lg border bg-card">
-            <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
-              <span>Pull request</span><span>Review status</span><span>Open findings</span><span>Created</span><span />
-            </div>
-            {group.items.map((pr) => <Link key={pr.id} to={`/pulls/${pr.id}`} state={{ inbox: `${location.pathname}${location.search}` }} className="inbox-row-grid group relative grid gap-y-3 border-b last:border-b-0 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:-outline-offset-2 md:items-center md:px-5 md:py-3">
-              <div className="flex min-w-0 items-start gap-3 pr-5 sm:items-center md:pr-0">
-                <GitPullRequest aria-hidden="true" className="mt-1 size-4 shrink-0 text-primary" />
-                <div className="min-w-0 flex-1"><p className="break-words font-medium group-hover:text-primary">{pr.title}</p><p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</p></div>
-              </div>
-              <div className="min-w-0 space-y-1"><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</div>
-              <div><Badge variant="outline" className={pr.open_findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{pr.open_findings} unresolved<span className="sr-only"> findings</span></Badge></div>
-              {pr.created_at ? <time dateTime={pr.created_at} title={date(pr.created_at)} className="text-xs tabular-nums text-muted-foreground">{createdFormatter.format(new Date(pr.created_at))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
-              <ChevronRight aria-hidden="true" className="absolute right-4 top-5 size-4 text-muted-foreground md:static" />
-            </Link>)}
+            <PullRequestListHeading />
+            {group.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
+              state={{ inbox: `${location.pathname}${location.search}` }}
+              metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
+              status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry {titles[group.group].toLowerCase()}</Button></div>}
             {(group.has_more || busy) && group.page < INBOX_MAX_PAGES && !error && <div className="px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
               const next = new URLSearchParams(params);

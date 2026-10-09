@@ -2,7 +2,7 @@ import { Link, useLocation, useMatch } from "react-router-dom";
 import { FolderGit2, Inbox, LoaderCircle, LogOut, MoreVertical, Plus, Settings, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
-import { getDetailPath } from "../lib/navigation";
+import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
 import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -40,6 +40,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const { setOpenMobile } = useSidebar();
   const repos = useApi<Repository[]>("/repositories", true);
   const inboxReturn = getInboxReturn(route.state);
+  const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository">>(detailPath ?? "", false, !!detailPath);
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
@@ -86,9 +87,10 @@ export function AppSidebar({ user, onLogout, signingOut }: {
             {repositories.map((repo) => {
               const [owner, name = owner] = repo.full_name.split("/");
               const running = !repos.error && repo.has_running_review;
+              const path = `/repositories/${repo.id}`;
               return <SidebarMenuItem key={repo.id}>
                 <SidebarMenuButton asChild size="lg" isActive={selected === repo.id}>
-                  <Link to={`/repositories/${repo.id}`} title={repo.full_name} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
+                  <Link to={repositoryReturn?.split("?")[0] === path ? repositoryReturn : path} title={repo.full_name} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
                     <FolderGit2 aria-hidden="true" className="text-muted-foreground" />
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{name}</span><span className="block truncate text-xs text-muted-foreground">{owner}</span></span>
                     {running && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}

@@ -10,10 +10,11 @@ import {
 } from "react-router-dom";
 import {
   ChevronRight,
-  GitPullRequest,
   Play,
   RefreshCw,
-  Search,
+  ArrowUpRight,
+  LockKeyhole,
+  Globe,
   SlidersHorizontal,
 } from "lucide-react";
 import {
@@ -24,7 +25,8 @@ import {
   type Schema,
 } from "./api";
 import { Button } from "./components/ui/button";
-import { Input } from "./components/ui/input";
+import { RepositoryPulls } from "./components/repository-pulls";
+import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import {
@@ -56,7 +58,9 @@ import { fileFeedback, runFeedback } from "./lib/run-feedback";
 function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
 }) {
-  const inboxReturn = getInboxReturn(useLocation().state);
+  const routeState = useLocation().state;
+  const inboxReturn = getInboxReturn(routeState);
+  const repositoryReturn = getRepositoryReturn(routeState);
   const feedback = runFeedback(run);
   if (!detail && !feedback.needsAttention) return null;
   return (
@@ -67,13 +71,13 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
         {feedback.nextStep}
       </p>
       <div className="flex flex-wrap gap-3">
-        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn }}>View run details</Link>}
+        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>View run details</Link>}
         {feedback.destination === "repository" && admin && (
           <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}?configure=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
-          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`} state={{ inbox: inboxReturn }}>
+          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>
             {canWrite && ["failed", "partial", "skipped", "cancelled"].includes(run.status) ? "Open pull request to run a new review" : "View pull request"}
           </Link>
         )}
@@ -88,14 +92,9 @@ export function Repositories({ admin }: { admin: boolean }) {
   const repos = useApi<Repository[]>("/repositories", true);
   const [params, setParams] = useSearchParams();
   const requested = repositoryId ?? (params.get("repo") || null);
-  const selected = requested ? repos.data?.find((repo) => String(repo.id) === requested) : repos.data?.[0];
-  const pulls = useApi<Schema["PullRequestOut"][]>(
-    `/repositories/${selected?.id}/pulls`,
-    true,
-    !!repositoryId && !!selected,
-  );
-  const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("open");
+  const denied = repos.error && [401, 403].includes(repos.error.status);
+  const available = denied ? [] : repos.data;
+  const selected = requested ? available?.find((repo) => String(repo.id) === requested) : available?.[0];
   const edit = admin && params.has("configure");
   function setEdit(open: boolean) {
     setParams((current) => {
@@ -113,214 +112,56 @@ export function Repositories({ admin }: { admin: boolean }) {
     return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}`, search: search.toString(), hash: location.hash }} replace />;
   }
   if (repos.isPending) return <Loading />;
-  if (repos.error && !repos.data) return <ErrorNotice error={repos.error} />;
-  const rows =
-    pulls.data?.filter(
-      (pr) =>
-        (scope === "all" || pr.state === scope) &&
-        `${pr.title} ${pr.number} ${pr.author}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-    ) ?? [];
-  return (
-    <>
-      <PageTitle
-        title={<span className="break-all">{selected?.full_name ?? "Repositories"}</span>}
-        actions={
-          admin && (
-            <Button asChild variant="outline">
-              <Link to="/settings?tab=github">{repos.data?.length ? "Manage repositories" : "Connect repository"}</Link>
-            </Button>
-          )
-        }
-      >
-        Follow each pull request from first review to final resolution.
-      </PageTitle>
-      <ErrorNotice error={repos.error || action.error} />
-      {requested && !selected && (
-        <Empty title="Repository unavailable">
-          This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
-        </Empty>
-      )}
-      {!requested && !repos.data?.length && (
-        <Empty title="Connect your first repository">
-          {admin ? (
-            <>
-              Install your GitHub App, then connect the installation in{" "}
-              <Link className="underline" to="/settings?tab=github">
-                settings
-              </Link>
-              .
-            </>
-          ) : (
-            "Ask your administrator to connect a repository you can access on GitHub."
-          )}
-        </Empty>
-      )}
-      {selected && (
-        <>
-          <div className="mb-7 flex flex-wrap items-center gap-3">
-            <Status value={selected?.enabled ? "enabled" : "paused"} />
-            <div className="ml-auto flex gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={action.isPending}
-                onClick={() =>
-                  action.mutate({ path: `/repositories/${selected!.id}/sync` })
-                }
-              >
-                <RefreshCw className="size-4" />
-                Sync
-              </Button>
-              {admin && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEdit(true)}
-                >
-                  <SlidersHorizontal className="size-4" />
-                  Configure
-                </Button>
-              )}
-            </div>
-          </div>
-          {selected && !selected.enabled && (
-            <div className="mb-6 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-              Reviews are paused for this repository.{" "}
-              {admin
-                ? "Choose an AI connection in Configure to enable them."
-                : "Your administrator can enable them."}
-            </div>
-          )}
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <h2 className="font-semibold">Pull requests</h2>
-              <span className="text-xs text-muted-foreground tabular">
-                {rows.length}
-              </span>
-            </div>
-            <div className="flex w-full gap-2 sm:w-auto">
-              <div className="relative min-w-0 flex-1">
-                <Search
-                  aria-hidden="true"
-                  className="absolute left-3 top-2.5 size-4 text-muted-foreground"
-                />
-                <Input
-                  aria-label="Search pull requests"
-                  className="pl-9 sm:w-60"
-                  placeholder="Search pull requests…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </div>
-              <NativeSelect
-                aria-label="Pull request state"
-                className="w-28"
-                value={scope}
-                onChange={(e) => setScope(e.target.value)}
-              >
-                <option value="open">Open</option>
-                <option value="merged">Merged</option>
-                <option value="closed">Closed</option>
-                <option value="all">All</option>
-              </NativeSelect>
-            </div>
-          </div>
-          <ErrorNotice error={pulls.error} />
-          {pulls.isPending ? (
-            <Loading />
-          ) : rows.length ? (
-            <div className="overflow-hidden rounded-lg border bg-card divide-y">
-              {rows.map((pr) => {
-                const feedback = pr.latest_run ? runFeedback(pr.latest_run) : null;
-                return (
-                  <Link
-                    key={pr.id}
-                    to={`/pulls/${pr.id}`}
-                    className="group flex items-start gap-3 p-5 hover:bg-muted/50 sm:items-center"
-                  >
-                    <GitPullRequest
-                      aria-hidden="true"
-                      className="mt-1 size-4 shrink-0 text-primary"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="break-words text-sm font-medium group-hover:underline">
-                        {pr.title}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                        <span>
-                          #{pr.number} · {pr.author}
-                        </span>
-                        <span className="max-w-60 truncate font-mono">
-                          {pr.head_ref}
-                        </span>
-                        {pr.draft && <span>Draft</span>}
-                        {pr.fork && <span>Fork · manual review</span>}
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 sm:hidden">
-                        <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                        <span className="text-xs text-muted-foreground">
-                          {pr.open_findings} open findings
-                        </span>
-                      </div>
-                      {feedback?.needsAttention && (
-                        <p className="mt-2 text-xs text-muted-foreground break-words">{feedback.summary}</p>
-                      )}
-                    </div>
-                    <div className="hidden items-center gap-6 sm:flex">
-                      <span className="text-xs text-muted-foreground tabular">
-                        {pr.open_findings} open findings
-                      </span>
-                      <Status value={pr.latest_run?.status ?? "not_reviewed"} />
-                    </div>
-                    <ChevronRight
-                      aria-hidden="true"
-                      className="size-4 shrink-0 text-muted-foreground"
-                    />
-                  </Link>
-                );
-              })}
-            </div>
-          ) : (
-            <Empty
-              title={
-                query
-                  ? "No matching pull requests"
-                  : "No pull requests here yet"
-              }
-            >
-              {query
-                ? "Try another search or change the state filter."
-                : "Use Sync to fetch pull requests from GitHub. Reviews begin once this repository is enabled."}
-            </Empty>
-          )}
-          {selected && (
-            <Sheet open={edit} onOpenChange={setEdit}>
-              <SheetContent className="sm:max-w-xl overflow-y-auto">
-                <SheetHeader>
-                  <SheetTitle>Repository configuration</SheetTitle>
-                  <SheetDescription>{selected.full_name}</SheetDescription>
-                </SheetHeader>
-                <div className="p-6">
-                  <RepositorySettings
-                    key={selected.id}
-                    repository={selected}
-                    showLimits={params.get("configure") === "limits"}
-                    onSaved={() => setEdit(false)}
-                  />
-                </div>
-              </SheetContent>
-            </Sheet>
-          )}
-        </>
-      )}
-    </>
-  );
+  if (repos.error && (!repos.data || denied)) return <ErrorNotice error={repos.error} />;
+  const syncPath = `/repositories/${selected?.id}/sync`;
+  const syncHere = action.variables?.path === syncPath;
+  const Visibility = selected?.private ? LockKeyhole : Globe;
+  return <>
+    <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <div className="min-w-0 flex-1 basis-80">
+        <h1 className="break-words text-3xl font-semibold tracking-tight [overflow-wrap:anywhere]">{selected?.full_name ?? "Repositories"}</h1>
+        {selected ? <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
+          <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+        </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
+      </div>
+      {selected && <div className="flex shrink-0 flex-wrap gap-2">
+        <Button variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: syncPath })}>
+          <RefreshCw aria-hidden="true" className={`size-4 ${action.isPending ? "motion-safe:animate-spin" : ""}`} />{action.isPending ? "Queuing sync…" : "Sync"}
+        </Button>
+        {admin && <Button variant="outline" onClick={() => setEdit(true)}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
+      </div>}
+    </header>
+    <ErrorNotice error={repos.error || (syncHere && action.error)} />
+    {syncHere && action.isSuccess && <p role="status" className="mb-4 text-sm text-muted-foreground">Sync queued. Pull requests will refresh when it finishes.</p>}
+    {requested && !selected && <Empty title="Repository unavailable">
+      This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
+    </Empty>}
+    {!requested && !available?.length && <Empty title="Connect your first repository">
+      {admin ? <>Install your GitHub App, then connect the installation in <Link className="underline" to="/settings?tab=github">settings</Link>.</> : "Ask your administrator to connect a repository you can access on GitHub."}
+    </Empty>}
+    {selected && <>
+      <section aria-label="Review configuration" className="mb-7 flex flex-wrap items-center gap-x-4 gap-y-2 border-y py-4 text-sm">
+        <Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Reviews enabled" : "Reviews paused"} />
+        <span>{selected.enabled ? (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only") : "Reviews are paused for this repository."}</span>
+        {selected.enabled ? <span className="text-xs text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span> : <span className="text-xs text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
+      </section>
+      <RepositoryPulls key={selected.id} repositoryId={selected.id} />
+      <Sheet open={edit} onOpenChange={setEdit}>
+        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader><SheetTitle>Repository configuration</SheetTitle><SheetDescription>{selected.full_name}</SheetDescription></SheetHeader>
+          <div className="p-6"><RepositorySettings key={selected.id} repository={selected} showLimits={params.get("configure") === "limits"} onSaved={() => setEdit(false)} /></div>
+        </SheetContent>
+      </Sheet>
+    </>}
+    {admin && <div className="mt-6 text-xs text-muted-foreground"><Link className="rounded-sm underline underline-offset-4 hover:text-foreground" to="/settings?tab=github">{available?.length ? "Manage repositories" : "Connect repository"}</Link></div>}
+  </>;
 }
 
 function RunList({ runs }: { runs: Run[] }) {
-  const inboxReturn = getInboxReturn(useLocation().state);
+  const routeState = useLocation().state;
+  const inboxReturn = getInboxReturn(routeState);
+  const repositoryReturn = getRepositoryReturn(routeState);
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -336,7 +177,7 @@ function RunList({ runs }: { runs: Run[] }) {
             className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
             key={run.id}
             to={`/runs/${run.id}`}
-            state={{ inbox: inboxReturn }}
+            state={{ inbox: inboxReturn, repository: repositoryReturn }}
           >
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{date(run.created_at)}</div>
@@ -369,6 +210,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const inboxReturn = getInboxReturn(location.state);
+  const repositoryReturn = getRepositoryReturn(location.state);
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
@@ -433,7 +275,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
                       body: connection ? { connection_id: connection } : {},
                     })
                     .catch(() => null);
-                  if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn } });
+                  if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
                 }}
               >
                 <Play className="size-4" />

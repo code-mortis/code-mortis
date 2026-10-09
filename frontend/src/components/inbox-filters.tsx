@@ -9,9 +9,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioG
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-export function InboxFilters({ params, data, onChange, onSearch }: {
+export function InboxFilters({ params, data, onChange, onSearch, repository = false }: {
   params: URLSearchParams;
-  data?: Schema["InboxOut"];
+  data?: Pick<Schema["InboxOut"], "repositories" | "authors" | "state_counts">;
+  repository?: boolean;
   onChange: (property: Property | "ordering", values: string[]) => void;
   onSearch: (value: string) => void;
 }) {
@@ -30,7 +31,7 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
   const filtersButton = useRef<HTMLButtonElement>(null);
   const pendingFilter = useRef<Property | null>(null);
   const sortButton = useRef<HTMLButtonElement>(null);
-  const ordering = params.get("ordering") ?? "-created_at";
+  const ordering = params.get("ordering") ?? (repository ? "-updated_at" : "-created_at");
   const field = ordering.replace(/^-/, "") as OrderingField;
   const descending = ordering.startsWith("-");
   let direction = descending ? "Z to A" : "A to Z";
@@ -45,7 +46,8 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
     const values = selected(params, key);
     return values.length > 0 && !(key === "state" && values.length === states.length);
   }
-  const available = (Object.keys(properties) as Property[]).filter((key) => !isActive(key));
+  const visible = (Object.keys(properties) as Property[]).filter((key) => !repository || key !== "repo");
+  const available = visible.filter((key) => !isActive(key));
   function clear(key: Property) {
     onChange(key, key === "state" ? ["all"] : []);
     setOpen(null);
@@ -101,7 +103,7 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
           {available.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">All filters are in use.</p>}
         </DropdownMenuContent>
       </DropdownMenu>
-      {(Object.keys(properties) as Property[]).map((key) => {
+      {visible.map((key) => {
         const values = selected(params, key);
         const names = values.map((value) => summary(key, value));
         const active = isActive(key);
@@ -131,7 +133,7 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
         <DropdownMenuTrigger asChild><Button ref={sortButton} variant="outline" className="bg-card" aria-label={`Sort by ${orderings[field]}`}><ArrowUpDown className="text-muted-foreground" />{orderings[field]}</Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]">
           <DropdownMenuRadioGroup value={field} onValueChange={(value) => { if (value !== field) onChange("ordering", [value.endsWith("_at") ? `-${value}` : value]); }}>
-            {(Object.keys(orderings) as OrderingField[]).map((key) => <DropdownMenuRadioItem key={key} value={key}>{orderings[key]}</DropdownMenuRadioItem>)}
+            {(Object.keys(orderings) as OrderingField[]).filter((key) => !repository || (key !== "repository" && key !== "created_at")).map((key) => <DropdownMenuRadioItem key={key} value={key}>{orderings[key]}</DropdownMenuRadioItem>)}
           </DropdownMenuRadioGroup>
           <DropdownMenuSeparator />
           <p className="px-2 py-1.5 text-xs text-muted-foreground">Within each group. Running and queued reviews stay first.</p>
