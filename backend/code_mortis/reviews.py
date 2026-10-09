@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import unified_diff
 from pathlib import PurePosixPath
 
@@ -244,6 +244,11 @@ def authorize_connection(db, connection, repo, trigger, actor=None, *, check_rep
 
 
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
+    created_at = data.get("created_at")
+    if created_at is not None:
+        created_at = datetime.fromisoformat(created_at)
+        if created_at.utcoffset() is None:
+            raise ValueError("GitHub PR creation time must include a timezone.")
     pr = db.scalar(
         select(PullRequest).where(PullRequest.repository_id == repo.id, PullRequest.number == data["number"])
     )
@@ -257,7 +262,11 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     pr.head_ref = data["head"]["ref"]
     head_repo = data["head"].get("repo")
     pr.fork = not head_repo or head_repo["id"] != repo.id
-    pr.updated_at = now()
+    # Unchanged syncs must not reshuffle lists ordered by updated_at.
+    if db.is_modified(pr, include_collections=False):
+        pr.updated_at = now()
+    if created_at is not None:
+        pr.created_at = created_at
     db.flush()
     for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))):
         if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":

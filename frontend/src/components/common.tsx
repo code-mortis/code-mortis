@@ -22,7 +22,7 @@ export function Status({ value, label }: { value: string; label?: string }) {
     value,
   );
   const bad = ["failed", "critical", "high", "failure", "timed_out"].includes(value);
-  const caution = ["partial", "medium", "partially_published", "action_required"].includes(value);
+  const caution = ["partial", "medium", "partially_published", "action_required", "blocked", "outdated"].includes(value);
   return (
     <Badge
       variant="outline"
@@ -32,6 +32,7 @@ export function Status({ value, label }: { value: string; label?: string }) {
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
+        value === "running" && "border-blue-700/20 bg-blue-700/8 text-blue-800 dark:text-blue-300",
         caution &&
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}

@@ -345,7 +345,7 @@ test("repository navigation, filtering, and review workspace", async ({
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await mock(page);
-  await page.goto("/");
+  await page.goto("/repositories");
   await expect(
     page.getByRole("heading", { name: "Repositories", exact: true }),
   ).toBeVisible();
@@ -358,7 +358,7 @@ test("repository navigation, filtering, and review workspace", async ({
   await page.evaluate(() => document.fonts.ready);
   await mkdir("../.impeccable/review", { recursive: true });
   await page.screenshot({
-    path: `../.impeccable/review/${info.project.name}.png`,
+    path: `../.impeccable/review/review-detail-${info.project.name}.png`,
     fullPage: true,
     animations: "disabled",
   });
@@ -368,6 +368,46 @@ test("repository navigation, filtering, and review workspace", async ({
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+for (const entry of ["history", "feedback", "start"] as const) {
+  test(`inbox context survives run ${entry} navigation and return`, async ({ page }) => {
+    await mock(page);
+    await page.route("**/api/v1/pulls?**", (route) => route.fulfill({ json: {
+      groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [{
+        ...pr, repository_name: repo.full_name, created_at: at, review_status: run.status,
+        has_running_review: false, run_id: run.id, publication: run.publication, publication_error: run.publication_error,
+      }] }],
+      total: 1, registered_total: 1, repository_count: 1, repositories: [repo],
+      authors: [pr.author], state_counts: { open: 1 }, page_size: 10,
+    } }));
+    await page.route("**/api/v1/pulls/pr/runs", (route) => route.fulfill({ json: run }));
+    const inbox = "/?q=retry&repo=22&ordering=title";
+    await page.goto(inbox);
+    await page.getByRole("link", { name: /Add retry handling/ }).click();
+    if (entry === "history") {
+      await page.getByRole("tab", { name: "Run history" }).click();
+      await page.getByRole("link", { name: /automatic.*aaaaaaa/ }).click();
+    } else if (entry === "feedback") {
+      await page.getByRole("link", { name: "View run details", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Run review", exact: true }).click();
+    }
+    await expect(page).toHaveURL(/\/runs\/run$/);
+    const inboxNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true });
+    await expect(inboxNav).toHaveAttribute("href", inbox);
+    await expect(inboxNav).toHaveClass(/nav-active/);
+    if (entry === "feedback") {
+      await page.getByRole("link", { name: "Open pull request to run a new review", exact: true }).click();
+    } else {
+      await page.getByRole("link", { name: /acme\/payments.*Run history/ }).click();
+    }
+    await expect(page).toHaveURL(/\/pulls\/pr$/);
+    await expect(inboxNav).toHaveClass(/nav-active/);
+    await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+    await expect(page).toHaveURL(inbox);
+    await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
+  });
+}
 
 test("resolution waits for GitHub and preserves the confirmed status", async ({
   page,
@@ -637,7 +677,7 @@ test("repository model choices follow its selected connection", async ({ page },
   const requests = await mock(page);
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection", model: "second-model" }] }));
   await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const model = page.getByLabel("Model override (optional)");
   await expect(model.locator("option:checked")).toHaveText("review-model");
@@ -663,7 +703,7 @@ test("project background generates an editable draft with unsaved selections and
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
   const requests = await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const field = page.getByLabel("Project background", { exact: true });
   await field.fill("Existing context");
@@ -702,7 +742,7 @@ for (const outcome of ["done", "failed"] as const) {
     test(`project background discards a late ${outcome} result after changing ${change}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
-      await page.goto("/");
+      await page.goto("/repositories");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
       const field = page.getByLabel("Project background", { exact: true });
       await field.fill("Original context");
@@ -735,7 +775,7 @@ for (const outcome of ["done", "failed"] as const) {
         id: "feedback-job", status: outcome, background: "A generated draft", error: "The provider denied model access.",
       };
       await mock(page, { background });
-      await page.goto("/");
+      await page.goto("/repositories");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
       await page.getByRole("button", { name: "Generate background", exact: true }).click();
       if (outcome === "done") await expect(page.getByRole("status", { name: "Background generation status" })).toContainText("Background generated.");
@@ -769,7 +809,7 @@ for (const transient of ["network", "server"] as const) {
         else await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } });
       } else await route.fulfill({ json: background });
     });
-    await page.goto("/");
+    await page.goto("/repositories");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     await page.getByRole("button", { name: "Generate background", exact: true }).click();
     await expect(page.getByLabel("Project background", { exact: true })).toHaveValue("Recovered draft");
@@ -791,7 +831,7 @@ for (const phase of ["start", "poll"] as const) {
       await response;
       await route.fulfill({ status: 403, json: { detail: "Access denied for the old selections" } });
     });
-    await page.goto("/");
+    await page.goto("/repositories");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     const sent = page.waitForRequest((request) => new URL(request.url()).pathname === path);
     await page.getByRole("button", { name: "Generate background", exact: true }).click();
@@ -810,7 +850,7 @@ test("project background preserves text on failure and explains missing selectio
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "failed", background: null, error: "Reconnect your account before retrying." };
   await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "no-model", name: "No model", model: "" }] }));
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const field = page.getByLabel("Project background", { exact: true });
   const generate = page.getByRole("button", { name: "Generate background", exact: true });
@@ -832,7 +872,7 @@ test("project background preserves text on failure and explains missing selectio
 test("project background preserves text when starting or polling fails", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 422, json: { detail: "Authorize this repository first." } }));
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const field = page.getByLabel("Project background", { exact: true });
   await field.fill("Keep my context");
@@ -850,7 +890,7 @@ for (const unlimited of [false, true]) {
   test(`project background uses unsaved ${unlimited ? "unlimited" : "custom"} review limits`, async ({ page }) => {
     const background: Schema["BackgroundJobOut"] = { id: "limits-job", status: "running", background: null, error: null };
     const requests = await mock(page, { background });
-    await page.goto("/");
+    await page.goto("/repositories");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     await page.getByText("Review limits and rules", { exact: true }).click();
     if (unlimited) {
@@ -876,7 +916,7 @@ test("project background explains missing output and displays its generation ref
   const error = "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result. Your background was not changed.";
   const background: Schema["BackgroundJobOut"] = { id: "ab31f162-abb3-4ce5-bc85-e6af43be6ba6", status: "failed", background: null, error };
   const requests = await mock(page, { background });
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const field = page.getByLabel("Project background", { exact: true });
   await field.fill("Keep my existing project background.");
@@ -898,7 +938,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
     current = { ...current, ...route.request().postDataJSON() };
     await route.fulfill({ json: current });
   });
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await page.getByText("Review limits and rules", { exact: true }).click();
   const time = page.getByLabel("Timeout (seconds)", { exact: true });
@@ -967,7 +1007,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
 
 test("personal review limits retain their separate context budget", async ({ page }) => {
   await mock(page, { personal: true });
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await page.getByLabel("AI connection", { exact: true }).selectOption("personal");
   await page.getByText("Review limits and rules", { exact: true }).click();
@@ -1056,7 +1096,7 @@ for (const [name, coverage, settings] of [
 test("oversized review explains its outcome and links to editable limits throughout the app", async ({ page }, info) => {
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
-  await page.goto("/");
+  await page.goto("/repositories");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(reason);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
@@ -1211,7 +1251,7 @@ test("publication failure after a completed review offers a publication retry", 
 
 test("completed reviews without comments need no attention in lists or previews", async ({ page }) => {
   await mock(page, { run: { status: "completed", publication: "not_applicable", publication_error: null } });
-  await page.goto("/");
+  await page.goto("/repositories");
   const row = page.getByRole("link", { name: /Add retry handling/ });
   await expect(row).not.toContainText("The selected review scope completed.");
   await row.click();
@@ -1324,8 +1364,9 @@ for (const configured of [false, true]) {
       const url = new URL(request.url());
       if (url.pathname === "/api/v1/auth/me") sessionOrigins.push(url.origin);
     });
-    await page.goto("/?from=local#setup");
-    await expect(page).toHaveURL("http://127.0.0.1:4178/?from=local#setup");
+    const entry = configured ? "/repositories?from=local#setup" : "/?from=local#setup";
+    await page.goto(entry);
+    await expect(page).toHaveURL(`http://127.0.0.1:4178${entry}`);
     await expect(
       page.getByRole("heading", {
         name: configured ? "Repositories" : "Give your reviews a home.",
@@ -1477,7 +1518,7 @@ test("run shows verification separately from confirmed resolutions", async ({ pa
 
 test("automatic resolution is opt-in and requires automatic reviews", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const automatic = page.getByRole("switch", { name: "Automatic reviews", exact: true });
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
@@ -1536,7 +1577,7 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
     current = { ...current, operation_status: "queued", job_id: "uninstall", can_connect: false, can_uninstall: false };
     await route.fulfill({ status: 202, json: { job_id: "uninstall" } });
   });
-  await page.goto("/");
+  await page.goto("/repositories");
   await page.getByRole("link", { name: "Manage repositories", exact: true }).click();
   const account = page.getByRole("article", { name: "acme", exact: true });
   await expect(page.getByRole("heading", { name: "acme", exact: true })).toHaveCount(1);

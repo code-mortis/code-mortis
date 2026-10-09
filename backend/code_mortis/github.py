@@ -10,10 +10,30 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import now, transaction
-from .models import AppConfig, User
+from .models import AppConfig, Installation, Repository, User
 from .security import clean_text, seal, unseal
 
 API = "https://api.github.com"
+
+
+def visible_repositories(db: Session, user: User) -> list[Repository]:
+    token = user_token(db, user)
+    visible = set()
+    for installation in db.scalars(select(Installation).where(Installation.active.is_(True))):
+        try:
+            visible.update(
+                repo["id"] for repo in pages(
+                    f"/user/installations/{installation.id}/repositories", token, "repositories"
+                )
+            )
+        except GitHubError as exc:
+            if exc.status not in {403, 404}:
+                raise
+    return list(db.scalars(
+        select(Repository).join(Installation).where(
+            Repository.id.in_(visible), Repository.active.is_(True), Installation.active.is_(True)
+        ).order_by(Repository.full_name)
+    ))
 
 
 class GitHubError(Exception):

@@ -7,9 +7,10 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Blocks, Github, LogOut, Settings } from "lucide-react";
+import { Blocks, Github, Inbox as InboxIcon, LogOut, Settings } from "lucide-react";
 import { api, ApiError, setCsrf, useAction, useApi, type Schema } from "./api";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -21,6 +22,8 @@ import {
   NativeSelect,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
+import { Inbox } from "./inbox";
+import { getInboxReturn } from "./lib/inbox-filters";
 import { SettingsPage } from "./settings";
 import "./index.css";
 
@@ -41,11 +44,12 @@ function Brand() {
   );
 }
 function Setup({ configured }: { configured: boolean }) {
+  const route = useLocation();
   const [token, setToken] = useState("");
   const [organization, setOrganization] = useState("");
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
-  const params = new URLSearchParams(location.search);
+  const params = new URLSearchParams(route.search);
   const authErrors: Record<string, string> = {
     expired:
       "This attempt expired or was already used. Start again in this browser.",
@@ -175,6 +179,9 @@ function App() {
   );
   const action = useAction();
   const navigate = useNavigate();
+  const route = useLocation();
+  const inboxReturn = getInboxReturn(route.state);
+  const fromInbox = inboxReturn !== null;
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -222,7 +229,7 @@ function App() {
         <Button onClick={() => setup.refetch()}>Check again</Button>
       </div>
     );
-  if (new URLSearchParams(location.search).has("auth_error"))
+  if (new URLSearchParams(route.search).has("auth_error"))
     return <Setup configured={setup.data?.configured ?? false} />;
   if (!setup.data?.configured || session.error?.status === 401)
     return <Setup configured={setup.data?.configured ?? false} />;
@@ -268,12 +275,16 @@ function App() {
           className="flex gap-1 px-3 pb-3 lg:flex-col lg:py-3"
         >
           <NavLink
-            to="/"
+            to={inboxReturn ?? "/"}
             end
             className={({ isActive }) =>
-              `nav-link ${isActive || location.pathname.startsWith("/pulls") || location.pathname.startsWith("/runs") ? "nav-active" : ""}`
+              `nav-link ${isActive || (fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`
             }
           >
+            <InboxIcon className="size-4" />
+            Inbox
+          </NavLink>
+          <NavLink to="/repositories" className={({ isActive }) => `nav-link ${isActive || (!fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`} >
             <Blocks className="size-4" />
             Repositories
           </NavLink>
@@ -319,12 +330,13 @@ function App() {
           </Button>
         </div>
       </aside>
-      <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-12">
-        <div className="mx-auto max-w-6xl">
+      <main className={`min-w-0 px-5 py-8 sm:px-9 ${route.pathname === "/" ? "lg:px-9 lg:py-6" : "lg:px-12 lg:py-12"}`}>
+        <div className={route.pathname === "/" ? "mx-auto" : "mx-auto max-w-6xl"}>
           <ErrorNotice error={action.error} />
           <Routes>
+            <Route path="/" element={<Inbox />} />
             <Route
-              path="/"
+              path="/repositories"
               element={<Repositories admin={session.data.role === "admin"} />}
             />
             <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
@@ -342,7 +354,7 @@ function App() {
               element={
                 <Empty title="Page not found">
                   <NavLink className="underline" to="/">
-                    Return to repositories
+                    Return to inbox
                   </NavLink>
                 </Empty>
               }

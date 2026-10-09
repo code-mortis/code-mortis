@@ -389,8 +389,10 @@ def schedule_reconciliation():
                 Job.payload["finding_id"].as_string() == finding.id,
             ).limit(1)) and not finding.sync_error:
                 enqueue(db, "resolve", finding.sync_intent)
-        # Closed PRs also retain resolvable review threads.
-        for pr in db.scalars(select(PullRequest).where(PullRequest.state != "open")):
+        # Closed PRs retain review threads; legacy PRs need their creation date filled in.
+        for pr in db.scalars(select(PullRequest).where(or_(
+            PullRequest.state != "open", PullRequest.created_at.is_(None),
+        ))):
             enqueue(
                 db, "sync_pr", {"repository_id": pr.repository_id, "number": pr.number, "automatic": False}
             )

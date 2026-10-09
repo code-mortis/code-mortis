@@ -225,6 +225,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Inbox */
+        get: operations["pull_inbox_api_v1_pulls_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls/{pr_id}": {
         parameters: {
             query?: never;
@@ -951,6 +968,91 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** InboxOut */
+        InboxOut: {
+            /** Groups */
+            groups: components["schemas"]["InboxPage"][];
+            /** Total */
+            total: number;
+            /** Repository Count */
+            repository_count: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Repositories */
+            repositories: components["schemas"]["InboxRepository"][];
+            /** Authors */
+            authors: string[];
+            /** State Counts */
+            state_counts: {
+                [key: string]: number;
+            };
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
+        };
+        /** InboxPage */
+        InboxPage: {
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "active" | "merged" | "closed";
+            /** Items */
+            items: components["schemas"]["InboxPullOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+        };
+        /** InboxPullOut */
+        InboxPullOut: {
+            /** Id */
+            id: string;
+            /** Repository Id */
+            repository_id: number;
+            /** Repository Name */
+            repository_name: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Author */
+            author: string;
+            /** State */
+            state: string;
+            /** Draft */
+            draft: boolean;
+            /** Created At */
+            created_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Review Status */
+            review_status: string;
+            /** Has Running Review */
+            has_running_review: boolean;
+            /** Run Id */
+            run_id: string | null;
+            /** Publication */
+            publication: string | null;
+            /** Publication Error */
+            publication_error: string | null;
+            /** Open Findings */
+            open_findings: number;
+        };
+        /** InboxRepository */
+        InboxRepository: {
+            /** Id */
+            id: number;
+            /** Full Name */
+            full_name: string;
         };
         /** InstallationOperation */
         InstallationOperation: {
@@ -1796,6 +1898,45 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_inbox_api_v1_pulls_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                repo?: number[];
+                state?: ("open" | "merged" | "closed" | "all")[];
+                review?: ("queued" | "running" | "blocked" | "completed" | "partial" | "failed" | "skipped" | "cancelled" | "superseded" | "not_reviewed" | "outdated")[];
+                author?: string[];
+                findings?: ("open" | "none") | null;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
+                group?: ("active" | "merged" | "closed") | null;
+                page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxOut"];
                 };
             };
             /** @description Validation Error */

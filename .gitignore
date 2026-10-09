@@ -12,9 +12,10 @@ frontend/test-results/
 frontend/playwright-report/
 *.tsbuildinfo
 .DS_Store
-.impeccable/review/
-.impeccable/mocks/
 data/
 *.db
 *.log
 graphify-out
+.impeccable/*
+!.impeccable/design.json
+!.impeccable/config.json

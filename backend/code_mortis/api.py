@@ -6,14 +6,14 @@ from importlib.resources import files
 from typing import Annotated
 from urllib.parse import urlencode, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import background, github, installations, model_discovery, runner_client, verification
+from . import background, github, inbox, installations, model_discovery, runner_client, verification
 from .config import settings
 from .db import get_db, now
 from .models import (
@@ -45,6 +45,8 @@ from .schemas import (
     FindingAction,
     FindingDetail,
     FindingOut,
+    InboxFilters,
+    InboxOut,
     InstallationOperation,
     InstallationOut,
     MemberInput,
@@ -357,26 +359,7 @@ def pr_out(db: Session, pr: PullRequest) -> PullRequestOut:
 
 @router.get("/repositories", response_model=list[RepositoryOut])
 def repositories(db: DB, user: USER):
-    token = github.user_token(db, user)
-    visible = set()
-    for installation in db.scalars(select(Installation).where(Installation.active.is_(True))):
-        try:
-            visible.update(
-                repo["id"]
-                for repo in github.pages(
-                    f"/user/installations/{installation.id}/repositories", token, "repositories"
-                )
-            )
-        except github.GitHubError as exc:
-            if exc.status not in {403, 404}:
-                raise
-    return [
-        repo_out(db, repo)
-        for repo in db.scalars(
-            select(Repository).where(Repository.active.is_(True)).order_by(Repository.full_name)
-        )
-        if repo.id in visible
-    ]
+    return [repo_out(db, repo) for repo in github.visible_repositories(db, user)]
 
 
 @router.put("/repositories/{repository_id}", response_model=RepositoryOut)
@@ -447,6 +430,11 @@ def refresh_repository(repository_id: int, db: DB, user: USER) -> dict:
     repo_access(db, user, repository_id, write=True)
     job = enqueue(db, "scan_repository", {"repository_id": repository_id})
     return {"job_id": job.id}
+
+
+@router.get("/pulls", response_model=InboxOut)
+def pull_inbox(db: DB, user: USER, filters: Annotated[InboxFilters, Query()]):
+    return inbox.list_pulls(db, github.visible_repositories(db, user), filters)
 
 
 @router.get("/pulls/{pr_id}", response_model=PRDetail)

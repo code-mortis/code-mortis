@@ -138,6 +138,7 @@ class PullRequest(Base):
     head_sha: Mapped[str] = mapped_column(String(40))
     base_sha: Mapped[str] = mapped_column(String(40))
     head_ref: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

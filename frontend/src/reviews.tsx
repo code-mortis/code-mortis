@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { getInboxReturn } from "./lib/inbox-filters";
 import {
   Link,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
 } from "react-router-dom";
@@ -53,6 +55,7 @@ import { fileFeedback, runFeedback } from "./lib/run-feedback";
 function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
 }) {
+  const inboxReturn = getInboxReturn(useLocation().state);
   const feedback = runFeedback(run);
   if (!detail && !feedback.needsAttention) return null;
   return (
@@ -63,13 +66,13 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
         {feedback.nextStep}
       </p>
       <div className="flex flex-wrap gap-3">
-        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`}>View run details</Link>}
+        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn }}>View run details</Link>}
         {feedback.destination === "repository" && admin && (
-          <Link className="underline underline-offset-4" to={`/?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
+          <Link className="underline underline-offset-4" to={`/repositories?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
-          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`}>
+          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`} state={{ inbox: inboxReturn }}>
             {canWrite && ["failed", "partial", "skipped", "cancelled"].includes(run.status) ? "Open pull request to run a new review" : "View pull request"}
           </Link>
         )}
@@ -317,6 +320,7 @@ export function Repositories({ admin }: { admin: boolean }) {
 }
 
 function RunList({ runs }: { runs: Run[] }) {
+  const inboxReturn = getInboxReturn(useLocation().state);
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -332,6 +336,7 @@ function RunList({ runs }: { runs: Run[] }) {
             className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
             key={run.id}
             to={`/runs/${run.id}`}
+            state={{ inbox: inboxReturn }}
           >
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{date(run.created_at)}</div>
@@ -362,6 +367,8 @@ function RunList({ runs }: { runs: Run[] }) {
 export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const inboxReturn = getInboxReturn(location.state);
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
@@ -392,11 +399,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        eyebrow={
-          <Link className="hover:underline" to={`/?repo=${repository.id}`}>
+        eyebrow={<>
+          {inboxReturn && <><Link className="hover:underline" to={inboxReturn}>Inbox</Link><span> / </span></>}
+          <Link className="hover:underline" to={`/repositories?repo=${repository.id}`}>
             {repository.full_name} / Pull request #{pr.number}
           </Link>
-        }
+        </>}
         title={pr.title}
         actions={
           <>
@@ -431,7 +439,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
                       body: connection ? { connection_id: connection } : {},
                     })
                     .catch(() => null);
-                  if (run) navigate(`/runs/${run.id}`);
+                  if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn } });
                 }}
               >
                 <Play className="size-4" />
@@ -764,6 +772,7 @@ type Coverage = {
 };
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
+  const inboxReturn = getInboxReturn(useLocation().state);
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
   const action = useAction();
   if (query.isPending) return <Loading />;
@@ -790,7 +799,7 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
     <>
       <PageTitle
         eyebrow={
-          <Link className="hover:underline" to={`/pulls/${pr.id}`}>
+          <Link className="hover:underline" to={`/pulls/${pr.id}`} state={{ inbox: inboxReturn }}>
             {repository.full_name} / #{pr.number} / Run history
           </Link>
         }

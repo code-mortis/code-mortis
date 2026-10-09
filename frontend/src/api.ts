@@ -23,9 +23,11 @@ export async function api<T>(
   method = "GET",
   body?: unknown,
   headers?: HeadersInit,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     method,
+    signal,
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
