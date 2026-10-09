@@ -18,7 +18,8 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import background, ocr, verification
+from code_mortis import assessment, background, ocr, verification
+from code_mortis.schemas import AssessmentResult
 
 calls = []
 verification_mode = "fixed"
@@ -73,12 +74,24 @@ class Provider(BaseHTTPRequestHandler):
                     {"revision": "current", "path": "main.py", "start_line": 1, "end_line": 1, "quote": "for attempt in range(3): retry()"},
                 ],
             }
+            if verification_mode.startswith("assessment_"):
+                assert verification.RESULT_DELIVERY in text
+                value = {
+                    "verdict": verification_mode.removeprefix("assessment_"), "relationship": "new",
+                    "finding_id": None, "explanation": "The supplied loop executes three times.",
+                    "cause": "Unconditional retries", "trigger": "The first delivery succeeds",
+                    "consequence": "Delivery is repeated after success", "history_explanation": "",
+                    "contradicts_prior": False, "changed_conditions": "", "suggestion_supported": False,
+                    "evidence": [value["evidence"][1]],
+                }
             content = [{"type": "tool_use", "id": "verify", "name": "code_comment", "input": {"comments": [{
                 "path": "evidence.py", "content": json.dumps(value), "category": "other", "severity": "low",
                 "existing_code": "# Code Mortis verification evidence", "suggestion_code": "",
             }]}}]
             if verification_mode == "no_verdict":
                 content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
+            elif verification_mode.startswith("assessment_"):
+                content.append({"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}})
         elif "task_done" in names:
             content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
         elif "file grouping assistant" in text:
@@ -287,6 +300,18 @@ def main():
                 ocr.command = original_command
             assert verification.validate_result(raw, context)["verdict"] == "fixed"
             assert usage["tokens"] > 0
+            assessment_context = {**context, "history": [], "finding": {}}
+            for verdict in ("confirmed", "rejected", "uncertain"):
+                verification_mode = "assessment_" + verdict
+                before = len(calls)
+                raw, usage = verification.api_verify(
+                    root, env, connection, {"api_key": "fake-test-key"}, assessment_context,
+                    options["token_budget"], 60, lambda: False, instructions=assessment.INSTRUCTIONS,
+                    schema=AssessmentResult.model_json_schema(), validator=assessment.validate_result,
+                )
+                assert raw["verdict"] == verdict, raw
+                assert usage["tokens"] > 0
+                assert len(calls) == before + 1, "A submitted assessment must finish without another model turn."
             for verification_mode in ("no_verdict", "provider_error"):
                 try:
                     verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context,

@@ -284,6 +284,13 @@ def evidence_bundle(context):
     return "\n\n".join(parts)
 
 
+RESULT_DELIVERY = (
+    " Submit exactly one result using code_comment, then call task_done with state DONE in the same response. "
+    "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
+    "After submitting the result, do not reconsider it, resubmit it, or continue reviewing. "
+)
+
+
 def verification_tools(instructions=INSTRUCTIONS, schema=None):
     # OCR's default tools describe only newly discovered defects. Override that contract for
     # this internal result envelope and remove context tools: all permitted evidence is supplied.
@@ -296,7 +303,7 @@ def verification_tools(instructions=INSTRUCTIONS, schema=None):
     }
     return [
         {"name": "code_comment", "main_task": True, "definition": {
-            "name": "code_comment", "description": instructions +
+            "name": "code_comment", "description": instructions + RESULT_DELIVERY +
             " Submit exactly one evidence result using this tool, including non-confirming outcomes. "
             "This is an internal result transport, not a new review comment. Do not report other issues.",
             "parameters": {"type": "object", "properties": {"comments": {
@@ -340,7 +347,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         evidence = root / "evidence.py"
         evidence.write_text(evidence_bundle(context))
         rule = root / "rules.json"
-        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + (
+        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + RESULT_DELIVERY + (
             " Return exactly one code_comment for evidence.py, category other, severity low. "
             "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
             "a JSON object matching this schema, including non-confirming outcomes: "
