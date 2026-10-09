@@ -330,8 +330,8 @@ function App() {
           </Button>
         </div>
       </aside>
-      <main className={`min-w-0 px-5 py-8 sm:px-9 ${route.pathname === "/" ? "lg:px-9 lg:py-6" : "lg:px-12 lg:py-12"}`}>
-        <div className={route.pathname === "/" ? "mx-auto" : "mx-auto max-w-6xl"}>
+      <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-12">
+        <div className="mx-auto max-w-6xl">
           <ErrorNotice error={action.error} />
           <Routes>
             <Route path="/" element={<Inbox />} />

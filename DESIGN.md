@@ -2,7 +2,7 @@
 name: "Code Mortis"
 description: "A compact workspace for traceable code reviews."
 colors:
-  background: "#f7f8f5"
+  background: "#ffffff"
   foreground: "#202c26"
   card: "#ffffff"
   card-foreground: "#202c26"
@@ -183,7 +183,7 @@ components:
 
 **Creative North Star: "Workflow-focused workspace"**
 
-Code Mortis uses compact controls, clear review states, and a persistent forest-green navigation area. Warm off-white surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
+Code Mortis uses compact controls, clear review states, and a persistent forest-green navigation area. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
 
 This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light, dark, and system appearance share the same structure; system mode follows operating-system changes while the app is open.
 
@@ -216,7 +216,7 @@ Page headlines use `headline`, changing to `headline-wide` at the small breakpoi
 
 ## Layout
 
-At 1024px and wider, the shell has a sticky 220px rail and a flexible main column. The homepage inbox uses the available main-column width, with 36px horizontal and 24px vertical padding. Other routes retain a 1152px content cap and 48px padding. Below 1024px, main padding is 20px horizontally and 32px vertically, increasing to 36px horizontal at 640px. The rail becomes a top navigation area with horizontal links and a compact appearance select.
+At 1024px and wider, the shell has a sticky 220px rail and a flexible main column. All routes use 48px padding and a centered 1152px content cap. Below 1024px, main padding is 20px horizontally and 32px vertically, increasing to 36px horizontal at 640px. The rail becomes a top navigation area with horizontal links and a compact appearance select.
 
 Each inbox list groups rows within its own bordered surface, with 24px between lists. Typical row padding is 20px; filters and actions wrap with 8px or 12px gaps. At 640px, repository controls receive bounded widths, pull-request status moves to the row end, and connection rows become horizontal. Inputs use 16px text below 768px and 14px above it. Forms retain visible labels and hints.
 
