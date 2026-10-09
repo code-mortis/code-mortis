@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useMatch } from "react-router-dom";
 import { Moon, Sun } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
@@ -26,16 +26,17 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const inboxReturn = getInboxReturn(route.state);
   const detailPath = /^\/(pulls|runs)\/[^/]+$/.test(path) ? path : null;
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
-  const repos = useApi<Repository[]>("/repositories", false, path === "/repositories");
+  const repositoryRoute = useMatch("/repositories/:repositoryId");
+  const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
   const crumbs: Crumb[] = [{ label: "Inbox", to: inboxReturn ?? "/" }];
 
-  if (path === "/repositories") {
-    const repository = repos.error ? undefined : repos.data?.find((repo) => repo.id === Number(params.get("repo"))) ?? repos.data?.[0];
+  if (path === "/repositories" || repositoryRoute) {
+    const repository = repos.error ? undefined : repos.data?.find((repo) => String(repo.id) === repositoryRoute?.params.repositoryId);
     crumbs.push({ label: repository?.full_name || "Repositories", to: path + route.search });
   } else if (detailPath) {
     if (detail.data && !detail.error) {
       const { repository, pull_request: pull } = detail.data;
-      crumbs.push({ label: repository.full_name, to: `/repositories?repo=${repository.id}` });
+      crumbs.push({ label: repository.full_name, to: `/repositories/${repository.id}` });
       crumbs.push({ label: `Pull request #${pull.number}`, to: `/pulls/${pull.id}`, state: inboxReturn ? { inbox: inboxReturn } : undefined });
     } else if (path.startsWith("/pulls/")) {
       crumbs.push({ label: "Pull request", to: path });

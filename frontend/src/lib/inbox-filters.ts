@@ -23,9 +23,8 @@ export function normalizeFilters(input: URLSearchParams) {
     let values = [...new Set(input.getAll(key))];
     if (key === "repo") values = values.filter((v) => /^\d+$/.test(v) && Number.isSafeInteger(+v) && +v > 0).map((v) => String(+v));
     if (key === "state") {
-      values = values.includes("all") ? ["all"] : states.filter((v) => values.includes(v));
-      if (values.length === states.length) values = ["all"];
-      if (values.length === 1 && values[0] === "open") values = [];
+      values = values.includes("all") ? [] : states.filter((v) => values.includes(v));
+      if (values.length === states.length) values = [];
     }
     if (key === "review") values = reviews.filter((v) => values.includes(v));
     if (key === "author") values = values.map((v) => v.trim().replace(/^@+/, "").toLowerCase()).filter((v) => v.length > 0 && v.length <= MAX_AUTHOR_LENGTH);
@@ -46,7 +45,7 @@ export function selected(params: URLSearchParams, property: Property) {
   if (property !== "state") return values;
   if (values.includes("all")) return [...states];
   if (values.length) return values;
-  return ["open"];
+  return [...states];
 }
 
 export function withoutPages(params: URLSearchParams) {

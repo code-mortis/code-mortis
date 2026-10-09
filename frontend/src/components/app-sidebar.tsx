@@ -1,4 +1,4 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useMatch } from "react-router-dom";
 import { FolderGit2, Inbox, LoaderCircle, LogOut, Plus, Settings, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
@@ -41,11 +41,11 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const detailPath = /^\/(pulls|runs)\/[^/]+$/.test(route.pathname) ? route.pathname : null;
   const detail = useApi<Pick<Schema["PRDetail"], "repository">>(detailPath ?? "", false, !!detailPath);
   const repositories = repos.error && [401, 403].includes(repos.error.status) ? [] : repos.data ?? [];
-  const requested = Number(new URLSearchParams(route.search).get("repo"));
-  const selected = route.pathname === "/repositories"
-    ? repositories.find((repo) => repo.id === requested)?.id ?? repositories[0]?.id
-    : detailPath && !inboxReturn && !detail.error ? detail.data?.repository.id : undefined;
-  const inboxActive = route.pathname === "/" || (!!detailPath && !!inboxReturn);
+  const repositoryRoute = useMatch("/repositories/:repositoryId");
+  const selected = repositoryRoute
+    ? repositories.find((repo) => String(repo.id) === repositoryRoute.params.repositoryId)?.id
+    : detailPath && !detail.error ? detail.data?.repository.id : undefined;
+  const inboxActive = route.pathname === "/";
   const closeMobile = () => setOpenMobile(false);
 
   return <Sidebar collapsible="offcanvas">
@@ -85,7 +85,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               const running = !repos.error && repo.has_running_review;
               return <SidebarMenuItem key={repo.id}>
                 <SidebarMenuButton asChild size="lg" isActive={selected === repo.id} tooltip={{ children: repo.full_name, hidden: false }}>
-                  <Link to={`/repositories?repo=${repo.id}`} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
+                  <Link to={`/repositories/${repo.id}`} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
                     <FolderGit2 aria-hidden="true" className="text-muted-foreground" />
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{name}</span><span className="block truncate text-xs text-muted-foreground">{owner}</span></span>
                     {running && <span className="flex shrink-0 items-center gap-1 text-xs text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" />Running</span>}

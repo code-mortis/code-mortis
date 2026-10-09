@@ -13,10 +13,11 @@ test("state selection returns independent values and preserves defaults", () => 
   const all = new URLSearchParams("state=all");
   selected(all, "state").pop();
   expect(selected(all, "state")).toEqual(["open", "merged", "closed"]);
-  expect(selected(new URLSearchParams(), "state")).toEqual(["open"]);
+  expect(selected(new URLSearchParams(), "state")).toEqual(["open", "merged", "closed"]);
   expect(selected(new URLSearchParams("author=alice"), "author")).toEqual(["alice"]);
-  expect(normalizeFilters(new URLSearchParams("state=open&state=merged&state=closed")).toString()).toBe("state=all");
-  expect(normalizeFilters(new URLSearchParams("state=open")).toString()).toBe("");
+  expect(normalizeFilters(new URLSearchParams("state=open&state=merged&state=closed")).toString()).toBe("");
+  expect(normalizeFilters(new URLSearchParams("state=open")).toString()).toBe("state=open");
+  expect(normalizeFilters(new URLSearchParams("state=all")).toString()).toBe("");
 });
 
 test("inbox return accepts only the inbox path and query", () => {

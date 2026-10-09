@@ -250,7 +250,7 @@ function App() {
             <Routes>
               <Route path="/" element={<Inbox />} />
               <Route
-                path="/repositories"
+                path="/repositories/:repositoryId?"
                 element={<Repositories admin={session.data.role === "admin"} />}
               />
               <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />

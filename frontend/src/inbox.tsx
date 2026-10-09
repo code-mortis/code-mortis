@@ -14,7 +14,9 @@ const createdFormatter = new Intl.DateTimeFormat(undefined, { month: "short", da
 type InboxData = Schema["InboxOut"] & { errors: Partial<Record<Group, string>> };
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
-  const filters = withoutPages(params).toString();
+  const request = withoutPages(params);
+  if (!request.has("state")) request.set("state", "all");
+  const filters = request.toString();
   const first = await api<Schema["InboxOut"]>(`/pulls?${filters}`, "GET", undefined, undefined, signal);
   const errors: InboxData["errors"] = {};
   const pages = await Promise.all(first.groups.map(async (group) => {
@@ -98,9 +100,7 @@ export function Inbox() {
   if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
   const data = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
   const visibleGroups = data?.groups.filter((group) => group.total > 0) ?? [];
-  const defaultOpen = !["q", "repo", "state", "review", "author", "findings"].some((key) => params.has(key));
-  let emptyTitle = "Your inbox is empty";
-  if (data?.registered_total) emptyTitle = defaultOpen ? "No open pull requests" : "No matching pull requests";
+  const emptyTitle = data?.registered_total ? "No matching pull requests" : "Your inbox is empty";
   return <>
     <header className="mb-5">
       <h1 className="text-3xl font-semibold tracking-tight">Inbox</h1>
@@ -112,8 +112,7 @@ export function Inbox() {
     {query.isPending && <Loading />}
     {data && data.total === 0 && !query.isPlaceholderData && <Empty title={emptyTitle}>
       {!data.registered_total && <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
-      {!!data.registered_total && defaultOpen && <>Use the PR state filter to browse merged and closed pull requests.</>}
-      {!!data.registered_total && !defaultOpen && <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</>}
+      {!!data.registered_total && <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</>}
     </Empty>}
     {data && data.total > 0 && <div className="space-y-6" aria-busy={query.isPlaceholderData}>
       {visibleGroups.map((group) => {
