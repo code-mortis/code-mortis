@@ -15,6 +15,7 @@ import {
   ExternalLink,
   Field,
   NativeSelect,
+  Status,
 } from "./components/common";
 
 type AuthState = {
@@ -160,6 +161,8 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const grants = useApi<Grant[]>(`/connections/${identity}/grants`);
   const repositories = useApi<Repository[]>("/repositories");
   const action = useAction();
+  const modelAction = useAction<Connection>();
+  const grantAction = useAction();
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [repository, setRepository] = useState("");
   const [automatic, setAutomatic] = useState(false);
@@ -169,26 +172,14 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const connected = auth.data?.status === "connected";
   return (
     <div className="min-w-0 space-y-6">
-      <ErrorNotice
-        error={
-          auth.error ||
-          action.error ||
-          grants.error ||
-          repositories.error ||
-          auth.data?.message
-        }
-      />
-      <div className="space-y-3">
-        <p role="status" className="text-sm">
-          <strong>
-            {connected
-              ? "Connected"
-              : auth.data?.status === "unavailable"
-                ? "Runner unavailable"
-                : "Not connected"}
-          </strong>
-          {auth.data?.account?.email && ` · ${auth.data.account.email}`}
-        </p>
+      <section className="space-y-4" aria-label="Account connection">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Account connection</h3>
+          <div role="status"><Status value={auth.data?.status ?? "pending"}
+            label={auth.isPending ? "Checking account…" : connected ? "Connected" : auth.data?.status === "unavailable" ? "Runner unavailable" : "Not connected"} /></div>
+        </div>
+        <ErrorNotice error={auth.error || action.error || auth.data?.message} />
+        {auth.data?.account?.email && <p className="break-words text-sm">{auth.data.account.email}</p>}
         <p className="text-sm text-muted-foreground">
           Your official client runs on this server. Your computer can be off
           during reviews. No API connection is used as a fallback.
@@ -290,18 +281,20 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             </pre>
           </details>
         )}
-      </div>
-      <form className="space-y-4 border-t pt-5" onSubmit={async (event) => {
+      </section>
+      <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
         event.preventDefault();
         try {
-          const saved = await action.mutateAsync({
+          const saved = await modelAction.mutateAsync({
             path: `/connections/${identity}`, method: "PUT",
             body: { name: connection.name, kind: connection.kind, model },
-          }) as Connection;
+          });
           setSavedModel(saved.model);
           setModel(saved.model);
         } catch { /* The action error is displayed above. */ }
       }}>
+        <h3 className="text-sm font-semibold">Default model</h3>
+        <ErrorNotice error={modelAction.error} />
         <ModelPicker
           value={model} onChange={setModel} required
           path={connected ? `/connections/${identity}/models` : undefined}
@@ -309,21 +302,23 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           hint="Sign in to load this connection’s models, or enter a custom model ID."
         />
         {!savedModel && <p className="text-sm text-muted-foreground">Choose a model to finish setup and enable reviews.</p>}
-        <Button type="submit" disabled={action.isPending || !model.trim() || model === savedModel}>
-          {action.isPending ? "Saving…" : "Save model"}
+        <Button type="submit" disabled={modelAction.isPending || !model.trim() || model === savedModel}>
+          {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
+        {modelAction.isSuccess && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
       </form>
-      <section className="space-y-4 border-t pt-5">
+      <section aria-label="Repository authorization" className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
+        <ErrorNotice error={grants.error || repositories.error || grantAction.error} />
         <p className="text-sm text-muted-foreground">
           Only you can grant use of this subscription. An administrator must
           also enable the repository and select this connection. One review runs
           at a time.
         </p>
-        {grants.data?.map((grant) => (
+        {!!grants.data?.length && <div className="divide-y rounded-lg border bg-card">{grants.data.map((grant) => (
           <div
             key={grant.repository_id}
-            className="flex flex-wrap items-center justify-between gap-2 border-b pb-3 text-sm"
+            className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"
           >
             <span className="break-all">
               {repositories.data?.find(
@@ -338,9 +333,9 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             <Button
               size="sm"
               variant="outline"
-              disabled={action.isPending}
+              disabled={grantAction.isPending}
               onClick={() =>
-                action.mutate({
+                grantAction.mutate({
                   path: `/connections/${identity}/grants/${grant.repository_id}`,
                   method: "DELETE",
                 })
@@ -349,12 +344,12 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
               Revoke
             </Button>
           </div>
-        ))}
+        ))}</div>}
         <form
           className="space-y-4"
           onSubmit={(event) => {
             event.preventDefault();
-            action.mutate({
+            grantAction.mutate({
               path: `/connections/${identity}/grants/${repository}`,
               method: "PUT",
               body: { automatic },
@@ -390,9 +385,10 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
               />
             )}
           </Field>
-          <Button disabled={action.isPending || !repository} type="submit">
-            Save authorization
+          <Button disabled={grantAction.isPending || !repository} type="submit">
+            {grantAction.isPending ? "Saving…" : "Save authorization"}
           </Button>
+          {grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Repository authorization updated.</p>}
         </form>
       </section>
     </div>
