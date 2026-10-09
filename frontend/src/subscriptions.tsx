@@ -32,6 +32,14 @@ type AuthState = {
 };
 type Grant = { repository_id: number; automatic: boolean };
 
+function accountStatus(status: string | undefined, pending: boolean, failed: boolean) {
+  if (pending) return { value: "pending", label: "Checking account…" };
+  if (failed) return { value: "failed", label: "Could not check account" };
+  if (status === "connected") return { value: status, label: "Connected" };
+  if (status === "unavailable") return { value: status, label: "Runner unavailable" };
+  return { value: status ?? "disconnected", label: "Not connected" };
+}
+
 function LoginConsole({
   identity,
   onClose,
@@ -170,23 +178,23 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const [savedModel, setSavedModel] = useState(connection.model);
   const attempt = auth.data?.attempt;
   const connected = auth.data?.status === "connected";
+  const pending = action.isPending || modelAction.isPending || grantAction.isPending;
   return (
     <div className="min-w-0 space-y-6">
       <section className="space-y-4" aria-label="Account connection">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">Account connection</h3>
-          <div role="status"><Status value={auth.data?.status ?? "pending"}
-            label={auth.isPending ? "Checking account…" : connected ? "Connected" : auth.data?.status === "unavailable" ? "Runner unavailable" : "Not connected"} /></div>
+          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending, auth.isError)} /></div>
         </div>
         <ErrorNotice error={auth.error || action.error || auth.data?.message} />
-        {auth.data?.account?.email && <p className="break-words text-sm">{auth.data.account.email}</p>}
+        {auth.data?.account?.email && <p className="break-words text-sm">Signed in as {auth.data.account.email}</p>}
         <p className="text-sm text-muted-foreground">
           Your official client runs on this server. Your computer can be off
           during reviews. No API connection is used as a fallback.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button
-            disabled={action.isPending}
+            disabled={pending}
             onClick={async () => {
               const result = await action
                 .mutateAsync({ path: `/connections/${identity}/auth` })
@@ -204,7 +212,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           </Button>
           <Button
             variant="outline"
-            disabled={auth.isFetching}
+            disabled={pending || auth.isFetching}
             onClick={() => auth.refetch()}
           >
             Check status
@@ -212,7 +220,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           {(connected || auth.data?.message) && (
             <Button
               variant="outline"
-              disabled={action.isPending}
+              disabled={pending}
               onClick={() => {
                 setConsoleOpen(false);
                 action.mutate({ path: `/connections/${identity}/disconnect` });
@@ -240,7 +248,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={action.isPending}
+              disabled={pending}
               onClick={() =>
                 action.mutate({
                   path: `/connections/${identity}/auth`,
@@ -284,6 +292,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
       </section>
       <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
         event.preventDefault();
+        if (pending) return;
         try {
           const saved = await modelAction.mutateAsync({
             path: `/connections/${identity}`, method: "PUT",
@@ -296,25 +305,29 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
         <h3 className="text-sm font-semibold">Default model</h3>
         <ErrorNotice error={modelAction.error} />
         <ModelPicker
-          value={model} onChange={setModel} required
+          value={model} onChange={setModel} required enabled={!pending}
           path={connected ? `/connections/${identity}/models` : undefined}
           context={`${identity}:${connected}`}
           hint="Sign in to load this connection’s models, or enter a custom model ID."
         />
         {!savedModel && <p className="text-sm text-muted-foreground">Choose a model to finish setup and enable reviews.</p>}
-        <Button type="submit" disabled={modelAction.isPending || !model.trim() || model === savedModel}>
+        <Button type="submit" disabled={pending || !model.trim() || model === savedModel}>
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
         {modelAction.isSuccess && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
       </form>
       <section aria-label="Repository authorization" className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
-        <ErrorNotice error={grants.error || repositories.error || grantAction.error} />
+        <ErrorNotice error={grants.error} />
+        <ErrorNotice error={repositories.error} />
+        <ErrorNotice error={grantAction.error} />
         <p className="text-sm text-muted-foreground">
           Only you can grant use of this subscription. An administrator must
           also enable the repository and select this connection. One review runs
           at a time.
         </p>
+        {grants.isPending && <p role="status" className="text-sm text-muted-foreground">Loading authorizations…</p>}
+        {grants.isSuccess && !grants.data.length && <p className="text-sm text-muted-foreground">No repositories authorized yet.</p>}
         {!!grants.data?.length && <div className="divide-y rounded-lg border bg-card">{grants.data.map((grant) => (
           <div
             key={grant.repository_id}
@@ -333,7 +346,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             <Button
               size="sm"
               variant="outline"
-              disabled={grantAction.isPending}
+              disabled={pending}
               onClick={() =>
                 grantAction.mutate({
                   path: `/connections/${identity}/grants/${grant.repository_id}`,
@@ -349,10 +362,13 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           className="space-y-4"
           onSubmit={(event) => {
             event.preventDefault();
+            if (pending || !repository) return;
             grantAction.mutate({
               path: `/connections/${identity}/grants/${repository}`,
               method: "PUT",
               body: { automatic },
+            }, {
+              onSuccess: () => { setRepository(""); setAutomatic(false); },
             });
           }}
         >
@@ -361,8 +377,12 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
               <NativeSelect
                 id={id}
                 required
+                disabled={pending}
                 value={repository}
-                onChange={(event) => setRepository(event.target.value)}
+                onChange={(event) => {
+                  if (grantAction.isSuccess) grantAction.reset();
+                  setRepository(event.target.value);
+                }}
               >
                 <option value="">Choose a repository</option>
                 {repositories.data?.map((repo) => (
@@ -380,15 +400,21 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             {(id) => (
               <Switch
                 id={id}
+                disabled={pending}
                 checked={automatic}
-                onCheckedChange={setAutomatic}
+                onCheckedChange={(checked) => {
+                  if (grantAction.isSuccess) grantAction.reset();
+                  setAutomatic(checked);
+                }}
               />
             )}
           </Field>
-          <Button disabled={grantAction.isPending || !repository} type="submit">
+          <Button disabled={pending || !repository} type="submit">
             {grantAction.isPending ? "Saving…" : "Save authorization"}
           </Button>
-          {grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Repository authorization updated.</p>}
+          {grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">
+            {grantAction.variables.method === "DELETE" ? "Authorization revoked." : "Repository authorization updated."}
+          </p>}
         </form>
       </section>
     </div>

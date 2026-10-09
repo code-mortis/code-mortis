@@ -2350,6 +2350,166 @@ test("personal model and repository errors stay with their operation", async ({ 
   expect(requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: false });
   await expect(grants.getByRole("status")).toContainText("Repository authorization updated");
   await grants.getByRole("switch").check();
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect.poll(() => requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: true });
 });
+
+test("personal account status distinguishes loading, errors, and the signed-in account", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let status = "error";
+  await page.route("**/api/v1/connections/personal/auth", async (route) => {
+    await held;
+    await route.fulfill(status === "error"
+      ? { status: 503, json: { detail: "Account status could not be loaded." } }
+      : { json: { status, account: status === "connected" ? { email: "carlos@example.com" } : null } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const account = page.getByRole("region", { name: "Account connection" });
+  await expect(account.getByRole("status")).toHaveText("Checking account…");
+  release();
+  await expect(account.getByRole("status")).toHaveText("Could not check account");
+  await expect(account.getByRole("alert")).toContainText("Account status could not be loaded");
+  for (const next of ["disconnected", "unavailable", "connected", "error"]) {
+    status = next;
+    await account.getByRole("button", { name: "Check status" }).click();
+    const labels: Record<string, string> = {
+      disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Could not check account",
+    };
+    await expect(account.getByRole("status")).toHaveText(labels[next]);
+    if (next === "connected") await expect(account.getByText("Signed in as carlos@example.com")).toBeVisible();
+  }
+});
+
+test("personal authorizations distinguish loading, fetch failure, mutation failure, and empty results", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let fail = true;
+  await page.route("**/api/v1/connections/personal/grants", async (route) => {
+    await held;
+    await route.fulfill(fail
+      ? { status: 503, json: { detail: "Authorizations could not be loaded." } }
+      : { json: [] });
+  });
+  await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
+    ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  await expect(grants.getByRole("status")).toHaveText("Loading authorizations…");
+  await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
+  release();
+  await expect(grants.getByRole("alert")).toContainText("Authorizations could not be loaded");
+  await expect(grants.getByText("Loading authorizations…")).toHaveCount(0);
+  await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await grants.getByRole("button", { name: "Save authorization" }).click();
+  await expect(grants.getByRole("alert")).toHaveText([
+    "Authorizations could not be loaded.", "Repository authorization denied.",
+  ]);
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  fail = false;
+  await grants.getByRole("button", { name: "Save authorization" }).click();
+  await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
+  await expect(grants.getByRole("alert")).toHaveCount(0);
+});
+
+test("personal authorization confirmations match saved changes and revocations", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let saved: { repository_id: number; automatic: boolean }[] = [];
+  let failRevoke = true;
+  await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json: saved }));
+  await page.route("**/api/v1/connections/personal/grants/22", (route) => {
+    if (route.request().method() === "DELETE") {
+      if (failRevoke) return route.fulfill({ status: 403, json: { detail: "Authorization could not be revoked." } });
+      saved = [];
+      return route.fulfill({ status: 204 });
+    }
+    saved = [{ repository_id: 22, automatic: route.request().postDataJSON().automatic }];
+    return route.fulfill({ json: saved[0] });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  const repository = grants.getByLabel("Repository", { exact: true });
+  const automatic = grants.getByRole("switch");
+  const save = grants.getByRole("button", { name: "Save authorization" });
+  await repository.selectOption("22");
+  await automatic.check();
+  await save.click();
+  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
+  await expect(repository).toHaveValue("");
+  await expect(automatic).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await repository.selectOption("22");
+  await expect(grants.getByRole("status")).toHaveCount(0);
+  await save.click();
+  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
+  await grants.getByRole("button", { name: "Revoke" }).click();
+  await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
+  await expect(grants.getByRole("status")).toHaveCount(0);
+  await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
+  failRevoke = false;
+  await grants.getByRole("button", { name: "Revoke" }).click();
+  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
+  await automatic.check();
+  await expect(grants.getByRole("status")).toHaveCount(0);
+  await expect(save).toBeDisabled();
+});
+
+for (const operation of ["auth", "model", "grant", "revoke"] as const) {
+  test(`personal connection blocks overlapping mutations during ${operation}`, async ({ page }) => {
+    await mock(page, { role: "member", personal: true });
+    await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: {
+      status: "connected", attempt: { status: "pending", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" },
+    } }));
+    await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json: [{ repository_id: 22, automatic: false }] }));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const paths = { auth: "/auth", model: "", grant: "/grants/22", revoke: "/grants/22" };
+    await page.route(`**/api/v1/connections/personal${paths[operation]}`, async (route) => {
+      if (route.request().method() === "GET") return route.fallback();
+      await held;
+      await route.fulfill({ status: 422, json: { detail: "Operation could not be completed." } });
+    });
+    await page.goto("/settings");
+    await page.getByRole("button", { name: "Manage account" }).click();
+    const account = page.getByRole("region", { name: "Account connection" });
+    const model = page.getByRole("form", { name: "Default model" });
+    const grants = page.getByRole("region", { name: "Repository authorization" });
+    await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+    await model.getByLabel("Custom model ID").fill("custom-model");
+    await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+    const triggers = {
+      auth: account.getByRole("button", { name: "Reconnect", exact: true }),
+      model: model.getByRole("button", { name: "Save model" }),
+      grant: grants.getByRole("button", { name: "Save authorization" }),
+      revoke: grants.getByRole("button", { name: "Revoke", exact: true }),
+    };
+    await triggers[operation].click();
+    await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeDisabled();
+    await expect(account.getByRole("button", { name: "Disconnect and revoke access" })).toBeDisabled();
+    await expect(account.getByRole("button", { name: "Cancel authorization" })).toBeDisabled();
+    await expect(model.getByRole("button", { name: /Save model|Saving/ })).toBeDisabled();
+    await expect(model.getByLabel("Custom model ID")).toBeDisabled();
+    await expect(grants.getByRole("button", { name: /Save authorization|Saving/ })).toBeDisabled();
+    await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeDisabled();
+    await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+    await expect(grants.getByRole("switch")).toBeDisabled();
+    release();
+    await expect(page.getByRole("dialog").getByRole("alert").filter({ hasText: "Operation could not be completed" })).toBeVisible();
+    await expect(triggers.auth).toBeEnabled();
+    await expect(triggers.model).toBeEnabled();
+    await expect(triggers.grant).toBeEnabled();
+    await expect(triggers.revoke).toBeEnabled();
+    await expect(model.getByLabel("Custom model ID")).toHaveValue("custom-model");
+    await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  });
+}
