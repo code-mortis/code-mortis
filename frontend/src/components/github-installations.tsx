@@ -18,7 +18,9 @@ function installationStatus(item: Installation) {
 }
 
 function installationPriority(status: string) {
-  return status === "active" ? 0 : status === "uninstalled" ? 2 : 1;
+  if (status === "active") return 0;
+  if (status === "uninstalled") return 2;
+  return 1;
 }
 
 function installationDescription(item: Installation, status: string) {

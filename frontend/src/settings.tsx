@@ -355,11 +355,13 @@ function ConnectionForm({
   providers,
   canCreateApi,
   onSaved,
+  onSavingChange,
 }: {
   connection?: Connection;
   providers: Provider[];
   canCreateApi: boolean;
   onSaved: (connection: Connection) => void;
+  onSavingChange: (saving: boolean) => void;
 }) {
   const [kind, setKind] = useState(
     connection?.kind ?? (canCreateApi ? "api" : "chatgpt"),
@@ -407,6 +409,8 @@ function ConnectionForm({
       className="space-y-5"
       onSubmit={async (e) => {
         e.preventDefault();
+        if (action.isPending) return;
+        onSavingChange(true);
         setError(undefined);
         try {
           const body =
@@ -421,6 +425,8 @@ function ConnectionForm({
           onSaved(saved);
         } catch (e) {
           setError(e);
+        } finally {
+          onSavingChange(false);
         }
       }}
     >
@@ -613,6 +619,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const action = useAction();
   const memberAction = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
+  const [savingConnection, setSavingConnection] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [personal, setPersonal] = useState<Connection | null>(null);
   const [member, setMember] = useState<Instance["members"][number] | "new" | null>(null);
@@ -700,7 +707,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                     </div>
                     <div className="min-w-0 text-xs text-muted-foreground">
                       <span className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
-                      {personalConnection ? <Status value={connection.auth_status} /> : connection.last_test ? <>
+                      {personalConnection && <Status value={connection.auth_status} />}
+                      {!personalConnection && connection.last_test && <>
                         <details className="group/test">
                           <summary className="flex cursor-pointer list-none items-start gap-1 text-foreground [&::-webkit-details-marker]:hidden">
                             <span className="line-clamp-2 break-words group-open/test:line-clamp-none"><span className="sr-only">Last test: </span>{connection.last_test}</span>
@@ -708,7 +716,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                           </summary>
                         </details>
                         {connection.tested_at && <time dateTime={connection.tested_at} className="mt-1 block tabular-nums">{date(connection.tested_at)}</time>}
-                      </> : <span>Not tested</span>}
+                      </>}
+                      {!personalConnection && !connection.last_test && <span>Not tested</span>}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
                       {canManage && <>
@@ -831,7 +840,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         </details>}
       </div>
     </div>
-    <Dialog open={!!editing} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+    <Dialog open={!!editing} onOpenChange={(open) => { if (!open && !savingConnection) setEditing(null); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl" onCloseAutoFocus={(event) => {
         event.preventDefault();
         if (!personal) returnFocus.current?.focus();
@@ -842,6 +851,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         </DialogHeader>
         {editing && providers.data && <ConnectionForm key={editing === "new" ? "new" : editing.id}
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
+          onSavingChange={setSavingConnection}
           onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model) setPersonal(saved); }} />}
       </DialogContent>
     </Dialog>

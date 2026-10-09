@@ -2294,8 +2294,13 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
 test("connection form errors preserve edits and omit unchanged secrets", async ({ page }, info) => {
   const requests = await mock(page);
   let fail = true;
-  await page.route("**/api/v1/connections/connection", (route) => fail && route.request().method() === "PUT"
-    ? route.fulfill({ status: 422, json: { detail: "Provider configuration could not be saved." } }) : route.fallback());
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections/connection", async (route) => {
+    if (!fail || route.request().method() !== "PUT") return route.fallback();
+    await held;
+    await route.fulfill({ status: 422, json: { detail: "Provider configuration could not be saved." } });
+  });
   await page.goto("/settings");
   await page.getByRole("button", { name: "Actions for Team reviews" }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
@@ -2305,7 +2310,16 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   await expect(dialog.getByLabel("Extra headers JSON")).toHaveValue("");
   await expect(dialog.getByLabel("Replace API key (optional)")).toHaveValue("");
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog.getByRole("heading", { name: "Edit AI connection" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "Edit AI connection" })).toBeVisible();
+  await page.locator('[data-slot="dialog-overlay"]').click({ position: { x: 4, y: 4 } });
+  await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
+  release();
   await expect(dialog.getByRole("alert")).toContainText("could not be saved");
+  await expect(dialog.getByRole("button", { name: "Save connection", exact: true })).toBeEnabled();
   await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
   await noOverflow(page);
   for (const theme of ["light", "dark"] as const) {
@@ -2322,6 +2336,35 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   expect(body).toMatchObject({ name: "Updated connection", model: "review-model" });
   expect(body).not.toHaveProperty("api_key");
   expect(body).not.toHaveProperty("extra_headers");
+});
+
+test("pending personal connection creation keeps its dialog until setup opens", async ({ page }) => {
+  await mock(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await held;
+    await route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", model: "", owner_id: 7 } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Connection type").selectOption("chatgpt");
+  await dialog.getByLabel("Connection name").fill("Personal setup");
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator('[data-slot="dialog-overlay"]').click({ position: { x: 4, y: 4 } });
+  await expect(dialog.getByRole("heading", { name: "Add AI connection" })).toBeVisible();
+  await expect(dialog.getByLabel("Connection name")).toHaveValue("Personal setup");
+  release();
+  await expect(dialog.getByRole("heading", { name: "Personal setup", exact: true })).toBeVisible();
+  await expect(dialog).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add connection", exact: true })).toBeFocused();
 });
 
 test("personal model and repository errors stay with their operation", async ({ page }) => {
@@ -2353,6 +2396,33 @@ test("personal model and repository errors stay with their operation", async ({ 
   await grants.getByLabel("Repository", { exact: true }).selectOption("22");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect.poll(() => requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: true });
+});
+
+test("personal model confirmation stays cleared after editing and reverting", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let saves = 0;
+  await page.route("**/api/v1/connections/personal", (route) => {
+    saves++;
+    return route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", kind: "chatgpt" } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const model = page.getByRole("form", { name: "Default model" });
+  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  const input = model.getByLabel("Custom model ID");
+  await input.fill("saved-custom");
+  await model.getByRole("button", { name: "Save model", exact: true }).click();
+  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await input.fill("edited-custom");
+  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
+  await input.fill("saved-custom");
+  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
+  await expect(model.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
+  expect(saves).toBe(1);
+  await input.fill("next-custom");
+  await model.getByRole("button", { name: "Save model", exact: true }).click();
+  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  expect(saves).toBe(2);
 });
 
 test("personal account status distinguishes loading, errors, and the signed-in account", async ({ page }) => {
@@ -2465,7 +2535,7 @@ test("personal authorization confirmations match saved changes and revocations",
 });
 
 for (const operation of ["auth", "model", "grant", "revoke"] as const) {
-  test(`personal connection blocks overlapping mutations during ${operation}`, async ({ page }) => {
+  test(`personal connection scopes mutation guards during ${operation}`, async ({ page }) => {
     await mock(page, { role: "member", personal: true });
     await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: {
       status: "connected", attempt: { status: "pending", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" },
@@ -2497,12 +2567,22 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeDisabled();
     await expect(account.getByRole("button", { name: "Disconnect and revoke access" })).toBeDisabled();
     await expect(account.getByRole("button", { name: "Cancel authorization" })).toBeDisabled();
-    await expect(model.getByRole("button", { name: /Save model|Saving/ })).toBeDisabled();
-    await expect(model.getByLabel("Custom model ID")).toBeDisabled();
-    await expect(grants.getByRole("button", { name: /Save authorization|Saving/ })).toBeDisabled();
-    await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeDisabled();
-    await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
-    await expect(grants.getByRole("switch")).toBeDisabled();
+    const modelBlocked = operation === "auth" || operation === "model";
+    await expect(model.getByRole("button", { name: /Save model|Saving/ })).toBeEnabled({ enabled: !modelBlocked });
+    await expect(model.getByLabel("Custom model ID")).toBeEnabled({ enabled: !modelBlocked });
+    const grantsBlocked = operation !== "model";
+    await expect(grants.getByRole("button", { name: /Save authorization|Saving/ })).toBeEnabled({ enabled: !grantsBlocked });
+    await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled({ enabled: !grantsBlocked });
+    await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled({ enabled: !grantsBlocked });
+    await expect(grants.getByRole("switch")).toBeEnabled({ enabled: !grantsBlocked });
+    const checkStatus = account.getByRole("button", { name: "Check status", exact: true });
+    if (operation === "auth") await expect(checkStatus).toBeDisabled();
+    else {
+      await expect(checkStatus).toBeEnabled();
+      await checkStatus.click();
+      await expect(account.getByRole("status")).toHaveText("Connected");
+      await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled({ enabled: !grantsBlocked });
+    }
     release();
     await expect(page.getByRole("dialog").getByRole("alert").filter({ hasText: "Operation could not be completed" })).toBeVisible();
     await expect(triggers.auth).toBeEnabled();
@@ -2513,3 +2593,44 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
   });
 }
+
+test("personal model and authorization saves run independently while auth stays guarded", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: { status: "connected" } }));
+  let saved: { repository_id: number; automatic: boolean }[] = [];
+  await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json: saved }));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const started: string[] = [];
+  await page.route("**/api/v1/connections/personal", async (route) => {
+    started.push("model");
+    await held;
+    await route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", kind: "chatgpt" } });
+  });
+  await page.route("**/api/v1/connections/personal/grants/22", async (route) => {
+    started.push("grant");
+    await held;
+    saved = [{ repository_id: 22, automatic: route.request().postDataJSON().automatic }];
+    await route.fulfill({ json: saved[0] });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const account = page.getByRole("region", { name: "Account connection" });
+  const model = page.getByRole("form", { name: "Default model" });
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await model.getByLabel("Custom model ID").fill("saved-custom");
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await grants.getByRole("switch").check();
+  await model.getByRole("button", { name: "Save model", exact: true }).click();
+  await grants.getByRole("button", { name: "Save authorization" }).click();
+  await expect.poll(() => started).toEqual(["model", "grant"]);
+  await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeDisabled();
+  await expect(account.getByRole("button", { name: "Disconnect and revoke access" })).toBeDisabled();
+  release();
+  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(model.getByLabel("Custom model ID")).toHaveValue("saved-custom");
+  await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
+  await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeEnabled();
+});
