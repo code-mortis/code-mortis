@@ -1,8 +1,10 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { FolderGit2, Inbox, LoaderCircle, LogOut, Plus, Settings, X } from "lucide-react";
+import { FolderGit2, Inbox, LoaderCircle, LogOut, MoreVertical, Plus, Settings, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { Button } from "./ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupAction,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton,
@@ -97,7 +99,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
         </SidebarGroup>
       </nav>
     </SidebarContent>
-    <SidebarFooter className="gap-3 border-t border-sidebar-border p-4">
+    <SidebarFooter className="gap-3 p-4">
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton asChild isActive={route.pathname === "/settings"} className="h-10">
@@ -105,10 +107,31 @@ export function AppSidebar({ user, onLogout, signingOut }: {
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
-      <div className="flex min-w-0 items-center gap-2 px-2">
-        <span className="mr-auto truncate text-xs" title={`@${user.login}`}>@{user.login}</span>
-        <Button variant="ghost" size="icon" className="size-8" aria-label="Sign out" onClick={onLogout} disabled={signingOut}><LogOut aria-hidden="true" className="size-4" /></Button>
-      </div>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <SidebarMenuButton size="lg" aria-label={`Account menu for @${user.login}`} title={`@${user.login}`} disabled={signingOut}>
+                <Avatar className="rounded-lg">
+                  <AvatarImage src={user.avatar_url || undefined} alt="" className="object-cover" />
+                  <AvatarFallback className="rounded-lg bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground">{user.login.slice(0, 2).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate font-medium">{user.login}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{signingOut ? "Signing out…" : user.role === "admin" ? "Administrator" : "Member"}</span>
+                </span>
+                {signingOut ? <LoaderCircle aria-hidden="true" className="size-4 motion-safe:animate-spin" /> : <MoreVertical aria-hidden="true" className="size-4 text-muted-foreground" />}
+              </SidebarMenuButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" sideOffset={8} className="w-(--radix-dropdown-menu-trigger-width) min-w-48">
+              <DropdownMenuItem asChild>
+                <Link to="/settings" onClick={closeMobile}><Settings aria-hidden="true" />Settings</Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onLogout} disabled={signingOut}><LogOut aria-hidden="true" />Sign out</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SidebarMenuItem>
+      </SidebarMenu>
     </SidebarFooter>
   </Sidebar>;
 }

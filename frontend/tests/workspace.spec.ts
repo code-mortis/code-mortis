@@ -440,6 +440,93 @@ test("repository paths preserve legacy settings links and never fall back from a
   await expect(page).toHaveURL(/\/repositories\/22$/);
 });
 
+test("sidebar account shows the GitHub avatar and signs out through its keyboard menu", async ({ page }, info) => {
+  await mock(page);
+  let signedOut = false;
+  let completeLogout!: () => void;
+  const pendingLogout = new Promise<void>((resolve) => { completeLogout = resolve; });
+  const avatar = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#245c47"/><text x="16" y="22" text-anchor="middle" font-family="sans-serif" font-size="20" fill="white">C</text></svg>')}`;
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill(signedOut
+    ? { status: 401, json: { detail: "Sign in required" } }
+    : { json: { id: 7, login: "carlos", role: "admin", avatar_url: avatar, csrf: "csrf-from-session" } }));
+  await page.route("**/api/v1/auth/logout", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-from-session");
+    await pendingLogout;
+    signedOut = true;
+    await route.fulfill({ json: {} });
+  });
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  const account = page.getByRole("button", { name: "Account menu for @carlos", exact: true });
+  await expect(account.locator('[data-slot="avatar-image"]')).toHaveAttribute("src", avatar);
+  await expect(account).toContainText("Administrator");
+  await account.focus();
+  await page.keyboard.press("Enter");
+  const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+  await expect(settings).toBeFocused();
+  await expect(settings).toHaveAttribute("href", "/settings");
+  await settings.press("Enter");
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  await account.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(account).toBeFocused();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
+  for (const theme of ["light", "dark"]) {
+    if (info.project.name === "mobile") {
+      await page.getByRole("button", { name: "Close navigation", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: /Switch to (light|dark) mode/ })).toBeVisible();
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    if (theme === "dark") await expect(page.locator("html")).toHaveClass("dark");
+    else await expect(page.locator("html")).not.toHaveClass("dark");
+    await openNavigation(page);
+    await account.click();
+    await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeInViewport();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/account-${info.project.name}-${theme}.png`, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
+  }
+  await account.press("Enter");
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).press("Enter");
+  await expect(account).toBeDisabled();
+  await expect(account).toContainText("Signing out…");
+  completeLogout();
+  await expect(page.getByRole("link", { name: "Continue with GitHub", exact: true })).toBeVisible();
+});
+
+test("sidebar account keeps an initials fallback for missing or failed avatars and long names", async ({ page }) => {
+  await mock(page, { role: "member" });
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true }).locator('[data-slot="avatar-fallback"]')).toHaveText("CA");
+  const login = "account-with-a-long-github-username";
+  let avatarFailed = false;
+  await page.route("**/missing-avatar.png", (route) => { avatarFailed = true; return route.fulfill({ status: 404 }); });
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { id: 7, login, role: "member", avatar_url: "/missing-avatar.png", csrf: "csrf-from-session" } }));
+  await page.reload();
+  await openNavigation(page);
+  await expect.poll(() => avatarFailed).toBe(true);
+  const account = page.getByRole("button", { name: `Account menu for @${login}`, exact: true });
+  await expect(account).toHaveAttribute("title", `@${login}`);
+  await expect(account).toContainText("Member");
+  await expect(account.locator('[data-slot="avatar-fallback"]')).toHaveText("AC");
+  await expect(account.locator('[data-slot="avatar-image"]')).toHaveCount(0);
+  await noOverflow(page);
+});
+
 test("sidebar activity refreshes and does not present failed polling as current", async ({ page }) => {
   await mock(page);
   await page.clock.install();
@@ -481,8 +568,9 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Main navigation" });
   await expect(nav.getByRole("link")).toHaveCount(41);
-  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true })).toBeInViewport();
   const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
+  await last.scrollIntoViewIfNeeded();
   await last.focus();
   await expect(last).toBeInViewport();
   await expect(page.getByRole("tooltip")).toContainText(`${name}-39`);
