@@ -969,7 +969,8 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
               {assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published
             </p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
-            {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. No new comments does not mean the review is clean.</p>}
+            {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.</p>}
+            {!candidates.length && <p className="mt-4 text-sm text-muted-foreground">{["queued", "running"].includes(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>}
             <div className="mt-4 space-y-3">
               {candidates.map((candidate) => (
                 <details key={candidate.id} className="rounded-lg border p-4 text-sm">

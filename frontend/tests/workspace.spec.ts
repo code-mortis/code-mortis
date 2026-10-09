@@ -1493,6 +1493,7 @@ test("legacy review findings are not labeled as validated", async ({ page }) => 
 test("candidate assessment exposes errors and complete highlighted evidence", async ({ page }, info) => {
   const source = "while True:\n    retry()";
   await mock(page, {
+    run: { ...run, status: "completed", publication: "published", publication_error: null },
     assessment: { candidates: 2, new_findings: 1, repeated_observations: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
@@ -1510,6 +1511,8 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   });
   await page.goto("/runs/run");
   const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
+  await expect(assessment).toContainText("Assessment is incomplete for 1 candidate. This is not a clean review.");
+  await expect(assessment).not.toContainText("No new comments");
   await assessment.locator("summary").filter({ hasText: "client.py:12 · Withheld" }).click();
   await expect(assessment.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
   const confirmed = assessment.locator("details").filter({ has: page.locator("summary", { hasText: "retry.py:7 · New validated finding" }) });
@@ -1525,6 +1528,20 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await mkdir("../.impeccable/review", { recursive: true });
   await assessment.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
 });
+
+for (const status of ["running", "completed"]) {
+  test(`empty candidate assessment explains ${status} review`, async ({ page }) => {
+    await mock(page, {
+      run: { ...run, status, publication: status === "running" ? "pending" : "no_new_comments", publication_error: null },
+      assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0,
+        pending: 0, incomplete: 0, published_comments: 0 },
+      candidates: [],
+    });
+    await page.goto("/runs/run");
+    await expect(page.getByText(status === "running" ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment.")).toBeVisible();
+    await noOverflow(page);
+  });
+}
 
 test("viewers receive an administrator next step without settings or retry actions", async ({ page }) => {
   await mock(page, { run: limitedRun, role: "member", canWrite: false });
