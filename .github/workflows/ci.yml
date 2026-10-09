@@ -27,12 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        image: mirror.gcr.io/library/postgres:17-alpine
         env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
         ports: [55439:5432]
         options: --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: mirror.gcr.io/library/redis:7-alpine
         ports: [56389:6379]
     defaults:
       run:
@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t code-mortis:test .
+      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -t code-mortis:test .
       - run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:mode=1777,size=256m
@@ -78,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f Dockerfile.runner -t code-mortis-runner:test .
+      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -f Dockerfile.runner -t code-mortis-runner:test .
       - run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:mode=1777,size=256m
