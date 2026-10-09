@@ -718,6 +718,11 @@
         "name": "sidebar-slide",
         "value": "200ms linear",
         "purpose": "Desktop sidebar position and main-column gap."
+      },
+      {
+        "name": "appearance-toggle",
+        "value": "200ms cubic-bezier(0, 0, 0.2, 1)",
+        "purpose": "Header sun/moon icon rotation and scaling; disabled with reduced motion."
       }
     ],
     "breakpoints": [
@@ -843,7 +848,7 @@
   ],
   "narrative": {
     "northStar": "Workflow-focused workspace",
-    "overview": "Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light, dark, and system appearance share the same structure; system mode follows operating-system changes while the app is open.",
+    "overview": "Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.",
     "keyCharacteristics": [
       "Compact, native form controls and explicit action labels.",
       "Semantic status chips paired with text.",

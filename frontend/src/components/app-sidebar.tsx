@@ -3,7 +3,6 @@ import { FolderGit2, Inbox, LoaderCircle, LogOut, Plus, Settings, X } from "luci
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { Button } from "./ui/button";
-import { NativeSelect } from "./common";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupAction,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton,
@@ -30,10 +29,8 @@ export function SidebarToggle() {
   />;
 }
 
-export function AppSidebar({ user, theme, onThemeChange, onLogout, signingOut }: {
+export function AppSidebar({ user, onLogout, signingOut }: {
   user: Schema["UserOut"];
-  theme: string;
-  onThemeChange: (theme: string) => void;
   onLogout: () => void;
   signingOut: boolean;
 }) {
@@ -112,9 +109,6 @@ export function AppSidebar({ user, theme, onThemeChange, onLogout, signingOut }:
         <span className="mr-auto truncate text-xs" title={`@${user.login}`}>@{user.login}</span>
         <Button variant="ghost" size="icon" className="size-8" aria-label="Sign out" onClick={onLogout} disabled={signingOut}><LogOut aria-hidden="true" className="size-4" /></Button>
       </div>
-      <NativeSelect aria-label="Appearance" value={theme} onChange={(event) => onThemeChange(event.target.value)} className="text-xs">
-        <option value="system">System appearance</option><option value="light">Light appearance</option><option value="dark">Dark appearance</option>
-      </NativeSelect>
     </SidebarFooter>
   </Sidebar>;
 }

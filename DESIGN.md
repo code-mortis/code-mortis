@@ -180,7 +180,7 @@ components:
 
 Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
 
-This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light, dark, and system appearance share the same structure; system mode follows operating-system changes while the app is open.
+This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.
 
 **Key Characteristics:**
 
@@ -213,7 +213,7 @@ Page headlines use `headline`, changing to `headline-wide` at the small breakpoi
 
 ## Layout
 
-At 1024px and wider, the shell has a fixed 256px sidebar and a flexible main column. The sidebar collapses completely offscreen and releases its full width to the main column. Below 1024px, navigation opens as a 288px left drawer with a backdrop. A sticky 56px header keeps the navigation toggle available at every width. Main content has a centered 1152px cap, 48px horizontal and 40px vertical padding on desktop; below 1024px it uses 20px horizontal and 32px vertical padding, increasing to 36px horizontal at 640px. Sidebar content scrolls independently between its brand header and footer.
+At 1024px and wider, the shell has a fixed 256px sidebar and a flexible main column. The sidebar collapses completely offscreen and releases its full width to the main column. Below 1024px, navigation opens as a 288px left drawer with a backdrop. A sticky 56px header keeps the navigation toggle, page breadcrumbs, and far-right appearance toggle available at every width. Main content has a centered 1152px cap, 48px horizontal and 40px vertical padding on desktop; below 1024px it uses 20px horizontal and 32px vertical padding, increasing to 36px horizontal at 640px. Sidebar content scrolls independently between its brand header and footer.
 
 Each inbox list groups rows within its own bordered surface, with 24px between lists. Typical row padding is 20px; filters and actions wrap with 8px or 12px gaps. At 640px, repository controls receive bounded widths, pull-request status moves to the row end, and connection rows become horizontal. Inputs use 16px text below 768px and 14px above it. Forms retain visible labels and hints.
 
@@ -237,6 +237,8 @@ Default controls are 36px high with medium-weight 14px text and 8px/16px padding
 
 Primary/destructive hover reduces fill opacity to 90%; outline and ghost use the accent surface. Secondary hover uses 80% opacity; links underline. Keyboard focus uses a 3px ring at 50% opacity. Disabled controls use 50% opacity and block interaction. The default state transition is 150ms; no hover lift is added.
 
+The header appearance toggle is a 36px circular ghost button with a muted fill, primary-colored 18px sun/moon icons, and accent hover treatment. Its accessible label and title name the next action: Switch to light mode or Switch to dark mode. Icons rotate and scale over 200ms with ease-out timing; reduced-motion preference disables these transitions.
+
 ### Inputs / Fields
 
 Inputs and native selects are 36px high, with 12px horizontal padding and input-colored borders. Inputs are transparent in light mode and use a 30% input fill in dark mode; native selects use the card surface. Field hints are 12px muted text. Textareas grow with content with a 64px minimum height. Invalid fields use destructive borders and rings. Native controls retain browser affordances.
@@ -257,9 +259,11 @@ Content cards use the card surface, large radius, a 1px border, and usually 20px
 
 The sidebar uses the shadcn Sidebar primitive installed through the CLI with Bun. Links combine 16px outline icons, 14px text, an 8px gap, and 8px padding. Inbox and Settings rows are 40px high; repository rows are 48px. Active links retain a filled accent background and accent foreground; hover uses the same treatment. Repository rows place the name above its owner in 12px muted text, truncate both within the available width, and expose the full `owner/name` through their accessible label and tooltip. A repository with a running review shows a green Running label and a 12px spinner that animates only when motion is allowed. Loading, empty, and retry states appear inside the repository group.
 
-Inbox is the homepage at `/`; repository links select `/repositories?repo=<id>`. The repository page uses the full `owner/name` as its wrapping title, with selection handled in the sidebar. Administrators get a Manage repositories action beside the group label. Settings at `/settings`, the account and sign-out control, and the native appearance select stay in the footer. Appearance choices read System appearance, Light appearance, and Dark appearance. The compact `cm` mark is typographic, not a mascot; its brand link returns to the unfiltered inbox.
+Inbox is the homepage at `/`; repository links select `/repositories?repo=<id>`. The repository page uses the full `owner/name` as its wrapping title, with selection handled in the sidebar. Administrators get a Manage repositories action beside the group label. Settings at `/settings` and the account and sign-out control stay in the footer. The compact `cm` mark is typographic, not a mascot; its brand link returns to the unfiltered inbox.
 
-Pull and run detail routes keep Inbox active when reached with inbox navigation context; otherwise the matching repository remains active. On PR details, the Inbox sidebar link and breadcrumb restore the originating inbox URL, including its filters and loaded pages. Choosing a link closes the mobile drawer. The persistent header toggle exposes its expanded state and supports Command/Ctrl+B. The collapsed desktop panel is inert; collapsing it with the keyboard while focus is inside moves focus to the toggle. The mobile drawer retains sheet focus trapping and Escape dismissal, includes a visible Close navigation button, and restores focus to the header toggle when closed.
+The authenticated workspace header uses the shadcn Breadcrumb primitive installed through the CLI with Bun. Paths begin with Inbox, then the repository, Pull request #N, and Review run as applicable; settings show Inbox, Settings, and the active tab. Loading or failed lookups use generic page labels. Ancestor links use muted 14px text, chevron separators, and foreground hover; the current page uses medium-weight foreground text and exposes its current state. Below 640px, intermediate ancestors move into a shadcn dropdown opened by an ellipsis button, keeping Inbox and the current page visible. Long labels truncate with their full text available in titles; dropdown labels wrap.
+
+Pull and run detail routes keep Inbox active when reached with inbox navigation context; otherwise the matching repository remains active. The Inbox sidebar link and header breadcrumb restore the originating inbox URL, including its filters and loaded pages; the PR ancestor on a run preserves that return context. Choosing a sidebar link closes the mobile drawer. The persistent header navigation toggle exposes its expanded state and supports Command/Ctrl+B. The collapsed desktop panel is inert; collapsing it with the keyboard while focus is inside moves focus to the toggle. The mobile drawer retains sheet focus trapping and Escape dismissal, includes a visible Close navigation button, and restores focus to the header toggle when closed.
 
 ### Grouped PR inbox
 

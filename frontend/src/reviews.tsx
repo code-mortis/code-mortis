@@ -384,12 +384,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        eyebrow={<>
-          {inboxReturn && <><Link className="hover:underline" to={inboxReturn}>Inbox</Link><span> / </span></>}
-          <Link className="hover:underline" to={`/repositories?repo=${repository.id}`}>
-            {repository.full_name} / Pull request #{pr.number}
-          </Link>
-        </>}
         title={pr.title}
         actions={
           <>
@@ -757,14 +751,12 @@ type Coverage = {
 };
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
-  const inboxReturn = getInboxReturn(useLocation().state);
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
   const action = useAction();
   if (query.isPending) return <Loading />;
   if (!query.data) return <ErrorNotice error={query.error} />;
   const {
     run,
-    pull_request: pr,
     repository,
     occurrences,
     can_write,
@@ -783,11 +775,6 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   return (
     <>
       <PageTitle
-        eyebrow={
-          <Link className="hover:underline" to={`/pulls/${pr.id}`} state={{ inbox: inboxReturn }}>
-            {repository.full_name} / #{pr.number} / Run history
-          </Link>
-        }
         title="Review run"
         actions={
           can_write && (

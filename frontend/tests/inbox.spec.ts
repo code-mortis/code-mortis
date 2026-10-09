@@ -221,7 +221,7 @@ test("independent loading, sharing, detail return and bounds", async ({ page }, 
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?state=open&state=merged&active_pages=2");
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
-  await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+  await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
   await expect(page).toHaveURL(/active_pages=2/);
   await expect(active.getByRole("link")).toHaveCount(20);
   await page.goto("/?active_pages=999&merged_pages=200");
@@ -477,7 +477,7 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await expect(page.getByRole("button", { name: "Sort by Title", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Z to A");
   await active.getByRole("link").first().click();
-  await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+  await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
   await expect(page).toHaveURL(/\?ordering=-title$/);
   const sort = page.getByRole("button", { name: "Sort by Title", exact: true });
   await sort.focus();
@@ -513,9 +513,11 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   }
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
-    if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
-    await page.getByLabel("Appearance").filter({ visible: true }).selectOption(theme);
-    if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
+    await expect(page.getByRole("button", { name: /Switch to (light|dark) mode/ })).toBeVisible();
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    if (theme === "dark") await expect(page.locator("html")).toHaveClass("dark");
+    else await expect(page.locator("html")).not.toHaveClass("dark");
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -541,7 +543,8 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await page.goto("/");
   }
   if (info.project.name === "desktop") {
-    await page.getByLabel("Appearance").filter({ visible: true }).selectOption("light");
+    await expect(page.getByRole("button", { name: /Switch to (light|dark) mode/ })).toBeVisible();
+    await page.getByRole("button", { name: "Switch to light mode" }).click();
     for (const width of [1536, 1388, 768]) {
       await page.setViewportSize({ width, height: width === 1536 ? 1024 : 938 });
       await noOverflow(page);

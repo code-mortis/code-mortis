@@ -22,7 +22,8 @@ import {
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
-import { AppSidebar, Brand, SidebarToggle } from "./components/app-sidebar";
+import { AppSidebar, Brand } from "./components/app-sidebar";
+import { AppHeader } from "./components/app-header";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { SettingsPage } from "./settings";
 import "./index.css";
@@ -171,13 +172,14 @@ function App() {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
+  const [dark, setDark] = useState(() => theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches));
   useEffect(() => {
     const system = matchMedia("(prefers-color-scheme: dark)");
-    const apply = () =>
-      document.documentElement.classList.toggle(
-        "dark",
-        theme === "dark" || (theme === "system" && system.matches),
-      );
+    const apply = () => {
+      const resolvedDark = theme === "dark" || (theme === "system" && system.matches);
+      document.documentElement.classList.toggle("dark", resolvedDark);
+      setDark(resolvedDark);
+    };
     apply();
     localStorage.setItem("theme", theme);
     system.addEventListener("change", apply);
@@ -239,12 +241,9 @@ function App() {
   }
   return (
     <SidebarProvider>
-      <AppSidebar user={session.data} theme={theme} onThemeChange={setTheme} onLogout={logout} signingOut={action.isPending} />
+      <AppSidebar user={session.data} onLogout={logout} signingOut={action.isPending} />
       <div className="min-w-0 flex-1">
-        <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background px-4 sm:px-8">
-          <SidebarToggle />
-          <span className="text-sm font-medium text-muted-foreground">Code Mortis</span>
-        </header>
+        <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setTheme(dark ? "light" : "dark")} />
         <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-10">
           <div className="mx-auto max-w-6xl">
             <ErrorNotice error={action.error} />
