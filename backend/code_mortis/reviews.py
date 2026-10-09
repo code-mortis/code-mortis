@@ -842,7 +842,8 @@ def publish_run(run_id: str):
                 finding.published_review_id = existing["id"]
             assessment.record_summary(db, run)
     with transaction() as db:
-        run = db.get(ReviewRun, run_id)
+        db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
+        run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         reconcile_threads(db, pr, repo, github.installation_token(db, repo.installation_id))
