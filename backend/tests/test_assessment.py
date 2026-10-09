@@ -147,6 +147,8 @@ def test_distinct_defects_on_same_code_can_both_publish(pipeline):
     {"trigger": ""}, {"contradicts_prior": True, "changed_conditions": ""},
     {"relationship": "uncertain"},
     {"evidence": [{"revision": "current", "path": "src/retry.py", "start_line": 7, "end_line": 7, "quote": "invented"}]},
+    {"verdict": "rejected", "evidence": [{"revision": "current", "path": "evidence.py", "start_line": 1,
+                                        "end_line": 1, "quote": "# Code Mortis verification evidence"}]},
 ])
 def test_unsupported_candidates_never_become_findings(pipeline, decision):
     pipeline["decision"] = decision
