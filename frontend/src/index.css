@@ -273,6 +273,7 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.settings-record [data-slot="button"][data-size="sm"] { padding-block: 0.25rem; }
 .settings-record [data-slot="badge"], .settings-member-role [data-slot="badge"] {
   max-width: 100%;
   white-space: normal;

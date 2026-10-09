@@ -684,6 +684,9 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             }}><Plus className="size-4" />Add connection</Button>
           </div>
           <ErrorNotice error={connections.error || providers.error || (!deleting && action.error)} />
+          {providers.isError && <Button variant="outline" size="sm" disabled={providers.isFetching} onClick={() => { void providers.refetch(); }}>
+            Retry providers
+          </Button>}
           {connections.isPending && <Loading />}
           {connections.isSuccess && !connections.data.length && (
             <Empty title="Choose your review model">Connect an API or your personal subscription, then choose it for reviews.</Empty>
@@ -746,7 +749,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting) event.preventDefault(); }}>
-                            <DropdownMenuItem onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
+                            <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>

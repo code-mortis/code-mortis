@@ -52,6 +52,8 @@ export function GitHubInstallations() {
     retry: false,
   });
   const action = useAction();
+  const uninstallAction = useAction();
+  const mutationPending = action.isPending || uninstallAction.isPending;
   const [uninstalling, setUninstalling] = useState<Installation | null>(null);
   const [message, setMessage] = useState("");
   const heading = useRef<HTMLHeadingElement>(null);
@@ -79,7 +81,7 @@ export function GitHubInstallations() {
             {query.isFetching ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
-        {(query.error || (!uninstalling && action.error)) && <div className="mb-4"><ErrorNotice error={query.error || action.error} /></div>}
+        {(query.error || action.error) && <div className="mb-4"><ErrorNotice error={query.error || action.error} /></div>}
         {message && <p role="status" className="mb-4 text-sm text-muted-foreground">{message}</p>}
         {query.isPending ? <Loading /> : connected.length ? (
           <div className="overflow-hidden rounded-lg border bg-card">
@@ -117,12 +119,12 @@ export function GitHubInstallations() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (uninstalling) event.preventDefault(); }}>
-                          <DropdownMenuItem disabled={action.isPending || query.isError || !item.can_connect}
+                          <DropdownMenuItem disabled={mutationPending || query.isError || !item.can_connect}
                             onSelect={() => connect(item)}>Resync repositories</DropdownMenuItem>
                           {!failed && <>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem variant="destructive" disabled={action.isPending || query.isError || !item.can_uninstall}
-                              onSelect={() => { action.reset(); setUninstalling(item); }}>Uninstall</DropdownMenuItem>
+                            <DropdownMenuItem variant="destructive" disabled={mutationPending || query.isError || !item.can_uninstall}
+                              onSelect={() => { uninstallAction.reset(); setUninstalling(item); }}>Uninstall</DropdownMenuItem>
                           </>}
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -131,8 +133,8 @@ export function GitHubInstallations() {
                   {(removed || busy || failed || !item.active) && <p className="settings-row-note text-xs leading-relaxed text-muted-foreground">{installationDescription(item, status)}</p>}
                   {failed && <div className="settings-row-note flex flex-wrap items-center justify-between gap-3">
                     {item.operation_error && <p role="alert" className="min-w-0 flex-1 basis-48 break-words text-sm text-destructive">{item.operation_error}</p>}
-                    <Button size="sm" variant="outline" disabled={action.isPending || query.isError || !item.can_uninstall}
-                      onClick={(event) => { returnFocus.current = event.currentTarget; action.reset(); setUninstalling(item); }}>Retry uninstall</Button>
+                    <Button size="sm" variant="outline" disabled={mutationPending || query.isError || !item.can_uninstall}
+                      onClick={(event) => { returnFocus.current = event.currentTarget; uninstallAction.reset(); setUninstalling(item); }}>Retry uninstall</Button>
                   </div>}
                   {!removed && !busy && item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
                 </article>
@@ -154,13 +156,13 @@ export function GitHubInstallations() {
               </div>
               <div className="text-xs"><span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>{repositoryAccess(item.repository_selection)}</div>
               <div><span className="settings-cell-label mb-1 text-xs text-muted-foreground">Status</span><Status value={installationStatus(item)} /></div>
-              <div className="settings-actions flex justify-end"><Button size="sm" variant="outline" disabled={action.isPending || !item.can_connect} onClick={() => connect(item)}>Connect</Button></div>
+              <div className="settings-actions flex justify-end"><Button size="sm" variant="outline" disabled={mutationPending || !item.can_connect} onClick={() => connect(item)}>Connect</Button></div>
               {item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
             </div>)}
           </div>
         ) : <p className="text-xs leading-relaxed text-muted-foreground">No additional installations available. Install the app on another account, then refresh.</p>}
       </section>}
-      <Dialog open={!!uninstalling} onOpenChange={(open) => { if (!open && !action.isPending) setUninstalling(null); }}>
+      <Dialog open={!!uninstalling} onOpenChange={(open) => { if (!open && !uninstallAction.isPending) setUninstalling(null); }}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
           <DialogHeader>
             <DialogTitle>Uninstall from {uninstalling?.account}?</DialogTitle>
@@ -170,14 +172,14 @@ export function GitHubInstallations() {
               Reconnecting requires installing the app again on GitHub.
             </DialogDescription>
           </DialogHeader>
-          <ErrorNotice error={action.error} />
+          <ErrorNotice error={uninstallAction.error} />
           <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" disabled={action.isPending} onClick={() => setUninstalling(null)}>Cancel</Button>
-            <Button variant="destructive" disabled={action.isPending} onClick={() => {
-              if (uninstalling) action.mutate({ path: `/installations/${uninstalling.id}`, method: "DELETE" }, {
+            <Button variant="outline" disabled={uninstallAction.isPending} onClick={() => setUninstalling(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={uninstallAction.isPending} onClick={() => {
+              if (uninstalling) uninstallAction.mutate({ path: `/installations/${uninstalling.id}`, method: "DELETE" }, {
                 onSuccess: () => { returnFocus.current = heading.current; setUninstalling(null); setMessage(""); },
               });
-            }}>{action.isPending ? "Requesting uninstall…" : "Uninstall GitHub App"}</Button>
+            }}>{uninstallAction.isPending ? "Requesting uninstall…" : "Uninstall GitHub App"}</Button>
           </div>
         </DialogContent>
       </Dialog>

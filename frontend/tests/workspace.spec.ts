@@ -2636,6 +2636,72 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   expect(body).not.toHaveProperty("extra_headers");
 });
 
+test("connection editing recovers when providers fail to load", async ({ page }) => {
+  await mock(page);
+  let fail = true;
+  await page.route("**/api/v1/providers", (route) => fail
+    ? route.fulfill({ status: 503, json: { detail: "Providers could not be loaded." } }) : route.fallback());
+  await page.goto("/settings");
+  await expect(page.getByRole("alert")).toContainText("Providers could not be loaded");
+  const actions = page.getByRole("button", { name: "Actions for Team reviews" });
+  await actions.click();
+  await expect(page.getByRole("menuitem", { name: "Edit", exact: true })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  fail = false;
+  await page.getByRole("button", { name: "Retry providers" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  await expect(page.getByRole("dialog").getByLabel("Connection name")).toHaveValue("Team reviews");
+});
+
+test("installation sync errors survive opening and cancelling uninstall", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/installations/10", (route) => route.fulfill({ status: 503, json: {
+    detail: route.request().method() === "DELETE" ? "Uninstall request failed." : "Repository sync failed.",
+  } }));
+  await page.goto("/settings?tab=github");
+  const actions = page.getByRole("button", { name: "Actions for acme" });
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Resync repositories" }).click();
+  const syncError = page.getByRole("region", { name: "Connected installations", includeHidden: true }).getByRole("alert", { includeHidden: true });
+  await expect(syncError).toHaveText("Repository sync failed.");
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Uninstall", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(syncError).toHaveText("Repository sync failed.");
+  await dialog.getByRole("button", { name: "Uninstall GitHub App" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Uninstall request failed.");
+  await expect(syncError).toHaveText("Repository sync failed.");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(actions).toBeFocused();
+  await expect(syncError).toHaveText("Repository sync failed.");
+});
+
+test("personal model saves compare and send trimmed model IDs", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let body: { model: string } | undefined;
+  await page.route("**/api/v1/connections/personal", (route) => {
+    body = route.request().postDataJSON();
+    return route.fulfill({ json: { ...connection, ...body } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const form = page.getByRole("form", { name: "Default model" });
+  await form.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  const model = form.getByLabel("Custom model ID");
+  await model.fill(" review-model ");
+  await expect(form.getByRole("button", { name: "Save model" })).toBeDisabled();
+  await model.fill(" custom-model ");
+  await form.getByRole("button", { name: "Save model" }).click();
+  await expect(form.getByRole("status").filter({ hasText: /^Model saved\.$/ })).toBeVisible();
+  expect(body?.model).toBe("custom-model");
+  await expect(model).toHaveValue("custom-model");
+});
+
 test("pending personal connection creation keeps its dialog until setup opens", async ({ page }) => {
   await mock(page);
   let release!: () => void;
@@ -3041,13 +3107,17 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
+  await repository.selectOption("22");
+  await automatic.check();
+  await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   failRevoke = false;
   await grants.getByRole("button", { name: "Revoke" }).click();
   await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
-  await automatic.check();
-  await expect(grants.getByRole("status")).toHaveCount(0);
+  await automatic.uncheck();
+  await repository.selectOption("");
+  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
   await expect(save).toBeDisabled();
 });
 

@@ -181,6 +181,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const [model, setModel] = useState(connection.model);
   const [savedModel, setSavedModel] = useState(connection.model);
   const [modelError, setModelError] = useState<unknown>();
+  const trimmedModel = model.trim();
   const attempt = auth.data?.attempt;
   const connected = auth.data?.status === "connected";
   const authPending = action.isPending || modelAction.isPending || grantAction.isPending;
@@ -188,7 +189,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const grantPending = action.isPending || grantAction.isPending;
   const revoking = grantAction.variables?.method === "DELETE";
   function clearGrantFeedback() {
-    if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
+    if (!revoking && (grantAction.isSuccess || grantAction.isError)) grantAction.reset();
   }
   return (
     <div className="min-w-0 space-y-6">
@@ -315,7 +316,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
         try {
           const saved = await modelAction.mutateAsync({
             path: `/connections/${identity}`, method: "PUT",
-            body: { name: connection.name, kind: connection.kind, model },
+            body: { name: connection.name, kind: connection.kind, model: trimmedModel },
           });
           if (typeof saved?.model !== "string" || !saved.model.trim())
             throw new Error("The server did not return a valid model. Please retry.");
@@ -336,7 +337,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           hint="Sign in to load this connection’s models, or enter a custom model ID."
         />
         {!savedModel && <p className="text-sm text-muted-foreground">Choose a model to finish setup and enable reviews.</p>}
-        <Button type="submit" disabled={modelPending || !model.trim() || model === savedModel}>
+        <Button type="submit" disabled={modelPending || !trimmedModel || trimmedModel === savedModel.trim()}>
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
         {modelAction.isSuccess && !modelError && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
