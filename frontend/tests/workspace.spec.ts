@@ -1490,6 +1490,42 @@ test("legacy review findings are not labeled as validated", async ({ page }) => 
   await expect(page.getByText("This run predates candidate assessment. Its findings have not been assessed by this policy.")).toBeVisible();
 });
 
+test("candidate assessment exposes errors and complete highlighted evidence", async ({ page }, info) => {
+  const source = "while True:\n    retry()";
+  await mock(page, {
+    assessment: { candidates: 2, new_findings: 1, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+    candidates: [
+      { id: "failed", snapshot: { path: "backend/client.py", start_line: 12, content: "Connection failure." },
+        status: "failed", result: null, finding_id: null, is_new: false,
+        error: "Assessment timed out; this candidate was withheld." },
+      { id: "confirmed", snapshot: { path: "backend/retry.py", start_line: 7, content: "Retry has no limit." },
+        status: "completed", finding_id: "finding", is_new: true, error: null, result: {
+          verdict: "confirmed", relationship: "new", finding_id: null, explanation: "Retries never terminate.",
+          cause: "Unbounded loop", trigger: "Repeated delivery failure", consequence: "Worker remains occupied",
+          history_explanation: "", contradicts_prior: false, changed_conditions: "", suggestion_supported: false,
+          evidence: [{ revision: "current", path: "backend/retry.py", start_line: 7, end_line: 8, quote: source }],
+        } },
+    ],
+  });
+  await page.goto("/runs/run");
+  const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
+  await assessment.locator("summary").filter({ hasText: "client.py:12 · Withheld" }).click();
+  await expect(assessment.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
+  const confirmed = assessment.locator("details").filter({ has: page.locator("summary", { hasText: "retry.py:7 · New validated finding" }) });
+  await confirmed.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(confirmed.getByText("current: backend/retry.py:7–8", { exact: true })).toBeVisible();
+  const code = confirmed.getByRole("region", { name: "Code snippet" });
+  await expect(code).toHaveText(source);
+  await expect(code.locator("code")).toHaveClass(/language-python/);
+  await expect(code.locator(".hljs-keyword").first()).toHaveText("while");
+  await expect(confirmed.getByRole("alert")).toHaveCount(0);
+  await noOverflow(page);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await assessment.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
+});
+
 test("viewers receive an administrator next step without settings or retry actions", async ({ page }) => {
   await mock(page, { run: limitedRun, role: "member", canWrite: false });
   await page.goto("/runs/run");

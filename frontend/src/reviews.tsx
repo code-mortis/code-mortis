@@ -747,6 +747,14 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
+function getCandidateLabel(candidate: Schema["CandidateOut"]) {
+  if (candidate.finding_id && candidate.is_new) return "New validated finding";
+  if (candidate.finding_id) return "Repeated observation";
+  if (candidate.result?.verdict === "rejected") return "Not supported";
+  if (candidate.status === "queued" || candidate.status === "running") return "Awaiting assessment";
+  return "Withheld";
+}
+
 function verificationSummary(value: unknown): Record<string, number> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const counts: Record<string, number> = {};
@@ -966,11 +974,11 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
               {candidates.map((candidate) => (
                 <details key={candidate.id} className="rounded-lg border p-4 text-sm">
                   <summary className="cursor-pointer break-words">
-                    {String(candidate.snapshot.path)}:{String(candidate.snapshot.start_line)} · {candidate.finding_id ? candidate.is_new ? "New validated finding" : "Repeated observation" : candidate.result?.verdict === "rejected" ? "Not supported" : candidate.status === "queued" || candidate.status === "running" ? "Awaiting assessment" : "Withheld"}
+                    {String(candidate.snapshot.path)}:{String(candidate.snapshot.start_line)} · {getCandidateLabel(candidate)}
                   </summary>
                   <div className="mt-4 space-y-3">
                     <Markdown>{String(candidate.snapshot.content)}</Markdown>
-                    {candidate.error && <p>{candidate.error}</p>}
+                    <ErrorNotice error={candidate.error} />
                     {candidate.result && (
                       <>
                         <p>{candidate.result.explanation}</p>
@@ -978,8 +986,8 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
                         {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
                         {candidate.result.evidence.map((evidence, index) => (
                           <div key={index}>
-                            <p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}</p>
-                            <Code>{evidence.quote}</Code>
+                            <p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
+                            <Code path={evidence.path}>{evidence.quote}</Code>
                           </div>
                         ))}
                       </>
