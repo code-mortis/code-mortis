@@ -50,10 +50,10 @@ class Provider(BaseHTTPRequestHandler):
                 "category": "other", "severity": "low",
                 "existing_code": "# Code Mortis project background evidence", "suggestion_code": "",
             }]}}]
-        elif "Code Mortis verification evidence" in text and "code_comment" in names and not any(
+        elif "Code Mortis verification evidence" in text and "task_done" in names and not any(
             message.get("role") == "assistant" for message in data["messages"]
         ):
-            assert names == {"code_comment", "task_done"}, names
+            assert names == {"task_done"}, names
             assert "internal result transport" in text
             assert "including non-confirming outcomes" in text, "OCR must load the verification rule"
             if verification_mode == "provider_error":
@@ -84,14 +84,12 @@ class Provider(BaseHTTPRequestHandler):
                     "contradicts_prior": False, "changed_conditions": "", "suggestion_supported": False,
                     "evidence": [value["evidence"][1]],
                 }
-            content = [{"type": "tool_use", "id": "verify", "name": "code_comment", "input": {"comments": [{
-                "path": "evidence.py", "content": json.dumps(value), "category": "other", "severity": "low",
-                "existing_code": "# Code Mortis verification evidence", "suggestion_code": "",
-            }]}}]
+            content = [{"type": "tool_use", "id": "verify", "name": "task_done",
+                        "input": {"state": "DONE", "result": value}}]
             if verification_mode == "no_verdict":
                 content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
-            elif verification_mode.startswith("assessment_"):
-                content.append({"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}})
+            elif verification_mode == "multiple_results":
+                content.append({**content[0], "id": "extra"})
         elif "task_done" in names:
             content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
         elif "file grouping assistant" in text:
@@ -312,14 +310,14 @@ def main():
                 assert raw["verdict"] == verdict, raw
                 assert usage["tokens"] > 0
                 assert len(calls) == before + 1, "A submitted assessment must finish without another model turn."
-            for verification_mode in ("no_verdict", "provider_error"):
+            for verification_mode in ("no_verdict", "multiple_results", "provider_error"):
                 try:
                     verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context,
                                             options["token_budget"], 60, lambda: False)
                 except ValueError as exc:
                     detail = str(exc)
                     assert "fake-test-key" not in detail, detail
-                    if verification_mode == "no_verdict":
+                    if verification_mode in {"no_verdict", "multiple_results"}:
                         assert "did not complete explicit finding verification" in detail, detail
                         assert exc.usage["tokens"] > 0
                     else:

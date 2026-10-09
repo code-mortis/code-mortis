@@ -142,9 +142,9 @@ def validate_result(value, context):
         if source is None or item["end_line"] < item["start_line"]:
             raise ValueError("Verification evidence references unavailable source.")
         lines = source.splitlines()
-        if item["end_line"] > len(lines) or "\n".join(
+        if item["end_line"] > len(lines) or not item["quote"].strip() or item["quote"] not in "\n".join(
             lines[item["start_line"] - 1:item["end_line"]]
-        ) != item["quote"]:
+        ):
             raise ValueError("Verification evidence does not match the supplied code.")
         revisions.add(item["revision"])
     if result["verdict"] == "fixed" and (
@@ -276,7 +276,8 @@ def evidence_bundle(context):
         key: value for key, value in context.items() if key not in {"sources", "diff"}
     }, indent=2)]
     blocks = [("Subsequent Git diff", context["diff"])]
-    blocks.extend((f"{revision} source: {json.dumps(path)} (starts at line 1)", source)
+    blocks.extend((f"{revision} source: {json.dumps(path)} (source line numbers before |)",
+                   "\n".join(f"{number} | {line}" for number, line in enumerate(source.splitlines(), 1)))
                   for revision, sources in context["sources"].items() for path, source in sources.items())
     for title, source in blocks:
         fence = "`" * max(3, 1 + max((len(value) for value in re.findall(r"`+", source)), default=0))
@@ -285,37 +286,47 @@ def evidence_bundle(context):
 
 
 RESULT_DELIVERY = (
-    " Submit exactly one result using code_comment, then call task_done with state DONE in the same response. "
+    " Submit exactly one task_done call with state DONE and the complete structured result in result. "
     "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
-    "After submitting the result, do not reconsider it, resubmit it, or continue reviewing. "
+    "This terminal call submits the result and ends the task. Do not use code_comment. "
+    "Evidence must cite paths and line numbers from the supplied source blocks, never evidence.py. "
+    "Copy source text verbatim after the line-number delimiter, preserving indentation, case and literals. "
 )
 
 
 def verification_tools(instructions=INSTRUCTIONS, schema=None):
-    # OCR's default tools describe only newly discovered defects. Override that contract for
-    # this internal result envelope and remove context tools: all permitted evidence is supplied.
-    properties = {key: {"type": "string", "enum": [value]} for key, value in {
-        "path": "evidence.py", "existing_code": "# Code Mortis verification evidence",
-        "category": "other", "severity": "low", "suggestion_code": "",
-    }.items()}
-    properties["content"] = {
-        "type": "string", "description": "Exactly one JSON object, no Markdown, matching: " + json.dumps(schema or output_schema())
-    }
-    return [
-        {"name": "code_comment", "main_task": True, "definition": {
-            "name": "code_comment", "description": instructions + RESULT_DELIVERY +
-            " Submit exactly one evidence result using this tool, including non-confirming outcomes. "
-            "This is an internal result transport, not a new review comment. Do not report other issues.",
-            "parameters": {"type": "object", "properties": {"comments": {
-                "type": "array", "minItems": 1, "maxItems": 1,
-                "items": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
-            }}, "required": ["comments"], "additionalProperties": False},
-        }},
-        {"name": "task_done", "main_task": True, "definition": {
-            "name": "task_done", "description": "Finish only after submitting the single explicit verification result through code_comment.",
-            "parameters": {"type": "object", "properties": {"state": {"type": "string", "enum": ["DONE", "FAILED"]}}, "required": ["state"]},
-        }},
-    ]
+    result = dict(schema or output_schema())
+    definitions = result.pop("$defs", {})
+    # OCR terminates on task_done; putting the verdict in that call avoids its asynchronous comment loop.
+    return [{"name": "task_done", "main_task": True, "definition": {
+        "name": "task_done", "description": instructions + RESULT_DELIVERY +
+        " This is an internal result transport, including non-confirming outcomes.",
+        "parameters": {"type": "object", "$defs": definitions, "properties": {
+            "state": {"type": "string", "enum": ["DONE"]}, "result": result,
+        }, "required": ["state", "result"], "additionalProperties": False},
+    }}]
+
+
+def terminal_result(root):
+    results = []
+    for path in (Path.home() / ".opencodereview" / "sessions").glob("*/*.jsonl"):
+        with path.open() as stream:
+            header = json.loads(next(stream))
+            if header.get("type") != "session_start" or header.get("cwd") != str(root):
+                continue
+            for line in stream:
+                row = json.loads(line)
+                if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
+                    for call in row.get("tool_calls") or []:
+                        if call.get("name") != "task_done":
+                            raise ValueError("Unexpected tool in the result transport.")
+                        value = json.loads(call["arguments"])
+                        if value.get("state") != "DONE" or not isinstance(value.get("result"), dict):
+                            raise ValueError("Missing explicit terminal result.")
+                        results.append(value["result"])
+    if len(results) != 1:
+        raise ValueError("Expected exactly one terminal result.")
+    return results[0]
 
 
 def scan_diagnostics(root, env, code, errors, secrets, stopped):
@@ -348,9 +359,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         evidence.write_text(evidence_bundle(context))
         rule = root / "rules.json"
         rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + RESULT_DELIVERY + (
-            " Return exactly one code_comment for evidence.py, category other, severity low. "
-            "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
-            "a JSON object matching this schema, including non-confirming outcomes: "
+            " The result must match this schema, including non-confirming outcomes: "
         ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
         tools.write_text(json.dumps(verification_tools(instructions, schema)))
@@ -374,6 +383,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             diagnostics = scan_diagnostics(root, env, code, errors, (
                 credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
             ), stopped)
+            raw, result_error = None, None
+            try:
+                raw = terminal_result(root)
+            except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
+                result_error = str(exc) or "Missing terminal result."
         try:
             data = json.loads(output)
             if not isinstance(data, dict):
@@ -387,20 +401,18 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             raise ValueError("Verification usage could not be established. " + diagnostics)
         comments = data.get("comments", [])
         if (code or data.get("status") != "success" or summary.get("budget_exceeded")
-            or summary.get("files_reviewed") != 1 or data.get("warnings") or not isinstance(comments, list)
-            or len(comments) != 1 or not isinstance(comments[0], dict) or comments[0].get("path") != "evidence.py"):
+            or summary.get("files_reviewed") != 1 or data.get("warnings") or comments or result_error):
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
-                                 "warnings": data.get("warnings"), "comments": comments,
+                                 "warnings": data.get("warnings"), "result_error": result_error,
                                  "diagnostics": diagnostics})[:4000]
             raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
         try:
-            raw = json.loads(comments[0]["content"])
             validated = validator(raw, context)
             return validated, {"tokens": usage}
         except (ValueError, KeyError, TypeError) as exc:
             raise VerificationOutputError(
                 "OCR returned an invalid verification verdict: " + str(exc) +
-                "; response=" + str(comments[0].get("content"))[:2000], {"tokens": usage}
+                "; response=" + json.dumps(raw)[:2000], {"tokens": usage}
             ) from exc
 
 

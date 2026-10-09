@@ -207,6 +207,34 @@ def test_incomplete_assessment_withholds_and_preserves_usage(pipeline, reason):
     assert not pipeline["reviews"]
 
 
+def test_preflight_skip_retains_its_status_and_zero_usage(pipeline):
+    pipeline["failure"] = verification.VerificationOutputError("Evidence exceeds scope", {"tokens": 0}, "skipped")
+    run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        assert row.status == "skipped" and row.usage == {"tokens": 0} and row.finding_id is None
+    assert not pipeline["reviews"]
+
+
+@pytest.mark.parametrize("publication", ["failed", "publishing", "partially_published"])
+def test_unacknowledged_owner_keeps_frozen_plan_until_retry(pipeline, publication):
+    first = new_run(assessed=True)
+    reviews.perform_review(first)
+    with transaction() as db:
+        run = db.get(ReviewRun, first)
+        run.publication_plan = reviews.publication_plan(db, run)
+        saved_plan = copy.deepcopy(run.publication_plan)
+        run.publication = publication
+    second = run_and_publish()
+    assert not pipeline["reviews"]
+    reviews.publish_run(first)
+    with transaction() as db:
+        assert db.get(ReviewRun, second).publication == "no_new_comments"
+        assert db.get(ReviewRun, first).publication_plan == saved_plan
+        assert db.scalar(select(Finding)).published_review_id == 1
+    assert len(pipeline["reviews"]) == 1
+
+
 def test_concurrent_history_change_invalidates_new_identity(pipeline):
     def change():
         with transaction() as db:
