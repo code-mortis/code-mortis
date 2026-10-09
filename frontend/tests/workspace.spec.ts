@@ -2308,6 +2308,56 @@ test("connection menus restore focus and deletion preserves server conflicts", a
   await expect(page.getByRole("heading", { name: "Choose your review model" })).toBeVisible();
 });
 
+for (const scenario of [
+  { tab: "connections", trigger: "Actions for Team reviews", item: "Edit" },
+  { tab: "connections", trigger: "Actions for Team reviews", item: "Delete" },
+  { tab: "github", trigger: "Actions for acme", item: "Uninstall" },
+  { tab: "team", trigger: "Actions for @carlos", item: "Edit role" },
+]) test(`settings menu hands focus directly to its dialog: ${scenario.item}`, async ({ page }) => {
+  await mock(page);
+  await page.goto(`/settings?tab=${scenario.tab}`);
+  const trigger = page.getByRole("button", { name: scenario.trigger, exact: true, includeHidden: true });
+  const menu = page.getByRole("menu", { includeHidden: true });
+  const dialog = page.getByRole("dialog");
+  await trigger.focus();
+  await trigger.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  for (const activation of ["keyboard", "pointer", "no-animation"]) {
+    if (activation === "no-animation") {
+      await page.addStyleTag({ content: '[data-slot="dropdown-menu-content"] { animation: none !important; }' });
+    }
+    if (activation !== "pointer") await trigger.press("Enter");
+    else await trigger.click();
+    const item = page.getByRole("menuitem", { name: scenario.item, exact: true });
+    await item.focus();
+    await trigger.evaluate((element) => {
+      element.dataset.focusReturns = "0";
+      const focus = element.focus.bind(element);
+      element.focus = (options) => {
+        element.dataset.focusReturns = String(Number(element.dataset.focusReturns) + 1);
+        focus(options);
+      };
+    });
+    if (activation !== "pointer") await item.press("Enter");
+    else await item.click();
+    await expect(dialog).toBeVisible();
+    await expect(menu).toHaveCount(0);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    for (const key of ["Shift+Tab", "Tab"]) {
+      await page.keyboard.press(key);
+      await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    }
+    await expect(trigger).toHaveAttribute("data-focus-returns", "0");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  }
+});
+
 test("team rows preserve unknown roles and align labels with resized avatars in both directions", async ({ page }, info) => {
   await mock(page);
   const role = "repository-observer-with-limited-access";
