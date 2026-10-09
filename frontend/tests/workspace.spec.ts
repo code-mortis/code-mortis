@@ -2282,6 +2282,24 @@ test("settings group visible connections and distinguish tests from authenticati
   await page.screenshot({ path: `../.impeccable/review/settings-groups-${info.project.name}.png`, fullPage: true });
 });
 
+test("saved connection test results stay readable without empty disclosure controls", async ({ page }) => {
+  await mock(page);
+  const longResult = "Provider response: " + "request-context/".repeat(80);
+  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [
+    { ...connection, name: "Short result", last_test: "Connected." },
+    { ...connection, id: "long", name: "Long result", last_test: longResult },
+  ] }));
+  await page.goto("/settings");
+  for (const [name, result] of [["Short result", "Connected."], ["Long result", longResult]]) {
+    const row = page.getByRole("article", { name, exact: true });
+    await expect(row).toContainText(`Last test: ${result}`);
+    await expect(row.locator("summary")).toHaveCount(0);
+    const text = row.getByText(`Last test: ${result}`, { exact: true });
+    expect(await text.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  }
+  await noOverflow(page);
+});
+
 test("settings keep loading and failed requests distinct from empty connections", async ({ page }) => {
   await mock(page);
   let release!: () => void;
@@ -2345,6 +2363,7 @@ for (const scenario of [
   { tab: "connections", trigger: "Actions for Team reviews", item: "Delete" },
   { tab: "github", trigger: "Actions for acme", item: "Uninstall" },
   { tab: "team", trigger: "Actions for @carlos", item: "Edit role" },
+  { tab: "team", trigger: "Actions for @carlos", item: "Remove" },
 ]) test(`settings menu hands focus directly to its dialog: ${scenario.item}`, async ({ page }) => {
   await mock(page);
   await page.goto(`/settings?tab=${scenario.tab}`);
@@ -2480,11 +2499,70 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   expect(bodies.at(-1)).toEqual({ login: "carlos", role: "member" });
   await actions.click();
   await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
-  await expect(actions).toBeDisabled();
-  await expect(add).toBeDisabled();
+  await dialog.getByRole("button", { name: "Remove member", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Actions for @carlos", includeHidden: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add member", exact: true, includeHidden: true })).toBeDisabled();
   releaseRemoval();
-  await expect(page.getByRole("alert")).toContainText("last administrator");
+  await expect(dialog.getByRole("alert")).toContainText("last administrator");
+  await expect(dialog.getByRole("button", { name: "Remove member", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(actions).toBeFocused();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByText("@carlos", { exact: true })).toBeVisible();
+});
+
+test("member removal requires confirmation and restores focus after cancellation or success", async ({ page }, info) => {
+  await mock(page);
+  let members = [{ id: 7, login: "carlos", role: "admin" }, { id: 8, login: "sam", role: "member" }];
+  await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], members, failed_jobs: [], public_url: "https://reviews.example.com",
+  } }));
+  let deletes = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/members/8", async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    deletes++;
+    await held;
+    members = members.filter((member) => member.id !== 8);
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/settings?tab=team");
+  const actions = page.getByRole("button", { name: "Actions for @sam", exact: true });
+  const dialog = page.getByRole("dialog");
+  for (const dismissal of ["Escape", "Cancel"]) {
+    await actions.click();
+    await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
+    await expect(dialog.getByRole("heading", { name: "Remove @sam?", exact: true })).toBeVisible();
+    await expect(dialog).toContainText("ends their sessions");
+    await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    expect(deletes).toBe(0);
+    if (dismissal === "Escape") await page.keyboard.press("Escape");
+    else await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(actions).toBeFocused();
+  }
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/member-removal-${info.project.name}-${theme}.png` });
+  }
+  await dialog.getByRole("button", { name: "Remove member", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Removing…", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator('[data-slot="dialog-overlay"]').click({ position: { x: 4, y: 4 } });
+  await expect(dialog).toBeVisible();
+  expect(deletes).toBe(1);
+  release();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Team", exact: true })).toBeFocused();
+  await expect(actions).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Actions for @carlos" })).toBeEnabled();
 });
 
 test("testing a connection cannot open a trapped deletion dialog", async ({ page }) => {
@@ -2660,6 +2738,36 @@ test("personal model confirmation stays cleared after editing and reverting", as
   expect(saves).toBe(2);
 });
 
+test("personal model saves report invalid success responses and retain an editable draft", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  const invalid = [{ status: 204 }, { body: "{", contentType: "application/json" }, { json: {} }, { json: { model: 42 } }, { json: { model: " " } }];
+  let saves = 0;
+  await page.route("**/api/v1/connections/personal", (route) => {
+    const response = invalid[saves++];
+    return route.fulfill(response ?? { json: { ...connection, ...route.request().postDataJSON(), id: "personal" } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const form = page.getByRole("form", { name: "Default model" });
+  await form.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  const input = form.getByLabel("Custom model ID");
+  for (let attempt = 0; attempt < invalid.length; attempt++) {
+    await input.fill(`custom-${attempt}`);
+    await expect(form.getByRole("alert")).toHaveCount(0);
+    await form.getByRole("button", { name: "Save model", exact: true }).click();
+    await expect(form.getByRole("alert")).toHaveText("The server did not return a valid model. Please retry.");
+    await expect(input).toHaveValue(`custom-${attempt}`);
+    await expect(form.getByText("Model saved.", { exact: true })).toHaveCount(0);
+    await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeEnabled();
+  }
+  await form.getByRole("button", { name: "Save model", exact: true }).click();
+  await expect(form.getByRole("alert")).toHaveCount(0);
+  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(input).toHaveValue(`custom-${invalid.length - 1}`);
+  await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
+  expect(saves).toBe(invalid.length + 1);
+});
+
 test("personal account status distinguishes loading, errors, and the signed-in account", async ({ page }) => {
   await mock(page, { role: "member", personal: true });
   let release!: () => void;
@@ -2690,9 +2798,42 @@ test("personal account status distinguishes loading, errors, and the signed-in a
       disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Last known: Connected",
     };
     await expect(account.getByRole("status")).toHaveText(labels[next]);
+    if (next === "unavailable" || next === "error") {
+      await expect(account.locator('[data-slot="badge"]')).toHaveClass(/text-amber-800/);
+      await expect(account.locator('[data-slot="badge"]')).not.toHaveClass(/text-emerald-800/);
+    }
     if (next === "connected") await expect(account.getByText("Signed in as carlos@example.com")).toBeVisible();
     if (next === "error") await expect(account.getByRole("alert")).toContainText("Account status could not be loaded");
   }
+});
+
+test("personal account polling stays quiet while manual checks show progress and reuse the fetch", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let reads = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections/personal/auth", async (route) => {
+    if (++reads === 1) return route.fulfill({ json: { status: "connected" } });
+    await held;
+    await route.fulfill({ status: 503, json: { detail: "Account refresh failed." } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const account = page.getByRole("region", { name: "Account connection" });
+  const check = account.getByRole("button", { name: "Check status", exact: true });
+  await expect(account.getByRole("status")).toHaveText("Connected");
+  await expect.poll(() => reads, { timeout: 8000 }).toBe(2);
+  await expect(account.getByRole("status")).toHaveText("Connected");
+  await expect(check).toBeEnabled();
+  await check.click();
+  await expect(account.getByRole("status")).toHaveText("Checking account…");
+  await expect(check).toBeDisabled();
+  release();
+  await expect(account.getByRole("status")).toHaveText("Last known: Connected");
+  await expect(account.getByRole("alert")).toContainText("Account refresh failed");
+  await expect(account.locator('[data-slot="badge"]')).toHaveClass(/text-amber-800/);
+  await expect(check).toBeEnabled();
+  expect(reads).toBe(2);
 });
 
 test("personal authorizations tolerate an empty response body", async ({ page }) => {
@@ -2730,6 +2871,51 @@ test("personal repository choices distinguish loading, empty results, and fetch 
   await expect(grants.getByText("No accessible repositories.")).toHaveCount(0);
   await expect(grants.getByText("Loading repositories…")).toHaveCount(0);
   await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+});
+
+test("personal repository and authorization fetches retry independently without losing drafts", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let retry = false;
+  let releaseRepositories!: () => void;
+  let releaseGrants!: () => void;
+  const repositories = new Promise<void>((resolve) => { releaseRepositories = resolve; });
+  const authorizations = new Promise<void>((resolve) => { releaseGrants = resolve; });
+  await page.route("**/api/v1/repositories", async (route) => {
+    if (!retry) return route.fulfill({ status: 503, json: { detail: "Repositories unavailable." } });
+    await repositories;
+    await route.fulfill({ json: [repo] });
+  });
+  await page.route("**/api/v1/connections/personal/grants", async (route) => {
+    if (!retry) return route.fulfill({ status: 503, json: { detail: "Authorizations unavailable." } });
+    await authorizations;
+    await route.fulfill({ json: [{ repository_id: 22, automatic: false }] });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  const model = page.getByRole("form", { name: "Default model" });
+  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await model.getByLabel("Custom model ID").fill("unsaved-model");
+  await grants.getByRole("switch").check();
+  await expect(grants.getByRole("alert")).toHaveText(["Authorizations unavailable.", "Repositories unavailable."]);
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  retry = true;
+  await grants.getByRole("button", { name: "Retry repositories", exact: true }).click();
+  await expect(grants.getByText("Loading repositories…")).toBeVisible();
+  await expect(grants.getByRole("button", { name: "Retry authorizations", exact: true })).toBeEnabled();
+  releaseRepositories();
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled();
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await expect(grants.getByRole("alert")).toHaveText("Authorizations unavailable.");
+  await grants.getByRole("button", { name: "Retry authorizations", exact: true }).click();
+  await expect(grants.getByText("Loading authorizations…")).toBeVisible();
+  releaseGrants();
+  await expect(grants.getByText("Manual use only")).toBeVisible();
+  await expect(grants.getByRole("alert")).toHaveCount(0);
+  await expect(grants.getByRole("button", { name: /^Retry / })).toHaveCount(0);
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  await expect(grants.getByRole("switch")).toBeChecked();
+  await expect(model.getByLabel("Custom model ID")).toHaveValue("unsaved-model");
 });
 
 test("personal model saves disable controls while retaining the loaded catalog", async ({ page }) => {

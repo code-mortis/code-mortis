@@ -38,7 +38,9 @@ function accountStatus(status: string | undefined, pending: boolean, failed: boo
   let label = "Not connected";
   if (status === "connected") label = "Connected";
   if (status === "unavailable") label = "Runner unavailable";
-  return { value: status ?? "disconnected", label: failed ? `Last known: ${label}` : label };
+  if (failed) return { value: "action_required", label: `Last known: ${label}` };
+  if (status === "unavailable") return { value: "action_required", label };
+  return { value: status ?? "disconnected", label };
 }
 
 function LoginConsole({
@@ -172,23 +174,28 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const action = useAction();
   const modelAction = useAction<Connection>();
   const grantAction = useAction();
+  const [checkingAccount, setCheckingAccount] = useState(false);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [repository, setRepository] = useState("");
   const [automatic, setAutomatic] = useState(false);
   const [model, setModel] = useState(connection.model);
   const [savedModel, setSavedModel] = useState(connection.model);
+  const [modelError, setModelError] = useState<unknown>();
   const attempt = auth.data?.attempt;
   const connected = auth.data?.status === "connected";
   const authPending = action.isPending || modelAction.isPending || grantAction.isPending;
   const modelPending = action.isPending || modelAction.isPending;
   const grantPending = action.isPending || grantAction.isPending;
   const revoking = grantAction.variables?.method === "DELETE";
+  function clearGrantFeedback() {
+    if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
+  }
   return (
     <div className="min-w-0 space-y-6">
       <section className="space-y-4" aria-label="Account connection">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">Account connection</h3>
-          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isFetching, auth.isError)} /></div>
+          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>
         </div>
         <ErrorNotice error={auth.error || action.error || auth.data?.message} />
         {auth.data?.account?.email && <p className="break-words text-sm">Signed in as {auth.data.account.email}</p>}
@@ -216,8 +223,15 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           </Button>
           <Button
             variant="outline"
-            disabled={action.isPending || auth.isFetching}
-            onClick={() => auth.refetch()}
+            disabled={action.isPending || auth.isPending || checkingAccount}
+            onClick={async () => {
+              setCheckingAccount(true);
+              try {
+                await auth.refetch({ cancelRefetch: false });
+              } finally {
+                setCheckingAccount(false);
+              }
+            }}
           >
             Check status
           </Button>
@@ -297,20 +311,24 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
       <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
         event.preventDefault();
         if (modelPending) return;
+        setModelError(undefined);
         try {
           const saved = await modelAction.mutateAsync({
             path: `/connections/${identity}`, method: "PUT",
             body: { name: connection.name, kind: connection.kind, model },
           });
+          if (typeof saved?.model !== "string" || !saved.model.trim())
+            throw new Error("The server did not return a valid model. Please retry.");
           setSavedModel(saved.model);
           setModel(saved.model);
-        } catch { /* The action error is displayed above. */ }
+        } catch (error) { setModelError(error); }
       }}>
         <h3 className="text-sm font-semibold">Default model</h3>
-        <ErrorNotice error={modelAction.error} />
+        <ErrorNotice error={modelError} />
         <ModelPicker
           value={model} onChange={(value) => {
             if (modelAction.isSuccess || modelAction.isError) modelAction.reset();
+            setModelError(undefined);
             setModel(value);
           }} required disabled={modelPending}
           path={connected ? `/connections/${identity}/models` : undefined}
@@ -321,12 +339,18 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
         <Button type="submit" disabled={modelPending || !model.trim() || model === savedModel}>
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
-        {modelAction.isSuccess && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
+        {modelAction.isSuccess && !modelError && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
       </form>
       <section aria-label="Repository authorization" className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
         <ErrorNotice error={grants.error} />
+        {grants.isError && <Button type="button" variant="outline" size="sm" disabled={grants.isFetching} onClick={() => { void grants.refetch(); }}>
+          Retry authorizations
+        </Button>}
         <ErrorNotice error={repositories.error} />
+        {repositories.isError && <Button type="button" variant="outline" size="sm" disabled={repositories.isFetching} onClick={() => { void repositories.refetch(); }}>
+          Retry repositories
+        </Button>}
         <p className="text-sm text-muted-foreground">
           Only you can grant use of this subscription. An administrator must
           also enable the repository and select this connection. One review runs
@@ -391,7 +415,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
                 disabled={grantPending || repositories.isPending || !repositories.data?.length}
                 value={repository}
                 onChange={(event) => {
-                  if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
+                  clearGrantFeedback();
                   setRepository(event.target.value);
                 }}
               >
@@ -414,7 +438,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
                 disabled={grantPending}
                 checked={automatic}
                 onCheckedChange={(checked) => {
-                  if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
+                  clearGrantFeedback();
                   setAutomatic(checked);
                 }}
               />

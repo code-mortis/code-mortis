@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, ChevronDown, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { ArrowUpRight, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
   api,
   useAction,
@@ -629,6 +629,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [personal, setPersonal] = useState<Connection | null>(null);
   const [member, setMember] = useState<Instance["members"][number] | "new" | null>(null);
+  const [removingMember, setRemovingMember] = useState<Instance["members"][number] | null>(null);
   const [login, setLogin] = useState("");
   const [role, setRole] = useState("member");
   const memberSubmitLabel = member === "new" ? "Add or update member" : "Save role";
@@ -723,12 +724,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       <span aria-hidden={!personalConnection && !!connection.last_test} className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
                       {personalConnection && <Status value={connection.auth_status} />}
                       {!personalConnection && connection.last_test && <>
-                        <details className="group/test">
-                          <summary className="flex cursor-pointer list-none items-start gap-1 text-foreground [&::-webkit-details-marker]:hidden">
-                            <span className="line-clamp-2 break-words group-open/test:line-clamp-none"><span className="sr-only">Last test: </span>{connection.last_test}</span>
-                            <ChevronDown aria-hidden="true" className="mt-0.5 size-3 shrink-0 group-open/test:rotate-180" />
-                          </summary>
-                        </details>
+                        <p className="break-words text-foreground"><span className="sr-only">Last test: </span>{connection.last_test}</p>
                         {connection.tested_at && <time dateTime={connection.tested_at} className="mt-1 block tabular-nums">{date(connection.tested_at)}</time>}
                       </>}
                       {!personalConnection && !connection.last_test && <span>Not tested</span>}
@@ -805,7 +801,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               <Plus className="size-4" />Add member
             </Button>
           </div>
-          {!member && <ErrorNotice error={memberAction.error} />}
+          {!member && !removingMember && <ErrorNotice error={memberAction.error} />}
           <p className="text-xs tabular-nums text-muted-foreground">{instance.members.length} {instance.members.length === 1 ? "member" : "members"}</p>
           <div className="overflow-hidden rounded-lg border bg-card">
             <div aria-hidden="true" className="settings-member-row settings-member-heading border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground sm:px-5">
@@ -826,14 +822,12 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                     onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
                     onFocus={(event) => { returnFocus.current = event.currentTarget; }}><MoreHorizontal className="size-4" /></Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (member) event.preventDefault(); }}>
+                <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (member || removingMember) event.preventDefault(); }}>
                   <DropdownMenuItem onSelect={() => openMember(item)}>Edit role</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem variant="destructive" onSelect={() => {
                     memberAction.reset();
-                    memberAction.mutate({ path: `/members/${item.id}`, method: "DELETE" }, {
-                      onSuccess: () => memberHeading.current?.focus(),
-                    });
+                    setRemovingMember(item);
                   }}>Remove</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -892,6 +886,26 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               onSuccess: () => { returnFocus.current = connectionHeading.current; setDeleting(null); },
             });
           }}>{action.isPending ? "Deleting…" : "Delete connection"}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!removingMember} onOpenChange={(open) => { if (!open && !memberAction.isPending) { setRemovingMember(null); memberAction.reset(); } }}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={restoreFocus}>
+        <DialogHeader>
+          <DialogTitle>Remove @{removingMember?.login}?</DialogTitle>
+          <DialogDescription>
+            This revokes their access, ends their sessions, and cancels their queued, running, or blocked reviews.
+            To restore access, add them again.
+          </DialogDescription>
+        </DialogHeader>
+        <ErrorNotice error={memberAction.error} />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" disabled={memberAction.isPending} onClick={() => { setRemovingMember(null); memberAction.reset(); }}>Cancel</Button>
+          <Button variant="destructive" disabled={memberAction.isPending} onClick={() => {
+            if (removingMember) memberAction.mutate({ path: `/members/${removingMember.id}`, method: "DELETE" }, {
+              onSuccess: () => { returnFocus.current = memberHeading.current; setRemovingMember(null); },
+            });
+          }}>{memberAction.isPending ? "Removing…" : "Remove member"}</Button>
         </div>
       </DialogContent>
     </Dialog>
