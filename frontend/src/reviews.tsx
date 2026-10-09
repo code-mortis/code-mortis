@@ -747,6 +747,14 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
+function getCandidateLabel(candidate: Schema["CandidateOut"]) {
+  if (candidate.finding_id && candidate.is_new) return "New validated finding";
+  if (candidate.finding_id) return "Repeated observation";
+  if (candidate.result?.verdict === "rejected") return "Not supported";
+  if (candidate.status === "queued" || candidate.status === "running") return "Awaiting assessment";
+  return "Withheld";
+}
+
 function verificationSummary(value: unknown): Record<string, number> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const counts: Record<string, number> = {};
@@ -774,6 +782,8 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
     run,
     repository,
     occurrences,
+    candidates = [],
+    assessment,
     can_write,
   } = query.data;
   const coverage = ((
@@ -951,6 +961,46 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
           )}
         </section>
       )}
+      <section className="mt-8">
+        <h2 className="mb-4 font-semibold">Candidate assessment</h2>
+        {assessment ? (
+          <>
+            <p className="text-sm">
+              {assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published
+            </p>
+            {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
+            {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.</p>}
+            {!candidates.length && <p className="mt-4 text-sm text-muted-foreground">{["queued", "running"].includes(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>}
+            <div className="mt-4 space-y-3">
+              {candidates.map((candidate) => (
+                <details key={candidate.id} className="rounded-lg border p-4 text-sm">
+                  <summary className="cursor-pointer break-words">
+                    {String(candidate.snapshot.path)}:{String(candidate.snapshot.start_line)} · {getCandidateLabel(candidate)}
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <Markdown>{String(candidate.snapshot.content)}</Markdown>
+                    <ErrorNotice error={candidate.error} />
+                    {candidate.result && (
+                      <>
+                        <p>{candidate.result.explanation}</p>
+                        {candidate.result.history_explanation && <p>{candidate.result.history_explanation}</p>}
+                        {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
+                        {candidate.result.evidence.map((evidence, index) => (
+                          <div key={index}>
+                            <p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
+                            <Code path={evidence.path}>{evidence.quote}</Code>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {candidate.finding_id && <p className="break-all text-xs text-muted-foreground">Existing finding: {candidate.finding_id}. Resolution state is preserved.</p>}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </>
+        ) : <p className="text-sm text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
+      </section>
       <section className="mt-8">
         <h2 className="mb-4 font-semibold">
           Findings at this run{" "}

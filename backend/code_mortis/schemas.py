@@ -399,11 +399,48 @@ class OccurrenceOut(ORMModel):
     inline_line: int | None
 
 
+class AssessmentResult(StrictModel):
+    verdict: Literal["confirmed", "rejected", "uncertain"]
+    relationship: Literal["new", "duplicate", "uncertain"]
+    finding_id: str | None
+    explanation: str = Field(min_length=1, max_length=10000)
+    cause: str = Field(max_length=10000)
+    trigger: str = Field(max_length=10000)
+    consequence: str = Field(max_length=10000)
+    history_explanation: str = Field(max_length=10000)
+    contradicts_prior: bool
+    changed_conditions: str = Field(max_length=10000)
+    suggestion_supported: bool
+    evidence: list[VerificationEvidence] = Field(max_length=30)
+
+
+class CandidateOut(ORMModel):
+    id: str
+    snapshot: dict[str, Any]
+    status: str
+    result: AssessmentResult | None
+    finding_id: str | None
+    is_new: bool
+    error: str | None
+
+
+class AssessmentSummary(StrictModel):
+    candidates: int = 0
+    new_findings: int = 0
+    repeated_observations: int = 0
+    withheld_candidates: int = 0
+    pending: int = 0
+    incomplete: int = 0
+    published_comments: int = 0
+
+
 class RunDetail(BaseModel):
     run: RunOut
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
+    candidates: list[CandidateOut] = Field(default_factory=list)
+    assessment: AssessmentSummary | None = None
     can_write: bool
 
 

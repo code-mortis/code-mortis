@@ -781,6 +781,77 @@ export interface components {
              */
             created_at: string;
         };
+        /** AssessmentResult */
+        AssessmentResult: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "confirmed" | "rejected" | "uncertain";
+            /**
+             * Relationship
+             * @enum {string}
+             */
+            relationship: "new" | "duplicate" | "uncertain";
+            /** Finding Id */
+            finding_id: string | null;
+            /** Explanation */
+            explanation: string;
+            /** Cause */
+            cause: string;
+            /** Trigger */
+            trigger: string;
+            /** Consequence */
+            consequence: string;
+            /** History Explanation */
+            history_explanation: string;
+            /** Contradicts Prior */
+            contradicts_prior: boolean;
+            /** Changed Conditions */
+            changed_conditions: string;
+            /** Suggestion Supported */
+            suggestion_supported: boolean;
+            /** Evidence */
+            evidence: components["schemas"]["VerificationEvidence"][];
+        };
+        /** AssessmentSummary */
+        AssessmentSummary: {
+            /**
+             * Candidates
+             * @default 0
+             */
+            candidates: number;
+            /**
+             * New Findings
+             * @default 0
+             */
+            new_findings: number;
+            /**
+             * Repeated Observations
+             * @default 0
+             */
+            repeated_observations: number;
+            /**
+             * Withheld Candidates
+             * @default 0
+             */
+            withheld_candidates: number;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
+            /**
+             * Incomplete
+             * @default 0
+             */
+            incomplete: number;
+            /**
+             * Published Comments
+             * @default 0
+             */
+            published_comments: number;
+        };
         /** BackgroundInput */
         BackgroundInput: {
             /** Connection Id */
@@ -805,6 +876,24 @@ export interface components {
             background?: string | null;
             /** Error */
             error?: string | null;
+        };
+        /** CandidateOut */
+        CandidateOut: {
+            /** Id */
+            id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            result: components["schemas"]["AssessmentResult"] | null;
+            /** Finding Id */
+            finding_id: string | null;
+            /** Is New */
+            is_new: boolean;
+            /** Error */
+            error: string | null;
         };
         /** ConnectionInput */
         ConnectionInput: {
@@ -1349,6 +1438,9 @@ export interface components {
             repository: components["schemas"]["RepositoryOut"];
             /** Occurrences */
             occurrences: components["schemas"]["OccurrenceOut"][];
+            /** Candidates */
+            candidates?: components["schemas"]["CandidateOut"][];
+            assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
         };

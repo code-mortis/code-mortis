@@ -19,6 +19,7 @@ from .models import (
     Occurrence,
     PullRequest,
     Repository,
+    ReviewCandidate,
     ReviewRun,
     User,
 )
@@ -141,9 +142,9 @@ def validate_result(value, context):
         if source is None or item["end_line"] < item["start_line"]:
             raise ValueError("Verification evidence references unavailable source.")
         lines = source.splitlines()
-        if item["end_line"] > len(lines) or "\n".join(
+        if item["end_line"] > len(lines) or not item["quote"].strip() or item["quote"] not in "\n".join(
             lines[item["start_line"] - 1:item["end_line"]]
-        ) != item["quote"]:
+        ):
             raise ValueError("Verification evidence does not match the supplied code.")
         revisions.add(item["revision"])
     if result["verdict"] == "fixed" and (
@@ -275,7 +276,8 @@ def evidence_bundle(context):
         key: value for key, value in context.items() if key not in {"sources", "diff"}
     }, indent=2)]
     blocks = [("Subsequent Git diff", context["diff"])]
-    blocks.extend((f"{revision} source: {json.dumps(path)} (starts at line 1)", source)
+    blocks.extend((f"{revision} source: {json.dumps(path)} (source line numbers before |)",
+                   "\n".join(f"{number} | {line}" for number, line in enumerate(source.splitlines(), 1)))
                   for revision, sources in context["sources"].items() for path, source in sources.items())
     for title, source in blocks:
         fence = "`" * max(3, 1 + max((len(value) for value in re.findall(r"`+", source)), default=0))
@@ -283,31 +285,54 @@ def evidence_bundle(context):
     return "\n\n".join(parts)
 
 
-def verification_tools():
-    # OCR's default tools describe only newly discovered defects. Override that contract for
-    # this internal result envelope and remove context tools: all permitted evidence is supplied.
-    properties = {key: {"type": "string", "enum": [value]} for key, value in {
-        "path": "evidence.py", "existing_code": "# Code Mortis verification evidence",
-        "category": "other", "severity": "low", "suggestion_code": "",
-    }.items()}
-    properties["content"] = {
-        "type": "string", "description": "Exactly one JSON object, no Markdown, matching: " + json.dumps(output_schema())
-    }
-    return [
-        {"name": "code_comment", "main_task": True, "definition": {
-            "name": "code_comment", "description": INSTRUCTIONS +
-            " Submit exactly one verification result using this tool even when fixed or uncertain. "
-            "This is an internal result transport, not a new review comment. Do not report other issues.",
-            "parameters": {"type": "object", "properties": {"comments": {
-                "type": "array", "minItems": 1, "maxItems": 1,
-                "items": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
-            }}, "required": ["comments"], "additionalProperties": False},
-        }},
-        {"name": "task_done", "main_task": True, "definition": {
-            "name": "task_done", "description": "Finish only after submitting the single explicit verification result through code_comment.",
-            "parameters": {"type": "object", "properties": {"state": {"type": "string", "enum": ["DONE", "FAILED"]}}, "required": ["state"]},
-        }},
-    ]
+RESULT_DELIVERY = (
+    " Submit exactly one task_done call with state DONE and the complete structured result in result. "
+    "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
+    "This terminal call submits the result and ends the task. Do not use code_comment. "
+    "Evidence must cite paths and line numbers from the supplied source blocks, never evidence.py. "
+    "Copy source text verbatim after the line-number delimiter, preserving indentation, case and literals. "
+)
+
+
+def verification_tools(instructions=INSTRUCTIONS, schema=None):
+    result = dict(schema or output_schema())
+    definitions = result.pop("$defs", {})
+    # OCR terminates on task_done; putting the verdict in that call avoids its asynchronous comment loop.
+    return [{"name": "task_done", "main_task": True, "definition": {
+        "name": "task_done", "description": instructions + RESULT_DELIVERY +
+        " This is an internal result transport, including non-confirming outcomes.",
+        "parameters": {"type": "object", "$defs": definitions, "properties": {
+            "state": {"type": "string", "enum": ["DONE"]}, "result": result,
+        }, "required": ["state", "result"], "additionalProperties": False},
+    }}]
+
+
+def terminal_result(root, session_id):
+    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
+        raise ValueError("OCR did not identify the result session.")
+    results = []
+    for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
+        with path.open() as stream:
+            header = json.loads(next(stream, ""))
+            if (header.get("type") != "session_start" or header.get("cwd") != str(root)
+                or header.get("sessionId") != session_id):
+                continue
+            for line in stream:
+                row = json.loads(line)
+                if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
+                    if row.get("sessionId") != session_id:
+                        raise ValueError("The terminal response belongs to another session.")
+                    for call in row.get("tool_calls") or []:
+                        if call.get("name") != "task_done":
+                            raise ValueError("Unexpected tool in the result transport.")
+                        value = json.loads(call["arguments"])
+                        if (not isinstance(value, dict) or value.get("state") != "DONE"
+                            or not isinstance(value.get("result"), dict)):
+                            raise ValueError("Missing explicit terminal result.")
+                        results.append(value["result"])
+    if len(results) != 1:
+        raise ValueError("Expected exactly one terminal result.")
+    return results[0]
 
 
 def scan_diagnostics(root, env, code, errors, secrets, stopped):
@@ -328,7 +353,8 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
     return json.dumps(detail)[:4000]
 
 
-def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped):
+def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
+               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result):
     if (token_budget is not None and token_budget <= 0) or (timeout is not None and timeout <= 0):
         raise ValueError("No verification allowance remains.")
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
@@ -338,13 +364,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         evidence = root / "evidence.py"
         evidence.write_text(evidence_bundle(context))
         rule = root / "rules.json"
-        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": INSTRUCTIONS + (
-            " Return exactly one code_comment for evidence.py, category other, severity low. "
-            "Its existing_code must be '# Code Mortis verification evidence'. Its content must be "
-            "a JSON object matching this schema, including fixed and uncertain outcomes: "
-        ) + json.dumps(output_schema())}]}))
+        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + RESULT_DELIVERY + (
+            " The result must match this schema, including non-confirming outcomes: "
+        ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
-        tools.write_text(json.dumps(verification_tools()))
+        tools.write_text(json.dumps(verification_tools(instructions, schema)))
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
                 "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
                 "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
@@ -365,33 +389,36 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             diagnostics = scan_diagnostics(root, env, code, errors, (
                 credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
             ), stopped)
-        try:
-            data = json.loads(output)
-            if not isinstance(data, dict):
-                raise ValueError("Expected an OCR result object.")
-        except ValueError as exc:
-            failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
-            raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
+            try:
+                data = json.loads(output)
+                if not isinstance(data, dict):
+                    raise ValueError("Expected an OCR result object.")
+            except ValueError as exc:
+                failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
+                raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
+            raw, result_error = None, None
+            try:
+                raw = terminal_result(root, data.get("session_id"))
+            except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
+                result_error = str(exc) or "Missing terminal result."
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
             raise ValueError("Verification usage could not be established. " + diagnostics)
         comments = data.get("comments", [])
         if (code or data.get("status") != "success" or summary.get("budget_exceeded")
-            or summary.get("files_reviewed") != 1 or data.get("warnings") or not isinstance(comments, list)
-            or len(comments) != 1 or not isinstance(comments[0], dict) or comments[0].get("path") != "evidence.py"):
+            or summary.get("files_reviewed") != 1 or data.get("warnings") or comments or result_error):
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
-                                 "warnings": data.get("warnings"), "comments": comments,
+                                 "warnings": data.get("warnings"), "result_error": result_error,
                                  "diagnostics": diagnostics})[:4000]
             raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
         try:
-            raw = json.loads(comments[0]["content"])
-            validate_result(raw, context)
-            return raw, {"tokens": usage}
+            validated = validator(raw, context)
+            return validated, {"tokens": usage}
         except (ValueError, KeyError, TypeError) as exc:
             raise VerificationOutputError(
                 "OCR returned an invalid verification verdict: " + str(exc) +
-                "; response=" + str(comments[0].get("content"))[:2000], {"tokens": usage}
+                "; response=" + json.dumps(raw)[:2000], {"tokens": usage}
             ) from exc
 
 
@@ -494,6 +521,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             used_tokens = summary.get("total_tokens")
             used_context = (run.report or {}).get("limits", {}).get("context_bytes", 0)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
+            prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
             if connection["kind"] == "api":
                 budget = options["token_budget"]
                 if budget is not None:

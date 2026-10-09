@@ -162,6 +162,58 @@ def test_evidence_must_match_exact_supplied_objects(change):
         verification.validate_result(data, CONTEXT)
 
 
+@pytest.mark.parametrize("quote,start_line", [("retry()", 2), ("Retry()", 2), ("retry()", 1), ("   ", 2)])
+def test_partial_line_quotes_preserve_literal_text_and_source_location(quote, start_line):
+    data = copy.deepcopy(RESULT)
+    data["evidence"][1].update(start_line=start_line, end_line=start_line, quote=quote)
+    if quote == "retry()" and start_line == 2:
+        assert verification.validate_result(data, CONTEXT)["verdict"] == "fixed"
+    else:
+        with pytest.raises(ValueError):
+            verification.validate_result(data, CONTEXT)
+
+
+@pytest.mark.parametrize("mode", [
+    "valid", "unrelated_empty", "unrelated_truncated", "missing", "multiple", "wrong_repo", "wrong_task",
+    "malformed", "nonobject", "empty", "wrong_session", "wrong_response_session", "missing_session",
+])
+def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    folder = tmp_path / ".opencodereview/sessions/repo"
+    folder.mkdir(parents=True)
+    root = tmp_path / "repo"
+    session_id = "00000000-0000-4000-8000-000000000001"
+    record = {"type": "llm_response", "sessionId": session_id, "taskType": "main_task", "tool_calls": [{
+        "name": "task_done", "arguments": json.dumps({"state": "DONE", "result": RESULT}),
+    }]}
+    if mode == "multiple":
+        record["tool_calls"] *= 2
+    elif mode == "missing":
+        record["tool_calls"][0]["arguments"] = '{"state":"DONE"}'
+    elif mode == "wrong_task":
+        record["taskType"] = "review_filter_task"
+    elif mode == "malformed":
+        record["tool_calls"][0]["arguments"] = "invalid"
+    elif mode == "nonobject":
+        record["tool_calls"][0]["arguments"] = "null"
+    elif mode == "wrong_response_session":
+        record["sessionId"] = "another-session"
+    header = {"type": "session_start", "sessionId": session_id,
+              "cwd": str(root) if mode != "wrong_repo" else "/another/repo"}
+    if mode == "wrong_session":
+        header["sessionId"] = "another-session"
+    (folder / f"{session_id}.jsonl").write_text(
+        "" if mode == "empty" else json.dumps(header) + "\n" + json.dumps(record) + "\n",
+    )
+    if mode.startswith("unrelated_"):
+        (folder / "interrupted.jsonl").write_text("{" if mode == "unrelated_truncated" else "")
+    if mode == "valid" or mode.startswith("unrelated_"):
+        assert verification.terminal_result(root, session_id) == RESULT
+    else:
+        with pytest.raises(ValueError):
+            verification.terminal_result(root, None if mode == "missing_session" else session_id)
+
+
 def test_unchanged_code_or_suggestion_match_is_not_fix_proof():
     assert verification.validate_result(RESULT, {**CONTEXT, "diff": ""})["verdict"] == "uncertain"
 
@@ -577,20 +629,18 @@ def test_manual_reopen_racing_remote_write_is_restored(scenario, monkeypatch):
 @pytest.mark.parametrize("bad", ["absent", "budget", "warning", "usage", "multiple", "malformed"])
 def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, bad):
     from contextlib import nullcontext
-    response = {"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 10},
-                "comments": [{"path": "evidence.py", "content": json.dumps(RESULT)}]}
-    if bad == "absent":
-        response["comments"] = []
-    elif bad == "budget":
+    response = {"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 10}, "comments": []}
+    if bad == "budget":
         response["summary"]["budget_exceeded"] = True
     elif bad == "warning":
         response["warnings"] = ["incomplete"]
     elif bad == "usage":
         response["summary"].pop("total_tokens")
-    elif bad == "multiple":
-        response["comments"] *= 2
-    else:
-        response["comments"][0]["content"] = "not json"
+    def terminal(root, session_id):
+        if bad in {"absent", "multiple"}:
+            raise ValueError("Expected exactly one terminal result.")
+        return {"verdict": "bad"} if bad == "malformed" else RESULT
+    monkeypatch.setattr(verification, "terminal_result", terminal)
     monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
     def command(args, *a, **k):

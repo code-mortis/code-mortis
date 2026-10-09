@@ -1,11 +1,12 @@
-FROM oven/bun:1.4.2 AS frontend
+ARG DOCKERHUB_REGISTRY=docker.io
+FROM ${DOCKERHUB_REGISTRY}/oven/bun:1.4.2 AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY frontend/ ./
 RUN bun run build
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM ${DOCKERHUB_REGISTRY}/library/python:3.13-slim-bookworm AS runtime
 ARG TARGETARCH
 ARG OCR_VERSION=1.12.11
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*

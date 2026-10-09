@@ -88,7 +88,7 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
     elif run.publication in {"failed", "partially_published"}:
         title = "Comments could not be fully published"
     elif run.status == "completed":
-        if run.publication == "published":
+        if run.publication in {"published", "no_new_comments"}:
             conclusion, title = (
                 "success",
                 f"Review complete: {findings} finding{'s' if findings != 1 else ''}",
@@ -107,6 +107,18 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         conclusion, title = "neutral", "Review complete; some findings could not be verified"
 
     lines = [f"Reviewed commit: `{run.head_sha}`", f"Findings: {findings}"]
+    assessment = run.progress.get("assessment")
+    if assessment is not None:
+        lines[1] = (
+            f"New validated findings: {assessment['new_findings']}. "
+            f"Repeated observations: {assessment['repeated_observations']}. "
+            f"Withheld candidates: {assessment['withheld_candidates']}. "
+            f"Comments published: {assessment['published_comments']}."
+        )
+        if status == "completed" and conclusion == "success":
+            title = f"Review complete: {assessment['new_findings']} new validated findings"
+            if assessment["incomplete"] or assessment["pending"]:
+                conclusion, title = "neutral", "Review complete; candidate assessment incomplete"
     if verification.get("selected"):
         lines.append(
             f"Fix verification: {verification.get('completed', 0)} of {verification['selected']} completed; "
@@ -123,7 +135,9 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         )
     if conclusion == "success":
         lines.append(
-            "Review completed and comments published. Findings are informational; this is not approval to merge."
+            ("Review completed; no additional comments were needed. " if run.publication == "no_new_comments"
+             else "Review completed and comments published. ")
+            + "Findings are informational; this is not approval to merge."
         )
     if run.status == "skipped" and isinstance((run.report or {}).get("message"), str):
         lines.append(clean_text(run.report["message"])[:2000])
@@ -148,6 +162,7 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
 
 
 def sync_check(run_id: str):
+    from . import assessment
     from .verification import record_summary
 
     # Serialize create/update and state transitions through the same row lock.
@@ -155,6 +170,7 @@ def sync_check(run_id: str):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run:
             return
+        assessment.record_summary(db, run)
         if run.progress.get("verification_prepared"):
             record_summary(db, run)
         if not run.check_enabled:
