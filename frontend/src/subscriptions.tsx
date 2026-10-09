@@ -33,11 +33,12 @@ type AuthState = {
 type Grant = { repository_id: number; automatic: boolean };
 
 function accountStatus(status: string | undefined, pending: boolean, failed: boolean) {
-  if (pending) return { value: "pending", label: "Checking account…" };
+  if (pending) return { value: "running", label: "Checking account…" };
   if (failed && !status) return { value: "failed", label: "Could not check account" };
-  if (status === "connected") return { value: status, label: "Connected" };
-  if (status === "unavailable") return { value: status, label: "Runner unavailable" };
-  return { value: status ?? "disconnected", label: "Not connected" };
+  let label = "Not connected";
+  if (status === "connected") label = "Connected";
+  if (status === "unavailable") label = "Runner unavailable";
+  return { value: status ?? "disconnected", label: failed ? `Last known: ${label}` : label };
 }
 
 function LoginConsole({
@@ -181,12 +182,13 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const authPending = action.isPending || modelAction.isPending || grantAction.isPending;
   const modelPending = action.isPending || modelAction.isPending;
   const grantPending = action.isPending || grantAction.isPending;
+  const revoking = grantAction.variables?.method === "DELETE";
   return (
     <div className="min-w-0 space-y-6">
       <section className="space-y-4" aria-label="Account connection">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">Account connection</h3>
-          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending, auth.isError)} /></div>
+          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isFetching, auth.isError)} /></div>
         </div>
         <ErrorNotice error={auth.error || action.error || auth.data?.message} />
         {auth.data?.account?.email && <p className="break-words text-sm">Signed in as {auth.data.account.email}</p>}
@@ -325,7 +327,6 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
         <h3 className="text-sm font-semibold">Repository authorization</h3>
         <ErrorNotice error={grants.error} />
         <ErrorNotice error={repositories.error} />
-        <ErrorNotice error={grantAction.error} />
         <p className="text-sm text-muted-foreground">
           Only you can grant use of this subscription. An administrator must
           also enable the repository and select this connection. One review runs
@@ -359,10 +360,12 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
                 })
               }
             >
-              Revoke
+              {grantAction.isPending && revoking && grantAction.variables?.path === `/connections/${identity}/grants/${grant.repository_id}` ? "Revoking…" : "Revoke"}
             </Button>
           </div>
         ))}</div>}
+        {revoking && <ErrorNotice error={grantAction.error} />}
+        {revoking && grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Authorization revoked.</p>}
         <form
           className="space-y-4"
           onSubmit={(event) => {
@@ -377,12 +380,15 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             });
           }}
         >
+          {!revoking && <ErrorNotice error={grantAction.error} />}
+          {repositories.isPending && <p role="status" className="text-sm text-muted-foreground">Loading repositories…</p>}
+          {repositories.isSuccess && !repositories.data?.length && <p className="text-sm text-muted-foreground">No accessible repositories.</p>}
           <Field label="Repository">
             {(id) => (
               <NativeSelect
                 id={id}
                 required
-                disabled={grantPending}
+                disabled={grantPending || repositories.isPending || !repositories.data?.length}
                 value={repository}
                 onChange={(event) => {
                   if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
@@ -415,11 +421,9 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             )}
           </Field>
           <Button disabled={grantPending || !repository} type="submit">
-            {grantAction.isPending ? "Saving…" : "Save authorization"}
+            {grantAction.isPending && !revoking ? "Saving…" : "Save authorization"}
           </Button>
-          {grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">
-            {grantAction.variables.method === "DELETE" ? "Authorization revoked." : "Repository authorization updated."}
-          </p>}
+          {!revoking && grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Repository authorization updated.</p>}
         </form>
       </section>
     </div>

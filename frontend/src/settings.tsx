@@ -716,11 +716,11 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       </div>
                     </div>
                     <div className="min-w-0">
-                      <span className="settings-cell-label mb-1 text-xs text-muted-foreground">Default model</span>
+                      <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Default model</span>
                       <p className="break-words text-xs leading-relaxed"><span className="sr-only">Default model: </span>{connection.model || "Choose a model"}</p>
                     </div>
                     <div className="min-w-0 text-xs text-muted-foreground">
-                      <span className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
+                      <span aria-hidden={!personalConnection && !!connection.last_test} className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
                       {personalConnection && <Status value={connection.auth_status} />}
                       {!personalConnection && connection.last_test && <>
                         <details className="group/test">
@@ -813,7 +813,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             </div>
             {instance.members.map((item) => <div key={item.id} className="settings-member-row border-b px-4 py-4 last:border-b-0 sm:px-5">
               <div className="settings-member-identity flex min-w-0 items-center">
-                <Avatar className="settings-member-avatar rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+                <Avatar className="settings-member-avatar size-(--settings-avatar-size) rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium">@{item.login}</p>
                   {item.id === user.id && <p className="mt-0.5 text-xs text-muted-foreground">You</p>}

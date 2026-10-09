@@ -2222,6 +2222,38 @@ test("settings rows retain labels and fit enlarged text at container breakpoints
   }
 });
 
+test("settings rows stack in narrow containers and keep icon targets and accessible labels", async ({ page }, info) => {
+  await mock(page);
+  await page.route("**/api/v1/installations", (route) => route.fulfill({ json: [
+    installation, { ...installation, id: 11, account: "Removed", status: "uninstalled" },
+  ] }));
+  await page.goto("/settings?tab=github");
+  await expect(page.getByRole("article", { name: "acme", exact: true })).toBeVisible();
+  await page.addStyleTag({ content: ".settings-content { width: 280px; max-width: 100%; }" });
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    const row = page.getByRole("article", { name: "acme", exact: true });
+    const access = await row.getByText("Repository access", { exact: true }).boundingBox();
+    const status = await row.getByText("Status", { exact: true }).boundingBox();
+    expect(status!.y).toBeGreaterThan(access!.y + access!.height);
+    const icon = row.getByRole("button", { name: "Actions for acme" });
+    await expect(icon).toHaveCSS("width", "32px");
+    await expect(icon).toHaveCSS("height", "32px");
+    await expect(page.getByRole("article", { name: "Removed", exact: true }).locator(".settings-actions")).toBeHidden();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/settings-narrow-${info.project.name}-${theme}.png`, fullPage: true });
+  }
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "AI connections" }).click();
+  const connectionRow = page.getByRole("article", { name: "Team reviews", exact: true });
+  await expect(connectionRow).toBeVisible();
+  for (const width of [280, 640]) {
+    await page.locator(".settings-content").evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px`; }, width);
+    const accessible = await connectionRow.ariaSnapshot();
+    expect(accessible.match(/Default model/g)).toHaveLength(1);
+    expect(accessible.match(/Last test/g)).toHaveLength(1);
+  }
+});
+
 test("settings group visible connections and distinguish tests from authentication", async ({ page }, info) => {
   await mock(page);
   const longName = "A connection with a long name " + "x".repeat(100);
@@ -2631,7 +2663,7 @@ test("personal model confirmation stays cleared after editing and reverting", as
 test("personal account status distinguishes loading, errors, and the signed-in account", async ({ page }) => {
   await mock(page, { role: "member", personal: true });
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  let held = new Promise<void>((resolve) => { release = resolve; });
   let status = "error";
   await page.route("**/api/v1/connections/personal/auth", async (route) => {
     await held;
@@ -2643,14 +2675,19 @@ test("personal account status distinguishes loading, errors, and the signed-in a
   await page.getByRole("button", { name: "Manage account" }).click();
   const account = page.getByRole("region", { name: "Account connection" });
   await expect(account.getByRole("status")).toHaveText("Checking account…");
+  await expect(account.getByRole("status").locator("svg")).toBeVisible();
   release();
   await expect(account.getByRole("status")).toHaveText("Could not check account");
   await expect(account.getByRole("alert")).toContainText("Account status could not be loaded");
   for (const next of ["disconnected", "unavailable", "connected", "error"]) {
     status = next;
+    held = new Promise<void>((resolve) => { release = resolve; });
     await account.getByRole("button", { name: "Check status" }).click();
+    await expect(account.getByRole("status")).toHaveText("Checking account…");
+    await expect(account.getByRole("status").locator("svg")).toBeVisible();
+    release();
     const labels: Record<string, string> = {
-      disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Connected",
+      disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Last known: Connected",
     };
     await expect(account.getByRole("status")).toHaveText(labels[next]);
     if (next === "connected") await expect(account.getByText("Signed in as carlos@example.com")).toBeVisible();
@@ -2665,6 +2702,34 @@ test("personal authorizations tolerate an empty response body", async ({ page })
   await page.getByRole("button", { name: "Manage account" }).click();
   await expect(page.getByRole("region", { name: "Repository authorization" }).getByText("No repositories authorized yet.")).toBeVisible();
   await expect(page.getByRole("form", { name: "Default model" })).toBeVisible();
+});
+
+test("personal repository choices distinguish loading, empty results, and fetch errors", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let failed = false;
+  await page.route("**/api/v1/repositories", async (route) => {
+    await held;
+    await route.fulfill(failed ? { status: 503, json: { detail: "Repositories could not be loaded." } } : { json: [] });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  await expect(grants.getByText("Loading repositories…")).toBeVisible();
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  await expect(grants.getByText("No accessible repositories.")).toHaveCount(0);
+  release();
+  await expect(grants.getByText("No accessible repositories.")).toBeVisible();
+  await expect(grants.getByText("Loading repositories…")).toHaveCount(0);
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  failed = true;
+  await page.reload();
+  await page.getByRole("button", { name: "Manage account" }).click();
+  await expect(grants.getByRole("alert")).toContainText("Repositories could not be loaded");
+  await expect(grants.getByText("No accessible repositories.")).toHaveCount(0);
+  await expect(grants.getByText("Loading repositories…")).toHaveCount(0);
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
 });
 
 test("personal model saves disable controls while retaining the loaded catalog", async ({ page }) => {
@@ -2748,9 +2813,12 @@ test("personal authorization confirmations match saved changes and revocations",
   await mock(page, { role: "member", personal: true });
   let saved: { repository_id: number; automatic: boolean }[] = [];
   let failRevoke = true;
+  let releaseRevoke!: () => void;
+  const revoke = new Promise<void>((resolve) => { releaseRevoke = resolve; });
   await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json: saved }));
-  await page.route("**/api/v1/connections/personal/grants/22", (route) => {
+  await page.route("**/api/v1/connections/personal/grants/22", async (route) => {
     if (route.request().method() === "DELETE") {
+      await revoke;
       if (failRevoke) return route.fulfill({ status: 403, json: { detail: "Authorization could not be revoked." } });
       saved = [];
       return route.fulfill({ status: 204 });
@@ -2768,6 +2836,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await automatic.check();
   await save.click();
   await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(grants.locator("form").getByRole("status")).toHaveText("Repository authorization updated.");
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(repository).toHaveValue("");
   await expect(automatic).not.toBeChecked();
@@ -2778,12 +2847,18 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await grants.getByRole("button", { name: "Revoke" }).click();
+  await expect(grants.getByRole("button", { name: "Revoking…", exact: true })).toBeDisabled();
+  await expect(save).toBeDisabled();
+  await expect(grants.getByRole("button", { name: "Saving…", exact: true })).toHaveCount(0);
+  releaseRevoke();
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
+  await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   failRevoke = false;
   await grants.getByRole("button", { name: "Revoke" }).click();
   await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await automatic.check();
   await expect(grants.getByRole("status")).toHaveCount(0);
@@ -2828,7 +2903,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await expect(model.getByLabel("Custom model ID")).toBeEnabled({ enabled: !modelBlocked });
     const grantsBlocked = operation !== "model";
     await expect(grants.getByRole("button", { name: /Save authorization|Saving/ })).toBeEnabled({ enabled: !grantsBlocked });
-    await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled({ enabled: !grantsBlocked });
+    await expect(grants.getByRole("button", { name: /^Revoke$|^Revoking…$/ })).toBeEnabled({ enabled: !grantsBlocked });
     await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled({ enabled: !grantsBlocked });
     await expect(grants.getByRole("switch")).toBeEnabled({ enabled: !grantsBlocked });
     const checkStatus = account.getByRole("button", { name: "Check status", exact: true });
@@ -2837,7 +2912,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
       await expect(checkStatus).toBeEnabled();
       await checkStatus.click();
       await expect(account.getByRole("status")).toHaveText("Connected");
-      await expect(grants.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled({ enabled: !grantsBlocked });
+      await expect(grants.getByRole("button", { name: /^Revoke$|^Revoking…$/ })).toBeEnabled({ enabled: !grantsBlocked });
     }
     release();
     await expect(page.getByRole("dialog").getByRole("alert").filter({ hasText: "Operation could not be completed" })).toBeVisible();
