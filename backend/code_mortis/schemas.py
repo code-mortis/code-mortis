@@ -468,4 +468,4 @@ class InboxOut(BaseModel):
     repositories: list[InboxRepository]
     authors: list[str]
     state_counts: dict[str, int]
-    page_size: int = 20
+    page_size: int = 10

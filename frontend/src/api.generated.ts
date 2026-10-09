@@ -989,7 +989,7 @@ export interface components {
             };
             /**
              * Page Size
-             * @default 20
+             * @default 10
              */
             page_size: number;
         };

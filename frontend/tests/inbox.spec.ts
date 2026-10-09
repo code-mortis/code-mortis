@@ -59,11 +59,11 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
             const priority = (r: Pull) => group !== "active" ? 2 : r.has_running_review ? 0 : r.review_status === "queued" ? 1 : 2;
             items.sort((a, b) => priority(a) - priority(b) || (a[key] ?? "").localeCompare(b[key] ?? "") * (ordering.startsWith("-") ? -1 : 1) || b.id.localeCompare(a.id));
           }
-          const index = Math.min(+(params.get("page") ?? 1), Math.max(1, Math.ceil(items.length / 20)));
-          return { group, items: items.slice((index - 1) * 20, index * 20), total: items.length, page: index, has_more: index * 20 < items.length };
+          const index = Math.min(+(params.get("page") ?? 1), Math.max(1, Math.ceil(items.length / 10)));
+          return { group, items: items.slice((index - 1) * 10, index * 10), total: items.length, page: index, has_more: index * 10 < items.length };
         }),
         total: filtered.length, repository_count: new Set(filtered.map((r) => r.repository_id)).size,
-        registered_total: all.length, repositories, authors: ["maria", "leo", "sam"], state_counts, page_size: 20,
+        registered_total: all.length, repositories, authors: ["maria", "leo", "sam"], state_counts, page_size: 10,
       } satisfies Schema["InboxOut"];
     } else data = [];
     await route.fulfill({ json: data });
@@ -208,29 +208,29 @@ test("independent loading, sharing, detail return and bounds", async ({ page }) 
   await page.goto("/?state=open&state=merged");
   const active = page.getByRole("region", { name: "Open", exact: true });
   const merged = page.getByRole("region", { name: /^Merged/ });
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await expect(merged.getByRole("link")).toHaveCount(2);
   await active.getByRole("button", { name: /Load more/ }).click();
   await expect(page).toHaveURL(/active_pages=2/);
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   await expect(merged.getByRole("link")).toHaveCount(2);
   await page.reload();
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   await active.getByRole("link").first().click();
   await expect(page.getByRole("heading", { name: titles[0], exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?state=open&state=merged&active_pages=2");
   await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
   await expect(page).toHaveURL(/active_pages=2/);
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   await page.goto("/?active_pages=999&merged_pages=200");
-  await expect(page).toHaveURL(/active_pages=3$/);
+  await expect(page).toHaveURL(/active_pages=5$/);
   await expect(active.getByRole("link")).toHaveCount(46);
   await page.goto("/?reviewed_pages=2");
   await expect(page).toHaveURL(/\?active_pages=2$/);
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   await includeState(page, "Closed");
   await expect(page).not.toHaveURL(/pages=/);
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
 });
 
 test("normalization, closed-only selection and keyboard focus", async ({ page }) => {
@@ -263,14 +263,14 @@ test("errors retain loaded rows, retry individually and clear denied data", asyn
   const { controls } = await mockInbox(page, { many: true });
   await page.goto("/");
   const active = page.getByRole("region", { name: "Open", exact: true });
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   controls.failMore = true;
   await active.getByRole("button", { name: /Load more/ }).click();
   await expect(active.getByRole("alert")).toContainText("Inbox temporarily unavailable");
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   controls.failMore = false;
   await active.getByRole("button", { name: /Retry/ }).click();
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   controls.fail = 403;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.getByRole("alert")).toBeVisible({ timeout: 10000 });
@@ -342,7 +342,7 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
   await mockInbox(page);
   await page.route("**/api/v1/pulls?**", async (route) => {
     const long = { ...rows[0], created_at: null, title: "Preserve".repeat(35), repository_name: "organization/" + "repository".repeat(10), author: "developer".repeat(4) };
-    await route.fulfill({ json: { groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [long] }], total: 1, repository_count: 1, registered_total: 1, repositories: [{ id: 22, full_name: long.repository_name }], authors: [long.author], state_counts: { open: 1, merged: 0, closed: 0 }, page_size: 20 } });
+    await route.fulfill({ json: { groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [long] }], total: 1, repository_count: 1, registered_total: 1, repositories: [{ id: 22, full_name: long.repository_name }], authors: [long.author], state_counts: { open: 1, merged: 0, closed: 0 }, page_size: 10 } });
   });
   await page.goto("/?repo=22");
   await expect(page.getByRole("link", { name: /PreservePreserve/ })).toBeVisible();
@@ -357,12 +357,12 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   const { requests } = await mockInbox(page, { many: true });
   await page.goto("/?ordering=title&active_pages=2");
   const active = page.getByRole("region", { name: "Open", exact: true });
-  await expect(active.getByRole("link")).toHaveCount(40);
+  await expect(active.getByRole("link")).toHaveCount(20);
   await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
   expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");
   await page.getByRole("button", { name: "Sort descending", exact: true }).click();
   await expect(page).toHaveURL(/\?ordering=-title$/);
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await expect(active.getByRole("link").nth(2)).toContainText("Persist request filters");
   await page.reload();
   await expect(page.getByRole("button", { name: "Sort by Title", exact: true })).toBeVisible();

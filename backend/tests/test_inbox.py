@@ -68,6 +68,8 @@ def test_groups_current_revision_reruns_and_publication(visible, client):
     groups = {group["group"]: group for group in result["groups"]}
     assert list(groups) == ["active"]
     active = groups["active"]["items"]
+    assert len(active) == 10
+    active += get(client, "?group=active&page=2")["groups"][0]["items"]
     assert [item["review_status"] for item in active[:3]] == ["running", "running", "queued"]
     assert {item["id"] for item in active if item["review_status"] == "outdated"} == {"head_sha", "base_sha"}
     assert next(item for item in active if item["id"] == "pr")["review_status"] == "not_reviewed"
@@ -153,13 +155,14 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
     finally:
         event.remove(engine(), "before_cursor_execute", record)
     reviewed = next(g for g in first["groups"] if g["group"] == "active")
-    assert reviewed["total"] == 42 and len(reviewed["items"]) == 20 and reviewed["has_more"]
+    assert first["page_size"] == 10
+    assert reviewed["total"] == 42 and len(reviewed["items"]) == 10 and reviewed["has_more"]
     assert len(statements) < 20
     second = get(client, "?review=completed&group=active&page=2")["groups"][0]
-    assert len(second["items"]) == 20
+    assert len(second["items"]) == 10
     assert not ({p["id"] for p in second["items"]} & {p["id"] for p in reviewed["items"]})
     last = get(client, "?review=completed&group=active&page=999")["groups"][0]
-    assert last["page"] == 3 and len(last["items"]) == 2 and not last["has_more"]
+    assert last["page"] == 5 and len(last["items"]) == 2 and not last["has_more"]
     filtered = get(client, "?author=alice&review=completed&review=not_reviewed&findings=none&state=open")
     assert filtered["total"] == 21 and filtered["state_counts"]["closed"] == 1
     assert get(client, "?author=alice&author=bob&repo=22&repo=999&review=completed")["total"] == 42
@@ -222,10 +225,12 @@ def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch
     monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
     first = get(client, f"?state=merged&ordering={ordering}")["groups"][0]
     second = get(client, f"?state=merged&ordering={ordering}&group=merged&page=2")["groups"][0]
+    third = get(client, f"?state=merged&ordering={ordering}&group=merged&page=3")["groups"][0]
     assert first["total"] == 26
     expected = [f"newest-{i:02}" for i in (range(24, -1, -1) if newest_first else range(25))] + ["unknown"]
-    assert [pr["id"] for pr in first["items"]] == expected[:20]
-    assert [pr["id"] for pr in second["items"]] == expected[20:]
+    assert [pr["id"] for pr in first["items"]] == expected[:10]
+    assert [pr["id"] for pr in second["items"]] == expected[10:20]
+    assert [pr["id"] for pr in third["items"]] == expected[20:]
 
 
 @pytest.mark.parametrize("field", ["title", "repository", "author"])

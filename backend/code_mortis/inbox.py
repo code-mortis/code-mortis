@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from .models import Finding, PullRequest, Repository, ReviewRun
 from .schemas import InboxFilters, InboxOut, InboxPage, InboxPullOut, InboxRepository
 
-PAGE_SIZE = 20
+PAGE_SIZE = 10
 
 
 def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters) -> InboxOut:
