@@ -363,6 +363,7 @@ test("sidebar repositories navigate, show activity, and collapse accessibly", as
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
     { ...repo, has_running_review: true },
     { ...repo, id: 23, full_name: "other/payments", enabled: false },
+    { ...repo, id: 24, full_name: "legacy-repository" },
   ] }));
   await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
   await page.goto("/repositories");
@@ -370,6 +371,7 @@ test("sidebar repositories navigate, show activity, and collapse accessibly", as
   await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("link", { name: "legacy-repository", exact: true }).locator(".font-medium")).toHaveText("legacy-repository");
   const running = nav.getByRole("link", { name: "acme/payments, review running", exact: true });
   await expect(running).toHaveAttribute("aria-current", "page");
   await expect(running).not.toContainText("Running");
@@ -557,8 +559,13 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await expect(activity).toBeVisible();
   failure = 403;
   await page.clock.fastForward(6000);
-  await expect(nav.getByRole("alert")).toBeVisible();
+  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
   await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveCount(0);
+  failure = 401;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
 });
 
 test("sidebar handles long repository lists and empty access", async ({ page }, info) => {
@@ -575,7 +582,8 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
   await last.scrollIntoViewIfNeeded();
   await last.focus();
   await expect(last).toBeInViewport();
-  await expect(page.getByRole("tooltip")).toContainText(`${name}-39`);
+  await expect(last).toHaveAttribute("title", `${name}-39`);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
   await noOverflow(page);
   await expect(page.getByRole("link", { name: "Manage repositories", exact: true })).toHaveCount(0);
   await last.click();
@@ -591,6 +599,47 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
     await openNavigation(page);
     await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toBeVisible();
     await noOverflow(page);
+    await closeNavigation(page);
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeVisible();
+    await expect(nav).toBeVisible();
+  }
+});
+
+test("sidebar shortcut leaves editing controls alone", async ({ page }, info) => {
+  await mock(page);
+  await page.goto("/");
+  const toggle = page.locator('[data-slot="sidebar-trigger"]');
+  await expect(toggle).toBeVisible();
+  await page.evaluate(() => {
+    const fields = document.createElement("div");
+    fields.id = "shortcut-fields";
+    fields.innerHTML = '<input /><textarea></textarea><select><option>Option</option></select><div contenteditable=""><span tabindex="0">Editable text</span></div>';
+    document.body.append(fields);
+  });
+  for (const selector of ["input", "textarea", "select", "[contenteditable] span"]) {
+    const field = page.locator(`#shortcut-fields ${selector}`);
+    for (const modifier of ["Control", "Meta"]) {
+      await field.press(`${modifier}+b`);
+      await expect(field).toBeFocused();
+      await expect(toggle).toHaveAttribute("aria-expanded", info.project.name === "mobile" ? "false" : "true");
+    }
+  }
+  await toggle.press("Control+b");
+  await expect(toggle).toHaveAttribute("aria-expanded", info.project.name === "mobile" ? "true" : "false");
+  expect((await page.context().cookies()).some((cookie) => cookie.name === "sidebar_state")).toBe(false);
+});
+
+test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ page }) => {
+  await mock(page);
+  for (const [path, label] of [["/pulls/pr/", "Pull request #148"], ["/runs/run/", "Review run"]]) {
+    await page.goto(path);
+    const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(label);
+    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", `/repositories/${repo.id}`);
+    await page.keyboard.press("Escape");
+    await openNavigation(page);
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("aria-current", "page");
   }
 });
 
@@ -1675,6 +1724,10 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   }
   await (await breadcrumbAncestor(page, "Settings")).click();
   await expect(current).toHaveText("AI connections");
+  for (const tab of ["", "unknown", "constructor"]) {
+    await page.goto(`/settings?tab=${tab}`);
+    await expect(current).toHaveText("AI connections");
+  }
   await page.goto("/setup");
   await expect(current).toHaveText("GitHub");
   await page.goto("/missing-page");

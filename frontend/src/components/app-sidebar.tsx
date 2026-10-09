@@ -2,6 +2,7 @@ import { Link, useLocation, useMatch } from "react-router-dom";
 import { FolderGit2, Inbox, LoaderCircle, LogOut, MoreVertical, Plus, Settings, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
+import { getDetailPath } from "../lib/navigation";
 import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -23,7 +24,6 @@ export function Brand() {
 export function SidebarToggle() {
   const { isMobile, open, openMobile } = useSidebar();
   return <SidebarTrigger
-    id="sidebar-toggle"
     className="size-9"
     aria-label={isMobile ? "Open navigation" : open ? "Hide sidebar" : "Show sidebar"}
     aria-expanded={isMobile ? openMobile : open}
@@ -40,9 +40,10 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const { setOpenMobile } = useSidebar();
   const repos = useApi<Repository[]>("/repositories", true);
   const inboxReturn = getInboxReturn(route.state);
-  const detailPath = /^\/(pulls|runs)\/[^/]+$/.test(route.pathname) ? route.pathname : null;
+  const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository">>(detailPath ?? "", false, !!detailPath);
-  const repositories = repos.error && [401, 403].includes(repos.error.status) ? [] : repos.data ?? [];
+  const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
+  const repositories = accessDenied ? [] : repos.data ?? [];
   const repositoryRoute = useMatch("/repositories/:repositoryId");
   const selected = repositoryRoute
     ? repositories.find((repo) => String(repo.id) === repositoryRoute.params.repositoryId)?.id
@@ -75,19 +76,19 @@ export function AppSidebar({ user, onLogout, signingOut }: {
           </SidebarGroupAction>}
           {repos.isPending && <p className="px-2 py-3 text-xs text-muted-foreground">Loading repositories…</p>}
           {repos.error && <div className="space-y-1 px-2 py-3 text-xs">
-            <p role="alert">Repository activity unavailable.</p>
-            <button className="underline underline-offset-4" onClick={() => repos.refetch()}>Retry repositories</button>
+            <p role="alert">{accessDenied ? "Repository access denied." : "Repository activity unavailable."}</p>
+            {!accessDenied && <button className="underline underline-offset-4" onClick={() => repos.refetch()}>Retry repositories</button>}
           </div>}
           {!repos.isPending && !repos.error && !repositories.length && <p className="px-2 py-3 text-xs text-muted-foreground">
             {user.role === "admin" ? <Link className="underline underline-offset-4" to="/settings?tab=github" onClick={closeMobile}>Connect your first repository</Link> : "No repositories available. Ask your administrator to connect one."}
           </p>}
           <SidebarMenu>
             {repositories.map((repo) => {
-              const [owner, name] = repo.full_name.split("/");
+              const [owner, name = owner] = repo.full_name.split("/");
               const running = !repos.error && repo.has_running_review;
               return <SidebarMenuItem key={repo.id}>
-                <SidebarMenuButton asChild size="lg" isActive={selected === repo.id} tooltip={{ children: repo.full_name, hidden: false }}>
-                  <Link to={`/repositories/${repo.id}`} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
+                <SidebarMenuButton asChild size="lg" isActive={selected === repo.id}>
+                  <Link to={`/repositories/${repo.id}`} title={repo.full_name} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
                     <FolderGit2 aria-hidden="true" className="text-muted-foreground" />
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{name}</span><span className="block truncate text-xs text-muted-foreground">{owner}</span></span>
                     {running && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}

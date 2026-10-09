@@ -3,6 +3,7 @@ import { Link, useLocation, useMatch } from "react-router-dom";
 import { Moon, Sun } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
+import { getDetailPath } from "../lib/navigation";
 import { SidebarToggle } from "./app-sidebar";
 import { Button } from "./ui/button";
 import {
@@ -24,7 +25,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const path = route.pathname.replace(/\/$/, "") || "/";
   const params = new URLSearchParams(route.search);
   const inboxReturn = getInboxReturn(route.state);
-  const detailPath = /^\/(pulls|runs)\/[^/]+$/.test(path) ? path : null;
+  const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
   const repositoryRoute = useMatch("/repositories/:repositoryId");
   const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
@@ -45,7 +46,8 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   } else if (path === "/settings") {
     const tab = admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });
-    crumbs.push({ label: tab === "github" ? "GitHub" : tab === "team" ? "Team" : "AI connections", to: path + route.search });
+    const tabLabels = new Map([["github", "GitHub"], ["team", "Team"]]);
+    crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI connections", to: path + route.search });
   } else if (path !== "/") {
     crumbs.push({ label: "Page not found", to: path });
   }
