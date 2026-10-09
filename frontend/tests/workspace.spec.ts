@@ -31,6 +31,7 @@ const repo = {
     rules: null,
   },
   open_prs: 2,
+  has_running_review: false,
 };
 const run = {
   id: "run",
@@ -328,6 +329,16 @@ async function mock(
   return requests;
 }
 
+async function openNavigation(page: Page) {
+  const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+  if (page.viewportSize()!.width < 1024) await toggle.click();
+}
+
+async function closeNavigation(page: Page) {
+  const close = page.getByRole("button", { name: "Close navigation", exact: true });
+  if (await close.isVisible()) await close.click();
+}
+
 async function noOverflow(page: Page) {
   expect(
     await page.evaluate(
@@ -339,6 +350,127 @@ async function noOverflow(page: Page) {
   }
 }
 
+test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
+  await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
+    { ...repo, has_running_review: true },
+    { ...repo, id: 23, full_name: "other/payments", enabled: false },
+  ] }));
+  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories");
+  await expect(page.getByRole("heading", { name: repo.full_name, exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  const running = nav.getByRole("link", { name: "acme/payments, review running", exact: true });
+  await expect(running).toHaveAttribute("aria-current", "page");
+  await expect(running).toContainText("Running");
+  await expect(running.locator(".animate-spin, .motion-safe\\:animate-spin")).toHaveCSS("animation-name", "none");
+  await nav.getByRole("link", { name: "other/payments", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\?repo=23$/);
+  await expect(page.getByRole("heading", { name: "other/payments", exact: true })).toBeVisible();
+  if (info.project.name === "mobile") {
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
+  }
+  await openNavigation(page);
+  await expect(nav.getByRole("link", { name: "other/payments", exact: true })).toHaveAttribute("aria-current", "page");
+  for (const theme of ["light", "dark"]) {
+    await page.getByLabel("Appearance").selectOption(theme);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/sidebar-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1400, height: 938 });
+    await noOverflow(page);
+    await page.screenshot({ path: "../.impeccable/review/sidebar-1400.png", fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "Hide sidebar" }).click();
+    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
+    await expect(page.locator('[data-slot="sidebar-container"]')).not.toBeInViewport();
+    await page.getByRole("button", { name: "Show sidebar" }).press("Enter");
+    await expect(nav).toBeInViewport();
+    await nav.getByRole("link", { name: "other/payments", exact: true }).focus();
+    await page.keyboard.press("Control+b");
+    await expect(page.getByRole("button", { name: "Show sidebar" })).toBeFocused();
+    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
+    await page.keyboard.press("Enter");
+    await expect(nav).toBeInViewport();
+  } else {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
+  }
+  for (const path of ["/pulls/pr", "/runs/run"]) {
+    await page.goto(path);
+    await openNavigation(page);
+    await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: "Inbox", exact: true })).not.toHaveAttribute("aria-current", "page");
+  }
+});
+
+test("sidebar activity refreshes and does not present failed polling as current", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  let running = true;
+  let failure = 0;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill(failure
+    ? { status: failure, json: { detail: "Repositories unavailable" } }
+    : { json: [{ ...repo, has_running_review: running }] }));
+  await page.goto("/settings");
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByText("Running", { exact: true })).toBeVisible();
+  running = false;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByText("Running", { exact: true })).toHaveCount(0);
+  running = true;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByText("Running", { exact: true })).toBeVisible();
+  failure = 503;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toHaveText("Repository activity unavailable.");
+  await expect(nav.getByRole("link", { name: repo.full_name, exact: true })).toBeVisible();
+  await expect(nav.getByText("Running", { exact: true })).toHaveCount(0);
+  failure = 0;
+  await nav.getByRole("button", { name: "Retry repositories" }).click();
+  await expect(nav.getByText("Running", { exact: true })).toBeVisible();
+  failure = 403;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toBeVisible();
+  await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveCount(0);
+});
+
+test("sidebar handles long repository lists and empty access", async ({ page }, info) => {
+  await mock(page, { role: "member" });
+  const name = "organization-with-a-long-name/repository-with-a-very-long-name";
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: Array.from({ length: 40 }, (_, i) => ({ ...repo, id: i + 22, full_name: `${name}-${i}`, has_running_review: i === 0 })) }));
+  await page.route("**/api/v1/repositories/*/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/settings");
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("link")).toHaveCount(41);
+  await expect(page.getByLabel("Appearance")).toBeInViewport();
+  const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
+  await last.focus();
+  await expect(last).toBeInViewport();
+  await expect(page.getByRole("tooltip")).toContainText(`${name}-39`);
+  await noOverflow(page);
+  await expect(page.getByRole("link", { name: "Manage repositories", exact: true })).toHaveCount(0);
+  await last.click();
+  await expect(page.getByRole("heading", { name: `${name}-39`, exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
+  await page.reload();
+  await openNavigation(page);
+  await expect(nav).toContainText("No repositories available.");
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1023, height: 800 });
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    await openNavigation(page);
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toBeVisible();
+    await noOverflow(page);
+  }
+});
+
 test("repository navigation, filtering, and review workspace", async ({
   page,
 }, info) => {
@@ -347,7 +479,7 @@ test("repository navigation, filtering, and review workspace", async ({
   await mock(page);
   await page.goto("/repositories");
   await expect(
-    page.getByRole("heading", { name: "Repositories", exact: true }),
+    page.getByRole("heading", { name: repo.full_name, exact: true }),
   ).toBeVisible();
   await page.getByLabel("Search pull requests").fill("148");
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
@@ -393,16 +525,20 @@ for (const entry of ["history", "feedback", "start"] as const) {
       await page.getByRole("button", { name: "Run review", exact: true }).click();
     }
     await expect(page).toHaveURL(/\/runs\/run$/);
+    await openNavigation(page);
     const inboxNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true });
     await expect(inboxNav).toHaveAttribute("href", inbox);
-    await expect(inboxNav).toHaveClass(/nav-active/);
+    await expect(inboxNav).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
     if (entry === "feedback") {
       await page.getByRole("link", { name: "Open pull request to run a new review", exact: true }).click();
     } else {
       await page.getByRole("link", { name: /acme\/payments.*Run history/ }).click();
     }
     await expect(page).toHaveURL(/\/pulls\/pr$/);
-    await expect(inboxNav).toHaveClass(/nav-active/);
+    await openNavigation(page);
+    await expect(inboxNav).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
     await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
     await expect(page).toHaveURL(inbox);
     await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
@@ -560,9 +696,11 @@ test("read-only members cannot change findings or instance settings", async ({
   await mock(page, { role: "member", canWrite: false });
   await page.goto("/pulls/pr");
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
+  await openNavigation(page);
   await expect(
     page.getByRole("link", { name: "Settings", exact: true }),
   ).toHaveCount(1);
+  await closeNavigation(page);
   await expect(
     page.getByRole("button", { name: "Run review", exact: true }),
   ).toHaveCount(0);
@@ -1369,7 +1507,7 @@ for (const configured of [false, true]) {
     await expect(page).toHaveURL(`http://127.0.0.1:4178${entry}`);
     await expect(
       page.getByRole("heading", {
-        name: configured ? "Repositories" : "Give your reviews a home.",
+        name: configured ? repo.full_name : "Give your reviews a home.",
         exact: true,
       }),
     ).toBeVisible();
@@ -1387,6 +1525,7 @@ test("system appearance follows OS changes and explicit choices persist", async 
     name: "Appearance",
     exact: true,
   });
+  await openNavigation(page);
   await expect(selector).toHaveValue("system");
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveClass("dark");
@@ -1398,6 +1537,7 @@ test("system appearance follows OS changes and explicit choices persist", async 
   await selector.selectOption("light");
   await expect(page.locator("html")).not.toHaveClass("dark");
   await page.reload();
+  await openNavigation(page);
   await expect(selector).toHaveValue("light");
   await selector.selectOption("system");
   await expect(page.locator("html")).toHaveClass("dark");
@@ -1578,7 +1718,7 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
     await route.fulfill({ status: 202, json: { job_id: "uninstall" } });
   });
   await page.goto("/repositories");
-  await page.getByRole("link", { name: "Manage repositories", exact: true }).click();
+  await page.getByRole("main").getByRole("link", { name: "Manage repositories", exact: true }).click();
   const account = page.getByRole("article", { name: "acme", exact: true });
   await expect(page.getByRole("heading", { name: "acme", exact: true })).toHaveCount(1);
   await expect(account.getByRole("link", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);

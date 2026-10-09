@@ -27,7 +27,7 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
     if (path === "/setup/status") data = { configured: true, public_url: url.origin };
     else if (path === "/auth/me") data = { id: 7, login: "developer", role: "admin", avatar_url: "", csrf: "test" };
     else if (path === "/connections") data = [];
-    else if (path === "/repositories") data = [{ ...repositories[0], installation_id: 10, private: false, active: true, enabled: true, connection_id: null, settings: { automatic: true, model: "", effort: "medium", language: "English", exclusions: "", background: "", timeout_seconds: 900, token_budget: 200000, max_files: 40, concurrency: 2, rules: null }, open_prs: 6 }];
+    else if (path === "/repositories") data = [{ ...repositories[0], installation_id: 10, private: false, active: true, enabled: true, connection_id: null, settings: { automatic: true, model: "", effort: "medium", language: "English", exclusions: "", background: "", timeout_seconds: 900, token_budget: 200000, max_files: 40, concurrency: 2, rules: null }, open_prs: 6, has_running_review: false }];
     else if (path === "/repositories/22/pulls") data = [];
     else if (path.startsWith("/pulls/")) data = {
       pull_request: { ...rows[0], url: "https://github.com/acme/code-mortis/pull/42", latest_run: null, head_ref: "feature", head_sha: "a".repeat(40), base_sha: "b".repeat(40), fork: false },
@@ -203,7 +203,7 @@ test("searchable multi-select filters and debounced search preserve browser hist
   await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
 });
 
-test("independent loading, sharing, detail return and bounds", async ({ page }) => {
+test("independent loading, sharing, detail return and bounds", async ({ page }, info) => {
   await mockInbox(page, { many: true });
   await page.goto("/?state=open&state=merged");
   const active = page.getByRole("region", { name: "Open", exact: true });
@@ -218,7 +218,9 @@ test("independent loading, sharing, detail return and bounds", async ({ page }) 
   await expect(active.getByRole("link")).toHaveCount(20);
   await active.getByRole("link").first().click();
   await expect(page.getByRole("heading", { name: titles[0], exact: true })).toBeVisible();
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?state=open&state=merged&active_pages=2");
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
   await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
   await expect(page).toHaveURL(/active_pages=2/);
   await expect(active.getByRole("link")).toHaveCount(20);
@@ -511,7 +513,9 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   }
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
+    if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
     await page.getByLabel("Appearance").filter({ visible: true }).selectOption(theme);
+    if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.getByRole("button", { name: "Filters", exact: true }).click();

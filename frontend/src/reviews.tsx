@@ -116,7 +116,7 @@ export function Repositories({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        title="Repositories"
+        title={<span className="break-all">{selected?.full_name ?? "Repositories"}</span>}
         actions={
           admin && (
             <Button asChild variant="outline">
@@ -145,21 +145,6 @@ export function Repositories({ admin }: { admin: boolean }) {
       ) : (
         <>
           <div className="mb-7 flex flex-wrap items-center gap-3">
-            <label className="sr-only" htmlFor="repository">
-              Repository
-            </label>
-            <NativeSelect
-              id="repository"
-              className="w-full sm:w-80"
-              value={selected?.id}
-              onChange={(e) => setParams({ repo: e.target.value })}
-            >
-              {repos.data.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.full_name}
-                </option>
-              ))}
-            </NativeSelect>
             <Status value={selected?.enabled ? "enabled" : "paused"} />
             <div className="ml-auto flex gap-2">
               <Button
