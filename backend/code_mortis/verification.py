@@ -326,7 +326,8 @@ def terminal_result(root, session_id):
                         if call.get("name") != "task_done":
                             raise ValueError("Unexpected tool in the result transport.")
                         value = json.loads(call["arguments"])
-                        if value.get("state") != "DONE" or not isinstance(value.get("result"), dict):
+                        if (not isinstance(value, dict) or value.get("state") != "DONE"
+                            or not isinstance(value.get("result"), dict)):
                             raise ValueError("Missing explicit terminal result.")
                         results.append(value["result"])
     if len(results) != 1:

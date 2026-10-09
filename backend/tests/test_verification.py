@@ -175,7 +175,7 @@ def test_partial_line_quotes_preserve_literal_text_and_source_location(quote, st
 
 @pytest.mark.parametrize("mode", [
     "valid", "unrelated_empty", "unrelated_truncated", "missing", "multiple", "wrong_repo", "wrong_task",
-    "malformed", "empty", "wrong_session", "wrong_response_session", "missing_session",
+    "malformed", "nonobject", "empty", "wrong_session", "wrong_response_session", "missing_session",
 ])
 def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -194,6 +194,8 @@ def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatc
         record["taskType"] = "review_filter_task"
     elif mode == "malformed":
         record["tool_calls"][0]["arguments"] = "invalid"
+    elif mode == "nonobject":
+        record["tool_calls"][0]["arguments"] = "null"
     elif mode == "wrong_response_session":
         record["sessionId"] = "another-session"
     header = {"type": "session_start", "sessionId": session_id,
