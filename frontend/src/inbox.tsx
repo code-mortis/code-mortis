@@ -15,6 +15,7 @@ type InboxData = Schema["InboxOut"] & { errors: Partial<Record<Group, string>> }
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
   const request = withoutPages(params);
+  // The API defaults to open PRs; the Inbox defaults to all states.
   if (!request.has("state")) request.set("state", "all");
   const filters = request.toString();
   const first = await api<Schema["InboxOut"]>(`/pulls?${filters}`, "GET", undefined, undefined, signal);

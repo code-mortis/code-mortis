@@ -137,11 +137,12 @@ export function Repositories({ admin }: { admin: boolean }) {
         Follow each pull request from first review to final resolution.
       </PageTitle>
       <ErrorNotice error={repos.error || action.error} />
-      {requested && !selected ? (
+      {requested && !selected && (
         <Empty title="Repository unavailable">
           This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
         </Empty>
-      ) : !repos.data?.length ? (
+      )}
+      {!requested && !repos.data?.length && (
         <Empty title="Connect your first repository">
           {admin ? (
             <>
@@ -155,7 +156,8 @@ export function Repositories({ admin }: { admin: boolean }) {
             "Ask your administrator to connect a repository you can access on GitHub."
           )}
         </Empty>
-      ) : (
+      )}
+      {selected && (
         <>
           <div className="mb-7 flex flex-wrap items-center gap-3">
             <Status value={selected?.enabled ? "enabled" : "paused"} />

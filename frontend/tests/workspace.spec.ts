@@ -439,8 +439,18 @@ test("repository paths preserve legacy settings links and never fall back from a
   await openNavigation(page);
   await expect(page.getByRole("navigation", { name: "Main navigation" }).locator('[aria-current="page"]')).toHaveCount(0);
   await closeNavigation(page);
+  const documentRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) documentRequests.push(request.url());
+  });
   await page.getByRole("link", { name: "View available repositories", exact: true }).click();
   await expect(page).toHaveURL(/\/repositories\/22$/);
+  expect(documentRequests).toEqual([]);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories");
+  await expect(page.getByRole("heading", { name: "Connect your first repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Connect repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
 });
 
 test("sidebar account shows the GitHub avatar and signs out through its keyboard menu", async ({ page }, info) => {
@@ -1768,6 +1778,8 @@ test("breadcrumbs handle unavailable data and member settings without inventing 
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
   await page.goto("/repositories");
   await expect(current).toHaveText("Repositories");
+  await expect(page.getByRole("heading", { name: "Connect your first repository", exact: true })).toBeVisible();
+  await expect(page.getByText("Ask your administrator to connect a repository you can access on GitHub.", { exact: true })).toBeVisible();
   await noOverflow(page);
 });
 

@@ -40,6 +40,7 @@ export function normalizeFilters(input: URLSearchParams) {
   return result;
 }
 
+// Accept raw state=all links as well as normalized filter params.
 export function selected(params: URLSearchParams, property: Property) {
   const values = params.getAll(property);
   if (property !== "state") return values;
