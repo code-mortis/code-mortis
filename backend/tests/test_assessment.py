@@ -416,8 +416,8 @@ def test_supported_distinct_regression_can_reverse_prior_advice(pipeline):
     assert len(pipeline["reviews"]) == 2
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_legacy_summary_publication_is_adopted_without_changing_its_plan(pipeline, published):
+@pytest.mark.parametrize("publication", ["pending", "failed", "publishing", "partially_published", "published"])
+def test_legacy_summary_publication_is_adopted_without_changing_its_plan(pipeline, publication):
     pipeline["comments"][0]["inline_line"] = None
     old = new_run()
     reviews.perform_review(old)
@@ -426,10 +426,12 @@ def test_legacy_summary_publication_is_adopted_without_changing_its_plan(pipelin
         run.publication_plan = reviews.publication_plan(db, run)
         saved = copy.deepcopy(run.publication_plan)
         fingerprint = db.scalar(select(Finding)).fingerprint
-    if published:
+        if publication != "published":
+            run.publication = publication
+    if publication == "published":
         reviews.publish_run(old)
     current = run_and_publish()
-    if not published:
+    if publication != "published":
         reviews.publish_run(old)
     with transaction() as db:
         assert db.get(ReviewRun, old).publication_plan == saved
