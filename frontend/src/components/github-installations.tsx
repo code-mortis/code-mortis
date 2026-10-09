@@ -53,7 +53,7 @@ export function GitHubInstallations() {
   const connected = query.data?.filter((item) => item.connected)
     .sort((a, b) => installationPriority(installationStatus(a)) - installationPriority(installationStatus(b))) ?? [];
   const available = query.data?.filter((item) => !item.connected)
-    .sort((a, b) => installationPriority(a.status) - installationPriority(b.status)) ?? [];
+    .sort((a, b) => installationPriority(installationStatus(a)) - installationPriority(installationStatus(b))) ?? [];
 
   function connect(item: Installation) {
     setMessage("");
@@ -147,7 +147,7 @@ export function GitHubInstallations() {
                 <Github aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" /><span className="min-w-0 break-words text-sm font-medium">{item.account}</span>
               </div>
               <div className="text-xs"><span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>{item.repository_selection === "all" ? "All repositories" : "Selected repositories"}</div>
-              <div><span className="settings-cell-label mb-1 text-xs text-muted-foreground">Status</span><Status value={item.status} /></div>
+              <div><span className="settings-cell-label mb-1 text-xs text-muted-foreground">Status</span><Status value={installationStatus(item)} /></div>
               <div className="settings-actions flex justify-end"><Button size="sm" variant="outline" disabled={action.isPending || !item.can_connect} onClick={() => connect(item)}>Connect</Button></div>
               {item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
             </div>)}

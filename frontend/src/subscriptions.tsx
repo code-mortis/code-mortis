@@ -308,7 +308,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
         <ErrorNotice error={modelAction.error} />
         <ModelPicker
           value={model} onChange={(value) => {
-            if (modelAction.isSuccess) modelAction.reset();
+            if (modelAction.isSuccess || modelAction.isError) modelAction.reset();
             setModel(value);
           }} required enabled={!modelPending}
           path={connected ? `/connections/${identity}/models` : undefined}
@@ -385,7 +385,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
                 disabled={grantPending}
                 value={repository}
                 onChange={(event) => {
-                  if (grantAction.isSuccess) grantAction.reset();
+                  if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
                   setRepository(event.target.value);
                 }}
               >
@@ -408,7 +408,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
                 disabled={grantPending}
                 checked={automatic}
                 onCheckedChange={(checked) => {
-                  if (grantAction.isSuccess) grantAction.reset();
+                  if (grantAction.isSuccess || grantAction.isError) grantAction.reset();
                   setAutomatic(checked);
                 }}
               />

@@ -2089,6 +2089,31 @@ test("GitHub installations show recoverable failures and unavailable actions", a
   await noOverflow(page);
 });
 
+test("GitHub installation lists order and label uninstall operations consistently", async ({ page }) => {
+  await mock(page);
+  const items: Schema["InstallationOut"][] = [
+    { ...installation, id: 11, account: "Removed account", status: "uninstalled", operation_status: "failed", can_connect: false },
+    { ...installation, id: 12, account: "Failed uninstall", operation_status: "failed", can_connect: false },
+    { ...installation, id: 13, account: "Queued uninstall", operation_status: "queued", can_connect: false },
+    { ...installation, id: 14, account: "Active account" },
+    { ...installation, id: 15, account: "Running uninstall", operation_status: "running", can_connect: false },
+    { ...installation, id: 16, account: "Suspended account", status: "suspended", can_connect: false },
+  ];
+  await page.route("**/api/v1/installations", (route) => route.fulfill({ json: [
+    ...items, ...items.map((item) => ({ ...item, id: item.id + 100, connected: false })),
+  ] }));
+  await page.goto("/settings?tab=github");
+  for (const name of ["Connected installations", "Available installations"]) {
+    const section = page.getByRole("region", { name, exact: true });
+    await expect(section.locator(".settings-identity")).toHaveText([
+      "Active account", "Failed uninstall", "Queued uninstall", "Running uninstall", "Suspended account", "Removed account",
+    ]);
+    await expect(section.locator('[data-slot="badge"]')).toHaveText([
+      "active", "failed", "uninstalling", "uninstalling", "suspended", "uninstalled",
+    ]);
+  }
+});
+
 test("GitHub installations refresh on return and connect available accounts", async ({ page }) => {
   const requests = await mock(page);
   let connected = false;
@@ -2160,16 +2185,20 @@ test("settings group visible connections and distinguish tests from authenticati
     { ...connection, name: longName, model: "model-" + "x".repeat(160) },
     { ...connection, id: "untested", name: "Untested API", last_test: null, tested_at: null },
     { ...connection, id: "personal", name: "My subscription", kind: "chatgpt", owner_id: 7, auth_status: "connected", last_test: null },
+    { ...connection, id: "claude", name: "My Claude subscription", kind: "claude_code", owner_id: 7, auth_status: "disconnected", last_test: null },
   ] }));
   await page.goto("/settings");
   const shared = page.getByRole("region", { name: "Shared API connections" });
   const personal = page.getByRole("region", { name: "Your subscriptions" });
   await expect(shared.getByRole("article")).toHaveCount(2);
-  await expect(personal.getByRole("article")).toHaveCount(1);
+  await expect(personal.getByRole("article")).toHaveCount(2);
   await expect(shared.getByRole("article").first()).toHaveAccessibleName(longName);
   await expect(shared).toContainText("Last test: Connected. Model completed a tool-call round trip.");
   await expect(shared).toContainText("Not tested");
   await expect(personal.getByText("connected", { exact: true })).toBeVisible();
+  await expect(shared).toContainText("openai · openai");
+  await expect(personal.getByRole("article", { name: "My subscription", exact: true })).toContainText("ChatGPT subscription");
+  await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
   await expect(personal).not.toContainText("Last test");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/settings-groups-${info.project.name}.png`, fullPage: true });
@@ -2388,6 +2417,21 @@ test("personal model and repository errors stay with their operation", async ({ 
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
   await expect(page.getByRole("region", { name: "Account connection" }).getByRole("alert")).toHaveCount(0);
   await expect(model.getByLabel("Custom model ID")).toHaveValue("custom-model");
+  await grants.getByRole("switch").check();
+  await expect(grants.getByRole("alert")).toHaveCount(0);
+  await expect(model.getByRole("alert")).toContainText("Model could not be saved");
+  await grants.getByRole("button", { name: "Save authorization" }).click();
+  await expect(grants.getByRole("alert")).toContainText("Repository authorization denied");
+  await grants.getByLabel("Repository", { exact: true }).selectOption("");
+  await expect(grants.getByRole("alert")).toHaveCount(0);
+  await expect(grants.getByRole("switch")).toBeChecked();
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await grants.getByRole("switch").uncheck();
+  await model.getByLabel("Custom model ID").fill("revised-model");
+  await expect(model.getByRole("alert")).toHaveCount(0);
+  await model.getByRole("button", { name: "Save model" }).click();
+  await expect(model.getByRole("alert")).toContainText("Model could not be saved");
+  await expect(model.getByLabel("Custom model ID")).toHaveValue("revised-model");
   fail = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   expect(requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: false });
@@ -2482,6 +2526,9 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
     "Authorizations could not be loaded.", "Repository authorization denied.",
   ]);
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  await grants.getByLabel("Repository", { exact: true }).selectOption("");
+  await expect(grants.getByRole("alert")).toHaveText("Authorizations could not be loaded.");
+  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
   fail = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();

@@ -625,6 +625,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const [member, setMember] = useState<Instance["members"][number] | "new" | null>(null);
   const [login, setLogin] = useState("");
   const [role, setRole] = useState("member");
+  const memberSubmitLabel = member === "new" ? "Add or update member" : "Save role";
   const returnFocus = useRef<HTMLElement | null>(null);
   const connectionHeading = useRef<HTMLHeadingElement>(null);
   const memberHeading = useRef<HTMLHeadingElement>(null);
@@ -675,9 +676,11 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             }}><Plus className="size-4" />Add connection</Button>
           </div>
           <ErrorNotice error={connections.error || providers.error || (!deleting && action.error)} />
-          {connections.isPending ? <Loading /> : !connections.error && !connections.data?.length ? (
+          {connections.isPending && <Loading />}
+          {connections.isSuccess && !connections.data.length && (
             <Empty title="Choose your review model">Connect an API or your personal subscription, then choose it for reviews.</Empty>
-          ) : <div className="space-y-6">
+          )}
+          {!connections.isPending && groups.length > 0 && <div className="space-y-6">
             {groups.map((group) => <section key={group.title} aria-label={group.title}>
               <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">
                 {group.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.items.length}</span>
@@ -688,6 +691,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                 </div>
                 {group.items.map((connection) => {
                   const personalConnection = (connection.kind ?? "api") !== "api";
+                  let kindLabel = `${connection.provider} · ${connection.protocol}`;
+                  if (personalConnection) kindLabel = connection.kind === "chatgpt" ? "ChatGPT subscription" : "Claude Code subscription";
                   const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
                   const Icon = personalConnection ? UserRound : Plug;
                   return <article key={connection.id} aria-label={connection.name}
@@ -697,7 +702,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
                         <p className="mt-1 break-words text-xs text-muted-foreground">
-                          {personalConnection ? (connection.kind === "chatgpt" ? "ChatGPT subscription" : "Claude Code subscription") : `${connection.provider} · ${connection.protocol}`}
+                          {kindLabel}
                         </p>
                       </div>
                     </div>
@@ -902,7 +907,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           </NativeSelect>}</Field>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" disabled={memberAction.isPending} onClick={() => { setMember(null); memberAction.reset(); }}>Cancel</Button>
-            <Button type="submit" disabled={memberAction.isPending}>{memberAction.isPending ? "Saving…" : member === "new" ? "Add or update member" : "Save role"}</Button>
+            <Button type="submit" disabled={memberAction.isPending}>{memberAction.isPending ? "Saving…" : memberSubmitLabel}</Button>
           </div>
         </form>
       </DialogContent>
