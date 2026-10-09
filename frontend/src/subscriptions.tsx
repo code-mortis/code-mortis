@@ -34,7 +34,7 @@ type Grant = { repository_id: number; automatic: boolean };
 
 function accountStatus(status: string | undefined, pending: boolean, failed: boolean) {
   if (pending) return { value: "pending", label: "Checking account…" };
-  if (failed) return { value: "failed", label: "Could not check account" };
+  if (failed && !status) return { value: "failed", label: "Could not check account" };
   if (status === "connected") return { value: status, label: "Connected" };
   if (status === "unavailable") return { value: status, label: "Runner unavailable" };
   return { value: status ?? "disconnected", label: "Not connected" };
@@ -310,7 +310,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           value={model} onChange={(value) => {
             if (modelAction.isSuccess || modelAction.isError) modelAction.reset();
             setModel(value);
-          }} required enabled={!modelPending}
+          }} required disabled={modelPending}
           path={connected ? `/connections/${identity}/models` : undefined}
           context={`${identity}:${connected}`}
           hint="Sign in to load this connection’s models, or enter a custom model ID."
@@ -332,7 +332,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           at a time.
         </p>
         {grants.isPending && <p role="status" className="text-sm text-muted-foreground">Loading authorizations…</p>}
-        {grants.isSuccess && !grants.data.length && <p className="text-sm text-muted-foreground">No repositories authorized yet.</p>}
+        {grants.isSuccess && !grants.data?.length && <p className="text-sm text-muted-foreground">No repositories authorized yet.</p>}
         {!!grants.data?.length && <div className="divide-y rounded-lg border bg-card">{grants.data.map((grant) => (
           <div
             key={grant.repository_id}

@@ -23,6 +23,12 @@ function installationPriority(status: string) {
   return 1;
 }
 
+function repositoryAccess(selection: Installation["repository_selection"]) {
+  if (selection === "all") return "All repositories";
+  if (selection === "selected") return "Selected repositories";
+  return "Unknown repository access";
+}
+
 function installationDescription(item: Installation, status: string) {
   const paused = item.active ? "" : " Reviews are paused.";
   switch (status) {
@@ -33,7 +39,7 @@ function installationDescription(item: Installation, status: string) {
     case "failed":
       return `Uninstall did not complete. Retry to check GitHub and finish removal.${paused}`;
     default:
-      return `${item.repository_selection === "all" ? "All repositories" : "Selected repositories"} on GitHub.${paused}`;
+      return `${repositoryAccess(item.repository_selection)} on GitHub.${paused}`;
   }
 }
 
@@ -64,7 +70,7 @@ export function GitHubInstallations() {
 
   return (
     <>
-      <section aria-label="Connected installations">
+      <section aria-label="Connected installations" className="settings-container">
         <div className="mb-2.5 flex items-center justify-between gap-3">
           <h3 ref={heading} tabIndex={-1} className="flex items-baseline gap-2 text-sm font-semibold">
             Connected installations{query.data && <span className="text-xs font-normal tabular-nums text-muted-foreground">{connected.length}</span>}
@@ -93,7 +99,7 @@ export function GitHubInstallations() {
                   </div>
                   <div className="min-w-0 text-xs">
                     <span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>
-                    {item.repository_selection === "all" ? "All repositories" : "Selected repositories"} on GitHub.
+                    {repositoryAccess(item.repository_selection)} on GitHub.
                   </div>
                   <div>
                     <span className="settings-cell-label mb-1 text-xs text-muted-foreground">Status</span>
@@ -135,7 +141,7 @@ export function GitHubInstallations() {
           </div>
         ) : !query.isError && <Empty title="No connected installations">Install the app on GitHub, then connect an installation below.</Empty>}
       </section>
-      {!query.isPending && !query.isError && <section aria-label="Available installations">
+      {!query.isPending && !query.isError && <section aria-label="Available installations" className="settings-container">
         <h3 className="mb-2.5 flex items-baseline gap-2 text-sm font-semibold">Available installations<span className="text-xs font-normal tabular-nums text-muted-foreground">{available.length}</span></h3>
         {available.length ? (
           <div className="overflow-hidden rounded-lg border bg-card">
@@ -146,7 +152,7 @@ export function GitHubInstallations() {
               <div className="settings-identity flex min-w-0 items-start gap-3">
                 <Github aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" /><span className="min-w-0 break-words text-sm font-medium">{item.account}</span>
               </div>
-              <div className="text-xs"><span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>{item.repository_selection === "all" ? "All repositories" : "Selected repositories"}</div>
+              <div className="text-xs"><span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>{repositoryAccess(item.repository_selection)}</div>
               <div><span className="settings-cell-label mb-1 text-xs text-muted-foreground">Status</span><Status value={installationStatus(item)} /></div>
               <div className="settings-actions flex justify-end"><Button size="sm" variant="outline" disabled={action.isPending || !item.can_connect} onClick={() => connect(item)}>Connect</Button></div>
               {item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}

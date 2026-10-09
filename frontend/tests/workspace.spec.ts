@@ -2092,7 +2092,7 @@ test("GitHub installations show recoverable failures and unavailable actions", a
 test("GitHub installation lists order and label uninstall operations consistently", async ({ page }) => {
   await mock(page);
   const items: Schema["InstallationOut"][] = [
-    { ...installation, id: 11, account: "Removed account", status: "uninstalled", operation_status: "failed", can_connect: false },
+    { ...installation, id: 11, account: "Removed account", status: "uninstalled", operation_status: "failed", can_connect: false, repository_selection: null },
     { ...installation, id: 12, account: "Failed uninstall", operation_status: "failed", can_connect: false },
     { ...installation, id: 13, account: "Queued uninstall", operation_status: "queued", can_connect: false },
     { ...installation, id: 14, account: "Active account" },
@@ -2111,6 +2111,21 @@ test("GitHub installation lists order and label uninstall operations consistentl
     await expect(section.locator('[data-slot="badge"]')).toHaveText([
       "active", "failed", "uninstalling", "uninstalling", "suspended", "uninstalled",
     ]);
+    await expect(section.locator(".settings-record").filter({ hasText: "Removed account" })).toContainText("Unknown repository access");
+  }
+});
+
+test("GitHub installation rows adapt without the settings page container", async ({ page }) => {
+  await mock(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings?tab=github");
+  await page.locator(".settings-content").evaluate((element) => { (element as HTMLElement).style.containerType = "normal"; });
+  const section = page.getByRole("region", { name: "Connected installations", exact: true });
+  for (const width of [360, 640]) {
+    await section.evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px`; }, width);
+    await expect(section.locator(".settings-list-heading")).toBeVisible({ visible: width >= 640 });
+    await expect(section.getByRole("article")).toBeVisible();
+    await noOverflow(page);
   }
 });
 
@@ -2178,6 +2193,35 @@ test("settings sections retain URLs and adapt to the workspace width in both the
   }
 });
 
+test("settings rows retain labels and fit enlarged text at container breakpoints", async ({ page }, info) => {
+  await mock(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings?tab=github");
+  await expect(page.getByRole("article", { name: "acme", exact: true })).toBeVisible();
+  await page.addStyleTag({ content: ".settings-content { width: 640px; max-width: 100%; }" });
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    for (const fontSize of [16, 32]) {
+      await page.evaluate((size) => { document.documentElement.style.fontSize = `${size}px`; }, fontSize);
+      const row = page.getByRole("article", { name: "acme", exact: true });
+      await expect(row.locator('[data-slot="badge"]')).toHaveCSS("font-size", `${fontSize * 0.75}px`);
+      await expect(row.getByRole("link", { name: "Manage repositories" })).toHaveCSS("font-size", `${fontSize * 0.875}px`);
+      const clipped = await row.evaluate((element) => [...element.querySelectorAll('[data-slot="button"], [data-slot="badge"]')]
+        .filter((control) => {
+          const bounds = control.getBoundingClientRect();
+          const parent = control.parentElement!.getBoundingClientRect();
+          return bounds.left < parent.left - 1 || bounds.right > parent.right + 1 || control.scrollWidth > control.clientWidth + 1;
+        }).map((control) => control.textContent));
+      expect.soft(clipped).toEqual([]);
+      const labels = await row.ariaSnapshot();
+      expect.soft(labels).toContain("Repository access");
+      expect.soft(labels).toContain("Status");
+      await noOverflow(page);
+      await page.screenshot({ path: `../.impeccable/review/settings-text-${info.project.name}-${theme}-${fontSize}.png`, fullPage: true });
+    }
+  }
+});
+
 test("settings group visible connections and distinguish tests from authentication", async ({ page }, info) => {
   await mock(page);
   const longName = "A connection with a long name " + "x".repeat(100);
@@ -2186,12 +2230,13 @@ test("settings group visible connections and distinguish tests from authenticati
     { ...connection, id: "untested", name: "Untested API", last_test: null, tested_at: null },
     { ...connection, id: "personal", name: "My subscription", kind: "chatgpt", owner_id: 7, auth_status: "connected", last_test: null },
     { ...connection, id: "claude", name: "My Claude subscription", kind: "claude_code", owner_id: 7, auth_status: "disconnected", last_test: null },
+    { ...connection, id: "future", name: "Another subscription", kind: "future_provider", owner_id: 7, auth_status: "disconnected", last_test: null },
   ] }));
   await page.goto("/settings");
   const shared = page.getByRole("region", { name: "Shared API connections" });
   const personal = page.getByRole("region", { name: "Your subscriptions" });
   await expect(shared.getByRole("article")).toHaveCount(2);
-  await expect(personal.getByRole("article")).toHaveCount(2);
+  await expect(personal.getByRole("article")).toHaveCount(3);
   await expect(shared.getByRole("article").first()).toHaveAccessibleName(longName);
   await expect(shared).toContainText("Last test: Connected. Model completed a tool-call round trip.");
   await expect(shared).toContainText("Not tested");
@@ -2199,6 +2244,7 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect(shared).toContainText("openai · openai");
   await expect(personal.getByRole("article", { name: "My subscription", exact: true })).toContainText("ChatGPT subscription");
   await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
+  await expect(personal.getByRole("article", { name: "Another subscription", exact: true })).toContainText("Personal subscription");
   await expect(personal).not.toContainText("Last test");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/settings-groups-${info.project.name}.png`, fullPage: true });
@@ -2262,11 +2308,42 @@ test("connection menus restore focus and deletion preserves server conflicts", a
   await expect(page.getByRole("heading", { name: "Choose your review model" })).toBeVisible();
 });
 
+test("team rows preserve unknown roles and align labels with resized avatars in both directions", async ({ page }, info) => {
+  await mock(page);
+  const role = "repository-observer-with-limited-access";
+  await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], failed_jobs: [], public_url: "https://reviews.example.com",
+    members: [{ id: 8, login: "observer", role }],
+  } }));
+  await page.goto("/settings?tab=team");
+  await expect(page.getByText(role, { exact: true })).toBeVisible();
+  await page.locator(".settings-content").evaluate((element) => { (element as HTMLElement).style.width = "280px"; });
+  const row = page.locator(".settings-member-row").filter({ hasText: "@observer" });
+  for (const direction of ["ltr", "rtl"]) {
+    await page.evaluate((value) => { document.documentElement.dir = value; }, direction);
+    for (const avatarSize of ["2rem", "3rem"]) {
+      await row.evaluate((element, value) => {
+        (element as HTMLElement).style.setProperty("--settings-avatar-size", value);
+        (element as HTMLElement).style.setProperty("--settings-member-gap", "1rem");
+      }, avatarSize);
+      await expect.poll(() => row.evaluate((element) => {
+        const name = element.querySelector(".settings-member-identity p")!.getBoundingClientRect();
+        const badge = element.querySelector('[data-slot="badge"]')!.getBoundingClientRect();
+        return getComputedStyle(element).direction === "ltr" ? badge.left - name.left : badge.right - name.right;
+      })).toBeCloseTo(0, 0);
+      expect(await row.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    }
+    await page.screenshot({ path: `../.impeccable/review/settings-member-${info.project.name}-${direction}.png`, fullPage: true });
+  }
+});
+
 test("member dialog preserves drafts, saves roles, and reports removal failures", async ({ page }, info) => {
   await mock(page);
   let members = [{ id: 7, login: "carlos", role: "admin" }];
   let fail = true;
   let release: (() => void) | undefined;
+  let releaseRemoval!: () => void;
+  const removal = new Promise<void>((resolve) => { releaseRemoval = resolve; });
   const bodies: unknown[] = [];
   await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
     github_app: { id: "123", slug: "code-mortis-acme", install_url: "https://github.com/apps/code-mortis-acme" },
@@ -2282,7 +2359,10 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
     members = [{ ...members[0], role: body.login === "carlos" ? body.role : "admin" }, ...(body.login === "carlos" ? [] : [{ id: 8, ...body }])];
     await route.fulfill({ json: { ok: true } });
   });
-  await page.route("**/api/v1/members/7", (route) => route.fulfill({ status: 409, json: { detail: "The last administrator cannot be removed." } }));
+  await page.route("**/api/v1/members/7", async (route) => {
+    await removal;
+    await route.fulfill({ status: 409, json: { detail: "The last administrator cannot be removed." } });
+  });
   await page.goto("/settings?tab=team");
   const add = page.getByRole("button", { name: "Add member", exact: true });
   await add.click();
@@ -2291,6 +2371,8 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   await dialog.getByLabel("Role", { exact: true }).selectOption("admin");
   await dialog.getByRole("button", { name: "Add or update member" }).click();
   await expect(dialog.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Actions for @carlos", includeHidden: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add member", exact: true, includeHidden: true })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeVisible();
   await expect.poll(() => !!release).toBe(true);
@@ -2316,8 +2398,35 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   expect(bodies.at(-1)).toEqual({ login: "carlos", role: "member" });
   await actions.click();
   await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
+  await expect(actions).toBeDisabled();
+  await expect(add).toBeDisabled();
+  releaseRemoval();
   await expect(page.getByRole("alert")).toContainText("last administrator");
   await expect(page.getByText("@carlos", { exact: true })).toBeVisible();
+});
+
+test("testing a connection cannot open a trapped deletion dialog", async ({ page }) => {
+  await mock(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections/connection/test", async (route) => {
+    await held;
+    await route.fulfill({ status: 503, json: { detail: "Connection test failed." } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Test", exact: true }).click();
+  const actions = page.getByRole("button", { name: "Actions for Team reviews" });
+  await expect(actions).toBeDisabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  release();
+  await expect(page.getByRole("alert")).toContainText("Connection test failed");
+  await expect(actions).toBeEnabled();
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(actions).toBeFocused();
 });
 
 test("connection form errors preserve edits and omit unchanged secrets", async ({ page }, info) => {
@@ -2491,11 +2600,61 @@ test("personal account status distinguishes loading, errors, and the signed-in a
     status = next;
     await account.getByRole("button", { name: "Check status" }).click();
     const labels: Record<string, string> = {
-      disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Could not check account",
+      disconnected: "Not connected", unavailable: "Runner unavailable", connected: "Connected", error: "Connected",
     };
     await expect(account.getByRole("status")).toHaveText(labels[next]);
     if (next === "connected") await expect(account.getByText("Signed in as carlos@example.com")).toBeVisible();
+    if (next === "error") await expect(account.getByRole("alert")).toContainText("Account status could not be loaded");
   }
+});
+
+test("personal authorizations tolerate an empty response body", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ status: 204 }));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  await expect(page.getByRole("region", { name: "Repository authorization" }).getByText("No repositories authorized yet.")).toBeVisible();
+  await expect(page.getByRole("form", { name: "Default model" })).toBeVisible();
+});
+
+test("personal model saves disable controls while retaining the loaded catalog", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: { status: "connected" } }));
+  let reads = 0;
+  let releaseRefresh!: () => void;
+  const refresh = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  await page.route("**/api/v1/connections/personal/models", async (route) => {
+    if (++reads > 1) await refresh;
+    await route.fulfill({ json: { source: "client", status: "ready", message: "Official client catalog.", models: [
+      { id: "review-model", name: "Review model" }, { id: "next-model", name: "Next model" },
+    ] } });
+  });
+  let releaseSave!: () => void;
+  const save = new Promise<void>((resolve) => { releaseSave = resolve; });
+  await page.route("**/api/v1/connections/personal", async (route) => {
+    await save;
+    await route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", kind: "chatgpt" } });
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Manage account" }).click();
+  const form = page.getByRole("form", { name: "Default model" });
+  const select = form.getByLabel("Model", { exact: true });
+  await select.selectOption("next-model");
+  await form.getByRole("button", { name: "Save model", exact: true }).click();
+  await expect(select).toBeDisabled();
+  await expect(form.getByRole("button", { name: "Refresh models" })).toBeDisabled();
+  await expect(select.locator('option[value="review-model"]')).toHaveCount(1);
+  await expect(select.locator('option[value="next-model"]')).toHaveCount(1);
+  await expect(form.getByText("Official client catalog.")).toBeVisible();
+  expect(reads).toBe(1);
+  releaseSave();
+  await expect.poll(() => reads).toBe(2);
+  await expect(select.locator('option[value="review-model"]')).toHaveCount(1);
+  releaseRefresh();
+  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(form.getByText("Official client catalog.")).toBeVisible();
+  await expect(select).toBeEnabled();
+  expect(reads).toBe(2);
 });
 
 test("personal authorizations distinguish loading, fetch failure, mutation failure, and empty results", async ({ page }) => {

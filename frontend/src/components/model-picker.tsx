@@ -7,7 +7,7 @@ import { Input } from "./ui/input";
 type Catalog = Schema["ModelCatalog"];
 
 export function ModelPicker({
-  value, onChange, path, loadDraft, context = path ?? "", enabled = true,
+  value, onChange, path, loadDraft, context = path ?? "", enabled = true, disabled = false,
   required = false, label = "Model", emptyLabel = "Choose a model", hint,
 }: {
   value: string;
@@ -16,6 +16,7 @@ export function ModelPicker({
   loadDraft?: () => Promise<Catalog>;
   context?: string;
   enabled?: boolean;
+  disabled?: boolean;
   required?: boolean;
   label?: string;
   emptyLabel?: string;
@@ -30,11 +31,11 @@ export function ModelPicker({
     return () => { request.current++; };
   }, [context, enabled]);
   const current = draft?.context === context ? draft : undefined;
-  const catalog = enabled && !query.isFetching ? (current ? current.data : query.data) : undefined;
+  const catalog = enabled ? (current ? current.data : query.data) : undefined;
   const pending = enabled && (current?.pending || query.isFetching);
   const models = catalog?.models ?? [];
   const error = current ? current.error : enabled && path ? query.error : undefined;
-  const canLoad = enabled && (!!path || !!loadDraft);
+  const canLoad = enabled && !disabled && (!!path || !!loadDraft);
   async function refresh() {
     if (!loadDraft) {
       await query.refetch();
@@ -59,7 +60,7 @@ export function ModelPicker({
               className="min-w-0 flex-1 basis-48"
               value={custom ? "\u0000custom" : value}
               required={required}
-              disabled={!enabled}
+              disabled={!enabled || disabled}
               onChange={(event) => {
                 const next = event.target.value;
                 setCustom(next === "\u0000custom");
@@ -86,7 +87,7 @@ export function ModelPicker({
       {custom && (
         <Field label="Custom model ID">
           {(id) => (
-            <Input id={id} value={value} required={required} disabled={!enabled} maxLength={150}
+            <Input id={id} value={value} required={required} disabled={!enabled || disabled} maxLength={150}
               placeholder="Provider model ID" onChange={(event) => onChange(event.target.value)} />
           )}
         </Field>

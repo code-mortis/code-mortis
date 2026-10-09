@@ -66,6 +66,12 @@ function parseObject(value: string, label: string) {
   return data;
 }
 
+function memberRoleLabel(role: string) {
+  if (role === "admin") return "Administrator";
+  if (role === "member") return "Member";
+  return role;
+}
+
 export function RepositorySettings({
   repository: repo,
   onSaved,
@@ -636,6 +642,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   ].filter((group) => group.items.length);
 
   function openMember(value: Instance["members"][number] | "new") {
+    if (memberAction.isPending) return;
     memberAction.reset();
     setLogin(value === "new" ? "" : value.login);
     setRole(value === "new" ? "member" : value.role);
@@ -692,7 +699,9 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                 {group.items.map((connection) => {
                   const personalConnection = (connection.kind ?? "api") !== "api";
                   let kindLabel = `${connection.provider} · ${connection.protocol}`;
-                  if (personalConnection) kindLabel = connection.kind === "chatgpt" ? "ChatGPT subscription" : "Claude Code subscription";
+                  if (connection.kind === "chatgpt") kindLabel = "ChatGPT subscription";
+                  else if (connection.kind === "claude_code") kindLabel = "Claude Code subscription";
+                  else if (personalConnection) kindLabel = "Personal subscription";
                   const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
                   const Icon = personalConnection ? UserRound : Plug;
                   return <article key={connection.id} aria-label={connection.name}
@@ -734,7 +743,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                           onClick={() => { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }}>Test</Button>}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${connection.name}`}
+                            <Button variant="ghost" size="icon" className="size-8" disabled={action.isPending} aria-label={`Actions for ${connection.name}`}
                               onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
                               onFocus={(event) => { returnFocus.current = event.currentTarget; }}>
                               <MoreHorizontal className="size-4" />
@@ -792,7 +801,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               <h2 id="members-heading" ref={memberHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Team</h2>
               <p className="mt-1 text-sm text-muted-foreground">Manage who can sign in to this instance.</p>
             </div>
-            <Button onClick={(event) => { returnFocus.current = event.currentTarget; openMember("new"); }}>
+            <Button disabled={memberAction.isPending} onClick={(event) => { returnFocus.current = event.currentTarget; openMember("new"); }}>
               <Plus className="size-4" />Add member
             </Button>
           </div>
@@ -803,17 +812,17 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               <span>Member</span><span>Role</span><span />
             </div>
             {instance.members.map((item) => <div key={item.id} className="settings-member-row border-b px-4 py-4 last:border-b-0 sm:px-5">
-              <div className="flex min-w-0 items-center gap-3">
-                <Avatar className="rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+              <div className="settings-member-identity flex min-w-0 items-center">
+                <Avatar className="settings-member-avatar rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium">@{item.login}</p>
                   {item.id === user.id && <p className="mt-0.5 text-xs text-muted-foreground">You</p>}
                 </div>
               </div>
-              <div className="settings-member-role"><Badge variant="outline" className="font-normal">{item.role === "admin" ? "Administrator" : "Member"}</Badge></div>
+              <div className="settings-member-role"><Badge variant="outline" className="font-normal">{memberRoleLabel(item.role)}</Badge></div>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="settings-member-actions size-8" disabled={memberAction.isPending && memberAction.variables?.method === "DELETE"} aria-label={`Actions for @${item.login}`}
+                  <Button variant="ghost" size="icon" className="settings-member-actions size-8" disabled={memberAction.isPending} aria-label={`Actions for @${item.login}`}
                     onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
                     onFocus={(event) => { returnFocus.current = event.currentTarget; }}><MoreHorizontal className="size-4" /></Button>
                 </DropdownMenuTrigger>
@@ -894,6 +903,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         </DialogHeader>
         <form className="space-y-4" onSubmit={async (event) => {
           event.preventDefault();
+          if (memberAction.isPending) return;
           try {
             await memberAction.mutateAsync({ path: "/members", body: { login, role } });
             setMember(null);
