@@ -54,7 +54,7 @@ class Provider(BaseHTTPRequestHandler):
         ):
             assert names == {"code_comment", "task_done"}, names
             assert "internal result transport" in text
-            assert "including fixed and uncertain outcomes" in text, "OCR must load the verification rule"
+            assert "including non-confirming outcomes" in text, "OCR must load the verification rule"
             if verification_mode == "provider_error":
                 self.send_response(401)
                 self.send_header("Content-Type", "application/json")
