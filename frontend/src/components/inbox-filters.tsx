@@ -59,7 +59,7 @@ export function InboxFilters({ params, data, onChange, onSearch }: {
     else if (key === "review") choices = reviews.map((value) => ({ value, name: label(value) }));
     else choices = [{ value: "open", name: "Has open findings" }, { value: "none", name: "No open findings" }];
     const values = selected(params, key);
-    for (const value of values) if (!choices.some((c) => c.value === value)) choices.push({ value, name: key === "author" ? `@${value}` : `Repository ${value}` });
+    for (const value of values) if (!choices.some((c) => c.value === value)) choices.push({ value, name: key === "repo" || key === "author" ? summary(key, value) : label(value) });
     return <>
       {(key === "repo" || key === "author") && <Input autoFocus aria-label={`Search ${properties[key].toLowerCase()} options`} placeholder={`Find ${key === "repo" ? "a repository" : "an author"}…`} value={optionQuery} onChange={(e) => setOptionQuery(e.target.value)} className="mb-2" />}
       <div className="max-h-64 overflow-y-auto" role="group" aria-label={properties[key]}>

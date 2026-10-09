@@ -233,6 +233,23 @@ test("independent loading, sharing, detail return and bounds", async ({ page }) 
   await expect(active.getByRole("link")).toHaveCount(10);
 });
 
+test("loading another page does not restart a pending search debounce", async ({ page }) => {
+  await page.clock.install();
+  await mockInbox(page, { many: true });
+  await page.goto("/");
+  const active = page.getByRole("region", { name: "Open", exact: true });
+  await expect(active.getByRole("link")).toHaveCount(10);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.getByRole("textbox", { name: "Search pull requests", exact: true }).fill("headers");
+  await page.clock.runFor(200);
+  await active.getByRole("button", { name: /Load more/ }).click();
+  await expect(page).toHaveURL(/active_pages=2/);
+  await page.clock.runFor(100);
+  await expect(page).toHaveURL(/\?q=headers$/);
+  await page.clock.resume();
+  await expect(active.getByRole("link")).toHaveCount(1);
+});
+
 test("normalization, closed-only selection and keyboard focus", async ({ page }) => {
   await mockInbox(page);
   await page.goto("/?repo=nope&repo=22&repo=22&state=closed&review=bad&merged_pages=-1&q=%20%20&ordering=--title");

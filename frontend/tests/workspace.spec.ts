@@ -369,6 +369,46 @@ test("repository navigation, filtering, and review workspace", async ({
   expect(errors).toEqual([]);
 });
 
+for (const entry of ["history", "feedback", "start"] as const) {
+  test(`inbox context survives run ${entry} navigation and return`, async ({ page }) => {
+    await mock(page);
+    await page.route("**/api/v1/pulls?**", (route) => route.fulfill({ json: {
+      groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [{
+        ...pr, repository_name: repo.full_name, created_at: at, review_status: run.status,
+        has_running_review: false, run_id: run.id, publication: run.publication, publication_error: run.publication_error,
+      }] }],
+      total: 1, registered_total: 1, repository_count: 1, repositories: [repo],
+      authors: [pr.author], state_counts: { open: 1 }, page_size: 10,
+    } }));
+    await page.route("**/api/v1/pulls/pr/runs", (route) => route.fulfill({ json: run }));
+    const inbox = "/?q=retry&repo=22&ordering=title";
+    await page.goto(inbox);
+    await page.getByRole("link", { name: /Add retry handling/ }).click();
+    if (entry === "history") {
+      await page.getByRole("tab", { name: "Run history" }).click();
+      await page.getByRole("link", { name: /automatic.*aaaaaaa/ }).click();
+    } else if (entry === "feedback") {
+      await page.getByRole("link", { name: "View run details", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Run review", exact: true }).click();
+    }
+    await expect(page).toHaveURL(/\/runs\/run$/);
+    const inboxNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true });
+    await expect(inboxNav).toHaveAttribute("href", inbox);
+    await expect(inboxNav).toHaveClass(/nav-active/);
+    if (entry === "feedback") {
+      await page.getByRole("link", { name: "Open pull request to run a new review", exact: true }).click();
+    } else {
+      await page.getByRole("link", { name: /acme\/payments.*Run history/ }).click();
+    }
+    await expect(page).toHaveURL(/\/pulls\/pr$/);
+    await expect(inboxNav).toHaveClass(/nav-active/);
+    await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+    await expect(page).toHaveURL(inbox);
+    await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
+  });
+}
+
 test("resolution waits for GitHub and preserves the confirmed status", async ({
   page,
 }, info) => {

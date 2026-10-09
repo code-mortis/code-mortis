@@ -44,11 +44,12 @@ function Brand() {
   );
 }
 function Setup({ configured }: { configured: boolean }) {
+  const route = useLocation();
   const [token, setToken] = useState("");
   const [organization, setOrganization] = useState("");
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
-  const params = new URLSearchParams(location.search);
+  const params = new URLSearchParams(route.search);
   const authErrors: Record<string, string> = {
     expired:
       "This attempt expired or was already used. Start again in this browser.",
@@ -228,7 +229,7 @@ function App() {
         <Button onClick={() => setup.refetch()}>Check again</Button>
       </div>
     );
-  if (new URLSearchParams(location.search).has("auth_error"))
+  if (new URLSearchParams(route.search).has("auth_error"))
     return <Setup configured={setup.data?.configured ?? false} />;
   if (!setup.data?.configured || session.error?.status === 401)
     return <Setup configured={setup.data?.configured ?? false} />;

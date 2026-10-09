@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, LoaderCircle } from "lucide-react";
 import { api, ApiError, type Schema } from "./api";
@@ -52,6 +52,7 @@ async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise
 
 export function Inbox() {
   const [raw, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const params = normalizeFilters(raw);
   const canonical = params.toString();
   const filters = withoutPages(params).toString();
@@ -83,10 +84,11 @@ export function Inbox() {
     if (bounded.toString() !== canonical) setParams(bounded, { replace: true });
   }, [query.data, query.isPlaceholderData, query.isFetching, canonical, setParams]);
   const search = useCallback((value: string) => {
-    const next = withoutPages(new URLSearchParams(canonical));
+    const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
-    setParams(normalizeFilters(next), { replace: true });
-  }, [canonical, setParams]);
+    // Unlike setParams, navigate stays stable when only the loaded pages change.
+    navigate({ search: normalizeFilters(next).toString() }, { replace: true });
+  }, [filters, navigate]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
