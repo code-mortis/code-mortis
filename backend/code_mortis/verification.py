@@ -307,16 +307,21 @@ def verification_tools(instructions=INSTRUCTIONS, schema=None):
     }}]
 
 
-def terminal_result(root):
+def terminal_result(root, session_id):
+    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
+        raise ValueError("OCR did not identify the result session.")
     results = []
-    for path in (Path.home() / ".opencodereview" / "sessions").glob("*/*.jsonl"):
+    for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
         with path.open() as stream:
-            header = json.loads(next(stream))
-            if header.get("type") != "session_start" or header.get("cwd") != str(root):
+            header = json.loads(next(stream, ""))
+            if (header.get("type") != "session_start" or header.get("cwd") != str(root)
+                or header.get("sessionId") != session_id):
                 continue
             for line in stream:
                 row = json.loads(line)
                 if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
+                    if row.get("sessionId") != session_id:
+                        raise ValueError("The terminal response belongs to another session.")
                     for call in row.get("tool_calls") or []:
                         if call.get("name") != "task_done":
                             raise ValueError("Unexpected tool in the result transport.")
@@ -383,18 +388,18 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             diagnostics = scan_diagnostics(root, env, code, errors, (
                 credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
             ), stopped)
+            try:
+                data = json.loads(output)
+                if not isinstance(data, dict):
+                    raise ValueError("Expected an OCR result object.")
+            except ValueError as exc:
+                failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
+                raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
             raw, result_error = None, None
             try:
-                raw = terminal_result(root)
+                raw = terminal_result(root, data.get("session_id"))
             except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
                 result_error = str(exc) or "Missing terminal result."
-        try:
-            data = json.loads(output)
-            if not isinstance(data, dict):
-                raise ValueError("Expected an OCR result object.")
-        except ValueError as exc:
-            failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
-            raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:

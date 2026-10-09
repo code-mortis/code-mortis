@@ -291,6 +291,9 @@ def main():
                 return result
             ocr.command = capture
             try:
+                interrupted = Path.home() / ".opencodereview/sessions/interrupted"
+                interrupted.mkdir(parents=True, exist_ok=True)
+                (interrupted / "old.jsonl").write_text("{")
                 raw, usage = verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context, None, None, lambda: False)
             except ValueError as exc:
                 raise AssertionError(str(scan_output)) from exc

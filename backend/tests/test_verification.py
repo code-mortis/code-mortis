@@ -173,13 +173,17 @@ def test_partial_line_quotes_preserve_literal_text_and_source_location(quote, st
             verification.validate_result(data, CONTEXT)
 
 
-@pytest.mark.parametrize("mode", ["valid", "missing", "multiple", "wrong_repo", "wrong_task", "malformed"])
+@pytest.mark.parametrize("mode", [
+    "valid", "unrelated_empty", "unrelated_truncated", "missing", "multiple", "wrong_repo", "wrong_task",
+    "malformed", "empty", "wrong_session", "wrong_response_session", "missing_session",
+])
 def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     folder = tmp_path / ".opencodereview/sessions/repo"
     folder.mkdir(parents=True)
     root = tmp_path / "repo"
-    record = {"type": "llm_response", "taskType": "main_task", "tool_calls": [{
+    session_id = "00000000-0000-4000-8000-000000000001"
+    record = {"type": "llm_response", "sessionId": session_id, "taskType": "main_task", "tool_calls": [{
         "name": "task_done", "arguments": json.dumps({"state": "DONE", "result": RESULT}),
     }]}
     if mode == "multiple":
@@ -190,13 +194,22 @@ def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatc
         record["taskType"] = "review_filter_task"
     elif mode == "malformed":
         record["tool_calls"][0]["arguments"] = "invalid"
-    header = {"type": "session_start", "cwd": str(root) if mode != "wrong_repo" else "/another/repo"}
-    (folder / "session.jsonl").write_text(json.dumps(header) + "\n" + json.dumps(record) + "\n")
-    if mode == "valid":
-        assert verification.terminal_result(root) == RESULT
+    elif mode == "wrong_response_session":
+        record["sessionId"] = "another-session"
+    header = {"type": "session_start", "sessionId": session_id,
+              "cwd": str(root) if mode != "wrong_repo" else "/another/repo"}
+    if mode == "wrong_session":
+        header["sessionId"] = "another-session"
+    (folder / f"{session_id}.jsonl").write_text(
+        "" if mode == "empty" else json.dumps(header) + "\n" + json.dumps(record) + "\n",
+    )
+    if mode.startswith("unrelated_"):
+        (folder / "interrupted.jsonl").write_text("{" if mode == "unrelated_truncated" else "")
+    if mode == "valid" or mode.startswith("unrelated_"):
+        assert verification.terminal_result(root, session_id) == RESULT
     else:
         with pytest.raises(ValueError):
-            verification.terminal_result(root)
+            verification.terminal_result(root, None if mode == "missing_session" else session_id)
 
 
 def test_unchanged_code_or_suggestion_match_is_not_fix_proof():
@@ -621,7 +634,7 @@ def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, ba
         response["warnings"] = ["incomplete"]
     elif bad == "usage":
         response["summary"].pop("total_tokens")
-    def terminal(root):
+    def terminal(root, session_id):
         if bad in {"absent", "multiple"}:
             raise ValueError("Expected exactly one terminal result.")
         return {"verdict": "bad"} if bad == "malformed" else RESULT
