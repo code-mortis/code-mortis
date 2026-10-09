@@ -23,6 +23,7 @@ import {
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
+import { getInboxReturn } from "./lib/inbox-filters";
 import { SettingsPage } from "./settings";
 import "./index.css";
 
@@ -178,7 +179,8 @@ function App() {
   const action = useAction();
   const navigate = useNavigate();
   const route = useLocation();
-  const fromInbox = typeof route.state?.inbox === "string" && /^\/(?:\?|$)/.test(route.state.inbox);
+  const inboxReturn = getInboxReturn(route.state);
+  const fromInbox = inboxReturn !== null;
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -272,7 +274,7 @@ function App() {
           className="flex gap-1 px-3 pb-3 lg:flex-col lg:py-3"
         >
           <NavLink
-            to={fromInbox ? route.state.inbox : "/"}
+            to={inboxReturn ?? "/"}
             end
             className={({ isActive }) =>
               `nav-link ${isActive || (fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`

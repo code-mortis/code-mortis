@@ -16,7 +16,7 @@ const rows: Pull[] = titles.map((title, i) => ({
 }));
 const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled", has_running_review: false };
 
-async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean; historyOnly?: boolean } = {}) {
+async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean; historyOnly?: boolean; extra?: number; authors?: string[] } = {}) {
   const requests: URLSearchParams[] = [];
   const controls = { failMore: false, fail: 0, complete: false, state: "open" };
   await page.route("**/api/v1/**", async (route) => {
@@ -39,7 +39,7 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
       let all = options.empty ? [] : [...rows, closed];
       all = all.map((r) => r.id === "pr-0" ? { ...r, state: controls.state, ...(controls.complete ? { review_status: "completed", has_running_review: false } : {}) } : r);
       if (options.historyOnly) all = all.filter((r) => r.state !== "open");
-      if (options.many) all = [...all, ...Array.from({ length: 40 }, (_, i) => ({ ...rows[3], id: `extra-${i}`, title: `Additional change ${i}`, number: 100 + i }))];
+      if (options.many) all = [...all, ...Array.from({ length: options.extra ?? 40 }, (_, i) => ({ ...rows[3], id: `extra-${i}`, title: `Additional change ${i}`, number: 100 + i }))];
       let filtered = all.filter((r) => (!params.has("q") || `${r.title} ${r.number} ${r.author} ${r.repository_name}`.toLowerCase().includes(params.get("q")!.toLowerCase()))
         && (!params.has("repo") || params.getAll("repo").includes(String(r.repository_id)))
         && (!params.has("review") || params.getAll("review").includes(r.review_status) || (params.getAll("review").includes("running") && r.has_running_review))
@@ -63,7 +63,7 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
           return { group, items: items.slice((index - 1) * 10, index * 10), total: items.length, page: index, has_more: index * 10 < items.length };
         }),
         total: filtered.length, repository_count: new Set(filtered.map((r) => r.repository_id)).size,
-        registered_total: all.length, repositories, authors: ["maria", "leo", "sam"], state_counts, page_size: 10,
+        registered_total: all.length, repositories, authors: options.authors ?? ["maria", "leo", "sam"], state_counts, page_size: 10,
       } satisfies Schema["InboxOut"];
     } else data = [];
     await route.fulfill({ json: data });
@@ -260,6 +260,7 @@ test("normalization, closed-only selection and keyboard focus", async ({ page })
 });
 
 test("errors retain loaded rows, retry individually and clear denied data", async ({ page }) => {
+  await page.clock.install();
   const { controls } = await mockInbox(page, { many: true });
   await page.goto("/");
   const active = page.getByRole("region", { name: "Open", exact: true });
@@ -272,9 +273,98 @@ test("errors retain loaded rows, retry individually and clear denied data", asyn
   await active.getByRole("button", { name: /Retry/ }).click();
   await expect(active.getByRole("link")).toHaveCount(20);
   controls.fail = 403;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.clock.fastForward(16000);
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
   await expect(page.getByRole("alert")).toBeVisible({ timeout: 10000 });
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(0);
+});
+
+test("mixed-case authors stay checked without duplicate options", async ({ page }) => {
+  await mockInbox(page, { authors: ["Maria", "maria", "Leo"] });
+  await page.goto("/?author=%40MARIA");
+  await expect(page).toHaveURL(/\?author=maria$/);
+  await expect(page.getByRole("status").first()).toContainText("2 pull requests");
+  await page.getByRole("button", { name: /Edit Author/ }).click();
+  const maria = page.getByRole("checkbox", { name: /^@maria$/i });
+  await expect(maria).toHaveCount(1);
+  await expect(maria).toBeChecked();
+  await maria.click();
+  await expect(page).not.toHaveURL(/author=/);
+});
+
+test("moving rows are deduplicated without changing server totals or page cursors", async ({ page }) => {
+  await mockInbox(page);
+  const requested: number[] = [];
+  await page.route("**/api/v1/pulls?**", async (route) => {
+    const index = Number(new URL(route.request().url()).searchParams.get("page") ?? 1);
+    requested.push(index);
+    const items = [rows.slice(0, 2), rows.slice(1, 3), rows.slice(3, 5)][index - 1];
+    await route.fulfill({ json: {
+      groups: [{ group: "active", items, total: 6, page: index, has_more: index < 3 }],
+      total: 6, repository_count: 3, registered_total: 6, repositories,
+      authors: ["maria", "leo", "sam"], state_counts: { open: 6 }, page_size: 2,
+    } satisfies Schema["InboxOut"] });
+  });
+  await page.goto("/?active_pages=2");
+  const active = page.getByRole("region", { name: "Open", exact: true });
+  await expect(active.getByRole("link")).toHaveCount(3);
+  await expect(page.getByRole("status").first()).toContainText("6 pull requests");
+  await active.getByRole("button", { name: /Load more/ }).click();
+  await expect(active.getByRole("link")).toHaveCount(5);
+  expect(requested.at(-1)).toBe(3);
+  await expect(active.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await expect(page.getByRole("status").first()).toContainText("6 pull requests");
+});
+
+test("large shared pagination is bounded and expanded lists do not poll", async ({ page }) => {
+  await page.clock.install();
+  const { requests } = await mockInbox(page, { many: true, extra: 150 });
+  await page.goto("/?active_pages=999999");
+  await expect(page).toHaveURL(/active_pages=10$/);
+  const active = page.getByRole("region", { name: "Open", exact: true });
+  await expect(active.getByRole("link")).toHaveCount(100);
+  await expect(active.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await expect(active).toContainText("Use filters to narrow the remaining pull requests.");
+  expect(Math.max(...requests.map((p) => Number(p.get("page") ?? 1)))).toBe(10);
+  const count = requests.length;
+  await page.clock.fastForward(16000);
+  expect(requests).toHaveLength(count);
+});
+
+test("search keeps loaded rows and cancels initial and paginated requests", async ({ page }) => {
+  await mockInbox(page, { many: true });
+  await page.addInitScript(() => {
+    const original = window.fetch;
+    window.fetch = (input, init) => {
+      const path = String(input);
+      if (path.includes("/pulls?") && (path.includes("q=slow") || path.includes("group=active"))) {
+        sessionStorage.setItem("pending-inbox", path);
+        return new Promise((_, reject) => init?.signal?.addEventListener("abort", () => {
+          sessionStorage.setItem("aborted-inbox", path);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true }));
+      }
+      return original(input, init);
+    };
+  });
+  await page.goto("/");
+  const active = page.getByRole("region", { name: "Open", exact: true });
+  const search = page.getByRole("textbox", { name: "Search pull requests", exact: true });
+  await expect(active.getByRole("link")).toHaveCount(10);
+  await search.fill("slow");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("pending-inbox"))).toContain("q=slow");
+  await expect(active.getByRole("link")).toHaveCount(10);
+  await expect(page.getByRole("status").first()).toContainText("Updating pull requests");
+  await expect(active.getByRole("button", { name: /Load more/ })).toBeDisabled();
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(search).toHaveValue("");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("aborted-inbox"))).toContain("q=slow");
+  await active.getByRole("button", { name: /Load more/ }).click();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("pending-inbox"))).toContain("group=active");
+  await search.fill("headers");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("aborted-inbox"))).toContain("group=active");
+  await expect(active.getByRole("link")).toHaveCount(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("empty workspace, no matches, and legacy repository links", async ({ page }) => {

@@ -2,9 +2,7 @@ from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import Finding, PullRequest, Repository, ReviewRun
-from .schemas import InboxFilters, InboxOut, InboxPage, InboxPullOut, InboxRepository
-
-PAGE_SIZE = 10
+from .schemas import INBOX_PAGE_SIZE, InboxFilters, InboxOut, InboxPage, InboxPullOut, InboxRepository
 
 
 def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters) -> InboxOut:
@@ -67,12 +65,15 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     if filters.findings:
         conditions.append(base.c.open_findings > 0 if filters.findings == "open" else base.c.open_findings == 0)
     if query := filters.q.strip():
-        conditions.append(or_(
+        predicates = [
             base.c.title.icontains(query, autoescape=True),
             base.c.repository_name.icontains(query, autoescape=True),
-            base.c.author.icontains(query.lstrip("@"), autoescape=True),
-            cast(base.c.number, String) == query.lstrip("#"),
-        ))
+        ]
+        if author_query := query.lstrip("@"):
+            predicates.append(base.c.author.icontains(author_query, autoescape=True))
+        if number_query := query.lstrip("#"):
+            predicates.append(cast(base.c.number, String) == number_query)
+        conditions.append(or_(*predicates))
     state_counts = {state: 0 for state in ["open", "merged", "closed"]}
     state_counts.update(dict(db.execute(
         select(base.c.state, func.count()).where(*conditions).group_by(base.c.state)
@@ -96,15 +97,15 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         if filters.group and name != filters.group:
             continue
         total = totals.get(name, 0)
-        page = min(filters.page if filters.group else 1, max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE))
+        page = min(filters.page if filters.group else 1, max(1, (total + INBOX_PAGE_SIZE - 1) // INBOX_PAGE_SIZE))
         items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
             case((filtered.c.has_running_review, 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
             order.nulls_last(), filtered.c.id.desc(),
-        ).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)).mappings()
+        ).offset((page - 1) * INBOX_PAGE_SIZE).limit(INBOX_PAGE_SIZE)).mappings()
         pages.append(InboxPage(
             group=name, items=[InboxPullOut.model_validate(row) for row in items],
-            total=total, page=page, has_more=page * PAGE_SIZE < total,
+            total=total, page=page, has_more=page * INBOX_PAGE_SIZE < total,
         ))
     registered = select(PullRequest).where(PullRequest.repository_id.in_(permitted)).subquery()
     return InboxOut(

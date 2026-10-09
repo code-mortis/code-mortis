@@ -170,6 +170,9 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
     assert get(client, "?q=%233")["total"] == 1
     assert get(client, "?q=Change%20item-01")["total"] == 1
     assert get(client, "?q=%25")["total"] == 0
+    for query in ["?q=@", "?q=@@", "?q=%23"]:
+        assert get(client, query)["total"] == 0
+    assert get(client, "?q=@ALICE")["total"] == 21
     assert get(client, "?findings=open")["total"] == 0
 
 

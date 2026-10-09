@@ -7,22 +7,23 @@ import { Empty, ErrorNotice, Loading, Status, date } from "./components/common";
 import { InboxFilters } from "./components/inbox-filters";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
-import { groups, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
+import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
 
 const titles: Record<Group, string> = { active: "Open", merged: "Merged", closed: "Closed" };
-type InboxData = Schema["InboxOut"] & { filterKey: string; errors: Partial<Record<Group, string>> };
+const createdFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+type InboxData = Schema["InboxOut"] & { errors: Partial<Record<Group, string>> };
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
   const filters = withoutPages(params).toString();
-  const first = await api<Schema["InboxOut"]>(`/pulls?${filters}`);
+  const first = await api<Schema["InboxOut"]>(`/pulls?${filters}`, "GET", undefined, undefined, signal);
   const errors: InboxData["errors"] = {};
   const pages = await Promise.all(first.groups.map(async (group) => {
-    const wanted = Math.min(Number(params.get(`${group.group}_pages`) ?? 1), Math.max(1, Math.ceil(group.total / first.page_size)));
+    const wanted = Math.min(Number(params.get(`${group.group}_pages`) ?? 1), Math.max(1, Math.ceil(group.total / first.page_size)), INBOX_MAX_PAGES);
     const combined = { ...group, items: [...group.items] };
     for (let page = 2; page <= wanted; page++) {
       signal.throwIfAborted();
       try {
-        const response = await api<Schema["InboxOut"]>(`/pulls?${filters}&group=${group.group}&page=${page}`);
+        const response = await api<Schema["InboxOut"]>(`/pulls?${filters}&group=${group.group}&page=${page}`, "GET", undefined, undefined, signal);
         const next = response.groups[0];
         if (!next) break;
         combined.items.push(...next.items);
@@ -31,6 +32,7 @@ async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise
         combined.has_more = next.has_more;
         if (next.page < page) break;
       } catch (error) {
+        signal.throwIfAborted();
         if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
         errors[group.group] = error instanceof Error ? error.message : "Could not load more pull requests.";
         break;
@@ -39,12 +41,13 @@ async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise
     return combined;
   }));
   const seen = new Set<string>();
+  // Keep server totals and cursors: de-duplication only handles rows moving between requests.
   for (const page of pages) page.items = page.items.filter((item) => {
     if (seen.has(item.id)) return false;
     seen.add(item.id);
     return true;
   });
-  return { ...first, groups: pages, errors, filterKey: filters };
+  return { ...first, groups: pages, errors };
 }
 
 export function Inbox() {
@@ -58,7 +61,7 @@ export function Inbox() {
     queryKey: ["inbox", filters, canonical],
     queryFn: ({ signal }) => fetchInbox(new URLSearchParams(canonical), signal),
     enabled: !legacy,
-    refetchInterval: 5000,
+    refetchInterval: groups.some((group) => params.has(`${group}_pages`)) ? false : 5000,
     retry: false,
     placeholderData: (previous) => previous,
   });
@@ -91,23 +94,26 @@ export function Inbox() {
     setParams(normalizeFilters(next));
   }
   if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
-  const options = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
-  const data = options?.filterKey === filters ? options : undefined;
+  const data = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
   const visibleGroups = data?.groups.filter((group) => group.total > 0) ?? [];
   const defaultOpen = !["q", "repo", "state", "review", "author", "findings"].some((key) => params.has(key));
+  let emptyTitle = "Your inbox is empty";
+  if (data?.registered_total) emptyTitle = defaultOpen ? "No open pull requests" : "No matching pull requests";
   return <>
     <header className="mb-5">
       <h1 className="text-3xl font-semibold tracking-tight">Inbox</h1>
       <p className="mt-1 text-sm text-muted-foreground">Pull requests across your repositories.</p>
     </header>
-    <InboxFilters params={params} data={options} onChange={change} onSearch={search} />
-    <p role="status" aria-live="polite" className="my-4 text-xs text-muted-foreground">{data ? `${data.total} pull ${data.total === 1 ? "request" : "requests"} · ${data.repository_count} ${data.repository_count === 1 ? "repository" : "repositories"}` : "Loading pull requests…"}</p>
+    <InboxFilters params={params} data={data} onChange={change} onSearch={search} />
+    <p role="status" aria-live="polite" className="my-4 text-xs text-muted-foreground">{data ? `${data.total} pull ${data.total === 1 ? "request" : "requests"} · ${data.repository_count} ${data.repository_count === 1 ? "repository" : "repositories"}` : "Loading pull requests…"}{query.isPlaceholderData && " · Updating pull requests…"}</p>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}
-    {(query.isPending || (query.isPlaceholderData && !data)) && <Loading />}
-    {data && data.total === 0 && <Empty title={data.registered_total ? defaultOpen ? "No open pull requests" : "No matching pull requests" : "Your inbox is empty"}>
-      {data.registered_total ? defaultOpen ? <>Use the PR state filter to browse merged and closed pull requests.</> : <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</> : <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
+    {query.isPending && <Loading />}
+    {data && data.total === 0 && !query.isPlaceholderData && <Empty title={emptyTitle}>
+      {!data.registered_total && <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
+      {!!data.registered_total && defaultOpen && <>Use the PR state filter to browse merged and closed pull requests.</>}
+      {!!data.registered_total && !defaultOpen && <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</>}
     </Empty>}
-    {data && data.total > 0 && <div className="space-y-6">
+    {data && data.total > 0 && <div className="space-y-6" aria-busy={query.isPlaceholderData}>
       {visibleGroups.map((group) => {
         const busy = query.isFetching && Number(params.get(`${group.group}_pages`) ?? 1) > group.page;
         const error = data.errors[group.group];
@@ -123,13 +129,16 @@ export function Inbox() {
               <div className="min-w-0 pr-5 md:pr-0"><p className="break-words font-medium group-hover:text-primary">{pr.title}</p><p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span className="break-all">{pr.repository_name}</span><span>#{pr.number}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</p></div>
               <div className="min-w-0 space-y-1"><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</div>
               <div><Badge variant="outline" className={pr.open_findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{pr.open_findings} unresolved<span className="sr-only"> findings</span></Badge></div>
-              {pr.created_at ? <time dateTime={pr.created_at} title={date(pr.created_at)} className="text-xs tabular-nums text-muted-foreground">{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(pr.created_at))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
+              {pr.created_at ? <time dateTime={pr.created_at} title={date(pr.created_at)} className="text-xs tabular-nums text-muted-foreground">{createdFormatter.format(new Date(pr.created_at))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
               <ChevronRight aria-hidden="true" className="absolute right-4 top-5 size-4 text-muted-foreground md:static" />
             </Link>)}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry {titles[group.group].toLowerCase()}</Button></div>}
-            {(group.has_more || busy) && !error && <div className="border-b px-5 py-3"><Button variant="ghost" size="sm" disabled={busy} onClick={() => {
-              const next = new URLSearchParams(params); next.set(`${group.group}_pages`, String(group.page + 1)); setParams(next);
+            {(group.has_more || busy) && group.page < INBOX_MAX_PAGES && !error && <div className="px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
+              const next = new URLSearchParams(params);
+              next.set(`${group.group}_pages`, String(group.page + 1));
+              setParams(normalizeFilters(next));
             }}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {titles[group.group].toLowerCase()}</span></Button></div>}
+            {group.has_more && group.page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining pull requests.</p>}
           </div>
         </section>;
       })}

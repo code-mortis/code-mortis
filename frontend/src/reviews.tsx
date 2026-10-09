@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { getInboxReturn } from "./lib/inbox-filters";
 import {
   Link,
   useNavigate,
@@ -364,7 +365,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const inboxReturn = typeof location.state?.inbox === "string" && /^\/(?:\?|$)/.test(location.state.inbox) ? location.state.inbox : null;
+  const inboxReturn = getInboxReturn(location.state);
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");

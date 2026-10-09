@@ -407,6 +407,7 @@ class RunDetail(BaseModel):
 
 
 InboxGroup = Literal["active", "merged", "closed"]
+INBOX_PAGE_SIZE = 10
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",
@@ -468,4 +469,4 @@ class InboxOut(BaseModel):
     repositories: list[InboxRepository]
     authors: list[str]
     state_counts: dict[str, int]
-    page_size: int = 10
+    page_size: int = INBOX_PAGE_SIZE
