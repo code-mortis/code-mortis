@@ -337,11 +337,18 @@ def pr_access(db: Session, user: User, pr_id: str, write=False):
 
 def repo_out(db: Session, repo: Repository) -> RepositoryOut:
     result = RepositoryOut.model_validate(repo)
-    result.open_prs = db.scalar(
-        select(func.count())
-        .select_from(PullRequest)
-        .where(PullRequest.repository_id == repo.id, PullRequest.state == "open")
-    )
+    result.open_prs, result.has_running_review = db.execute(
+        select(
+            select(func.count())
+            .select_from(PullRequest)
+            .where(PullRequest.repository_id == repo.id, PullRequest.state == "open")
+            .scalar_subquery(),
+            select(ReviewRun.id)
+            .join(PullRequest, ReviewRun.pr_id == PullRequest.id)
+            .where(PullRequest.repository_id == repo.id, ReviewRun.status == "running")
+            .exists(),
+        )
+    ).one()
     return result
 
 

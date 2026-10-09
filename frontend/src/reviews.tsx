@@ -2,6 +2,7 @@ import { useState } from "react";
 import { getInboxReturn } from "./lib/inbox-filters";
 import {
   Link,
+  Navigate,
   useNavigate,
   useLocation,
   useParams,
@@ -68,7 +69,7 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
       <div className="flex flex-wrap gap-3">
         {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn }}>View run details</Link>}
         {feedback.destination === "repository" && admin && (
-          <Link className="underline underline-offset-4" to={`/repositories?repo=${repositoryId}&configure=limits`}>Adjust review settings</Link>
+          <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}?configure=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
@@ -82,15 +83,16 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
 }
 
 export function Repositories({ admin }: { admin: boolean }) {
+  const { repositoryId } = useParams();
+  const location = useLocation();
   const repos = useApi<Repository[]>("/repositories", true);
   const [params, setParams] = useSearchParams();
-  const selected =
-    repos.data?.find((repo) => repo.id === Number(params.get("repo"))) ??
-    repos.data?.[0];
+  const requested = repositoryId ?? (params.get("repo") || null);
+  const selected = requested ? repos.data?.find((repo) => String(repo.id) === requested) : repos.data?.[0];
   const pulls = useApi<Schema["PullRequestOut"][]>(
     `/repositories/${selected?.id}/pulls`,
     true,
-    !!selected,
+    !!repositoryId && !!selected,
   );
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("open");
@@ -104,7 +106,14 @@ export function Repositories({ admin }: { admin: boolean }) {
     });
   }
   const action = useAction();
+  const target = requested ?? selected?.id;
+  if (target && (!repositoryId || params.has("repo"))) {
+    const search = new URLSearchParams(params);
+    search.delete("repo");
+    return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}`, search: search.toString(), hash: location.hash }} replace />;
+  }
   if (repos.isPending) return <Loading />;
+  if (repos.error && !repos.data) return <ErrorNotice error={repos.error} />;
   const rows =
     pulls.data?.filter(
       (pr) =>
@@ -116,7 +125,7 @@ export function Repositories({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        title="Repositories"
+        title={<span className="break-all">{selected?.full_name ?? "Repositories"}</span>}
         actions={
           admin && (
             <Button asChild variant="outline">
@@ -128,7 +137,12 @@ export function Repositories({ admin }: { admin: boolean }) {
         Follow each pull request from first review to final resolution.
       </PageTitle>
       <ErrorNotice error={repos.error || action.error} />
-      {!repos.data?.length ? (
+      {requested && !selected && (
+        <Empty title="Repository unavailable">
+          This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
+        </Empty>
+      )}
+      {!requested && !repos.data?.length && (
         <Empty title="Connect your first repository">
           {admin ? (
             <>
@@ -142,24 +156,10 @@ export function Repositories({ admin }: { admin: boolean }) {
             "Ask your administrator to connect a repository you can access on GitHub."
           )}
         </Empty>
-      ) : (
+      )}
+      {selected && (
         <>
           <div className="mb-7 flex flex-wrap items-center gap-3">
-            <label className="sr-only" htmlFor="repository">
-              Repository
-            </label>
-            <NativeSelect
-              id="repository"
-              className="w-full sm:w-80"
-              value={selected?.id}
-              onChange={(e) => setParams({ repo: e.target.value })}
-            >
-              {repos.data.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.full_name}
-                </option>
-              ))}
-            </NativeSelect>
             <Status value={selected?.enabled ? "enabled" : "paused"} />
             <div className="ml-auto flex gap-2">
               <Button
@@ -399,12 +399,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
   return (
     <>
       <PageTitle
-        eyebrow={<>
-          {inboxReturn && <><Link className="hover:underline" to={inboxReturn}>Inbox</Link><span> / </span></>}
-          <Link className="hover:underline" to={`/repositories?repo=${repository.id}`}>
-            {repository.full_name} / Pull request #{pr.number}
-          </Link>
-        </>}
         title={pr.title}
         actions={
           <>
@@ -772,14 +766,12 @@ type Coverage = {
 };
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
-  const inboxReturn = getInboxReturn(useLocation().state);
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
   const action = useAction();
   if (query.isPending) return <Loading />;
   if (!query.data) return <ErrorNotice error={query.error} />;
   const {
     run,
-    pull_request: pr,
     repository,
     occurrences,
     can_write,
@@ -798,11 +790,6 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   return (
     <>
       <PageTitle
-        eyebrow={
-          <Link className="hover:underline" to={`/pulls/${pr.id}`} state={{ inbox: inboxReturn }}>
-            {repository.full_name} / #{pr.number} / Run history
-          </Link>
-        }
         title="Review run"
         actions={
           can_write && (

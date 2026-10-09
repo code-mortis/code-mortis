@@ -256,34 +256,6 @@
           "oklch(95% 0.0899 158.98)"
         ]
       },
-      "rail": {
-        "role": "primary",
-        "displayName": "Rail",
-        "tonalRamp": [
-          "oklch(15% 0.0275 172.06)",
-          "oklch(26% 0.0275 172.06)",
-          "oklch(38% 0.0275 172.06)",
-          "oklch(49% 0.0275 172.06)",
-          "oklch(61% 0.0275 172.06)",
-          "oklch(72% 0.0275 172.06)",
-          "oklch(84% 0.0275 172.06)",
-          "oklch(95% 0.0275 172.06)"
-        ]
-      },
-      "rail-foreground": {
-        "role": "neutral",
-        "displayName": "Rail foreground",
-        "tonalRamp": [
-          "oklch(15% 0.0150 151.76)",
-          "oklch(26% 0.0150 151.76)",
-          "oklch(38% 0.0150 151.76)",
-          "oklch(49% 0.0150 151.76)",
-          "oklch(61% 0.0150 151.76)",
-          "oklch(72% 0.0150 151.76)",
-          "oklch(84% 0.0150 151.76)",
-          "oklch(95% 0.0150 151.76)"
-        ]
-      },
       "dark-background": {
         "role": "neutral",
         "displayName": "Dark background",
@@ -536,62 +508,6 @@
           "oklch(95% 0.0745 154.20)"
         ]
       },
-      "dark-rail": {
-        "role": "primary",
-        "displayName": "Dark rail",
-        "tonalRamp": [
-          "oklch(15% 0.0208 162.30)",
-          "oklch(26% 0.0208 162.30)",
-          "oklch(38% 0.0208 162.30)",
-          "oklch(49% 0.0208 162.30)",
-          "oklch(61% 0.0208 162.30)",
-          "oklch(72% 0.0208 162.30)",
-          "oklch(84% 0.0208 162.30)",
-          "oklch(95% 0.0208 162.30)"
-        ]
-      },
-      "dark-rail-foreground": {
-        "role": "neutral",
-        "displayName": "Dark rail foreground",
-        "tonalRamp": [
-          "oklch(15% 0.0150 151.76)",
-          "oklch(26% 0.0150 151.76)",
-          "oklch(38% 0.0150 151.76)",
-          "oklch(49% 0.0150 151.76)",
-          "oklch(61% 0.0150 151.76)",
-          "oklch(72% 0.0150 151.76)",
-          "oklch(84% 0.0150 151.76)",
-          "oklch(95% 0.0150 151.76)"
-        ]
-      },
-      "navigation-text": {
-        "role": "neutral",
-        "displayName": "Navigation text",
-        "tonalRamp": [
-          "oklch(15% 0.0291 161.93)",
-          "oklch(26% 0.0291 161.93)",
-          "oklch(38% 0.0291 161.93)",
-          "oklch(49% 0.0291 161.93)",
-          "oklch(61% 0.0291 161.93)",
-          "oklch(72% 0.0291 161.93)",
-          "oklch(84% 0.0291 161.93)",
-          "oklch(95% 0.0291 161.93)"
-        ]
-      },
-      "navigation-active": {
-        "role": "neutral",
-        "displayName": "Navigation active",
-        "tonalRamp": [
-          "oklch(15% 0.0437 163.05)",
-          "oklch(26% 0.0437 163.05)",
-          "oklch(38% 0.0437 163.05)",
-          "oklch(49% 0.0437 163.05)",
-          "oklch(61% 0.0437 163.05)",
-          "oklch(72% 0.0437 163.05)",
-          "oklch(84% 0.0437 163.05)",
-          "oklch(95% 0.0437 163.05)"
-        ]
-      },
       "status-good-fill": {
         "role": "semantic",
         "displayName": "Status good fill",
@@ -797,6 +713,16 @@
         "name": "reduced-motion",
         "value": "0.01ms",
         "purpose": "Animation/transition duration when reduced motion is requested."
+      },
+      {
+        "name": "sidebar-slide",
+        "value": "200ms linear",
+        "purpose": "Desktop sidebar position and main-column gap."
+      },
+      {
+        "name": "appearance-toggle",
+        "value": "200ms cubic-bezier(0, 0, 0.2, 1)",
+        "purpose": "Header sun/moon icon rotation and scaling; disabled with reduced motion."
       }
     ],
     "breakpoints": [
@@ -880,12 +806,12 @@
       "css": ".ds-select{font-family:'Inter Variable',sans-serif;height:36px;width:160px;padding:0 12px;border:1px solid var(--input, #c5cec3);border-radius:var(--radius,8px);background:var(--card, #ffffff);color:var(--foreground, #202c26);font-size:14px;line-height:20px;cursor:pointer;}.ds-select:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}.ds-select:disabled{opacity:.5;}"
     },
     {
-      "name": "Rail navigation",
+      "name": "Sidebar navigation",
       "kind": "nav",
       "refersTo": "navigation",
-      "description": "Current repository navigation within its dark rail surface.",
-      "html": "<nav class=\"ds-rail\" aria-label=\"Main navigation\"><a class=\"ds-nav-link\" href=\"#repositories\" aria-current=\"page\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect width=\"7\" height=\"7\" x=\"14\" y=\"3\" rx=\"1\"/><path d=\"M10 21V8a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H3\"/></svg>Repositories</a></nav>",
-      "css": ".ds-rail{background:var(--rail, #162923);padding:12px;width:220px;}.ds-nav-link{font-family:'Inter Variable',sans-serif;display:flex;align-items:center;gap:.7rem;padding:.7rem .8rem;border-radius:.4rem;font-size:.82rem;line-height:1.5;color:#b3c9bd;text-decoration:none;}.ds-nav-link:hover,.ds-nav-link[aria-current=page]{background:#284638;color:#fff;}.ds-nav-link:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}"
+      "description": "Theme-matching shadcn sidebar with filled selection, owner/name repository labels, and visible running activity. The 256px desktop sidebar hides fully; below 1024px it opens as a 288px drawer. This preview shows the navigation rows.",
+      "html": "<nav class=\"ds-sidebar\" aria-label=\"Main navigation\"><a class=\"ds-nav-link\" href=\"#inbox\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg><span>Inbox</span></a><p class=\"ds-nav-group\">Repositories</p><a class=\"ds-nav-link ds-nav-repository\" href=\"#repositories\" aria-current=\"page\" aria-label=\"acme/payments, review running\" title=\"acme/payments\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5\"/><circle cx=\"13\" cy=\"12\" r=\"2\"/><path d=\"M18 19c-2.8 0-5-2.2-5-5v8\"/><circle cx=\"20\" cy=\"19\" r=\"2\"/></svg><span class=\"ds-nav-identity\"><span class=\"ds-nav-name\">payments</span><span class=\"ds-nav-owner\">acme</span></span><span class=\"ds-nav-running\"><svg class=\"ds-nav-spinner\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></svg>Running</span></a></nav>",
+      "css": ".ds-sidebar{box-sizing:border-box;width:256px;max-width:100%;padding:16px;background:var(--sidebar,var(--muted,#eef0ec));color:var(--sidebar-foreground,var(--foreground,#202c26));font-family:'Inter Variable',sans-serif;}.ds-nav-link{box-sizing:border-box;display:flex;align-items:center;gap:8px;height:40px;padding:8px;border-radius:var(--radius,8px);font-size:14px;line-height:20px;color:inherit;text-decoration:none;}.ds-nav-link>svg{flex-shrink:0;}.ds-nav-link:hover,.ds-nav-link:active,.ds-nav-link[aria-current=page]{background:var(--sidebar-accent,var(--accent,#e1ebe2));color:var(--sidebar-accent-foreground,var(--accent-foreground,#173e2a));}.ds-nav-link[aria-current=page]{font-weight:500;}.ds-nav-link:focus-visible{outline:none;box-shadow:0 0 0 2px var(--sidebar-ring,var(--ring,#377c59));}.ds-nav-group{margin:24px 0 0;padding:8px;font-size:12px;line-height:16px;font-weight:500;color:var(--muted-foreground,#606a62);}.ds-nav-repository{height:48px;}.ds-nav-repository>svg,.ds-nav-owner{color:var(--muted-foreground,#606a62);}.ds-nav-identity{min-width:0;flex:1;}.ds-nav-name,.ds-nav-owner{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}.ds-nav-name{font-weight:500;}.ds-nav-owner{font-size:12px;line-height:16px;}.ds-nav-running{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12px;line-height:16px;color:var(--sidebar-primary,var(--primary,#245944));}@media(prefers-reduced-motion:no-preference){.ds-nav-spinner{animation:ds-sidebar-spin 1s linear infinite;}}@keyframes ds-sidebar-spin{to{transform:rotate(360deg);}}"
     },
     {
       "name": "Semantic status chips",
@@ -922,7 +848,7 @@
   ],
   "narrative": {
     "northStar": "Workflow-focused workspace",
-    "overview": "Code Mortis uses compact controls, clear review states, and a persistent forest-green navigation area. Warm off-white surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light, dark, and system appearance share the same structure; system mode follows operating-system changes while the app is open.",
+    "overview": "Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.",
     "keyCharacteristics": [
       "Compact, native form controls and explicit action labels.",
       "Semantic status chips paired with text.",

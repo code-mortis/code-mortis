@@ -44,6 +44,25 @@ def get(client, query=""):
     return response.json()
 
 
+@pytest.mark.parametrize("state", ["open", "merged", "closed"])
+@pytest.mark.parametrize("status", ["running", "queued", "blocked", "completed", "failed"])
+def test_repository_review_activity(visible, github_stub, client, state, status):
+    with transaction() as db:
+        db.get(Repository, 22).enabled = False
+        pr = pull(db, "activity", state)
+        run(db, pr, status, "older", head_sha="c" * 40, created_at=now() - timedelta(minutes=1))
+        run(db, pr, "completed", "newer")
+    response = client.get("/api/v1/repositories")
+    assert response.status_code == 200
+    repository = response.json()[0]
+    assert repository["has_running_review"] is (status == "running")
+    assert repository["open_prs"] == 1 + (state == "open")
+    assert client.get("/api/v1/runs/older").json()["repository"]["has_running_review"] is (status == "running")
+    with transaction() as db:
+        db.get(ReviewRun, "older").status = "completed"
+    assert client.get("/api/v1/repositories").json()[0]["has_running_review"] is False
+
+
 def test_groups_current_revision_reruns_and_publication(visible, client):
     with transaction() as db:
         for status in ["running", "queued", "blocked", "failed", "partial", "skipped", "cancelled", "superseded"]:
@@ -129,6 +148,9 @@ def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, 
     assert result["total"] == result["registered_total"] == 1
     assert result["authors"] == ["owner"]
     assert result["repositories"] == [{"id": 22, "full_name": "team/project"}]
+    repositories = client.get("/api/v1/repositories").json()
+    assert [repo["id"] for repo in repositories] == [22]
+    assert repositories[0]["has_running_review"] is False
     assert get(client, "?repo=23")["total"] == 0
     assert get(client, "?author=hidden")["total"] == 0
     monkeypatch.setattr(github, "pages", lambda *args: [])

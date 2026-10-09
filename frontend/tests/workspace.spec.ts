@@ -31,6 +31,7 @@ const repo = {
     rules: null,
   },
   open_prs: 2,
+  has_running_review: false,
 };
 const run = {
   id: "run",
@@ -328,6 +329,24 @@ async function mock(
   return requests;
 }
 
+async function openNavigation(page: Page) {
+  const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+  if (page.viewportSize()!.width < 1024) await toggle.click();
+}
+
+async function closeNavigation(page: Page) {
+  const close = page.getByRole("button", { name: "Close navigation", exact: true });
+  if (await close.isVisible()) await close.click();
+}
+
+async function breadcrumbAncestor(page: Page, name: string) {
+  if (page.viewportSize()!.width < 640) {
+    await page.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
+    return page.getByRole("menuitem", { name, exact: true });
+  }
+  return page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name, exact: true, disabled: false });
+}
+
 async function noOverflow(page: Page) {
   expect(
     await page.evaluate(
@@ -339,6 +358,301 @@ async function noOverflow(page: Page) {
   }
 }
 
+test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
+  await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
+    { ...repo, has_running_review: true },
+    { ...repo, id: 23, full_name: "other/payments", enabled: false },
+    { ...repo, id: 24, full_name: "legacy-repository" },
+  ] }));
+  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories");
+  await expect(page.getByRole("heading", { name: repo.full_name, exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("link", { name: "legacy-repository", exact: true }).locator(".font-medium")).toHaveText("legacy-repository");
+  const running = nav.getByRole("link", { name: "acme/payments, review running", exact: true });
+  await expect(running).toHaveAttribute("aria-current", "page");
+  await expect(running).not.toContainText("Running");
+  await expect(running.locator(".motion-safe\\:animate-spin")).toBeVisible();
+  await expect(running.locator(".animate-spin, .motion-safe\\:animate-spin")).toHaveCSS("animation-name", "none");
+  await nav.getByRole("link", { name: "other/payments", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/23$/);
+  await expect(page.getByRole("heading", { name: "other/payments", exact: true })).toBeVisible();
+  if (info.project.name === "mobile") {
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
+  }
+  await openNavigation(page);
+  await expect(nav.getByRole("link", { name: "other/payments", exact: true })).toHaveAttribute("aria-current", "page");
+  for (const theme of ["light", "dark"]) {
+    await closeNavigation(page);
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await openNavigation(page);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/sidebar-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1400, height: 938 });
+    await noOverflow(page);
+    await page.screenshot({ path: "../.impeccable/review/sidebar-1400.png", fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "Hide sidebar" }).click();
+    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
+    await expect(page.locator('[data-slot="sidebar-container"]')).not.toBeInViewport();
+    await page.getByRole("button", { name: "Show sidebar" }).press("Enter");
+    await expect(nav).toBeInViewport();
+    await nav.getByRole("link", { name: "other/payments", exact: true }).focus();
+    await page.keyboard.press("Control+b");
+    await expect(page.getByRole("button", { name: "Show sidebar" })).toBeFocused();
+    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
+    await page.keyboard.press("Enter");
+    await expect(nav).toBeInViewport();
+  } else {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
+  }
+  for (const path of ["/pulls/pr", "/runs/run"]) {
+    await page.goto(path);
+    await openNavigation(page);
+    await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: "Inbox", exact: true })).not.toHaveAttribute("aria-current", "page");
+  }
+});
+
+test("repository paths preserve legacy settings links and never fall back from an unknown id", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "other/payments" }] }));
+  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories?repo=23&configure=limits#settings");
+  await expect(page).toHaveURL(/\/repositories\/23\?configure=limits#settings$/);
+  await expect(page.getByRole("dialog", { name: "Repository configuration" })).toContainText("other/payments");
+  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("dialog", { name: "Repository configuration" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/\/repositories\/23$/);
+  await page.goto("/repositories/999");
+  await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).locator('[aria-current="page"]')).toHaveCount(0);
+  await closeNavigation(page);
+  const documentRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) documentRequests.push(request.url());
+  });
+  await page.getByRole("link", { name: "View available repositories", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/22$/);
+  expect(documentRequests).toEqual([]);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories");
+  await expect(page.getByRole("heading", { name: "Connect your first repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Connect repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
+});
+
+test("sidebar account shows the GitHub avatar and signs out through its keyboard menu", async ({ page }, info) => {
+  await mock(page);
+  let signedOut = false;
+  let completeLogout!: () => void;
+  const pendingLogout = new Promise<void>((resolve) => { completeLogout = resolve; });
+  const avatar = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#245c47"/><text x="16" y="22" text-anchor="middle" font-family="sans-serif" font-size="20" fill="white">C</text></svg>')}`;
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill(signedOut
+    ? { status: 401, json: { detail: "Sign in required" } }
+    : { json: { id: 7, login: "carlos", role: "admin", avatar_url: avatar, csrf: "csrf-from-session" } }));
+  await page.route("**/api/v1/auth/logout", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-from-session");
+    await pendingLogout;
+    signedOut = true;
+    await route.fulfill({ json: {} });
+  });
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  const account = page.getByRole("button", { name: "Account menu for @carlos", exact: true });
+  await expect(account.locator('[data-slot="avatar-image"]')).toHaveAttribute("src", avatar);
+  await expect(account).toContainText("Administrator");
+  await account.focus();
+  await page.keyboard.press("Enter");
+  const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+  await expect(settings).toBeFocused();
+  await expect(settings).toHaveAttribute("href", "/settings");
+  await settings.press("Enter");
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  await account.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(account).toBeFocused();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
+  for (const theme of ["light", "dark"]) {
+    if (info.project.name === "mobile") {
+      await page.getByRole("button", { name: "Close navigation", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: /Switch to (light|dark) mode/ })).toBeVisible();
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    if (theme === "dark") await expect(page.locator("html")).toHaveClass("dark");
+    else await expect(page.locator("html")).not.toHaveClass("dark");
+    await openNavigation(page);
+    await account.click();
+    await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeInViewport();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/account-${info.project.name}-${theme}.png`, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
+  }
+  await account.press("Enter");
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).press("Enter");
+  await expect(account).toBeDisabled();
+  await expect(account).toContainText("Signing out…");
+  completeLogout();
+  await expect(page.getByRole("link", { name: "Continue with GitHub", exact: true })).toBeVisible();
+});
+
+test("sidebar account keeps an initials fallback for missing or failed avatars and long names", async ({ page }) => {
+  await mock(page, { role: "member" });
+  await page.goto("/repositories/22");
+  await openNavigation(page);
+  await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true }).locator('[data-slot="avatar-fallback"]')).toHaveText("CA");
+  const login = "account-with-a-long-github-username";
+  let avatarFailed = false;
+  await page.route("**/missing-avatar.png", (route) => { avatarFailed = true; return route.fulfill({ status: 404 }); });
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { id: 7, login, role: "member", avatar_url: "/missing-avatar.png", csrf: "csrf-from-session" } }));
+  await page.reload();
+  await openNavigation(page);
+  await expect.poll(() => avatarFailed).toBe(true);
+  const account = page.getByRole("button", { name: `Account menu for @${login}`, exact: true });
+  await expect(account).toHaveAttribute("title", `@${login}`);
+  await expect(account).toContainText("Member");
+  await expect(account.locator('[data-slot="avatar-fallback"]')).toHaveText("AC");
+  await expect(account.locator('[data-slot="avatar-image"]')).toHaveCount(0);
+  await noOverflow(page);
+});
+
+test("sidebar activity refreshes and does not present failed polling as current", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  let running = true;
+  let failure = 0;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill(failure
+    ? { status: failure, json: { detail: "Repositories unavailable" } }
+    : { json: [{ ...repo, has_running_review: running }] }));
+  await page.goto("/settings");
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  const activity = nav.getByRole("link", { name: "acme/payments, review running", exact: true }).locator(".motion-safe\\:animate-spin");
+  await expect(activity).toBeVisible();
+  running = false;
+  await page.clock.fastForward(6000);
+  await expect(activity).toHaveCount(0);
+  running = true;
+  await page.clock.fastForward(6000);
+  await expect(activity).toBeVisible();
+  failure = 503;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toHaveText("Repository activity unavailable.");
+  await expect(nav.getByRole("link", { name: repo.full_name, exact: true })).toBeVisible();
+  await expect(activity).toHaveCount(0);
+  failure = 0;
+  await nav.getByRole("button", { name: "Retry repositories" }).click();
+  await expect(activity).toBeVisible();
+  failure = 403;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveCount(0);
+  failure = 401;
+  await page.clock.fastForward(6000);
+  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
+});
+
+test("sidebar handles long repository lists and empty access", async ({ page }, info) => {
+  await mock(page, { role: "member" });
+  const name = "organization-with-a-long-name/repository-with-a-very-long-name";
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: Array.from({ length: 40 }, (_, i) => ({ ...repo, id: i + 22, full_name: `${name}-${i}`, has_running_review: i === 0 })) }));
+  await page.route("**/api/v1/repositories/*/pulls", (route) => route.fulfill({ json: [] }));
+  await page.goto("/settings");
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("link")).toHaveCount(41);
+  await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true })).toBeInViewport();
+  const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await last.focus();
+  await expect(last).toBeInViewport();
+  await expect(last).toHaveAttribute("title", `${name}-39`);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await noOverflow(page);
+  await expect(page.getByRole("link", { name: "Manage repositories", exact: true })).toHaveCount(0);
+  await last.click();
+  await expect(page.getByRole("heading", { name: `${name}-39`, exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
+  await page.reload();
+  await openNavigation(page);
+  await expect(nav).toContainText("No repositories available.");
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1023, height: 800 });
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    await openNavigation(page);
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toBeVisible();
+    await noOverflow(page);
+    await closeNavigation(page);
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeVisible();
+    await expect(nav).toBeVisible();
+  }
+});
+
+test("sidebar shortcut leaves editing controls alone", async ({ page }, info) => {
+  await mock(page);
+  await page.goto("/");
+  const toggle = page.locator('[data-slot="sidebar-trigger"]');
+  await expect(toggle).toBeVisible();
+  await page.evaluate(() => {
+    const fields = document.createElement("div");
+    fields.id = "shortcut-fields";
+    fields.innerHTML = '<input /><textarea></textarea><select><option>Option</option></select><div contenteditable=""><span tabindex="0">Editable text</span></div>';
+    document.body.append(fields);
+  });
+  for (const selector of ["input", "textarea", "select", "[contenteditable] span"]) {
+    const field = page.locator(`#shortcut-fields ${selector}`);
+    for (const modifier of ["Control", "Meta"]) {
+      await field.press(`${modifier}+b`);
+      await expect(field).toBeFocused();
+      await expect(toggle).toHaveAttribute("aria-expanded", info.project.name === "mobile" ? "false" : "true");
+    }
+  }
+  await toggle.press("Control+b");
+  await expect(toggle).toHaveAttribute("aria-expanded", info.project.name === "mobile" ? "true" : "false");
+  expect((await page.context().cookies()).some((cookie) => cookie.name === "sidebar_state")).toBe(false);
+});
+
+test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ page }) => {
+  await mock(page);
+  for (const [path, label] of [["/pulls/pr/", "Pull request #148"], ["/runs/run/", "Review run"]]) {
+    await page.goto(path);
+    const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(label);
+    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", `/repositories/${repo.id}`);
+    await page.keyboard.press("Escape");
+    await openNavigation(page);
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("aria-current", "page");
+  }
+});
+
 test("repository navigation, filtering, and review workspace", async ({
   page,
 }, info) => {
@@ -347,7 +661,7 @@ test("repository navigation, filtering, and review workspace", async ({
   await mock(page);
   await page.goto("/repositories");
   await expect(
-    page.getByRole("heading", { name: "Repositories", exact: true }),
+    page.getByRole("heading", { name: repo.full_name, exact: true }),
   ).toBeVisible();
   await page.getByLabel("Search pull requests").fill("148");
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
@@ -393,17 +707,23 @@ for (const entry of ["history", "feedback", "start"] as const) {
       await page.getByRole("button", { name: "Run review", exact: true }).click();
     }
     await expect(page).toHaveURL(/\/runs\/run$/);
+    await openNavigation(page);
     const inboxNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true });
     await expect(inboxNav).toHaveAttribute("href", inbox);
-    await expect(inboxNav).toHaveClass(/nav-active/);
+    await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
     if (entry === "feedback") {
       await page.getByRole("link", { name: "Open pull request to run a new review", exact: true }).click();
     } else {
-      await page.getByRole("link", { name: /acme\/payments.*Run history/ }).click();
+      await (await breadcrumbAncestor(page, "Pull request #148")).click();
     }
     await expect(page).toHaveURL(/\/pulls\/pr$/);
-    await expect(inboxNav).toHaveClass(/nav-active/);
-    await page.getByRole("link", { name: "Inbox", exact: true }).last().click();
+    await openNavigation(page);
+    await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
+    await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
     await expect(page).toHaveURL(inbox);
     await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
   });
@@ -502,6 +822,7 @@ test("partial review and publication retry remain distinct", async ({
 }, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(page.locator("main header")).toContainText("· 90s");
   await expect(
     page.getByRole("region", { name: "Review outcome" }),
@@ -560,9 +881,11 @@ test("read-only members cannot change findings or instance settings", async ({
   await mock(page, { role: "member", canWrite: false });
   await page.goto("/pulls/pr");
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
+  await openNavigation(page);
   await expect(
     page.getByRole("link", { name: "Settings", exact: true }),
   ).toHaveCount(1);
+  await closeNavigation(page);
   await expect(
     page.getByRole("button", { name: "Run review", exact: true }),
   ).toHaveCount(0);
@@ -1369,7 +1692,7 @@ for (const configured of [false, true]) {
     await expect(page).toHaveURL(`http://127.0.0.1:4178${entry}`);
     await expect(
       page.getByRole("heading", {
-        name: configured ? "Repositories" : "Give your reviews a home.",
+        name: configured ? repo.full_name : "Give your reviews a home.",
         exact: true,
       }),
     ).toBeVisible();
@@ -1378,16 +1701,95 @@ for (const configured of [false, true]) {
   });
 }
 
-test("system appearance follows OS changes and explicit choices persist", async ({
+test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page }, info) => {
+  await mock(page);
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1283, height: 938 });
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  const current = breadcrumb.locator('[aria-current="page"]');
+  await page.goto("/runs/run");
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await expect(current).toHaveText("Review run");
+  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/");
+  await noOverflow(page);
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await page.screenshot({ path: `../.impeccable/review/header-${info.project.name}-${theme}.png`, animations: "disabled" });
+  }
+  const parent = await breadcrumbAncestor(page, "Pull request #148");
+  await expect(parent).toHaveAttribute("href", "/pulls/pr");
+  await parent.press("Enter");
+  await expect(current).toHaveText("Pull request #148");
+  await (await breadcrumbAncestor(page, "acme/payments")).click();
+  await expect(page).toHaveURL(/\/repositories\/22$/);
+  await expect(current).toHaveText("acme/payments");
+  await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(current).toHaveText("Inbox");
+  await page.goto("/settings");
+  await expect(current).toHaveText("AI connections");
+  for (const label of ["GitHub", "Team"]) {
+    await page.getByRole("tab", { name: label, exact: true }).click();
+    await expect(current).toHaveText(label);
+  }
+  await (await breadcrumbAncestor(page, "Settings")).click();
+  await expect(current).toHaveText("AI connections");
+  for (const tab of ["", "unknown", "constructor"]) {
+    await page.goto(`/settings?tab=${tab}`);
+    await expect(current).toHaveText("AI connections");
+  }
+  await page.goto("/setup");
+  await expect(current).toHaveText("GitHub");
+  await page.goto("/missing-page");
+  await expect(current).toHaveText("Page not found");
+  await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
+  await expect(current).toHaveText("Inbox");
+});
+
+test("breadcrumbs keep long names accessible without pushing the theme button offscreen", async ({ page }, info) => {
+  await mock(page);
+  const fullName = "organization-with-a-very-long-name/repository-with-a-very-long-name";
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+    repository: { ...repo, full_name: fullName }, pull_request: pr, runs: [run], findings: [], can_write: true,
+  } }));
+  await page.goto("/pulls/pr");
+  await expect(page.getByRole("heading", { name: pr.title, exact: true })).toBeVisible();
+  for (const width of info.project.name === "desktop" ? [1283, 1024, 768, 640] : [390, 320]) {
+    await page.setViewportSize({ width, height: 938 });
+    await expect(page.getByRole("button", { name: "Switch to dark mode" })).toBeInViewport();
+    await expect(page.getByRole("navigation", { name: "Breadcrumb", exact: true }).locator('[aria-current="page"]')).toBeInViewport();
+    await noOverflow(page);
+  }
+  await expect(await breadcrumbAncestor(page, fullName)).toHaveAttribute("href", "/repositories/22");
+  await page.screenshot({ path: `../.impeccable/review/header-long-${info.project.name}.png`, animations: "disabled" });
+});
+
+test("breadcrumbs handle unavailable data and member settings without inventing links", async ({ page }) => {
+  await mock(page, { role: "member" });
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  const current = breadcrumb.locator('[aria-current="page"]');
+  await page.goto("/settings?tab=team");
+  await expect(current).toHaveText("AI connections");
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ status: 403, json: { detail: "Permission denied" } }));
+  await page.goto("/pulls/pr");
+  await expect(current).toHaveText("Pull request");
+  await expect(breadcrumb).not.toContainText("acme/payments");
+  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/");
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
+  await page.goto("/repositories");
+  await expect(current).toHaveText("Repositories");
+  await expect(page.getByRole("heading", { name: "Connect your first repository", exact: true })).toBeVisible();
+  await expect(page.getByText("Ask your administrator to connect a repository you can access on GitHub.", { exact: true })).toBeVisible();
+  await noOverflow(page);
+});
+
+test("header theme toggle follows the OS until an explicit choice, then persists", async ({
   page,
 }, info) => {
   await mock(page);
   await page.goto("/pulls/pr");
-  const selector = page.getByRole("combobox", {
-    name: "Appearance",
-    exact: true,
-  });
-  await expect(selector).toHaveValue("system");
+  await expect(page.getByRole("combobox", { name: "Appearance", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("banner").getByRole("button", { name: "Switch to dark mode" })).toBeInViewport();
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveClass("dark");
   await page.screenshot({
@@ -1395,14 +1797,18 @@ test("system appearance follows OS changes and explicit choices persist", async 
     fullPage: true,
     animations: "disabled",
   });
-  await selector.selectOption("light");
+  await page.getByRole("button", { name: "Switch to light mode" }).press("Enter");
   await expect(page.locator("html")).not.toHaveClass("dark");
   await page.reload();
-  await expect(selector).toHaveValue("light");
-  await selector.selectOption("system");
+  await expect(page.getByRole("button", { name: "Switch to dark mode" })).toBeVisible();
+  await expect(page.locator("html")).not.toHaveClass("dark");
+  await page.getByRole("button", { name: "Switch to dark mode" }).press("Space");
   await expect(page.locator("html")).toHaveClass("dark");
   await page.emulateMedia({ colorScheme: "light" });
-  await expect(page.locator("html")).not.toHaveClass("dark");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Switch to light mode" })).toBeVisible();
+  await expect(page.locator("html")).toHaveClass("dark");
 });
 
 test("members manage personal subscriptions without administrative controls", async ({
@@ -1556,7 +1962,7 @@ for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { sel
   test(`invalid verification counts are not presented: ${JSON.stringify(verification)}`, async ({ page }) => {
     await mock(page, { run: { progress: { verification } } });
     await page.goto("/runs/run");
-    await expect(page.getByText("Review run", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
     await expect(page.getByText(/findings verified/)).toHaveCount(0);
   });
 }
@@ -1578,7 +1984,7 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
     await route.fulfill({ status: 202, json: { job_id: "uninstall" } });
   });
   await page.goto("/repositories");
-  await page.getByRole("link", { name: "Manage repositories", exact: true }).click();
+  await page.getByRole("main").getByRole("link", { name: "Manage repositories", exact: true }).click();
   const account = page.getByRole("article", { name: "acme", exact: true });
   await expect(page.getByRole("heading", { name: "acme", exact: true })).toHaveCount(1);
   await expect(account.getByRole("link", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);

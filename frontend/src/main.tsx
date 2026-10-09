@@ -10,7 +10,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Blocks, Github, Inbox as InboxIcon, LogOut, Settings } from "lucide-react";
+import { Github } from "lucide-react";
 import { api, ApiError, setCsrf, useAction, useApi, type Schema } from "./api";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -19,30 +19,18 @@ import {
   ErrorNotice,
   Field,
   Loading,
-  NativeSelect,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
-import { getInboxReturn } from "./lib/inbox-filters";
+import { AppSidebar, Brand } from "./components/app-sidebar";
+import { AppHeader } from "./components/app-header";
+import { SidebarProvider } from "./components/ui/sidebar";
 import { SettingsPage } from "./settings";
 import "./index.css";
 
 const cache = new QueryClient({
   defaultOptions: { queries: { staleTime: 15000, refetchOnWindowFocus: true } },
 });
-function Brand() {
-  return (
-    <span className="flex items-center gap-2.5 font-semibold tracking-tight">
-      <span
-        aria-hidden="true"
-        className="grid size-7 place-items-center rounded border border-current/30 font-mono text-xs"
-      >
-        cm
-      </span>
-      Code Mortis
-    </span>
-  );
-}
 function Setup({ configured }: { configured: boolean }) {
   const route = useLocation();
   const [token, setToken] = useState("");
@@ -180,19 +168,18 @@ function App() {
   const action = useAction();
   const navigate = useNavigate();
   const route = useLocation();
-  const inboxReturn = getInboxReturn(route.state);
-  const fromInbox = inboxReturn !== null;
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
+  const [dark, setDark] = useState(() => theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches));
   useEffect(() => {
     const system = matchMedia("(prefers-color-scheme: dark)");
-    const apply = () =>
-      document.documentElement.classList.toggle(
-        "dark",
-        theme === "dark" || (theme === "system" && system.matches),
-      );
+    const apply = () => {
+      const resolvedDark = theme === "dark" || (theme === "system" && system.matches);
+      document.documentElement.classList.toggle("dark", resolvedDark);
+      setDark(resolvedDark);
+    };
     apply();
     localStorage.setItem("theme", theme);
     system.addEventListener("change", apply);
@@ -253,116 +240,44 @@ function App() {
     window.location.reload();
   }
   return (
-    <div className="min-h-dvh lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside className="bg-[var(--rail)] text-[var(--rail-foreground)] lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col">
-        <div className="flex items-center justify-between px-5 py-5 lg:px-6 lg:py-8">
-          <NavLink to="/" aria-label="Code Mortis home">
-            <Brand />
-          </NavLink>
-          <NativeSelect
-            className="w-28 border-white/20 bg-[var(--rail)] text-xs lg:hidden"
-            aria-label="Appearance"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </NativeSelect>
-        </div>
-        <nav
-          aria-label="Main navigation"
-          className="flex gap-1 px-3 pb-3 lg:flex-col lg:py-3"
-        >
-          <NavLink
-            to={inboxReturn ?? "/"}
-            end
-            className={({ isActive }) =>
-              `nav-link ${isActive || (fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`
-            }
-          >
-            <InboxIcon className="size-4" />
-            Inbox
-          </NavLink>
-          <NavLink to="/repositories" className={({ isActive }) => `nav-link ${isActive || (!fromInbox && (route.pathname.startsWith("/pulls") || route.pathname.startsWith("/runs"))) ? "nav-active" : ""}`} >
-            <Blocks className="size-4" />
-            Repositories
-          </NavLink>
-          {
-            <NavLink
-              to="/settings"
-              className={({ isActive }) =>
-                `nav-link ${isActive ? "nav-active" : ""}`
-              }
-            >
-              <Settings className="size-4" />
-              Settings
-            </NavLink>
-          }
-        </nav>
-        <div className="hidden px-6 pt-9 text-xs leading-relaxed text-white/50 lg:block">
-          Every finding.
-          <br />A traceable resolution.
-        </div>
-        <div className="flex items-center gap-2 border-t border-white/10 px-4 py-3 lg:mt-auto lg:flex-wrap lg:px-5 lg:py-5">
-          <span className="mr-auto truncate text-xs">
-            @{session.data.login}
-          </span>
-          <NativeSelect
-            className="order-3 mt-3 hidden w-full border-white/20 bg-[var(--rail)] text-xs lg:block"
-            aria-label="Appearance"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-          >
-            <option value="system">System appearance</option>
-            <option value="light">Light appearance</option>
-            <option value="dark">Dark appearance</option>
-          </NativeSelect>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            aria-label="Sign out"
-            onClick={logout}
-            disabled={action.isPending}
-          >
-            <LogOut className="size-4" />
-          </Button>
-        </div>
-      </aside>
-      <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-12">
-        <div className="mx-auto max-w-6xl">
-          <ErrorNotice error={action.error} />
-          <Routes>
-            <Route path="/" element={<Inbox />} />
-            <Route
-              path="/repositories"
-              element={<Repositories admin={session.data.role === "admin"} />}
-            />
-            <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
-            <Route path="/runs/:id" element={<RunDetail user={session.data} />} />
-            <Route
-              path="/settings"
-              element={<SettingsPage user={session.data} />}
-            />
-            <Route
-              path="/setup"
-              element={<Navigate to="/settings?tab=github" replace />}
-            />
-            <Route
-              path="*"
-              element={
-                <Empty title="Page not found">
-                  <NavLink className="underline" to="/">
-                    Return to inbox
-                  </NavLink>
-                </Empty>
-              }
-            />
-          </Routes>
-        </div>
-      </main>
-    </div>
+    <SidebarProvider>
+      <AppSidebar user={session.data} onLogout={logout} signingOut={action.isPending} />
+      <div className="min-w-0 flex-1">
+        <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setTheme(dark ? "light" : "dark")} />
+        <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-10">
+          <div className="mx-auto max-w-6xl">
+            <ErrorNotice error={action.error} />
+            <Routes>
+              <Route path="/" element={<Inbox />} />
+              <Route
+                path="/repositories/:repositoryId?"
+                element={<Repositories admin={session.data.role === "admin"} />}
+              />
+              <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
+              <Route path="/runs/:id" element={<RunDetail user={session.data} />} />
+              <Route
+                path="/settings"
+                element={<SettingsPage user={session.data} />}
+              />
+              <Route
+                path="/setup"
+                element={<Navigate to="/settings?tab=github" replace />}
+              />
+              <Route
+                path="*"
+                element={
+                  <Empty title="Page not found">
+                    <NavLink className="underline" to="/">
+                      Return to inbox
+                    </NavLink>
+                  </Empty>
+                }
+              />
+            </Routes>
+          </div>
+        </main>
+      </div>
+    </SidebarProvider>
   );
 }
 class ErrorBoundary extends React.Component<

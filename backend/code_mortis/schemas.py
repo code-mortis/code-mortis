@@ -266,6 +266,7 @@ class RepositoryOut(ORMModel):
     connection_id: str | None
     settings: RepoSettings
     open_prs: int = 0
+    has_running_review: bool = False
 
 
 class RunOut(ORMModel):

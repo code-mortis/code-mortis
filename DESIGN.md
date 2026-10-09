@@ -20,8 +20,6 @@ colors:
   border: "#dce1d9"
   input: "#c5cec3"
   ring: "#377c59"
-  rail: "#162923"
-  rail-foreground: "#e5efe7"
   dark-background: "#17201c"
   dark-foreground: "#e8eee9"
   dark-card: "#1e2923"
@@ -40,10 +38,6 @@ colors:
   dark-border: "#35433a"
   dark-input: "#53685a"
   dark-ring: "#95c9a5"
-  dark-rail: "#111d17"
-  dark-rail-foreground: "#e5efe7"
-  navigation-text: "#b3c9bd"
-  navigation-active: "#284638"
   status-good-fill: "oklch(50.8% 0.118 165.612)"
   status-good-text: "oklch(43.2% 0.095 166.913)"
   status-good-dark-text: "oklch(84.5% 0.143 164.978)"
@@ -150,10 +144,11 @@ components:
     padding: "0 12px"
     height: "36px"
   navigation:
-    backgroundColor: "{colors.rail}"
-    textColor: "{colors.navigation-text}"
-    rounded: "6.4px"
-    padding: "11.2px 12.8px"
+    backgroundColor: "{colors.muted}"
+    textColor: "{colors.foreground}"
+    rounded: "{rounded.md}"
+    padding: "8px"
+    width: "256px"
   status-chip:
     backgroundColor: "transparent"
     textColor: "{colors.foreground}"
@@ -183,9 +178,9 @@ components:
 
 **Creative North Star: "Workflow-focused workspace"**
 
-Code Mortis uses compact controls, clear review states, and a persistent forest-green navigation area. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
+Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
 
-This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light, dark, and system appearance share the same structure; system mode follows operating-system changes while the app is open.
+This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.
 
 **Key Characteristics:**
 
@@ -196,17 +191,19 @@ This is a description of the implemented interface, not an approved creative met
 
 ## Colors
 
-The palette combines forest-green actions and navigation with warm green-tinted neutrals. Frontmatter holds the actual light values and matching `dark-` values; the app switches the semantic CSS properties together.
+The palette combines forest-green actions and navigation accents with warm green-tinted neutrals. Frontmatter holds the actual light values and matching `dark-` values; the app switches the semantic CSS properties together.
 
 ### Primary
 
-Primary green identifies consequential actions and links. The deeper rail anchors navigation in both appearances. The lighter dark-theme primary keeps those actions readable against dark surfaces.
+Primary green identifies consequential actions, links, the sidebar brand, and repository activity. The lighter dark-theme primary keeps those elements readable against dark surfaces.
 
 ### Neutral
 
 Background is the workspace canvas; card and popover distinguish bounded content. Foreground carries reading text, muted foreground carries supporting information, and border/input separate surfaces and controls. Secondary and accent are related green-tinted interaction surfaces rather than additional brand accents.
 
-Status colors retain their Tailwind OKLCH source values. Good states use emerald, failures and high severity use red, and partial, blocked, outdated, and medium-severity states use amber. Running uses blue with its spinner. Not reviewed, cancelled, superseded, and other statuses remain neutral. Status fills use 8% opacity and borders 20%; dark mode changes the text tone. Destructive actions and errors use the semantic destructive token.
+Sidebar colors reuse the workspace palette in both themes: `--sidebar` aliases `--muted`, `--sidebar-foreground` aliases `--foreground`, and the sidebar primary, primary-foreground, accent, accent-foreground, border, and ring properties alias their matching semantic tokens. Selected and hovered links use the filled accent surface; repository owner labels and icons use muted foreground.
+
+Status colors retain their Tailwind OKLCH source values. Good states use emerald, failures and high severity use red, and partial, blocked, outdated, and medium-severity states use amber. Running status chips use blue with their spinner; the sidebar's review activity spinner uses primary green. Not reviewed, cancelled, superseded, and other statuses remain neutral. Status fills use 8% opacity and borders 20%; dark mode changes the text tone. Destructive actions and errors use the semantic destructive token.
 
 ## Typography
 
@@ -216,7 +213,7 @@ Page headlines use `headline`, changing to `headline-wide` at the small breakpoi
 
 ## Layout
 
-At 1024px and wider, the shell has a sticky 220px rail and a flexible main column. All routes use 48px padding and a centered 1152px content cap. Below 1024px, main padding is 20px horizontally and 32px vertically, increasing to 36px horizontal at 640px. The rail becomes a top navigation area with horizontal links and a compact appearance select.
+At 1024px and wider, the shell has a fixed 256px sidebar and a flexible main column. The sidebar collapses completely offscreen and releases its full width to the main column. Below 1024px, navigation opens as a 288px left drawer with a backdrop. A sticky 56px header keeps the navigation toggle, page breadcrumbs, and far-right appearance toggle available at every width. Main content has a centered 1152px cap, 48px horizontal and 40px vertical padding on desktop; below 1024px it uses 20px horizontal and 32px vertical padding, increasing to 36px horizontal at 640px. Sidebar content scrolls independently between its brand header and footer.
 
 Each inbox list groups rows within its own bordered surface, with 24px between lists. Typical row padding is 20px; filters and actions wrap with 8px or 12px gaps. At 640px, repository controls receive bounded widths, pull-request status moves to the row end, and connection rows become horizontal. Inputs use 16px text below 768px and 14px above it. Forms retain visible labels and hints.
 
@@ -230,7 +227,7 @@ The workspace uses tonal surfaces and thin borders. Cards have no ambient shadow
 
 ## Shapes
 
-Controls use the medium radius, list containers the large radius, and status chips are fully rounded. The navigation uses a slightly tighter 6.4px radius. Borders are generally 1px. Evidence blocks use the medium radius and retain rectangular, scrollable code areas.
+Controls and navigation links use the medium radius, list containers the large radius, and status chips are fully rounded. Borders are generally 1px. Evidence blocks use the medium radius and retain rectangular, scrollable code areas.
 
 ## Components
 
@@ -240,6 +237,8 @@ Default controls are 36px high with medium-weight 14px text and 8px/16px padding
 
 Primary/destructive hover reduces fill opacity to 90%; outline and ghost use the accent surface. Secondary hover uses 80% opacity; links underline. Keyboard focus uses a 3px ring at 50% opacity. Disabled controls use 50% opacity and block interaction. The default state transition is 150ms; no hover lift is added.
 
+The header appearance toggle is a 36px circular ghost button with a muted fill, primary-colored 18px sun/moon icons, and accent hover treatment. Its accessible label and title name the next action: Switch to light mode or Switch to dark mode. Icons rotate and scale over 200ms with ease-out timing; reduced-motion preference disables these transitions.
+
 ### Inputs / Fields
 
 Inputs and native selects are 36px high, with 12px horizontal padding and input-colored borders. Inputs are transparent in light mode and use a 30% input fill in dark mode; native selects use the card surface. Field hints are 12px muted text. Textareas grow with content with a 64px minimum height. Invalid fields use destructive borders and rings. Native controls retain browser affordances.
@@ -248,9 +247,9 @@ Inputs and native selects are 36px high, with 12px horizontal padding and input-
 
 Status chips use 12px medium text, 2px/8px padding, thin borders, and semantic tints. Text is capitalized and underscores become spaces. Queued/running states include a spinner only when motion is allowed. These chips communicate state and are not filter buttons.
 
-The Filters button uses the installed shadcn dropdown menu and lists properties without an active condition. Choosing a property opens its checkbox popover. Only active filters and the property currently being edited appear in the toolbar; the default Open condition appears immediately. Dismissing a new filter without a selection leaves it in the menu. Active filter controls match the Filters button with a solid 1px outline, medium radius, and small shadow; dark mode uses the input border token. They retain the card surface, plus-circle icon, and property label. The inner hover edges where the filter and clear button meet are square. Selected values appear as compact secondary badges after a vertical separator: up to two labels on larger screens, a count for more selections, and a count on mobile. A separate sibling clear button removes the condition without nesting interactive controls. The popover also offers Clear filters or Include all states. Clearing removes the filter from the toolbar, makes it available in the menu again, and returns focus to Filters. Long selected values truncate; their full names remain available in the accessible label and option list.
+The Filters button uses the installed shadcn dropdown menu and lists properties without an active condition. Choosing a property opens its checkbox popover. Only active filters and the property currently being edited appear in the toolbar; the all-state default has no active PR state condition. Dismissing a new filter without a selection leaves it in the menu. Active filter controls match the Filters button with a solid 1px outline, medium radius, and small shadow; dark mode uses the input border token. They retain the card surface, plus-circle icon, and property label. The inner hover edges where the filter and clear button meet are square. Selected values appear as compact secondary badges after a vertical separator: up to two labels on larger screens, a count for more selections, and a count on mobile. A separate sibling clear button removes the condition without nesting interactive controls. The popover also offers Clear filters or Include all states. Clearing removes the filter from the toolbar, makes it available in the menu again, and returns focus to Filters. Long selected values truncate; their full names remain available in the accessible label and option list.
 
-Inbox search, selected filters, ordering, and loaded group pages are represented in the URL. Filters cover Repository, PR state, Review status, Author, and Open findings. Repository and Author options are searchable; checkbox choices support multiple values except Open findings, which accepts one. The default PR state selection is Open. Merged and Closed are hidden until selected in the PR state filter, where each state shows its matching count. Running reviews remain visible regardless of PR state, while respecting the other filters. Clearing that condition includes all states. The toolbar has no global Reset button; individual filter, search, and ordering clear actions remain available. The no-matches empty state offers a filter reset. Search updates after 300ms, and browser navigation restores the URL's selections. A separate dropdown selects Created, Updated, Title, Repository, or Author; the adjacent arrow reverses direction and exposes its current meaning in a tooltip. The URL uses `ordering` with a leading minus for descending order, defaulting to `-created_at`. Dates initially sort descending and text ascending. Reset ordering returns to newest first. Ordering and filter changes reset all loaded page counts.
+Inbox search, selected filters, ordering, and loaded group pages are represented in the URL. Filters cover Repository, PR state, Review status, Author, and Open findings. Repository and Author options are searchable; checkbox choices support multiple values except Open findings, which accepts one. The default PR state selection includes Open, Merged, and Closed. The PR state filter narrows that selection, and each state shows its matching count. Running reviews remain visible regardless of PR state, while respecting the other filters. Clearing that condition includes all states. The toolbar has no global Reset button; individual filter, search, and ordering clear actions remain available. The no-matches empty state offers a filter reset. Search updates after 300ms, and browser navigation restores the URL's selections. A separate dropdown selects Created, Updated, Title, Repository, or Author; the adjacent arrow reverses direction and exposes its current meaning in a tooltip. The URL uses `ordering` with a leading minus for descending order, defaulting to `-created_at`. Dates initially sort descending and text ascending. Reset ordering returns to newest first. Ordering and filter changes reset all loaded page counts.
 
 ### Cards / Containers
 
@@ -258,13 +257,19 @@ Content cards use the card surface, large radius, a 1px border, and usually 20px
 
 ### Navigation
 
-Rail links combine a 16px outline icon with 13.12px text, a 11.2px gap, and 11.2px/12.8px padding. Active and hovered links share a brighter green fill and white text. Inbox is the homepage at `/`; repository management lives at `/repositories`, followed by Settings at `/settings`. Pull and run detail routes keep Inbox active when reached with inbox navigation context, otherwise Repositories remains active. On PR details, the Inbox sidebar link and breadcrumb restore the originating inbox URL, including its filters and loaded pages. The brand link returns to the unfiltered inbox. The compact `cm` mark is typographic, not a mascot. Appearance choices are explicitly System, Light, and Dark.
+The sidebar uses the shadcn Sidebar primitive installed through the CLI with Bun. Links combine 16px outline icons, 14px text, an 8px gap, and 8px padding. Inbox and Settings rows are 40px high; repository rows are 48px. Active links retain a filled accent background and accent foreground; hover uses the same treatment. Repository rows place the name above its owner in 12px muted text, truncate both within the available width, and expose the full `owner/name` through their accessible label and native title. Repository rows do not force hover tooltips in the expanded sidebar or mobile drawer. A repository with a running review shows only a green 12px spinner that animates only when motion is allowed; its accessible link label includes review running. Loading, empty, and retry states appear inside the repository group. Access-denied responses hide repository data and explain the permission failure without a transient-error retry action.
+
+Inbox is the homepage at `/`; repository links open `/repositories/<id>`. Legacy `/repositories?repo=<id>` links redirect to that path and retain configuration parameters; `/repositories` opens the first available repository. An unavailable ID never silently selects another repository. The repository page uses the full `owner/name` as its wrapping title, with selection handled in the sidebar. Administrators get a Manage repositories action beside the group label. Settings at `/settings` stays above the account row in the footer. The 48px account row uses the shadcn Avatar installed with Bun: a 32px rounded-square GitHub avatar, a two-letter initials fallback, the GitHub username, and a muted Administrator or Member label. The full row opens an upward dropdown through a trailing three-dot affordance; Settings and Sign out live in that menu, with Settings also remaining directly available in the sidebar. During sign-out, the row is disabled and shows Signing out with a reduced-motion-aware spinner. The footer has no separating top border. The compact `cm` mark is typographic, not a mascot; its brand link returns to the unfiltered inbox.
+
+The authenticated workspace header uses the shadcn Breadcrumb primitive installed through the CLI with Bun. Paths begin with Inbox, then the repository, Pull request #N, and Review run as applicable; settings show Inbox, Settings, and the active tab. Loading or failed lookups use generic page labels. Ancestor links use muted 14px text, chevron separators, and foreground hover; the current page uses medium-weight foreground text and exposes its current state. Below 640px, intermediate ancestors move into a shadcn dropdown opened by an ellipsis button, keeping Inbox and the current page visible. Long labels truncate with their full text available in titles; dropdown labels wrap.
+
+Pull and run detail routes select the matching repository in the sidebar, including when reached from Inbox. Inbox is active only on the inbox page. The Inbox sidebar link and header breadcrumb restore the originating inbox URL, including its filters and loaded pages; the PR ancestor on a run preserves that return context. Choosing a sidebar link closes the mobile drawer. The persistent header navigation toggle exposes its expanded state and supports Command/Ctrl+B outside editing controls. The collapsed desktop panel is inert; collapsing it with the keyboard while focus is inside moves focus to the toggle. The mobile drawer retains sheet focus trapping and Escape dismissal, includes a visible Close navigation button, and restores focus to the header toggle when closed.
 
 ### Grouped PR inbox
 
-Separate bordered lists appear in order: Open, Merged, and Closed. The default view shows Open, including reviewed open PRs. Only nonempty lists appear. A single visible list has no section heading; multiple lists have static 14px semibold labels and smaller muted total counts above their bordered surfaces, with 10px between each label and its list. Section labels have no filled header bar or collapse control. Lists retain accessible region names even without visible headings. Selecting Merged or Closed adds its nonempty list below with column labels and an independent Load more action. A PR with any running review stays in Open until that run finishes, even if the PR has merged or closed; it never appears in two lists. Those rows display their actual PR state. If the running run is on an older revision, the current-revision review status remains accurate and a separate note explains that a review is still running. Completed reviews of open PRs remain in the same list. Active work places running reviews first, then queued reviews, then the remaining statuses; rows within each priority default to GitHub creation date, newest first, with a stable ID tie-breaker. The selected ordering applies within each priority and group, before pagination; text ordering is case-insensitive. Edits and background syncs do not promote older PRs. Existing records without a creation date appear last within their priority and show Pending sync until synchronization fills the date. Each group initially shows up to 10 PRs, and Load more adds another 10. Groups load more independently and keep pagination failures and retry actions beside the affected group.
+Separate bordered lists appear in order: Open, Merged, and Closed. The default view includes all PR states, including reviewed open PRs. Only nonempty lists appear. A single visible list has no section heading; multiple lists have static 14px semibold labels and smaller muted total counts above their bordered surfaces, with 10px between each label and its list. Section labels have no filled header bar or collapse control. Lists retain accessible region names even without visible headings. Each included state has its nonempty list with column labels and an independent Load more action. A PR with any running review stays in Open until that run finishes, even if the PR has merged or closed; it never appears in two lists. Those rows display their actual PR state. If the running run is on an older revision, the current-revision review status remains accurate and a separate note explains that a review is still running. Completed reviews of open PRs remain in the same list. Active work places running reviews first, then queued reviews, then the remaining statuses; rows within each priority default to GitHub creation date, newest first, with a stable ID tie-breaker. The selected ordering applies within each priority and group, before pagination; text ordering is case-insensitive. Edits and background syncs do not promote older PRs. Existing records without a creation date appear last within their priority and show Pending sync until synchronization fills the date. Each group initially shows up to 10 PRs, and Load more adds another 10. Groups load more independently and keep pagination failures and retry actions beside the affected group.
 
-Whole rows link to PR details and carry the inbox URL for the return path. All PR rows use the same card background, including running reviews; hover uses the shared muted fill. Review status, publication failures, and open finding counts remain distinct. Publication failed and Partially published appear immediately after the username in row metadata, using destructive and amber warning text respectively. Finding badges read “N unresolved” so they cannot be mistaken for the PR state. Positive finding counts use destructive text and a restrained tint; zero uses muted styling. Reviewed open PRs can still contain open findings. Empty results distinguish an empty workspace, no open PRs with history available, and filters with no matches. The empty state points to the PR state filter for browsing history. The combined list retains `active_pages` in the URL; legacy `reviewed_pages` is accepted when `active_pages` is absent.
+Whole rows link to PR details and carry the inbox URL for the return path. All PR rows use the same card background, including running reviews; hover uses the shared muted fill. Review status, publication failures, and open finding counts remain distinct. Publication failed and Partially published appear immediately after the username in row metadata, using destructive and amber warning text respectively. Finding badges read “N unresolved” so they cannot be mistaken for the PR state. Positive finding counts use destructive text and a restrained tint; zero uses muted styling. Reviewed open PRs can still contain open findings. Empty results distinguish an empty workspace from filters with no matches. Resetting filters restores all PR states. The combined list retains `active_pages` in the URL; legacy `reviewed_pages` is accepted when `active_pages` is absent.
 
 ### Evidence and resolution history
 
@@ -272,7 +277,7 @@ Finding details separate Markdown explanation, original code, suggested change, 
 
 ### Overlays and motion
 
-Radix dialogs and sheets retain their accessible interaction behavior and close controls. Dialog transitions use 200ms; sheets open in 500ms and close in 300ms. Shared control transitions use the standard easing. Reduced-motion preference shortens animation and transition duration to 0.01ms and disables smooth scrolling. Do not add motion to static evidence.
+Radix dialogs and sheets retain their accessible interaction behavior and close controls. Dialog transitions use 200ms; sheets open in 500ms and close in 300ms. Desktop sidebar position and main-column gap transitions use 200ms linear easing. Shared control transitions use the standard easing. Reduced-motion preference shortens animation and transition duration to 0.01ms and disables smooth scrolling. Do not add motion to static evidence.
 
 Popover, Checkbox, and DropdownMenu are added through the shadcn CLI using Bun. Their generated primitives wrap Radix; inbox-specific sizing and positioning are supplied through props. Filter popovers render in a portal, align to the trigger start with an 8px offset, keep 16px viewport collision padding, and cap their width at the viewport minus 32px. Filter choices scroll within a 256px maximum height. Opening and closing use fade and scale animations, with directional movement on opening. Keyboard activation, Escape dismissal, outside interaction, and focus return retain Radix behavior; clearing a condition or dismissing an unused filter returns focus to Filters. Closing an active filter returns focus to its property button. Ordering uses radio menu items with arrow-key navigation, checked state, Escape dismissal, and focus return. Checkbox rows are at least 40px tall and expose focus around the full label. The final selected PR state cannot be unchecked, keeping the selection meaningful.
 

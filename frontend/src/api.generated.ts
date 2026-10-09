@@ -1336,6 +1336,11 @@ export interface components {
              * @default 0
              */
             open_prs: number;
+            /**
+             * Has Running Review
+             * @default false
+             */
+            has_running_review: boolean;
         };
         /** RunDetail */
         RunDetail: {
