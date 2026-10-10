@@ -56,6 +56,13 @@ def test_finding_pages_counts_filters_and_stable_order(seed, github_stub, client
     first = client.get(path).json()
     assert first["page_size"] == 10 and first["total"] == first["registered_total"] == 69
     assert first["status_counts"] == {"open": 23, "resolved": 23, "dismissed": 23}
+    open_page = client.get(path, params={"status": "open"}).json()
+    assert open_page["page_size"] == 10 and open_page["total"] == 23
+    assert [group["group"] for group in open_page["groups"]] == ["open"]
+    assert len(open_page["groups"][0]["items"]) == 10
+    open_next = client.get(path, params={"status": "open", "group": "open", "page": 2}).json()["groups"][0]
+    assert open_next["page"] == 2 and len(open_next["items"]) == 10 and open_next["has_more"]
+    assert {item["id"] for item in open_page["groups"][0]["items"]}.isdisjoint(item["id"] for item in open_next["items"])
     for group in first["groups"]:
         assert len(group["items"]) == 10 and group["has_more"]
         ids = [row["id"] for row in group["items"]]

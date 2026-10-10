@@ -255,7 +255,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [statuses, setStatuses] = useState<string[]>([]);
+  const [statuses, setStatuses] = useState<string[]>(["open"]);
   const [severities, setSeverities] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);

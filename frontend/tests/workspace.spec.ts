@@ -3913,6 +3913,10 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(summary).toContainText("ccccccc");
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
+  await expect(list.getByRole("region")).toHaveCount(1);
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Edit Status: Open", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   await expect(list.getByRole("region")).toHaveCount(3);
   await expect(list.getByRole("button")).toHaveCount(3);
   for (const theme of ["light", "dark"]) {
@@ -3993,6 +3997,9 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   let runs: typeof run[] = [run];
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings }));
   await page.goto("/pulls/pr");
+  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "View all findings", exact: true }).click();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -4134,6 +4141,14 @@ test("pull detail paginates each finding status independently and resets pages w
   const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
   const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
   const rows = (section: typeof open) => section.getByRole("button", { name: /Test finding/ });
+  await expect(rows(open)).toHaveCount(10);
+  await expect(resolved).toHaveCount(0);
+  await expect(dismissed).toHaveCount(0);
+  expect(requests[0].getAll("status")).toEqual(["open"]);
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await expect(rows(open)).toHaveCount(20);
+  expect(requests.some((params) => params.get("status") === "open" && params.get("group") === "open" && params.get("page") === "2")).toBe(true);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   for (const section of [open, resolved, dismissed]) {
     await expect(rows(section)).toHaveCount(10);
     await expect(section.getByRole("heading")).toContainText("21");
