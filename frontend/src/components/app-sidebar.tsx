@@ -46,7 +46,10 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
-  const repositoryRoute = useMatch("/repositories/:repositoryId");
+  const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
+  const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
+  const settingsSearch = new URLSearchParams(route.search);
+  settingsSearch.delete("tab");
   const selected = repositoryRoute
     ? repositories.find((repo) => String(repo.id) === repositoryRoute.params.repositoryId)?.id
     : detailPath && !detail.error ? detail.data?.repository.id : undefined;
@@ -90,9 +93,12 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               const [owner, name = owner] = repo.full_name.split("/");
               const running = !repos.error && repo.has_running_review;
               const path = `/repositories/${repo.id}`;
+              const returnPath = repositorySettingsRoute && selected === repo.id
+                ? path + (settingsSearch.size ? `?${settingsSearch}` : "")
+                : repositoryReturn?.split("?")[0] === path ? repositoryReturn : path;
               return <SidebarMenuItem key={repo.id}>
                 <SidebarMenuButton asChild size="lg" isActive={selected === repo.id}>
-                  <Link to={repositoryReturn?.split("?")[0] === path ? repositoryReturn : path} title={repo.full_name} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
+                  <Link to={returnPath} title={repo.full_name} aria-label={`${repo.full_name}${running ? ", review running" : ""}`} aria-current={selected === repo.id ? "page" : undefined} onClick={closeMobile}>
                     <FolderGit2 aria-hidden="true" className="text-muted-foreground" />
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{name}</span><span className="block truncate text-xs text-muted-foreground">{owner}</span></span>
                     {running && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}

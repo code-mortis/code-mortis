@@ -80,7 +80,7 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
       <div className="flex flex-wrap gap-3">
         {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>View run details</Link>}
         {feedback.destination === "repository" && admin && (
-          <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}?configure=limits`}>Adjust review settings</Link>
+          <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}/settings?tab=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
@@ -93,33 +93,37 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   );
 }
 
-export function Repositories({ admin }: { admin: boolean }) {
+export function Repositories({ admin, configure = false }: { admin: boolean; configure?: boolean }) {
   const { repositoryId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const repos = useApi<Repository[]>("/repositories", true);
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
   const requested = repositoryId ?? (params.get("repo") || null);
   const denied = repos.error && [401, 403].includes(repos.error.status);
   const available = denied ? [] : repos.data;
   const selected = requested ? available?.find((repo) => String(repo.id) === requested) : available?.[0];
-  const edit = admin && params.has("configure");
-  function setEdit(open: boolean) {
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      if (open) next.set("configure", "true");
-      else next.delete("configure");
-      return next;
-    });
-  }
   const action = useAction();
   const target = requested ?? selected?.id;
-  if (target && (!repositoryId || params.has("repo"))) {
+  if (target && (!repositoryId || params.has("repo") || params.has("configure"))) {
     const search = new URLSearchParams(params);
     search.delete("repo");
-    return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}`, search: search.toString(), hash: location.hash }} replace />;
+    const legacyConfigure = admin && params.has("configure");
+    if (legacyConfigure && params.get("configure") === "limits") search.set("tab", "limits");
+    search.delete("configure");
+    return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}${configure || legacyConfigure ? "/settings" : ""}`, search: search.toString(), hash: legacyConfigure ? "" : location.hash }} state={location.state} replace />;
   }
   if (repos.isPending) return <Loading />;
   if (repos.error && (!repos.data || denied)) return <ErrorNotice error={repos.error} />;
+  const repositoryPath = `/repositories/${requested ?? selected?.id}`;
+  const returnSearch = new URLSearchParams(params);
+  if (configure) returnSearch.delete("tab");
+  const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
+  if (configure) {
+    if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
+    const finish = () => navigate(returnPath, { state: location.state });
+    return <RepositorySettings key={selected.id} repository={selected} onSaved={finish} />;
+  }
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
   const syncPending = syncHere && action.isPending;
@@ -137,7 +141,7 @@ export function Repositories({ admin }: { admin: boolean }) {
         <Button variant="outline" disabled={syncPending} onClick={() => action.mutate({ path: syncPath })}>
           <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
         </Button>
-        {admin && <Button variant="outline" onClick={() => setEdit(true)}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
+        {admin && <Button variant="outline" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
       </div>}
     </header>
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
@@ -155,12 +159,6 @@ export function Repositories({ admin }: { admin: boolean }) {
         {selected.enabled ? <span className="text-xs text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span> : <span className="text-xs text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
       </section>
       <RepositoryPulls key={selected.id} repositoryId={selected.id} />
-      <Sheet open={edit} onOpenChange={setEdit}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
-          <SheetHeader><SheetTitle>Repository configuration</SheetTitle><SheetDescription>{selected.full_name}</SheetDescription></SheetHeader>
-          <div className="p-6"><RepositorySettings key={selected.id} repository={selected} showLimits={params.get("configure") === "limits"} onSaved={() => setEdit(false)} /></div>
-        </SheetContent>
-      </Sheet>
     </>}
     {admin && <div className="mt-6 text-xs text-muted-foreground"><Link className="rounded-sm underline underline-offset-4 hover:text-foreground" to="/settings?tab=github">{available?.length ? "Manage repositories" : "Connect repository"}</Link></div>}
   </>;
@@ -719,7 +717,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       <TabsContent value="coverage" className="min-w-0">
         <section aria-label="Coverage">
           <h2 className="text-sm font-semibold">Coverage</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
+          <p className="mt-2 text-xs text-muted-foreground mb-4">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
           {run.report ? <>
             <dl className="my-4 flex flex-wrap gap-x-8 gap-y-4 border-y py-4">{(["selected", "completed", "reused", "failed", "waived"] as const).map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className="text-sm font-medium tabular-nums">{coverage[key]?.length ?? 0}</dd></div>)}</dl>
             {!!files.length && <details className="border-b py-4 text-sm" open={run.status === "skipped"}>
