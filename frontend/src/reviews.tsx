@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import {
   ApiError,
+  api,
   useAction,
   useApi,
   type Repository,
@@ -163,10 +164,29 @@ export function Repositories({ admin }: { admin: boolean }) {
   </>;
 }
 
-function RunList({ runs }: { runs: Run[] }) {
+function RunList({ prId }: { prId: string }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
+  const query = useInfiniteQuery({
+    queryKey: ["pull-runs", prId],
+    queryFn: ({ pageParam, signal }) => api<Schema["RunPage"]>(`/pulls/${prId}/runs?page=${pageParam}`, "GET", undefined, undefined, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last) => last.has_more ? last.page + 1 : undefined,
+    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    retry: false,
+  });
+  if (query.isPending) return <Loading />;
+  if (query.error instanceof ApiError && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
+  if (!query.data || (query.error && query.data.pages[0].total === 0)) return <div className="space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button></div>;
+  const seen = new Set<string>();
+  const runs = query.data.pages.flatMap((page) => page.items).filter((run) => {
+    if (seen.has(run.id)) return false;
+    seen.add(run.id);
+    return true;
+  });
+  const total = query.data.pages.at(-1)!.total;
+  const paginated = query.hasNextPage || query.data.pages.length > 1;
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -209,6 +229,15 @@ function RunList({ runs }: { runs: Run[] }) {
           </Link>
         );
       })}
+      {(paginated || query.error) && <div className="space-y-2 px-5 py-3">
+        <ErrorNotice error={query.error} />
+        <div className="flex items-center justify-between gap-3">
+          {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.fetchNextPage()}>
+            {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> run history</span>
+          </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button> : null}
+          {paginated && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{runs.length} of {total}</span>}
+        </div>
+      </div>}
     </div>
   );
 }
@@ -250,12 +279,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
-  const { pull_request: pr, repository, runs, can_write } = query.data;
+  const { pull_request: pr, repository, run_count, has_active_run: running, latest_observed_run_id: observed, can_write } = query.data;
   const findings = findingsQuery.data;
   const total = findings?.registered_total ?? 0;
-  const latest = runs[0];
-  const running = runs.some((run) => active(run.status));
-  const observed = runs.find((run) => ["completed", "partial"].includes(run.status));
+  const latest = pr.latest_run;
   const term = search.trim().toLowerCase();
   const count = (state: string) => findings?.status_counts[state] ?? 0;
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
@@ -316,7 +343,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     <Tabs defaultValue="findings">
       <TabsList className="mb-4">
         <TabsTrigger value="findings">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : ""}</span></TabsTrigger>
-        <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{runs.length}</span></TabsTrigger>
+        <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4">
@@ -347,7 +374,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
                     <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
                     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span className="capitalize">{words(item.category)}</span>
-                      {observed && item.last_seen_run_id !== observed.id && <span>Not observed in latest review</span>}
+                      {observed && item.last_seen_run_id !== observed && <span>Not observed in latest review</span>}
                     </div>
                   </div>
                   <div><Status value={item.severity} /></div>
@@ -366,13 +393,13 @@ export function PullDetail({ admin }: { admin: boolean }) {
               </div>
             </section>;
           })}
-        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : runs.length ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, or severity." : runs.length ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : run_count ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, or severity." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
           {total > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
       </TabsContent>
-      <TabsContent value="history" className="min-w-0"><RunList runs={runs} /></TabsContent>
+      <TabsContent value="history" className="min-w-0"><RunList prId={pr.id} /></TabsContent>
     </Tabs>
     <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(event) => {

@@ -35,6 +35,10 @@ const repo = {
 };
 const run = {
   id: "run",
+  connection_id: "connection",
+  blocked_reason: null,
+  failure_reason: null,
+  check_synced_at: null,
   engine: "ocr",
   owner_id: null,
   actor_id: 7,
@@ -182,12 +186,25 @@ async function mockRepositoryPulls(page: Page, repositoryId: number, items: () =
   await page.route(`**/api/v1/repositories/${repositoryId}/pulls?**`, (route) => route.fulfill({ json: repositoryPage(items(), new URL(route.request().url()).searchParams) }));
 }
 
-async function mockPullDetail(page: Page, detail: () => { findings: Schema["FindingOut"][]; [key: string]: unknown }) {
-  await page.route("**/api/v1/pulls/pr", (route) => {
-    const { findings: _findings, ...metadata } = detail();
-    return route.fulfill({ json: metadata });
-  });
+type PullDetailFixture = { pull_request: typeof pr; runs: Run[]; findings: Schema["FindingOut"][]; [key: string]: unknown };
+
+function pullMetadata({ runs, findings: _findings, pull_request, ...metadata }: PullDetailFixture) {
+  return {
+    ...metadata, pull_request: { ...pull_request, latest_run: runs[0] ?? null }, run_count: runs.length,
+    has_active_run: runs.some((run) => ["queued", "running"].includes(run.status)),
+    latest_observed_run_id: runs.find((run) => ["completed", "partial"].includes(run.status))?.id ?? null,
+  };
+}
+
+function runPage(runs: Run[], params: URLSearchParams): Schema["RunPage"] {
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(runs.length / 10)));
+  return { items: runs.slice((page - 1) * 10, page * 10), total: runs.length, page, has_more: page * 10 < runs.length, page_size: 10 };
+}
+
+async function mockPullDetail(page: Page, detail: () => PullDetailFixture) {
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: pullMetadata(detail()) }));
   await page.route("**/api/v1/pulls/pr/findings?**", (route) => route.fulfill({ json: findingPage(detail().findings, new URL(route.request().url()).searchParams) }));
+  await page.route("**/api/v1/pulls/pr/runs?**", (route) => route.fulfill({ json: runPage(detail().runs, new URL(route.request().url()).searchParams) }));
 }
 
 async function mock(
@@ -258,6 +275,8 @@ async function mock(
           open_findings: 0,
         },
       ];
+    else if (path === "/pulls/pr/runs" && method === "GET")
+      data = runPage([currentRun], new URL(request.url()).searchParams);
     else if (path === "/pulls/pr" || path === "/pulls/pr/findings") {
       const detail = {
         pull_request: pr,
@@ -280,8 +299,7 @@ async function mock(
         ],
         can_write: options.canWrite !== false,
       };
-      const { findings, ...metadata } = detail;
-      data = path.endsWith("/findings") ? findingPage(findings, new URL(request.url()).searchParams) : metadata;
+      data = path.endsWith("/findings") ? findingPage(detail.findings, new URL(request.url()).searchParams) : pullMetadata(detail);
     } else if (path === "/findings/finding") {
       if (method === "PATCH")
         current.desired_status = request.postDataJSON().status;
@@ -3600,6 +3618,8 @@ test("pull detail searches evidence and separates severity, status, and run hist
     await page.keyboard.press("Escape");
     await page.getByRole("tab", { name: "Run history" }).click();
     await expect(page.getByRole("link", { name: /automatic.*ccccccc/ })).toContainText("GitHub: Published");
+    await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Load more run history" })).toHaveCount(0);
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/pull-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
   }
@@ -3644,6 +3664,97 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/pull-empty-${info.project.name}.png`, fullPage: true });
+});
+
+test("run history fetches ten runs per page and keeps summary independent of loaded pages", async ({ page }, info) => {
+  await mock(page);
+  await page.clock.install();
+  const runs = Array.from({ length: 23 }, (_, index) => ({
+    ...run, id: `history-${index}`, status: index === 22 ? "queued" : index === 20 ? "completed" : "cancelled",
+    publication: "published", publication_error: null, check_enabled: false,
+  }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [{ ...finding, sync_intent: null }] }));
+  const requests: number[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/pulls/pr/runs")) requests.push(Number(url.searchParams.get("page")));
+  });
+  await page.goto("/pulls/pr");
+  await expect(page.getByRole("tab", { name: "Run history 23" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review in progress" })).toBeDisabled();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+  expect(requests).toEqual([]);
+  await page.getByRole("tab", { name: "Run history 23" }).click();
+  const history = page.getByRole("tabpanel");
+  await expect(history.getByRole("link")).toHaveCount(10);
+  await expect(history.getByRole("status")).toHaveText("10 of 23");
+  expect(requests).toEqual([1]);
+  await noOverflow(page);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.screenshot({ path: `../.impeccable/review/run-history-pagination-${info.project.name}.png`, fullPage: true });
+  await page.clock.fastForward(5000);
+  await expect.poll(() => requests.length).toBe(2);
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(20);
+  await expect(history.getByRole("status")).toHaveText("20 of 23");
+  const expandedRequests = requests.length;
+  await page.clock.fastForward(15000);
+  expect(requests.length).toBe(expandedRequests);
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(23);
+  await expect(history.getByRole("status")).toHaveText("23 of 23");
+  await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  expect(requests).toEqual([1, 1, 2, 3]);
+  await page.getByRole("tab", { name: "Findings 1" }).click();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+});
+
+test("run history retries failed pages and hides loaded runs when access is revoked", async ({ page }) => {
+  await mock(page);
+  const runs = Array.from({ length: 23 }, (_, index) => ({ ...run, id: `history-${index}` }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
+  let failure = 502;
+  await page.route("**/api/v1/pulls/pr/runs?**", (route) => failure
+    ? route.fulfill({ status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Run history temporarily unavailable" } })
+    : route.fallback());
+  await page.goto("/pulls/pr");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  const history = page.getByRole("tabpanel");
+  await expect(history.getByText("Run history temporarily unavailable")).toBeVisible();
+  await expect(history.getByText("No reviews yet")).toHaveCount(0);
+  failure = 0;
+  await history.getByRole("button", { name: "Retry run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(10);
+  failure = 502;
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByRole("button", { name: "Retry run history" })).toBeVisible();
+  await expect(history.getByRole("link")).toHaveCount(10);
+  await expect(history.getByRole("status")).toHaveText("10 of 23");
+  failure = 0;
+  await history.getByRole("button", { name: "Retry run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(20);
+  failure = 403;
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByText("Repository access revoked")).toBeVisible();
+  await expect(history.getByRole("link")).toHaveCount(0);
+});
+
+test("run history deduplicates shifted pages without changing the server total or cursor", async ({ page }) => {
+  await mock(page);
+  const runs = Array.from({ length: 23 }, (_, index) => ({ ...run, id: `history-${index}` }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
+  await page.goto("/pulls/pr");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  const history = page.getByRole("tabpanel");
+  await expect(history.getByRole("link")).toHaveCount(10);
+  runs.unshift({ ...run, id: "new-run" });
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(19);
+  await expect(history.getByRole("status")).toHaveText("19 of 24");
+  await history.getByRole("button", { name: "Load more run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(23);
+  await expect(history.getByRole("status")).toHaveText("23 of 24");
+  await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
 });
 
 test("pull detail paginates each finding status independently and resets pages with filters", async ({ page }, info) => {

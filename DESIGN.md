@@ -295,6 +295,8 @@ Finding rows separate the two-line explanation preview, truncated file and line 
 
 Run-history rows separate Review run, Review status, and GitHub publication. The first column shows the date, trigger, short commit, model, and any attention summary; mobile publication text retains a GitHub label when column headings disappear. Whole rows link to run details and retain the originating list context. Finding rows open the evidence sheet; closing it restores focus to that row, falling back to finding search if the row is no longer mounted.
 
+Run history fetches its first server page when the tab opens. Each page contains up to 10 runs, newest first; Load more appends the next page and the footer displays the shown/total count. The pagination footer is hidden when all runs fit on the first page; it remains visible after additional pages have been loaded. The first page refreshes every five seconds, and interval refresh pauses after loading more pages. Failed requests offer a retry without removing loaded rows; an access denial hides them. PR metadata supplies the total run count, active-review state, and latest completed or partial run independently of the history pages, preserving review availability and finding observation labels.
+
 ### Evidence and resolution history
 
 Finding details separate Markdown explanation, original code, suggested change, actions, and Activity. Code blocks use a muted background, a 1px border, 16px padding, and 12px monospace text. The Activity list uses 2px left borders, 16px inner offsets, and 20px gaps; actor, source, time, and reason remain distinct. Pending GitHub confirmation and synchronization errors remain visible beside actions.

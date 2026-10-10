@@ -388,7 +388,9 @@ class FindingDetail(BaseModel):
 class PRDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
-    runs: list[RunOut]
+    run_count: int
+    has_active_run: bool
+    latest_observed_run_id: str | None
     can_write: bool
 
 
@@ -443,8 +445,18 @@ class RunDetail(BaseModel):
     can_write: bool
 
 
-InboxGroup = Literal["active", "merged", "closed"]
 LIST_PAGE_SIZE = 10
+
+
+class RunPage(BaseModel):
+    items: list[RunOut]
+    total: int
+    page: int
+    has_more: bool
+    page_size: int = LIST_PAGE_SIZE
+
+
+InboxGroup = Literal["active", "merged", "closed"]
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",

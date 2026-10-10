@@ -30,9 +30,10 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
     else if (path === "/repositories") data = [{ ...repositories[0], installation_id: 10, private: false, active: true, enabled: true, connection_id: null, settings: { automatic: true, model: "", effort: "medium", language: "English", exclusions: "", background: "", timeout_seconds: 900, token_budget: 200000, max_files: 40, concurrency: 2, rules: null }, open_prs: 6, has_running_review: false }];
     else if (path === "/repositories/22/pulls") data = [];
     else if (path.endsWith("/findings")) data = { groups: [], total: 0, registered_total: 0, status_counts: {}, page_size: 10 };
+    else if (path.endsWith("/runs")) data = { items: [], total: 0, page: 1, has_more: false, page_size: 10 };
     else if (path.startsWith("/pulls/")) data = {
       pull_request: { ...rows[0], url: "https://github.com/acme/code-mortis/pull/42", latest_run: null, head_ref: "feature", head_sha: "a".repeat(40), base_sha: "b".repeat(40), fork: false },
-      repository: repositories[0], runs: [], findings: [], can_write: false,
+      repository: repositories[0], run_count: 0, has_active_run: false, latest_observed_run_id: null, can_write: false,
     };
     else if (path === "/pulls") {
       requests.push(params);

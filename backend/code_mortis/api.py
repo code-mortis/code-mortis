@@ -48,6 +48,7 @@ from .models import (
 )
 from .reviews import can_publish, create_run, enqueue, request_finding_status, upsert_pr
 from .schemas import (
+    LIST_PAGE_SIZE,
     ActivityOut,
     BackgroundInput,
     BackgroundJobOut,
@@ -74,6 +75,7 @@ from .schemas import (
     RepositoryPullFilters,
     RunDetail,
     RunOut,
+    RunPage,
     StartRunInput,
     UserOut,
     VerificationOut,
@@ -370,7 +372,8 @@ def repo_out(db: Session, repo: Repository) -> RepositoryOut:
 def pr_out(db: Session, pr: PullRequest) -> PullRequestOut:
     result = PullRequestOut.model_validate(pr)
     run = db.scalar(
-        select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.created_at.desc()).limit(1)
+        select(ReviewRun).where(ReviewRun.pr_id == pr.id)
+        .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1)
     )
     result.latest_run = RunOut.model_validate(run) if run else None
     result.open_findings = db.scalar(
@@ -465,13 +468,31 @@ def pull_detail(pr_id: str, db: DB, user: USER):
     return PRDetail(
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
-        runs=[
-            RunOut.model_validate(run)
-            for run in db.scalars(
-                select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.created_at.desc())
-            )
-        ],
+        run_count=db.scalar(select(func.count()).select_from(ReviewRun).where(ReviewRun.pr_id == pr.id)),
+        has_active_run=db.scalar(select(select(ReviewRun.id).where(
+            ReviewRun.pr_id == pr.id, ReviewRun.status.in_(["queued", "running"]),
+        ).exists())),
+        latest_observed_run_id=db.scalar(
+            select(ReviewRun.id).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(["completed", "partial"]))
+            .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1)
+        ),
         can_write=remote.get("permissions", {}).get("push", False),
+    )
+
+
+@router.get("/pulls/{pr_id}/runs", response_model=RunPage)
+def pull_runs(pr_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    pr, _, _ = pr_access(db, user, pr_id)
+    total = db.scalar(select(func.count()).select_from(ReviewRun).where(ReviewRun.pr_id == pr.id))
+    page = min(page, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
+    runs = db.scalars(
+        select(ReviewRun).where(ReviewRun.pr_id == pr.id)
+        .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc())
+        .offset((page - 1) * LIST_PAGE_SIZE).limit(LIST_PAGE_SIZE)
+    )
+    return RunPage(
+        items=[RunOut.model_validate(run) for run in runs], total=total, page=page,
+        has_more=page * LIST_PAGE_SIZE < total,
     )
 
 

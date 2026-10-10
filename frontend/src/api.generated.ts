@@ -259,6 +259,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Runs */
+        get: operations["pull_runs_api_v1_pulls__pr_id__runs_get"];
+        put?: never;
+        /** Start Run */
+        post: operations["start_run_api_v1_pulls__pr_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls/{pr_id}/findings": {
         parameters: {
             query?: never;
@@ -270,23 +288,6 @@ export interface paths {
         get: operations["pull_findings_api_v1_pulls__pr_id__findings_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pulls/{pr_id}/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Start Run */
-        post: operations["start_run_api_v1_pulls__pr_id__runs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1344,8 +1345,12 @@ export interface components {
         PRDetail: {
             pull_request: components["schemas"]["PullRequestOut"];
             repository: components["schemas"]["RepositoryOut"];
-            /** Runs */
-            runs: components["schemas"]["RunOut"][];
+            /** Run Count */
+            run_count: number;
+            /** Has Active Run */
+            has_active_run: boolean;
+            /** Latest Observed Run Id */
+            latest_observed_run_id: string | null;
             /** Can Write */
             can_write: boolean;
         };
@@ -1584,6 +1589,22 @@ export interface components {
             check_error: string | null;
             /** Check Synced At */
             check_synced_at: string | null;
+        };
+        /** RunPage */
+        RunPage: {
+            /** Items */
+            items: components["schemas"]["RunOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
         };
         /** StartRunInput */
         StartRunInput: {
@@ -2148,13 +2169,9 @@ export interface operations {
             };
         };
     };
-    pull_findings_api_v1_pulls__pr_id__findings_get: {
+    pull_runs_api_v1_pulls__pr_id__runs_get: {
         parameters: {
             query?: {
-                q?: string;
-                status?: ("open" | "resolved" | "dismissed")[];
-                severity?: ("critical" | "high" | "medium" | "low")[];
-                group?: ("open" | "resolved" | "dismissed") | null;
                 page?: number;
             };
             header?: never;
@@ -2171,7 +2188,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["FindingsOut"];
+                    "application/json": components["schemas"]["RunPage"];
                 };
             };
             /** @description Validation Error */
@@ -2207,6 +2224,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_findings_api_v1_pulls__pr_id__findings_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                status?: ("open" | "resolved" | "dismissed")[];
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                group?: ("open" | "resolved" | "dismissed") | null;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingsOut"];
                 };
             };
             /** @description Validation Error */

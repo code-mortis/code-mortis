@@ -6,7 +6,7 @@ from test_inbox import pull, run
 
 from code_mortis import github
 from code_mortis.db import now, transaction
-from code_mortis.models import Finding, ReviewRun
+from code_mortis.models import Finding, PullRequest, ReviewRun
 
 
 def test_repository_pages_filter_and_sort_on_server(seed, github_stub, client):
@@ -75,7 +75,49 @@ def test_finding_pages_counts_filters_and_stable_order(seed, github_stub, client
     assert "findings" not in client.get("/api/v1/pulls/pr").json()
 
 
+def test_run_pages_and_summary_include_history_beyond_first_page(seed, github_stub, client):
+    at = now()
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        for index in range(23):
+            status = "queued" if index == 0 else "completed" if index == 1 else "failed"
+            run(db, pr, status, f"run-{index:02}", created_at=at)
+        run(db, pull(db, "other"), "running", "other-run")
+    detail = client.get("/api/v1/pulls/pr").json()
+    assert "runs" not in detail
+    assert detail["run_count"] == 23
+    assert detail["has_active_run"] is True
+    assert detail["latest_observed_run_id"] == "run-01"
+    assert detail["pull_request"]["latest_run"]["id"] == "run-22"
+    ids = []
+    path = "/api/v1/pulls/pr/runs"
+    for page in [1, 2, 3]:
+        response = client.get(path, params={"page": page})
+        assert response.status_code == 200
+        result = response.json()
+        assert result["page"] == page and result["total"] == 23 and result["page_size"] == 10
+        assert len(result["items"]) == (3 if page == 3 else 10)
+        assert result["has_more"] is (page < 3)
+        ids += [item["id"] for item in result["items"]]
+    assert ids == [f"run-{index:02}" for index in reversed(range(23))]
+    assert client.get(path, params={"page": 1000000}).json()["page"] == 3
+    with transaction() as db:
+        db.get(ReviewRun, "run-00").status = "cancelled"
+    assert client.get("/api/v1/pulls/pr").json()["has_active_run"] is False
+
+
+def test_empty_run_history(seed, github_stub, client):
+    assert client.get("/api/v1/pulls/pr/runs?page=2").json() == {
+        "items": [], "total": 0, "page": 1, "has_more": False, "page_size": 10,
+    }
+    detail = client.get("/api/v1/pulls/pr").json()
+    assert detail["run_count"] == 0 and detail["has_active_run"] is False
+    assert detail["latest_observed_run_id"] is None and detail["pull_request"]["latest_run"] is None
+    assert client.get("/api/v1/pulls/missing/runs").status_code == 404
+
+
 @pytest.mark.parametrize("path,params", [
+    ("/pulls/pr/runs", {"page": 0}), ("/pulls/pr/runs", {"page": 1000001}),
     ("/repositories/22/pulls", {"page": 0}), ("/repositories/22/pulls", {"group": "invalid"}),
     ("/pulls/pr/findings", {"page": 0}), ("/pulls/pr/findings", {"page": 1000001}),
     ("/pulls/pr/findings", {"status": "fixed"}), ("/pulls/pr/findings", {"severity": "urgent"}),
@@ -85,7 +127,7 @@ def test_list_filters_are_validated(seed, github_stub, client, path, params):
     assert client.get("/api/v1" + path, params=params).status_code == 422
 
 
-@pytest.mark.parametrize("path", ["/repositories/22/pulls", "/pulls/pr/findings"])
+@pytest.mark.parametrize("path", ["/repositories/22/pulls", "/pulls/pr/findings", "/pulls/pr/runs"])
 def test_page_requests_revalidate_github_access(seed, client, monkeypatch, path):
     def denied(*args, **kwargs):
         raise HTTPException(403, "Repository access revoked")
