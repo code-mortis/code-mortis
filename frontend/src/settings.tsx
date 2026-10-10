@@ -1026,7 +1026,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
           initialKind={newKind}
           onSavingChange={setSavingConnection}
-          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api") setPersonal(saved); }} />}
+          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model.trim()) setPersonal(saved); }} />}
         {personal && <PersonalConnection key={personal.id} connection={personal} onDone={() => setPersonal(null)} />}
       </DialogContent>
     </Dialog>

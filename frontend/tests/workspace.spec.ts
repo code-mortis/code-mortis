@@ -4544,6 +4544,35 @@ test("personal model saves compare and send trimmed model IDs", async ({ page })
   await expect(model).toHaveValue("custom-model");
 });
 
+for (const kind of ["chatgpt", "claude_code"] as const) {
+  for (const model of ["review-model", "", " "]) {
+    test(`${kind} connection edits ${model.trim() ? "return to the list" : `continue setup for ${JSON.stringify(model)} models`}`, async ({ page }, info) => {
+      await mock(page, { role: "member", personal: true, claude: kind === "claude_code" });
+      let personal = { ...connection, id: "personal", name: "My subscription", kind, owner_id: 7, auth_status: "connected", model };
+      await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [personal] }));
+      await page.route("**/api/v1/connections/personal", (route) => {
+        personal = { ...personal, ...route.request().postDataJSON() };
+        return route.fulfill({ json: personal });
+      });
+      await page.goto("/settings");
+      await page.getByRole("button", { name: "Actions for My subscription", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByLabel("Connection name").fill("Updated subscription");
+      await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+      await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model });
+      if (model.trim()) {
+        await expect(dialog).toHaveCount(0);
+        await expect(page.getByRole("article", { name: "Updated subscription", exact: true })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Actions for Updated subscription", exact: true })).toBeFocused();
+        await page.screenshot({ path: info.outputPath("saved-subscription.png"), fullPage: true });
+      } else {
+        await expect(dialog.getByRole("heading", { name: kind === "chatgpt" ? "Sign in to ChatGPT" : "Sign in to Claude Code", exact: true })).toBeVisible();
+      }
+    });
+  }
+}
+
 test("pending personal connection creation keeps its dialog until setup opens", async ({ page }) => {
   await mock(page);
   let release!: () => void;
