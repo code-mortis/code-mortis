@@ -2,6 +2,7 @@
 
 import json
 
+from pydantic import Field
 from sqlalchemy import select
 
 from . import github, ocr, runner_client, verification
@@ -43,6 +44,12 @@ INSTRUCTIONS = (
     "Reject speculative future changes, preference-only refactoring "
     "and disproven claims. Missing necessary context means uncertain. A passing test/build rebuts only "
     "the specific behavior it actually covers; never claim to have run tests. "
+    "The initial evidence is focused on this finding, not the whole pull request. "
+    "If a caller, dependency, contract or other file is needed, return verdict uncertain and list its exact "
+    "repository-relative path in required_paths. Request only necessary files; unchanged files may be requested. "
+    "Their complete current source and PR diff will be supplied for reassessment. "
+    "Use an empty required_paths list only when the supplied evidence suffices or the missing evidence "
+    "cannot be identified. Never confirm or reject based on assumptions about unavailable code. "
     "Compare the cause, trigger and consequence with every related historical finding and prior candidate. "
     "Rewording, moved lines, renamed files, severity/category changes or resolution are not new defects. "
     "Another branch or entry point creating the same state under the same ownership and recovery contract "
@@ -56,6 +63,28 @@ INSTRUCTIONS = (
     "set suggestion_supported=false if it is unrelated, incomplete, or unsafe. "
     "Return exactly the requested assessment schema. Do not resolve, reopen, or invent finding IDs."
 )
+
+
+class AssessmentResponse(AssessmentResult):
+    required_paths: list[str] = Field(default_factory=list, max_length=10)
+
+
+def output_schema():
+    schema = AssessmentResponse.model_json_schema()
+    schema["required"] = list(schema["properties"])
+    return schema
+
+
+def validate_response(value, context):
+    response = AssessmentResponse.model_validate(value, strict=True).model_dump()
+    paths = response.pop("required_paths")
+    for path in paths:
+        if not path or len(path) > 2000:
+            raise ValueError("Requested evidence paths must contain 1 to 2000 characters.")
+        ocr.ReviewComment.relative_path(path)
+    if paths and response["verdict"] != "uncertain":
+        raise ValueError("An assessment requiring more evidence must remain uncertain.")
+    return {**validate_result(response, context), "required_paths": list(dict.fromkeys(paths))}
 
 
 def enabled(run):
@@ -145,19 +174,21 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
     head = run.head_sha
     source_sha = snapshot.get("source_sha") or head
     context = verification.build_context(
-        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped,
+        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped, focused=True,
     )
     if source_sha == head:
         context["sources"].pop("original", None)
-    # The review diff explains the proposal; the verification diff above locates renamed source.
+    # Keep a changed-path index for discovery, but load only the finding's actual evidence.
     paths = ocr.git(repo, env, "diff", "--name-only", "--diff-filter=ACMRT", "-z",
                     f"{run.base_sha}...{head}", stopped=stopped).rstrip("\0").split("\0")
     selected = verification.filter_context(repo, env, dict.fromkeys(filter(None, paths), "# context\n"),
                                            run.config["settings"], stopped)
-    if selected:
+    context["changed_paths"] = sorted(selected)
+    focused = {snapshot["path"], context["current_path"]} - {None}
+    if focused:
         context["diff"] = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
                                   f"{run.base_sha}...{head}", "--",
-                                  *(f":(literal){path}" for path in sorted(selected)), stopped=stopped)
+                                  *(f":(literal){path}" for path in sorted(focused)), stopped=stopped)
     related, renamed = [], {}
     anchor = snapshot.get("existing_code", "").strip()
     for item in previous["findings"]:
@@ -205,9 +236,35 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
         "rules": rules,
         "language": run.config["settings"]["language"],
     })
-    if len(json.dumps(context).encode()) > min(run.config["settings"]["delegated_context_bytes"], 1_500_000):
-        raise ValueError("Complete assessment context exceeds the existing context limit.")
+    check_context_size(context, run.config["settings"])
     return context
+
+
+def check_context_size(context, options):
+    size = len(json.dumps(context).encode())
+    limit = min(options["delegated_context_bytes"], 1_500_000)
+    if size > limit:
+        raise ValueError(f"Assessment evidence requires {size:,} bytes; context limit is {limit:,} bytes. "
+                         "Necessary evidence was not truncated.")
+
+
+def expand_context(repo, env, run, context, paths, stopped):
+    for path in paths:
+        ocr.ReviewComment.relative_path(path)
+    requested = set(paths) - context["sources"].get("current", {}).keys()
+    if not requested:
+        raise ValueError("Assessment requested evidence already supplied; necessary context remains uncertain.")
+    allowed = verification.filter_context(repo, env, dict.fromkeys(requested, "# context\n"),
+                                          run.config["settings"], stopped)
+    if requested != allowed:
+        raise ValueError("Necessary assessment evidence is excluded or unsupported by OCR: "
+                         + ", ".join(sorted(requested - allowed)))
+    for path in sorted(requested):
+        source = verification.read_source(repo, env, run.head_sha, path, stopped)
+        context["sources"].setdefault("current", {})[path] = source
+        context["diff"] += ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
+                                   f"{run.base_sha}...{run.head_sha}", "--", f":(literal){path}", stopped=stopped)
+    check_context_size(context, run.config["settings"])
 
 
 def validate_result(value, context):
@@ -245,7 +302,9 @@ def exact_repeat(context):
         previous = item.get("assessment")
         if (item["sha"] == context["head_sha"] and previous and previous["verdict"] == "confirmed"
             and all(candidate.get(key) == item["snapshot"].get(key)
-                    for key in ("path", "start_line", "end_line", "content", "existing_code", "source_sha", "suggestion_code"))):
+                    for key in ("path", "start_line", "end_line", "content", "existing_code", "source_sha", "suggestion_code"))
+            and all(evidence["path"] in context["sources"].get(evidence["revision"], {})
+                    for evidence in previous["evidence"])):
             return validate_result({**previous, "relationship": "duplicate", "finding_id": item["id"],
                                     "history_explanation": "Identical accepted observation at the same revision."}, context)
     return None
@@ -332,47 +391,71 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 raise ocr.ReviewStopped("Assessment time allowance expired or review stopped.")
             context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
             result = exact_repeat(context)
-            remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
-            input_bytes = len(json.dumps(context).encode()) + len(INSTRUCTIONS.encode()) + 4096
-            with transaction() as db:
-                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-                row = db.get(ReviewCandidate, identity)
-                if current.progress.get("execution") != claim or current.cancel_requested:
-                    return
-                repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
-                selected = db.get(Connection, current.connection_id)
-                if (not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active
-                    or not selected or any(connection[key] != getattr(selected, key)
-                                           for key in ("kind", "owner_id", "provider", "protocol", "base_url"))):
-                    raise ValueError("The selected connection or repository changed during assessment.")
-                actor = db.get(User, current.actor_id) if current.actor_id else None
-                if current.actor_id:
-                    if not actor or not actor.enabled or not db.get(Membership, actor.id):
-                        raise ValueError("The requesting user no longer has access.")
-                    github.authorize_repo(db, actor, repo.full_name, write=True)
-                authorize_connection(db, selected, repo, current.trigger, actor)
-                if selected.kind != "api" and selected.auth_status != "connected":
-                    raise runner_client.RunnerBlocked("authentication")
+            unit = "tokens" if connection["kind"] == "api" else "context_bytes"
+            consumed = 0
+            for attempt in range(3):
+                if stopped():
+                    raise ocr.ReviewStopped("Assessment time allowance expired or review stopped.")
+                allowance = None if budget is None else budget - consumed
+                remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
+                input_bytes = len(json.dumps(context).encode()) + len(INSTRUCTIONS.encode()) + 4096
+                with transaction() as db:
+                    current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                    row = db.get(ReviewCandidate, identity)
+                    if current.progress.get("execution") != claim or current.cancel_requested:
+                        return
+                    repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
+                    selected = db.get(Connection, current.connection_id)
+                    if (not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active
+                        or not selected or any(connection[key] != getattr(selected, key)
+                                               for key in ("kind", "owner_id", "provider", "protocol", "base_url"))):
+                        raise ValueError("The selected connection or repository changed during assessment.")
+                    actor = db.get(User, current.actor_id) if current.actor_id else None
+                    if current.actor_id:
+                        if not actor or not actor.enabled or not db.get(Membership, actor.id):
+                            raise ValueError("The requesting user no longer has access.")
+                        github.authorize_repo(db, actor, repo.full_name, write=True)
+                    authorize_connection(db, selected, repo, current.trigger, actor)
+                    if selected.kind != "api" and selected.auth_status != "connected":
+                        raise runner_client.RunnerBlocked("authentication")
+                    if result is None:
+                        if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
+                            raise ValueError("No verified budget or time allowance remains for assessment.")
+                        if connection["kind"] != "api" and input_bytes > allowance:
+                            raise ValueError(f"Assessment requires {input_bytes:,} context bytes; remaining subscription allowance is {allowance:,} bytes.")
+                        usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": consumed + input_bytes}
+                    row.status, row.context, row.usage = "running", context, usage
                 if result is None:
-                    if (remaining is not None and remaining < 10) or (budget is not None and budget <= 0):
-                        raise ValueError("No verified budget or time allowance remains for assessment.")
-                    if connection["kind"] != "api" and input_bytes > budget:
-                        raise ValueError("Assessment exceeds the remaining subscription context allowance.")
-                    usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": input_bytes}
-                row.status, row.context, row.usage = "running", context, usage
-            if result is None:
-                if connection["kind"] == "api":
-                    result, usage = verification.api_verify(
-                        repo_path, env, connection, credentials, context, budget, remaining, stopped,
-                        instructions=INSTRUCTIONS, schema=AssessmentResult.model_json_schema(), validator=validate_result,
-                    )
-                else:
-                    raw = runner_client.review(connection["id"], "assess-" + identity, {
-                        "kind": connection["kind"], "task": "assessment", "model": connection["model"],
-                        "effort": options["effort"], "prompt": json.dumps({"instructions": INSTRUCTIONS, "context": context}),
-                        "output_schema": AssessmentResult.model_json_schema(), "timeout": remaining,
-                    }, stopped)
-                    result = validate_result(raw, context)
+                    if connection["kind"] == "api":
+                        try:
+                            result, spent = verification.api_verify(
+                                repo_path, env, connection, credentials, context, allowance, remaining, stopped,
+                                instructions=INSTRUCTIONS, schema=output_schema(), validator=validate_response,
+                            )
+                        except verification.VerificationOutputError as exc:
+                            exc.usage = {"tokens": consumed + exc.usage["tokens"]}
+                            raise
+                    else:
+                        raw = runner_client.review(connection["id"], "assess-" + identity + (f"-{attempt}" if attempt else ""), {
+                            "kind": connection["kind"], "task": "assessment", "model": connection["model"],
+                            "effort": options["effort"], "prompt": json.dumps({"instructions": INSTRUCTIONS, "context": context}),
+                            "output_schema": output_schema(), "timeout": remaining,
+                        }, stopped)
+                        result = validate_response(raw, context)
+                        spent = {"context_bytes": input_bytes}
+                    consumed += spent[unit]
+                    usage = {unit: consumed}
+                requested = result.pop("required_paths", [])
+                if not requested:
+                    break
+                if attempt == 2:
+                    result = {**result, "verdict": "uncertain", "relationship": "uncertain", "finding_id": None,
+                              "suggestion_supported": False,
+                              "explanation": "Assessment still needs additional evidence after three passes: "
+                              + ", ".join(requested)}
+                    break
+                expand_context(repo_path, env, run, context, requested, stopped)
+                result = None
             result = validate_result(result, context)
             status, error = "completed", None
         except Exception as exc:

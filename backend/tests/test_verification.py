@@ -1092,6 +1092,7 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
     monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
     def preview(args, *a, **k):
         assert "--preview" in args
+        assert args[args.index("--max-tokens") + 1] == "58888"
         if failure == "cancelled":
             raise ocr.ReviewStopped()
         return 0, "not json" if failure == "invalid_preview" else json.dumps({"files": [
@@ -1102,6 +1103,28 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
         verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
     assert caught.value.usage == {"tokens": 0}
     assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
+    if failure == "too_large":
+        assert "47,110 tokens" in str(caught.value) and "max_tokens=58,888" in str(caught.value)
+        assert "too_large" in str(caught.value) and "Evidence size:" in str(caught.value)
+
+
+def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
+    def command(args, *a, **k):
+        assert args[args.index("--max-tokens") + 1] == "58888"
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        return 0, json.dumps({"status": "completed_with_warnings", "summary": {"total_tokens": 0},
+                             "warnings": [{"type": "token_threshold_exceeded",
+                                           "message": "prompt tokens (48475) exceed 80% of max_tokens(58888)"}]}), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(verification.VerificationOutputError, match="47,110-token limit.*48475") as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
 
 
 def test_missing_resolution_permission_skips_analysis_but_preserves_review(scenario, monkeypatch):

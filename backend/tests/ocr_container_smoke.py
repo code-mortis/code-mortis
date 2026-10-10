@@ -19,7 +19,6 @@ os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
 from code_mortis import assessment, background, ocr, verification
-from code_mortis.schemas import AssessmentResult
 
 calls = []
 verification_mode = "fixed"
@@ -77,12 +76,13 @@ class Provider(BaseHTTPRequestHandler):
             if verification_mode.startswith("assessment_"):
                 assert verification.RESULT_DELIVERY in text
                 value = {
-                    "verdict": verification_mode.removeprefix("assessment_"), "relationship": "new",
+                    "verdict": "uncertain" if verification_mode == "assessment_context" else verification_mode.removeprefix("assessment_"), "relationship": "new",
                     "finding_id": None, "explanation": "The supplied loop executes three times.",
                     "cause": "Unconditional retries", "trigger": "The first delivery succeeds",
                     "consequence": "Delivery is repeated after success", "history_explanation": "",
                     "contradicts_prior": False, "changed_conditions": "", "suggestion_supported": False,
                     "evidence": [value["evidence"][1]],
+                    "required_paths": ["helper.py"] if verification_mode == "assessment_context" else [],
                 }
             content = [{"type": "tool_use", "id": "verify", "name": "task_done",
                         "input": {"state": "DONE", "result": value}}]
@@ -302,17 +302,34 @@ def main():
             assert verification.validate_result(raw, context)["verdict"] == "fixed"
             assert usage["tokens"] > 0
             assessment_context = {**context, "history": [], "finding": {}}
-            for verdict in ("confirmed", "rejected", "uncertain"):
+            for verdict in ("confirmed", "rejected", "uncertain", "context"):
                 verification_mode = "assessment_" + verdict
                 before = len(calls)
                 raw, usage = verification.api_verify(
                     root, env, connection, {"api_key": "fake-test-key"}, assessment_context,
                     options["token_budget"], 60, lambda: False, instructions=assessment.INSTRUCTIONS,
-                    schema=AssessmentResult.model_json_schema(), validator=assessment.validate_result,
+                    schema=assessment.output_schema(), validator=assessment.validate_response,
                 )
-                assert raw["verdict"] == verdict, raw
+                assert raw["verdict"] == ("uncertain" if verdict == "context" else verdict), raw
+                assert raw["required_paths"] == (["helper.py"] if verdict == "context" else [])
                 assert usage["tokens"] > 0
                 assert len(calls) == before + 1, "A submitted assessment must finish without another model turn."
+            for repetitions in (60000, 46000):
+                before = len(calls)
+                try:
+                    verification.api_verify(
+                        root, env, connection, {"api_key": "fake-test-key"},
+                        {**assessment_context, "diff": "x " * repetitions}, None, 60,
+                        lambda: False, instructions=assessment.INSTRUCTIONS,
+                        schema=assessment.output_schema(), validator=assessment.validate_response,
+                    )
+                except verification.VerificationOutputError as exc:
+                    assert "47,110" in str(exc) and "58,888" in str(exc), str(exc)
+                    assert ("too_large" in str(exc)) == (repetitions == 60000), str(exc)
+                    assert exc.status == "skipped" and exc.usage == {"tokens": 0}
+                else:
+                    raise AssertionError("Oversized evidence was accepted")
+                assert len(calls) == before, "Size checks must not call the provider."
             for verification_mode in ("no_verdict", "multiple_results", "provider_error"):
                 try:
                     verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context,

@@ -210,7 +210,7 @@ def filter_context(repo, env, sources, options, stopped):
         return set(sources) & selected
 
 
-def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped):
+def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped, *, focused=False):
     if not re.fullmatch(r"[0-9a-f]{40}", original_sha):
         raise ValueError("The original occurrence has no valid commit identity.")
     try:
@@ -239,6 +239,8 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
             current_path = None
     if current_path:
         paths.add(current_path)
+    if focused:
+        paths, original_paths = ({current_path} if current_path else set()), {old_path}
     if len(paths | original_paths) > 100:
         raise ValueError("Too many changed files to establish complete verification context.")
     # Apply scope before loading optional changes. An excluded test must not block an unrelated fix
@@ -257,8 +259,9 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     context = {"finding": original, "original_sha": original_sha, "head_sha": head_sha,
                "current_path": current_path, "sources": sources, "diff": patch,
                "excluded_paths": sorted(all_paths - selected), "diff_only_paths": sorted(selected - required)}
-    if len(json.dumps(context).encode()) > limit:
-        raise ValueError("Necessary verification context exceeds the existing context limit.")
+    size = len(json.dumps(context).encode())
+    if size > limit:
+        raise ValueError(f"Necessary verification context requires {size:,} bytes; limit is {limit:,} bytes.")
     return context
 
 
@@ -362,26 +365,38 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         root = Path(temp)
         ocr.git(root, env, "init", "--quiet", stopped=stopped)
         evidence = root / "evidence.py"
-        evidence.write_text(evidence_bundle(context))
+        bundle = evidence_bundle(context)
+        evidence.write_text(bundle)
         rule = root / "rules.json"
         rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + RESULT_DELIVERY + (
             " The result must match this schema, including non-confirming outcomes: "
         ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
         tools.write_text(json.dumps(verification_tools(instructions, schema)))
+        # Pin OCR 1.12.11's scan default so preview and execution enforce the same reported limit.
+        max_tokens = 58888
+        token_limit = max_tokens * 4 // 5
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
                 "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
                 "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
-                "--timeout", "0"]
+                "--timeout", "0", "--max-tokens", str(max_tokens)]
         try:
-            code, preview, _ = ocr.command([*args, "--preview"], root, env, timeout=timeout, stopped=stopped)
-            accepted = any(item.get("path") == "evidence.py" and item.get("will_review") is True
-                           for item in json.loads(preview).get("files", []))
+            code, preview, errors = ocr.command([*args, "--preview"], root, env, timeout=timeout, stopped=stopped)
+            selected = next((item for item in json.loads(preview).get("files", [])
+                             if item.get("path") == "evidence.py"), {})
         except Exception as exc:
             status = "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
             raise VerificationOutputError("OCR could not complete the evidence preflight.", {"tokens": 0}, status) from exc
-        if code or not accepted:
-            raise VerificationOutputError("The evidence bundle exceeds OCR scope or context limits.", {"tokens": 0}, "skipped")
+        if code or selected.get("will_review") is not True:
+            reason = selected.get("exclude_reason", "evidence.py was not selected")
+            detail = f"OCR rejected assessment/verification evidence ({reason}; exit code {code})."
+            if reason == "too_large":
+                detail += (f" Evidence size: {len(bundle.encode()):,} bytes. OCR's per-prompt limit is "
+                           f"{token_limit:,} tokens (80% of max_tokens={max_tokens:,}), separate from the run token budget.")
+            elif errors:
+                detail += " " + errors[-1500:]
+            detail = clean_text(detail, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
+            raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
         with ocr.configuration(connection, credentials, {}, stopped):
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
@@ -405,6 +420,15 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
             raise ValueError("Verification usage could not be established. " + diagnostics)
+        for warning in data.get("warnings") or []:
+            if isinstance(warning, dict) and warning.get("type") == "token_threshold_exceeded":
+                message = clean_text(str(warning.get("message", "")), (
+                    credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
+                ))
+                raise VerificationOutputError(
+                    f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
+                    f"(80% of max_tokens={max_tokens:,}): {message}", {"tokens": usage}, "skipped",
+                )
         comments = data.get("comments", [])
         if (code or data.get("status") != "success" or summary.get("budget_exceeded")
             or summary.get("files_reviewed") != 1 or data.get("warnings") or comments or result_error):

@@ -361,10 +361,14 @@ def test_context_tracks_renames_and_preserves_literal_case(tmp_path, monkeypatch
     git("config", "user.email", "test@example.com")
     source = 'def Retry():\n    while True:\n        send("CaseSensitive")\n'
     (repo / "old.py").write_text(source)
-    git("add", "old.py")
+    (repo / "helper.py").write_text('def send(value):\n    return value == "CaseSensitive"\n')
+    git("add", ".")
     git("commit", "--quiet", "-m", "original")
     original_sha = git("rev-parse", "HEAD")
     git("mv", "old.py", "new.py")
+    (repo / "unrelated.py").write_text("# unrelated change\n" * 20000)
+    (repo / "caller.py").write_text("from new import Retry\nRetry()\n")
+    git("add", ".")
     git("commit", "--quiet", "-m", "rename")
     head = git("rev-parse", "HEAD")
     monkeypatch.setattr(verification, "filter_context", lambda repo, env, sources, options, stopped: set(sources))
@@ -375,6 +379,14 @@ def test_context_tracks_renames_and_preserves_literal_case(tmp_path, monkeypatch
     assert context["history"][0]["id"] == "original"
     assert context["sources"] == {"current": {"new.py": source}}
     assert "CaseSensitive" in context["sources"]["current"]["new.py"]
+    assert "unrelated.py" in context["changed_paths"]
+    assert "unrelated change" not in verification.evidence_bundle(context)
+    assert "caller.py" not in context["diff"]
+    assessment.expand_context(repo, {}, run, context, ["helper.py", "caller.py"], lambda: False)
+    assert context["sources"]["current"]["helper.py"] == (repo / "helper.py").read_text()
+    assert context["sources"]["current"]["caller.py"] == (repo / "caller.py").read_text()
+    assert "caller.py" in context["diff"]
+    assert "unrelated change" not in verification.evidence_bundle(context)
     previous["findings"] = [
         {"id": "moved-block", "sha": head, "fingerprint": "legacy", "snapshot": {**COMMENT, "path": "another.py"}},
         {"id": "different-literal", "sha": head, "fingerprint": "legacy2",
@@ -386,6 +398,119 @@ def test_context_tracks_renames_and_preserves_literal_case(tmp_path, monkeypatch
     monkeypatch.setattr(verification, "filter_context", lambda repo, env, sources, options, stopped: set(sources) - {"another.py"})
     with pytest.raises(ValueError, match="history is excluded"):
         assessment.build_context(repo, {}, {}, run, {**COMMENT, "path": "new.py", "source_sha": head}, previous, lambda: False)
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pipeline, monkeypatch, kind):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    calls, allowances, identities, sizes = [], [], [], []
+    def expand(repo, env, run, context, paths, stopped):
+        assert paths == ["helper.py"]
+        context["sources"]["current"]["helper.py"] = "def retry(): return False\n"
+    monkeypatch.setattr(assessment, "expand_context", expand)
+    def respond(context):
+        calls.append(copy.deepcopy(context))
+        if len(calls) == 1:
+            return verdict(context, verdict="uncertain", required_paths=["helper.py"])
+        assert context["sources"]["current"]["helper.py"] == "def retry(): return False\n"
+        return verdict(context, required_paths=[])
+    def api(*args, **kwargs):
+        allowances.append(args[5])
+        return kwargs["validator"](respond(args[4]), args[4]), {"tokens": 25}
+    def native(connection, identity, payload, stopped):
+        identities.append(identity)
+        context = json.loads(payload["prompt"])["context"]
+        sizes.append(len(json.dumps(context).encode()) + len(assessment.INSTRUCTIONS.encode()) + 4096)
+        assert "required_paths" in payload["output_schema"]["required"]
+        return respond(context)
+    monkeypatch.setattr(verification, "api_verify", api)
+    monkeypatch.setattr(runner_client, "review", native)
+    run_and_publish()
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        assert candidate.status == "completed"
+        assert "helper.py" in candidate.context["sources"]["current"]
+        assert "required_paths" not in candidate.result
+        assert candidate.usage == ({"tokens": 50} if kind == "api" else {"context_bytes": sum(sizes)})
+    assert len(calls) == 2 and len(pipeline["reviews"]) == 1
+    if kind == "api":
+        assert allowances[1] == allowances[0] - 25
+    else:
+        assert len(set(identities)) == 2
+
+
+@pytest.mark.parametrize("failure", ["limit", "unknown_usage", "excluded", "round_limit"])
+def test_followup_failure_never_publishes_or_reuses_spent_allowance(pipeline, monkeypatch, failure):
+    calls = []
+    def expand(repo, env, run, context, paths, stopped):
+        if failure == "excluded":
+            raise ValueError("Necessary assessment evidence is excluded")
+        context["sources"]["current"][paths[0]] = "dependency = 1\n"
+    monkeypatch.setattr(assessment, "expand_context", expand)
+    def api(*args, **kwargs):
+        calls.append(args[5])
+        if len(calls) > 1 and failure == "limit":
+            raise verification.VerificationOutputError("OCR limit: 47,110 tokens", {"tokens": 0}, "skipped")
+        if len(calls) > 1 and failure == "unknown_usage":
+            raise ValueError("Provider failed; consumption is unknown")
+        return verdict(args[4], verdict="uncertain", required_paths=[f"helper{len(calls)}.py"]), {"tokens": 25}
+    monkeypatch.setattr(verification, "api_verify", api)
+    run_and_publish()
+    assert not pipeline["reviews"]
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        assert candidate.finding_id is None
+        if failure == "round_limit":
+            assert len(calls) == 3 and candidate.result["verdict"] == "uncertain"
+            assert candidate.usage == {"tokens": 75}
+        else:
+            assert candidate.status in {"failed", "skipped"}
+            assert candidate.usage == {"tokens": calls[0] if failure == "unknown_usage" else 25}
+
+
+@pytest.mark.parametrize("path", ["", "x" * 2001, "../secret.py", "/etc/passwd", ".git/config"])
+def test_evidence_requests_reject_unsafe_paths(path):
+    context = {"finding": COMMENT, "history": [], "sources": {"current": {COMMENT["path"]: SOURCE}}}
+    with pytest.raises(ValueError):
+        assessment.validate_response(verdict(context, verdict="uncertain", required_paths=[path]), context)
+
+
+def test_requested_context_keeps_scope_and_reports_byte_limit(tmp_path, monkeypatch):
+    run = SimpleNamespace(base_sha="a" * 40, head_sha="b" * 40, config={"settings": RepoSettings().model_dump()})
+    context = {"sources": {"current": {}}, "diff": ""}
+    monkeypatch.setattr(verification, "filter_context", lambda *args: set())
+    monkeypatch.setattr(verification, "read_source", lambda *args: pytest.fail("Excluded source read"))
+    with pytest.raises(ValueError, match="excluded.*secret.py"):
+        assessment.expand_context(tmp_path, {}, run, context, ["secret.py"], lambda: False)
+    with pytest.raises(ValueError, match="limit is 4,096 bytes.*not truncated"):
+        assessment.check_context_size({"sources": {"current": {"main.py": "x" * 5000}}}, {"delegated_context_bytes": 4096})
+
+
+def test_exact_repeat_requires_previously_requested_evidence():
+    context = {"finding": COMMENT, "head_sha": "a" * 40, "history": [],
+               "sources": {"current": {COMMENT["path"]: SOURCE}}}
+    previous = verdict(context, evidence=[{"revision": "current", "path": "helper.py", "start_line": 1,
+                                         "end_line": 1, "quote": "while True: retry()"}])
+    context["history"] = [{"id": "existing", "sha": context["head_sha"], "snapshot": COMMENT, "assessment": previous}]
+    assert assessment.exact_repeat(context) is None
+    context["sources"]["current"]["helper.py"] = "while True: retry()\n"
+    assert assessment.exact_repeat(context)["relationship"] == "duplicate"
+
+
+def test_revocation_between_evidence_passes_stops_before_another_call(pipeline, monkeypatch):
+    pipeline["decision"] = {"verdict": "uncertain", "required_paths": ["helper.py"]}
+    def expand(*args):
+        with transaction() as db:
+            db.get(Repository, 22).enabled = False
+    monkeypatch.setattr(assessment, "expand_context", expand)
+    run_and_publish()
+    assert pipeline["calls"] == 1 and not pipeline["reviews"]
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        assert candidate.status == "skipped" and candidate.usage == {"tokens": 25}
 
 
 @pytest.mark.parametrize("comment", json.loads((Path(__file__).parent / "fixtures/pr15_candidates.json").read_text()),
