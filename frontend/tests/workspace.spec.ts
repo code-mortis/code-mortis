@@ -539,7 +539,8 @@ test("repository paths preserve legacy settings links and never fall back from a
   const repositoryCrumb = await breadcrumbAncestor(page, repo.full_name);
   await expect(repositoryCrumb).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
   await repositoryCrumb.click();
-  await expect(page).toHaveURL(/\/repositories\/22\?state=all&q=retry$/);
+  await expect(page).toHaveURL((url) => url.pathname === "/repositories/22" && url.searchParams.size === 2
+    && url.searchParams.get("state") === "all" && url.searchParams.get("q") === "retry");
   await page.goto("/repositories/999");
   await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
