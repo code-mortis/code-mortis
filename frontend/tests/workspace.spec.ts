@@ -588,16 +588,16 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
   await expect(account).toContainText("Administrator");
   await account.focus();
   await page.keyboard.press("Enter");
-  const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+  const settings = page.getByRole("menuitem", { name: "AI providers", exact: true });
   await expect(settings).toBeFocused();
-  await expect(settings).toHaveAttribute("href", "/settings");
+  await expect(settings).toHaveAttribute("href", "/settings?tab=connections");
   await settings.press("Enter");
-  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page).toHaveURL(/\/settings\?tab=connections$/);
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
   await openNavigation(page);
   await account.press("Enter");
-  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("End");
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(account).toBeFocused();
@@ -645,7 +645,40 @@ test("sidebar account keeps an initials fallback for missing or failed avatars a
   await expect(account).toContainText("Member");
   await expect(account.locator('[data-slot="avatar-fallback"]')).toHaveText("AC");
   await expect(account.locator('[data-slot="avatar-image"]')).toHaveCount(0);
+  await account.click();
+  const menu = page.getByRole("menu");
+  await expect(menu.locator('[data-slot="avatar-fallback"]')).toHaveText("AC");
+  await expect(menu).toContainText(login);
+  await expect(menu).toContainText("Member");
   await noOverflow(page);
+});
+
+for (const role of ["admin", "member"]) test(`sidebar account links to the settings available to ${role}`, async ({ page }) => {
+  await mock(page, { role });
+  await page.goto("/repositories/22");
+  const sections = role === "admin"
+    ? [["connections", "AI providers"], ["github", "GitHub"], ["team", "Team"]]
+    : [["connections", "AI providers"]];
+  for (const [tab, label] of sections) {
+    await openNavigation(page);
+    await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toContainText("carlos");
+    await expect(menu).toContainText(role === "admin" ? "Administrator" : "Member");
+    await expect(menu.getByRole("menuitem")).toHaveCount(sections.length + 1);
+    if (role === "member") {
+      await expect(menu.getByRole("menuitem", { name: "GitHub", exact: true })).toHaveCount(0);
+      await expect(menu.getByRole("menuitem", { name: "Team", exact: true })).toHaveCount(0);
+    }
+    const link = menu.getByRole("menuitem", { name: label, exact: true });
+    await expect(link).toHaveAttribute("href", `/settings?tab=${tab}`);
+    await expect(link).toBeInViewport();
+    await link.click();
+    await expect(page).toHaveURL(`/settings?tab=${tab}`);
+    await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+  }
 });
 
 test("sidebar activity refreshes and does not present failed polling as current", async ({ page }) => {
