@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from . import (
     assessment,
     background,
+    finding_list,
     github,
     inbox,
     installations,
@@ -55,7 +56,9 @@ from .schemas import (
     ConnectionOut,
     FindingAction,
     FindingDetail,
+    FindingFilters,
     FindingOut,
+    FindingsOut,
     InboxFilters,
     InboxOut,
     InstallationOperation,
@@ -68,6 +71,7 @@ from .schemas import (
     PullRequestOut,
     RepositoryInput,
     RepositoryOut,
+    RepositoryPullFilters,
     RunDetail,
     RunOut,
     StartRunInput,
@@ -430,17 +434,17 @@ def background_status(repository_id: int, job_id: str, db: DB, user: ADMIN):
     return background.job_out(job)
 
 
-@router.get("/repositories/{repository_id}/pulls", response_model=list[PullRequestOut])
-def pull_requests(repository_id: int, db: DB, user: USER):
-    repo_access(db, user, repository_id)
-    return [
-        pr_out(db, pr)
-        for pr in db.scalars(
-            select(PullRequest)
-            .where(PullRequest.repository_id == repository_id)
-            .order_by(PullRequest.updated_at.desc())
-        )
-    ]
+@router.get("/repositories/{repository_id}/pulls", response_model=InboxOut)
+def pull_requests(repository_id: int, db: DB, user: USER, filters: Annotated[RepositoryPullFilters, Query()]):
+    repo, _ = repo_access(db, user, repository_id)
+    result = inbox.list_pulls(db, [repo], filters)
+    run_ids = {item.run_id for page in result.groups for item in page.items if item.run_id}
+    runs = {run.id: run for run in db.scalars(select(ReviewRun).where(ReviewRun.id.in_(run_ids)))}
+    for page in result.groups:
+        for item in page.items:
+            if run := runs.get(item.run_id):
+                item.latest_run = RunOut.model_validate(run)
+    return result
 
 
 @router.post("/repositories/{repository_id}/sync", status_code=202)
@@ -467,14 +471,14 @@ def pull_detail(pr_id: str, db: DB, user: USER):
                 select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.created_at.desc())
             )
         ],
-        findings=[
-            FindingOut.model_validate(finding)
-            for finding in db.scalars(
-                select(Finding).where(Finding.pr_id == pr.id).order_by(Finding.created_at.desc())
-            )
-        ],
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.get("/pulls/{pr_id}/findings", response_model=FindingsOut)
+def pull_findings(pr_id: str, db: DB, user: USER, filters: Annotated[FindingFilters, Query()]):
+    pr, _, _ = pr_access(db, user, pr_id)
+    return finding_list.list_findings(db, pr.id, filters)
 
 
 @router.post("/pulls/{pr_id}/runs", response_model=RunOut, status_code=202)

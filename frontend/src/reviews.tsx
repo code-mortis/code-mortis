@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
-import { getInboxReturn } from "./lib/inbox-filters";
+import { useQuery } from "@tanstack/react-query";
+import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
+import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
   Link,
   Navigate,
@@ -18,6 +20,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import {
+  ApiError,
   useAction,
   useApi,
   type Repository,
@@ -211,7 +214,6 @@ function RunList({ runs }: { runs: Run[] }) {
 }
 
 const findingStatuses = ["open", "resolved", "dismissed"] as const;
-const FINDINGS_PAGE_SIZE = 10;
 
 export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
@@ -233,21 +235,31 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const filters = JSON.stringify([id, statuses, severities, search]);
   const [pagination, setPagination] = useState({ filters, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
   if (pagination.filters !== filters) setPagination({ filters, pages: {} });
+  const findingFilters = new URLSearchParams();
+  if (search.trim()) findingFilters.set("q", search.trim());
+  statuses.forEach((value) => findingFilters.append("status", value));
+  severities.forEach((value) => findingFilters.append("severity", value));
+  const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
+    queryKey: ["pull-findings", id, filters, pagination.pages],
+    queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
+    enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
+    refetchInterval: Object.values(pagination.pages).some((page) => page! > 1) ? false : 5000,
+    retry: false,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id ? previous : undefined,
+  });
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
-  const { pull_request: pr, repository, runs, findings, can_write } = query.data;
+  if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
+  const { pull_request: pr, repository, runs, can_write } = query.data;
+  const findings = findingsQuery.data;
+  const total = findings?.registered_total ?? 0;
   const latest = runs[0];
   const running = runs.some((run) => active(run.status));
   const observed = runs.find((run) => ["completed", "partial"].includes(run.status));
   const term = search.trim().toLowerCase();
-  const visible = findings.filter((item) =>
-    (!statuses.length || statuses.includes(item.status)) &&
-    (!severities.length || severities.includes(item.severity)) &&
-    (!term || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(term)),
-  );
-  const count = (state: string) => findings.filter((item) => item.status === state).length;
-  const sections = findingStatuses.map((status) => ({ status, items: visible.filter((item) => item.status === status) })).filter(({ items }) => items.length);
-  const noOpenFindings = findings.length > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
+  const count = (state: string) => findings?.status_counts[state] ?? 0;
+  const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
+  const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : running ? "A review is already queued or running."
     : pr.state !== "open" ? "Reviews can only run on open pull requests."
@@ -303,7 +315,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
     <Tabs defaultValue="findings">
       <TabsList className="mb-4">
-        <TabsTrigger value="findings">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings.length}</span></TabsTrigger>
+        <TabsTrigger value="findings">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : ""}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{runs.length}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
@@ -314,20 +326,22 @@ export function PullDetail({ admin }: { admin: boolean }) {
               { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
             ]}
             onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)}>
-            <span role="status" className="shrink-0 text-xs tabular-nums text-muted-foreground sm:pt-2.5">{visible.length} of {findings.length} findings</span>
+            <span role="status" className="shrink-0 text-xs tabular-nums text-muted-foreground sm:pt-2.5">{findings ? `${findings.total} of ${total} findings` : findingsQuery.error ? "Findings unavailable" : "Loading findings…"}</span>
           </FilterBar>
         </div>
-        {visible.length ? <section aria-label="Findings" className="space-y-6">
-          {sections.map(({ status, items }) => {
-            const page = pagination.pages[status] ?? 1;
-            const shown = items.slice(0, page * FINDINGS_PAGE_SIZE);
+        {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
+        {findingsQuery.isPending && <Loading />}
+        {findings && (findings.total > 0 ? <section aria-label="Findings" className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
+          {sections.map(({ group: status, items, page, total: groupTotal, has_more }) => {
+            const busy = findingsQuery.isFetching && (pagination.pages[status] ?? 1) > page;
+            const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
-              <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{items.length}</span></h2>
+              <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
               <div className="divide-y overflow-hidden rounded-lg border bg-card">
                 <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
                   <span>Finding</span><span>Severity</span><span>Status</span><span />
                 </div>
-                {shown.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
+                {items.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
                   <div className="min-w-0">
                     <p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{item.content.replaceAll(/[*`#]/g, "")}</p>
                     <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
@@ -343,17 +357,19 @@ export function PullDetail({ admin }: { admin: boolean }) {
                   </div>
                   <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
                 </button>)}
-                {shown.length < items.length && <div className="flex items-center justify-between gap-3 px-5 py-3">
-                  <Button variant="ghost" size="sm" onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>Load more<span className="sr-only"> {status} findings</span></Button>
-                  <span className="text-xs tabular-nums text-muted-foreground">{shown.length} of {items.length}</span>
+                {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
+                {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
+                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
+                  <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
                 </div>}
+                {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
               </div>
             </section>;
           })}
-        </section> : <Empty title={noOpenFindings ? "No open findings" : findings.length ? "No findings match these filters" : runs.length ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : findings.length ? "Try another search, status, or severity." : runs.length ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
-          {findings.length > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
-        </Empty>}
+        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : runs.length ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, or severity." : runs.length ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          {total > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
+        </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
       </TabsContent>
       <TabsContent value="history" className="min-w-0"><RunList runs={runs} /></TabsContent>

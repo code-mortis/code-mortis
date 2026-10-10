@@ -12,7 +12,7 @@ const rows: Pull[] = titles.map((title, i) => ({
   review_status: ["running", "queued", "failed", "not_reviewed", "completed", "completed", "completed", "completed"][i],
   has_running_review: i === 0,
   run_id: i === 3 ? null : `run-${i}`, publication: "published", publication_error: null,
-  created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
+  created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, fork: false, head_ref: "feature", open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
 }));
 const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled", has_running_review: false };
 
@@ -29,6 +29,7 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
     else if (path === "/connections") data = [];
     else if (path === "/repositories") data = [{ ...repositories[0], installation_id: 10, private: false, active: true, enabled: true, connection_id: null, settings: { automatic: true, model: "", effort: "medium", language: "English", exclusions: "", background: "", timeout_seconds: 900, token_budget: 200000, max_files: 40, concurrency: 2, rules: null }, open_prs: 6, has_running_review: false }];
     else if (path === "/repositories/22/pulls") data = [];
+    else if (path.endsWith("/findings")) data = { groups: [], total: 0, registered_total: 0, status_counts: {}, page_size: 10 };
     else if (path.startsWith("/pulls/")) data = {
       pull_request: { ...rows[0], url: "https://github.com/acme/code-mortis/pull/42", latest_run: null, head_ref: "feature", head_sha: "a".repeat(40), base_sha: "b".repeat(40), fork: false },
       repository: repositories[0], runs: [], findings: [], can_write: false,

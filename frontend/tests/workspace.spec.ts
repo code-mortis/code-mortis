@@ -133,6 +133,63 @@ const connection = {
   auth_message: null,
 };
 
+function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
+  const statuses = ["open", "resolved", "dismissed"] as const;
+  const query = (params.get("q") ?? "").toLowerCase();
+  const filtered = items.filter((item) => (!params.has("status") || params.getAll("status").includes(item.status))
+    && (!params.has("severity") || params.getAll("severity").includes(item.severity))
+    && (!query || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(query)));
+  return {
+    groups: statuses.filter((group) => (!params.has("status") || params.getAll("status").includes(group)) && (!params.has("group") || params.get("group") === group)).map((group) => {
+      const matches = filtered.filter((item) => item.status === group);
+      const page = Math.min(params.has("group") ? Number(params.get("page") ?? 1) : 1, Math.max(1, Math.ceil(matches.length / 10)));
+      return { group, items: matches.slice((page - 1) * 10, page * 10), total: matches.length, page, has_more: page * 10 < matches.length };
+    }),
+    total: filtered.length, registered_total: items.length, page_size: 10,
+    status_counts: Object.fromEntries(statuses.map((status) => [status, items.filter((item) => item.status === status).length])),
+  };
+}
+
+type RepositoryPullFixture = Omit<typeof pr, "latest_run"> & { latest_run: typeof run | null };
+function repositoryPage(items: RepositoryPullFixture[], params: URLSearchParams) {
+  const rows = items.map((item) => ({ ...item, repository_name: repo.full_name, created_at: at,
+    review_status: !item.latest_run ? "not_reviewed" : item.latest_run.head_sha !== item.head_sha || item.latest_run.base_sha !== item.base_sha ? "outdated" : item.latest_run.status,
+    has_running_review: item.latest_run?.status === "running", run_id: item.latest_run?.id ?? null,
+    publication: item.latest_run?.publication ?? null, publication_error: item.latest_run?.publication_error ?? null,
+  }));
+  const query = (params.get("q") ?? "").toLowerCase();
+  const matches = rows.filter((item) => (!query || `${item.title} ${item.head_ref} ${item.author}`.toLowerCase().includes(query.replace(/^@/, "")) || String(item.number) === query.replace(/^#/, ""))
+    && (!params.has("review") || params.getAll("review").includes(item.review_status) || (params.getAll("review").includes("running") && item.has_running_review))
+    && (!params.has("author") || params.getAll("author").includes(item.author.toLowerCase()))
+    && (!params.has("findings") || (params.get("findings") === "open" ? item.open_findings > 0 : item.open_findings === 0)));
+  const filtered = matches.filter((item) => !params.has("state") || params.getAll("state").includes("all") || params.getAll("state").includes(item.state) || item.has_running_review);
+  const ordering = params.get("ordering") ?? "-updated_at";
+  const field = ordering.replace(/^-/, "") as "title" | "author" | "updated_at";
+  filtered.sort((a, b) => Number(b.has_running_review) - Number(a.has_running_review) || a[field].localeCompare(b[field]) * (ordering.startsWith("-") ? -1 : 1));
+  return {
+    groups: (["active", "merged", "closed"] as const).filter((group) => !params.has("group") || params.get("group") === group).map((group) => {
+      const matches = filtered.filter((item) => (item.has_running_review || item.state === "open" ? "active" : item.state) === group);
+      const page = Math.min(params.has("group") ? Number(params.get("page") ?? 1) : 1, Math.max(1, Math.ceil(matches.length / 10)));
+      return { group, items: matches.slice((page - 1) * 10, page * 10), total: matches.length, page, has_more: page * 10 < matches.length };
+    }),
+    total: filtered.length, registered_total: items.length, page_size: 10, repository_count: items.length ? 1 : 0,
+    repositories: [{ id: repo.id, full_name: repo.full_name }], authors: [...new Set(items.map((item) => item.author))],
+    state_counts: Object.fromEntries(["open", "merged", "closed"].map((state) => [state, matches.filter((item) => item.state === state).length])),
+  };
+}
+
+async function mockRepositoryPulls(page: Page, repositoryId: number, items: () => RepositoryPullFixture[]) {
+  await page.route(`**/api/v1/repositories/${repositoryId}/pulls?**`, (route) => route.fulfill({ json: repositoryPage(items(), new URL(route.request().url()).searchParams) }));
+}
+
+async function mockPullDetail(page: Page, detail: () => { findings: Schema["FindingOut"][]; [key: string]: unknown }) {
+  await page.route("**/api/v1/pulls/pr", (route) => {
+    const { findings: _findings, ...metadata } = detail();
+    return route.fulfill({ json: metadata });
+  });
+  await page.route("**/api/v1/pulls/pr/findings?**", (route) => route.fulfill({ json: findingPage(detail().findings, new URL(route.request().url()).searchParams) }));
+}
+
 async function mock(
   page: Page,
   options: {
@@ -201,8 +258,8 @@ async function mock(
           open_findings: 0,
         },
       ];
-    else if (path === "/pulls/pr")
-      data = {
+    else if (path === "/pulls/pr" || path === "/pulls/pr/findings") {
+      const detail = {
         pull_request: pr,
         repository: repo,
         runs: [currentRun],
@@ -223,7 +280,9 @@ async function mock(
         ],
         can_write: options.canWrite !== false,
       };
-    else if (path === "/findings/finding") {
+      const { findings, ...metadata } = detail;
+      data = path.endsWith("/findings") ? findingPage(findings, new URL(request.url()).searchParams) : metadata;
+    } else if (path === "/findings/finding") {
       if (method === "PATCH")
         current.desired_status = request.postDataJSON().status;
       data =
@@ -328,6 +387,7 @@ async function mock(
         status: 404,
         json: { detail: "Unexpected test request: " + path },
       });
+    if (/^\/repositories\/\d+\/pulls$/.test(path) && Array.isArray(data)) data = repositoryPage(data, new URL(request.url()).searchParams);
     await route.fulfill({ json: data });
   });
   return requests;
@@ -369,7 +429,7 @@ test("sidebar repositories navigate, show activity, and collapse accessibly", as
     { ...repo, id: 23, full_name: "other/payments", enabled: false },
     { ...repo, id: 24, full_name: "legacy-repository" },
   ] }));
-  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories");
   await expect(page.getByRole("heading", { name: repo.full_name, exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
@@ -428,7 +488,7 @@ test("sidebar repositories navigate, show activity, and collapse accessibly", as
 test("repository paths preserve legacy settings links and never fall back from an unknown id", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "other/payments" }] }));
-  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories?repo=23&configure=limits#settings");
   await expect(page).toHaveURL(/\/repositories\/23\?configure=limits#settings$/);
   await expect(page.getByRole("dialog", { name: "Repository configuration" })).toContainText("other/payments");
@@ -586,7 +646,7 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
   await mock(page, { role: "member" });
   const name = "organization-with-a-long-name/repository-with-a-very-long-name";
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: Array.from({ length: 40 }, (_, i) => ({ ...repo, id: i + 22, full_name: `${name}-${i}`, has_running_review: i === 0 })) }));
-  await page.route("**/api/v1/repositories/*/pulls", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/v1/repositories/*/pulls?**", (route) => route.fulfill({ json: repositoryPage([], new URL(route.request().url()).searchParams) }));
   await page.goto("/settings");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Main navigation" });
@@ -664,7 +724,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
     ...pr, id: `merged-${index}`, number: 147 - index, title: `Merged change ${index}`,
     state: "merged", author: "sam", latest_run: completed, open_findings: 0,
   })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
-  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: items }));
+  await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22");
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
@@ -731,9 +791,9 @@ test("repository filters survive configuration and the pull request run round tr
 test("repository list distinguishes failed requests, empty data, and revoked access", async ({ page }) => {
   await mock(page);
   let status = 502;
-  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill(status
+  await page.route("**/api/v1/repositories/22/pulls?**", (route) => route.fulfill(status
     ? { status, json: { detail: status === 403 ? "Repository access revoked" : "GitHub unavailable" } }
-    : { json: [] }));
+    : { json: repositoryPage([], new URL(route.request().url()).searchParams) }));
   await page.goto("/repositories/22");
   await expect(page.getByRole("alert")).toContainText("GitHub unavailable");
   await expect(page.getByRole("heading", { name: "No pull requests here yet" })).toHaveCount(0);
@@ -754,14 +814,14 @@ test("repository outdated reviews remain distinct from running reviews and page 
     { ...pr, latest_run: { ...run, status: "completed", publication: "published", head_sha: "old" } },
     { ...pr, id: "running", title: "Still running on an earlier commit", state: "merged", latest_run: { ...run, status: "running", head_sha: "old" } },
   ];
-  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: items }));
+  await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22?review=outdated");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(/outdated/i);
   await expect(page.getByRole("link", { name: /Still running/ })).toContainText("A review is still running");
   await page.goto("/repositories/22?state=closed&review=running");
   await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
-  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: Array.from({ length: 101 }, (_, index) => ({ ...pr, id: `many-${index}`, number: index + 1, title: `Change ${index + 1}`, latest_run: null })) }));
+  await mockRepositoryPulls(page, 22, () => Array.from({ length: 101 }, (_, index) => ({ ...pr, id: `many-${index}`, number: index + 1, title: `Change ${index + 1}`, latest_run: null })));
   await page.goto("/repositories/22?active_pages=999999");
   const open = page.getByRole("region", { name: "Open", exact: true });
   await expect(open.getByRole("link")).toHaveCount(100);
@@ -775,8 +835,8 @@ test("repository outdated reviews remain distinct from running reviews and page 
 test("repository state filters retain running reviews and reset when switching repository", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/other", enabled: false }] }));
-  await page.route("**/api/v1/repositories/22/pulls", (route) => route.fulfill({ json: [pr, { ...pr, id: "running", title: "Running review", latest_run: { ...run, status: "running" } }] }));
-  await page.route("**/api/v1/repositories/23/pulls", (route) => route.fulfill({ json: [] }));
+  await mockRepositoryPulls(page, 22, () => [pr, { ...pr, id: "running", title: "Running review", latest_run: { ...run, status: "running" } }]);
+  await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories/22?state=closed");
   await expect(page.getByRole("link", { name: /Running review/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
@@ -1976,9 +2036,9 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
 test("breadcrumbs keep long names accessible without pushing the theme button offscreen", async ({ page }, info) => {
   await mock(page);
   const fullName = "organization-with-a-very-long-name/repository-with-a-very-long-name";
-  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+  await mockPullDetail(page, () => ({
     repository: { ...repo, full_name: fullName }, pull_request: pr, runs: [run], findings: [], can_write: true,
-  } }));
+  }));
   await page.goto("/pulls/pr");
   await expect(page.getByRole("heading", { name: pr.title, exact: true })).toBeVisible();
   for (const width of info.project.name === "desktop" ? [1283, 1024, 768, 640] : [390, 320]) {
@@ -3450,7 +3510,7 @@ test("personal model and authorization saves run independently while auth stays 
 test("pull detail searches evidence and separates severity, status, and run history", async ({ page }, info) => {
   await mock(page);
   const latest = { ...run, status: "completed", publication: "published", head_sha: "c".repeat(40) };
-  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+  await mockPullDetail(page, () => ({
     pull_request: { ...pr, draft: true }, repository: repo, can_write: true,
     runs: [latest, { ...run, id: "older" }],
     findings: [
@@ -3458,7 +3518,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
       { ...finding, id: "resolved", status: "resolved", severity: "medium", content: "Validate the response before acknowledging a webhook.", path: "src/webhooks/validate.ts", last_seen_run_id: "older" },
       { ...finding, id: "dismissed", status: "dismissed", severity: "low", category: "performance", content: "Batch dispatches to reduce unnecessary database queries.", path: "src/webhooks/dispatch.ts", desired_status: "open", sync_error: "GitHub unavailable" },
     ],
-  } }));
+  }));
   await page.goto("/pulls/pr");
   const summary = page.getByRole("region", { name: "Latest review" });
   await expect(summary).toContainText("Earlier commit");
@@ -3541,7 +3601,7 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await mock(page);
   let findings = [{ ...finding, status: "resolved" }];
   let runs: typeof run[] = [run];
-  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: { pull_request: pr, repository: repo, can_write: true, runs, findings } }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings }));
   await page.goto("/pulls/pr");
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
@@ -3558,8 +3618,8 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await page.clock.fastForward(500);
-  await expect(page.getByRole("region", { name: "Findings", exact: true })).toContainText("resolved");
   await page.clock.resume();
+  await expect(page.getByRole("region", { name: "Findings", exact: true })).toContainText("resolved");
   findings = [];
   await page.reload();
   await expect(page.getByRole("heading", { name: "No findings recorded", exact: true })).toBeVisible();
@@ -3575,14 +3635,19 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
 
 test("pull detail paginates each finding status independently and resets pages with filters", async ({ page }, info) => {
   await mock(page);
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/pulls/pr/findings")) requests.push(url.searchParams);
+  });
   const findings = ["open", "resolved", "dismissed"].flatMap((status) => Array.from({ length: 21 }, (_, index) => ({
     ...finding, id: `${status}-${index}`, status, sync_intent: null,
     content: `Test finding ${index + 1}: validate incoming webhook data before processing.`,
     path: `src/${status}/handler-${index + 1}.ts`, severity: index % 2 ? "medium" : "high",
   })));
-  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+  await mockPullDetail(page, () => ({
     pull_request: pr, repository: repo, can_write: true, runs: [], findings,
-  } }));
+  }));
   await page.goto("/pulls/pr");
   const open = page.getByRole("region", { name: "Open findings", exact: true });
   const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
@@ -3606,6 +3671,8 @@ test("pull detail paginates each finding status independently and resets pages w
   await expect(rows(dismissed)).toHaveCount(20);
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await expect(rows(open)).toHaveCount(21);
+  for (const status of ["open", "resolved", "dismissed"]) expect(requests.some((params) => params.get("group") === status && params.get("page") === "2")).toBe(true);
+  expect(requests.some((params) => params.get("group") === "open" && params.get("page") === "3")).toBe(true);
   await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
 
   await page.getByLabel("Search findings", { exact: true }).fill("handler-21.ts");
@@ -3640,11 +3707,11 @@ test("pull detail paginates each finding status independently and resets pages w
 for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {
   test(`pull detail explains review availability for ${state}`, async ({ page }) => {
     await mock(page);
-    await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+    await mockPullDetail(page, () => ({
       pull_request: { ...pr, state: state === "merged" ? "merged" : "open", fork: state === "fork" },
       repository: { ...repo, enabled: state !== "paused" }, can_write: state !== "viewer", findings: [],
       runs: state === "running" ? [{ ...run, status: "running", publication: "pending" }] : [],
-    } }));
+    }));
     await page.goto("/pulls/pr");
     const summary = page.getByRole("region", { name: "Latest review" });
     const messages = {
@@ -3678,3 +3745,36 @@ test("pull detail retains evidence on transient errors and hides it after access
   await expect(page.getByRole("region", { name: "Findings", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Run review" })).toHaveCount(0);
 });
+
+for (const kind of ["repository", "findings"] as const) {
+  test(`${kind} backend pages keep rows on failure and clear them on access denial`, async ({ page }) => {
+    await mock(page);
+    const findings = Array.from({ length: 21 }, (_, index) => ({ ...finding, id: `finding-${index}`, content: `Test finding ${index}` }));
+    const pulls = Array.from({ length: 21 }, (_, index) => ({ ...pr, id: `pr-${index}`, title: `Test pull request ${index}` }));
+    if (kind === "findings") await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, runs: [], findings, can_write: true }));
+    let failure = 502;
+    const requests: URLSearchParams[] = [];
+    const endpoint = kind === "repository" ? "/repositories/22/pulls" : "/pulls/pr/findings";
+    await page.route(`**/api/v1${endpoint}?**`, (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      requests.push(params);
+      if (failure && params.has("group")) return route.fulfill({ status: failure, json: { detail: failure === 403 ? "Access denied" : "Page unavailable" } });
+      return route.fulfill({ json: kind === "repository" ? repositoryPage(pulls, params) : findingPage(findings, params) });
+    });
+    await page.goto(kind === "repository" ? "/repositories/22" : "/pulls/pr");
+    const group = page.getByRole("region", { name: kind === "repository" ? "Open" : "Open findings", exact: true });
+    const rows = group.getByRole(kind === "repository" ? "link" : "button", { name: /Test (finding|pull request)/ });
+    await expect(rows).toHaveCount(10);
+    await group.getByRole("button", { name: /Load more/ }).click();
+    await expect(group.getByRole("alert")).toContainText("Page unavailable");
+    await expect(rows).toHaveCount(10);
+    expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+    failure = 0;
+    await group.getByRole("button", { name: /Retry/ }).click();
+    await expect(rows).toHaveCount(20);
+    failure = 403;
+    await group.getByRole("button", { name: /Load more/ }).click();
+    await expect(page.getByRole("alert")).toContainText("Access denied");
+    await expect(rows).toHaveCount(0);
+  });
+}

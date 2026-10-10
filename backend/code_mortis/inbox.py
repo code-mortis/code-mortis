@@ -2,7 +2,7 @@ from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import Finding, PullRequest, Repository, ReviewRun
-from .schemas import INBOX_PAGE_SIZE, InboxFilters, InboxOut, InboxPage, InboxPullOut, InboxRepository
+from .schemas import LIST_PAGE_SIZE, InboxFilters, InboxOut, InboxPage, InboxPullOut, InboxRepository
 
 
 def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters) -> InboxOut:
@@ -45,7 +45,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     base = select(
         PullRequest.id, PullRequest.repository_id, Repository.full_name.label("repository_name"),
         PullRequest.number, PullRequest.title, PullRequest.author, PullRequest.state,
-        PullRequest.draft, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
+        PullRequest.draft, PullRequest.fork, PullRequest.head_ref, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
         has_running_review.label("has_running_review"),
         runs.c.run_id, runs.c.publication, runs.c.publication_error,
         func.coalesce(findings.c.open_findings, 0).label("open_findings"), group.label("group"),
@@ -67,6 +67,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     if query := filters.q.strip():
         predicates = [
             base.c.title.icontains(query, autoescape=True),
+            base.c.head_ref.icontains(query, autoescape=True),
             base.c.repository_name.icontains(query, autoescape=True),
         ]
         if author_query := query.lstrip("@"):
@@ -97,15 +98,15 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         if filters.group and name != filters.group:
             continue
         total = totals.get(name, 0)
-        page = min(filters.page if filters.group else 1, max(1, (total + INBOX_PAGE_SIZE - 1) // INBOX_PAGE_SIZE))
+        page = min(filters.page if filters.group else 1, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
         items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
             case((filtered.c.has_running_review, 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
             order.nulls_last(), filtered.c.id.desc(),
-        ).offset((page - 1) * INBOX_PAGE_SIZE).limit(INBOX_PAGE_SIZE)).mappings()
+        ).offset((page - 1) * LIST_PAGE_SIZE).limit(LIST_PAGE_SIZE)).mappings()
         pages.append(InboxPage(
             group=name, items=[InboxPullOut.model_validate(row) for row in items],
-            total=total, page=page, has_more=page * INBOX_PAGE_SIZE < total,
+            total=total, page=page, has_more=page * LIST_PAGE_SIZE < total,
         ))
     registered = select(PullRequest).where(PullRequest.repository_id.in_(permitted)).subquery()
     return InboxOut(

@@ -2,55 +2,24 @@ import { useCallback, useEffect } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
-import { api, ApiError, type Schema } from "./api";
+import { ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, Status } from "./components/common";
 import { PullRequestListHeading, PullRequestRow } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
+import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Group, type Property } from "./lib/inbox-filters";
 
 const titles: Record<Group, string> = { active: "Open", merged: "Merged", closed: "Closed" };
-type InboxData = Schema["InboxOut"] & { errors: Partial<Record<Group, string>> };
+type InboxData = GroupedData<Schema["InboxOut"]>;
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
   const request = withoutPages(params);
   // The API defaults to open PRs; the Inbox defaults to all states.
   if (!request.has("state")) request.set("state", "all");
-  const filters = request.toString();
-  const first = await api<Schema["InboxOut"]>(`/pulls?${filters}`, "GET", undefined, undefined, signal);
-  const errors: InboxData["errors"] = {};
-  const pages = await Promise.all(first.groups.map(async (group) => {
-    const wanted = Math.min(Number(params.get(`${group.group}_pages`) ?? 1), Math.max(1, Math.ceil(group.total / first.page_size)), INBOX_MAX_PAGES);
-    const combined = { ...group, items: [...group.items] };
-    for (let page = 2; page <= wanted; page++) {
-      signal.throwIfAborted();
-      try {
-        const response = await api<Schema["InboxOut"]>(`/pulls?${filters}&group=${group.group}&page=${page}`, "GET", undefined, undefined, signal);
-        const next = response.groups[0];
-        if (!next) break;
-        combined.items.push(...next.items);
-        combined.page = next.page;
-        combined.total = next.total;
-        combined.has_more = next.has_more;
-        if (next.page < page) break;
-      } catch (error) {
-        signal.throwIfAborted();
-        if (error instanceof ApiError && [401, 403].includes(error.status)) throw error;
-        errors[group.group] = error instanceof Error ? error.message : "Could not load more pull requests.";
-        break;
-      }
-    }
-    return combined;
-  }));
-  const seen = new Set<string>();
-  // Keep server totals and cursors: de-duplication only handles rows moving between requests.
-  for (const page of pages) page.items = page.items.filter((item) => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-  return { ...first, groups: pages, errors };
+  return fetchGroupedPages<Schema["InboxOut"]>("/pulls", request,
+    Object.fromEntries(groups.map((group) => [group, Number(params.get(`${group}_pages`) ?? 1)])), signal);
 }
 
 export function Inbox() {

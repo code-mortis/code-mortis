@@ -389,7 +389,6 @@ class PRDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
     runs: list[RunOut]
-    findings: list[FindingOut]
     can_write: bool
 
 
@@ -445,7 +444,7 @@ class RunDetail(BaseModel):
 
 
 InboxGroup = Literal["active", "merged", "closed"]
-INBOX_PAGE_SIZE = 10
+LIST_PAGE_SIZE = 10
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",
@@ -476,6 +475,8 @@ class InboxPullOut(ORMModel):
     author: str
     state: str
     draft: bool
+    fork: bool = False
+    head_ref: str = ""
     created_at: datetime | None
     updated_at: datetime
     review_status: str
@@ -484,6 +485,7 @@ class InboxPullOut(ORMModel):
     publication: str | None
     publication_error: str | None
     open_findings: int
+    latest_run: RunOut | None = None
 
 
 class InboxPage(BaseModel):
@@ -507,4 +509,39 @@ class InboxOut(BaseModel):
     repositories: list[InboxRepository]
     authors: list[str]
     state_counts: dict[str, int]
-    page_size: int = INBOX_PAGE_SIZE
+    page_size: int = LIST_PAGE_SIZE
+
+
+class RepositoryPullFilters(InboxFilters):
+    state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["all"], max_length=4)
+    ordering: Literal[
+        "created_at", "-created_at", "updated_at", "-updated_at", "title", "-title",
+        "repository", "-repository", "author", "-author",
+    ] = "-updated_at"
+
+
+FindingStatus = Literal["open", "resolved", "dismissed"]
+
+
+class FindingFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    status: list[FindingStatus] = Field(default_factory=list, max_length=3)
+    severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    group: FindingStatus | None = None
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class FindingPage(BaseModel):
+    group: FindingStatus
+    items: list[FindingOut]
+    total: int
+    page: int
+    has_more: bool
+
+
+class FindingsOut(BaseModel):
+    groups: list[FindingPage]
+    total: int
+    registered_total: int
+    status_counts: dict[str, int]
+    page_size: int = LIST_PAGE_SIZE
