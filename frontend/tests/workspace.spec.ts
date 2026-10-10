@@ -3772,6 +3772,78 @@ test("shared API logos cover the provider catalog with custom and unknown fallba
   }
 });
 
+test("connection selectors show logos in options and selected values, but hide them during search", async ({ page }, info) => {
+  await mock(page);
+  const catalog: { name: string; displayName: string }[] = JSON.parse(
+    await readFile(new URL("../../backend/code_mortis/providers.json", import.meta.url), "utf8"),
+  );
+  await page.route("**/api/v1/providers", (route) => route.fulfill({ json: catalog }));
+  await page.goto("/settings?tab=connections");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const type = dialog.getByRole("combobox", { name: "Connection type", exact: true });
+  const provider = dialog.getByRole("combobox", { name: "Provider", exact: true });
+  const typeIcon = type.locator("..").locator('[data-align="inline-start"]');
+  const providerIcon = provider.locator("..").locator('[data-align="inline-start"]');
+  await dialog.getByLabel("Connection name", { exact: true }).focus();
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? "dark" : "");
+    await expect(typeIcon.locator(".lucide-plug")).toBeVisible();
+    await expect(providerIcon.locator("img")).toHaveAttribute("src", "/brands/openai.svg");
+    await expect(typeIcon).toHaveAttribute("aria-hidden", "true");
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/selected-connection-logos-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+    await type.fill("");
+    const shared = page.getByRole("option", { name: "Shared API connection", exact: true });
+    await expect(shared.locator(".lucide-plug")).toBeVisible();
+    for (const [label, logo] of [["Personal ChatGPT subscription", "openai"], ["Personal Claude Code subscription", "claude"]]) {
+      await expect(page.getByRole("option", { name: label, exact: true }).locator("img")).toHaveAttribute("src", `/brands/${logo}.svg`);
+    }
+    await expect(typeIcon).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/connection-type-logos-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+    await type.fill("claude");
+    await expect(typeIcon).toHaveCount(0);
+    await type.press("Escape");
+    await expect(type).toHaveValue("Shared API connection");
+    await expect(typeIcon.locator(".lucide-plug")).toBeVisible();
+    await provider.fill("");
+    await expect(page.getByRole("option")).toHaveCount(catalog.length);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/provider-option-logos-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+    await provider.fill("no such provider");
+    await expect(providerIcon).toHaveCount(0);
+    await provider.press("Escape");
+    await expect(provider).toHaveValue("OpenAI API");
+    await expect(providerIcon.locator("img")).toHaveAttribute("src", "/brands/openai.svg");
+  }
+  for (const preset of catalog) {
+    await provider.fill(preset.displayName);
+    const option = page.getByRole("option", { name: preset.displayName, exact: true });
+    const logo = option.locator("img");
+    if (preset.name === "custom") {
+      await expect(logo).toHaveCount(0);
+      await expect(option.locator(".lucide-plug")).toBeVisible();
+    } else {
+      await expect(logo).toHaveAttribute("alt", "");
+      await expect(logo).toHaveAttribute("aria-hidden", "true");
+      await expect.poll(() => logo.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0), { message: preset.name }).toBe(true);
+    }
+    await expect(provider.locator("..").locator("img")).toHaveCount(0);
+  }
+  await provider.fill("anth");
+  await provider.press("Enter");
+  await expect(provider).toHaveValue("Anthropic Claude API");
+  await expect(providerIcon.locator("img")).toHaveAttribute("src", "/brands/claude.svg");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await type.fill("claude");
+  await type.press("Enter");
+  await expect(type).toHaveValue("Personal Claude Code subscription");
+  await expect(typeIcon.locator("img")).toHaveAttribute("src", "/brands/claude.svg");
+  await expect(dialog.getByRole("combobox", { name: "Provider", exact: true })).toHaveCount(0);
+});
+
 for (const kind of ["chatgpt", "claude_code"] as const) {
   test(`${kind} subscription sign-in links replace pending badges and resume setup`, async ({ page }, info) => {
     const requests = await mock(page, { role: "member", personal: true, claude: kind === "claude_code" });

@@ -90,6 +90,13 @@ const apiProviderLogos = new Map([
   ["z-ai-coding", "zai"],
   ["opencode", "opencode"],
 ]);
+function ProviderLogo({ logo, className = "" }: { logo: string; className?: string }) {
+  return <img
+    src={`/brands/${logo}.svg`}
+    alt="" aria-hidden="true" width={16} height={16}
+    className={`size-4 shrink-0 ${logo === "claude" ? "" : logo === "litellm" ? "dark:brightness-0 dark:invert" : "dark:invert"} ${className}`}
+  />;
+}
 const languages = ["Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)", "Croatian", "Czech", "Danish", "Dutch", "English", "Finnish", "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian", "Italian", "Japanese", "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Serbian", "Slovak", "Spanish", "Swedish", "Tamil", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"];
 function parseObject(value: string, label: string) {
   let data: unknown;
@@ -567,9 +574,9 @@ function ConnectionForm({
               disabled={!!connection}
               onChange={setKind}
               options={[
-                ...(canCreateApi ? [{ value: "api", label: "Shared API connection" }] : []),
-                { value: "chatgpt", label: "Personal ChatGPT subscription" },
-                { value: "claude_code", label: "Personal Claude Code subscription" },
+                ...(canCreateApi ? [{ value: "api", label: "Shared API connection", icon: <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> }] : []),
+                { value: "chatgpt", label: "Personal ChatGPT subscription", icon: <ProviderLogo logo="openai" /> },
+                { value: "claude_code", label: "Personal Claude Code subscription", icon: <ProviderLogo logo="claude" /> },
               ]}
             />
           )}
@@ -596,7 +603,10 @@ function ConnectionForm({
                 id={id}
                 value={provider}
                 onChange={choose}
-                options={providers.map((p) => ({ value: p.name, label: p.displayName }))}
+                options={providers.map((p) => {
+                  const logo = apiProviderLogos.get(p.name);
+                  return { value: p.name, label: p.displayName, icon: logo ? <ProviderLogo logo={logo} /> : <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> };
+                })}
               />
             )}
           </Field>
@@ -828,11 +838,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
-                      {logo ? <img
-                        src={`/brands/${logo}.svg`}
-                        alt="" aria-hidden="true" width={16} height={16}
-                        className={`mt-0.5 size-4 shrink-0 ${logo === "claude" ? "" : logo === "litellm" ? "dark:brightness-0 dark:invert" : "dark:invert"}`}
-                      /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
+                      {logo ? <ProviderLogo logo={logo} className="mt-0.5" /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
                         <p className="mt-1 break-words text-xs text-muted-foreground">
