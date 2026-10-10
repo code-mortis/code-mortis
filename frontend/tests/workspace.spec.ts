@@ -3035,6 +3035,54 @@ for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { sel
   });
 }
 
+for (const webhook of [undefined, "https://hooks.example.com/a-long-webhook-channel"]) {
+  test(`GitHub App icons open its profile and copy the ${webhook ? "configured" : "default"} webhook`, async ({ page }, info) => {
+    await mock(page);
+    if (webhook) await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+      github_app: { id: "123", slug: "code-mortis-acme", install_url: "/api/v1/installations/start" },
+      members: [], failed_jobs: [], public_url: "https://reviews.example.com", webhook_url: webhook,
+    } }));
+    await page.goto("/settings?tab=github");
+    const app = page.getByRole("region", { name: "GitHub App", exact: true });
+    await expect(page.getByRole("article", { name: "acme", exact: true }).locator('[data-slot="badge"]')).toHaveText("Installed");
+    await expect(page.getByRole("region", { name: "Accounts to connect" })).toHaveCount(0);
+    const link = app.getByRole("link", { name: "Open GitHub App on GitHub", exact: true });
+    await expect(link).toHaveAttribute("href", "https://github.com/apps/code-mortis-acme");
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noreferrer");
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", { value: {
+        writeText: async (value: string) => { document.body.dataset.copiedEndpoint = value; },
+      } });
+    });
+    const card = app.locator("dl");
+    const height = (await card.boundingBox())!.height;
+    await app.getByRole("button", { name: "Copy webhook endpoint", exact: true }).click();
+    await expect(page.locator("body")).toHaveAttribute("data-copied-endpoint", webhook ?? "https://reviews.example.com/api/v1/webhooks/github");
+    await expect(app.getByRole("status")).toHaveText("Webhook endpoint copied.");
+    await expect(app.getByRole("button", { name: "Copy webhook endpoint", exact: true })).toHaveAttribute("title", "Copied");
+    expect((await card.boundingBox())!.height).toBe(height);
+    await noOverflow(page);
+    if (webhook) await page.screenshot({ path: `../.impeccable/review/github-app-icons-${info.project.name}.png`, fullPage: true });
+  });
+}
+
+test("webhook copy failures retain the endpoint and explain manual recovery", async ({ page }) => {
+  await mock(page);
+  await page.goto("/settings?tab=github");
+  const app = page.getByRole("region", { name: "GitHub App", exact: true });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { value: {
+      writeText: async () => { throw new Error("Clipboard denied"); },
+    } });
+  });
+  await app.getByRole("button", { name: "Copy webhook endpoint", exact: true }).click();
+  await expect(app.getByRole("alert")).toHaveText("Could not copy. Select the endpoint and copy it manually.");
+  await expect(app).toContainText("https://reviews.example.com/api/v1/webhooks/github");
+  await expect(app.getByRole("status")).toHaveCount(0);
+  await noOverflow(page);
+});
+
 test("GitHub installations manage repositories and confirm uninstall", async ({ page }, info) => {
   const requests = await mock(page);
   let current = { ...installation };
@@ -3060,12 +3108,13 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
   const account = page.getByRole("article", { name: "acme", exact: true });
   const connectedAccounts = page.getByRole("region", { name: "Connected installations" }).getByRole("heading", { level: 4 });
   await expect(connectedAccounts).toHaveText(["acme", "beta", "zeta"]);
-  await expect(page.getByRole("region", { name: "Available installations" }).locator(".settings-identity"))
+  await expect(page.getByRole("region", { name: "Accounts to connect" }).locator(".settings-identity"))
     .toHaveText(["personal-account", "suspended-account"]);
   await expect(page.getByRole("heading", { name: "acme", exact: true })).toHaveCount(1);
-  await expect(account.getByRole("link", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);
+  await expect(account.getByRole("link", { name: "Manage repositories" })).toHaveCount(0);
   await expect(page.getByText("personal-account", { exact: true })).toBeVisible();
   await account.getByRole("button", { name: "Actions for acme" }).click();
+  await expect(page.getByRole("menuitem", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);
   await page.getByRole("menuitem", { name: "Resync repositories" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Repository sync queued" })).toBeVisible();
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
@@ -3131,16 +3180,19 @@ test("GitHub installations show recoverable failures and unavailable actions", a
   await permissionUpdate.getByRole("button", { name: "Actions for permission-update" }).click();
   await expect(page.getByRole("menuitem", { name: "Uninstall", exact: true })).toBeDisabled();
   await expect(page.getByRole("menuitem", { name: "Resync repositories" })).toBeEnabled();
+  await expect(page.getByRole("menuitem", { name: "Manage repositories" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(permissionUpdate.getByRole("link", { name: "Manage repositories" })).toBeVisible();
-  await account.getByRole("button", { name: "Retry uninstall" }).click();
+  await account.getByRole("button", { name: "Actions for acme" }).click();
+  await page.getByRole("menuitem", { name: "Retry uninstall" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Uninstall GitHub App" }).click();
   await expect(page.getByRole("dialog")).toContainText("GitHub ownership changed");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
   refreshError = true;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "GitHub could not be reached" })).toBeVisible();
-  await expect(account.getByRole("button", { name: "Retry uninstall" })).toBeDisabled();
+  await account.getByRole("button", { name: "Actions for acme" }).click();
+  await expect(page.getByRole("menuitem", { name: "Retry uninstall" })).toBeDisabled();
+  await page.keyboard.press("Escape");
   await expect(account.getByText("Uninstalled from GitHub", { exact: false })).toHaveCount(0);
   refreshError = false;
   current = { ...current, operation_status: "done", status: "uninstalled", can_uninstall: false };
@@ -3163,15 +3215,24 @@ test("GitHub installation lists order and label uninstall operations consistentl
     ...items, ...items.map((item) => ({ ...item, id: item.id + 100, connected: false })),
   ] }));
   await page.goto("/settings?tab=github");
-  for (const name of ["Connected installations", "Available installations"]) {
+  for (const name of ["Connected installations", "Accounts to connect"]) {
     const section = page.getByRole("region", { name, exact: true });
     await expect(section.locator(".settings-identity")).toHaveText([
       "Active account", "Failed uninstall", "Queued uninstall", "Running uninstall", "Suspended account", "Removed account",
     ]);
     await expect(section.locator('[data-slot="badge"]')).toHaveText([
-      "active", "failed", "uninstalling", "uninstalling", "suspended", "uninstalled",
+      "Installed", "failed", "uninstalling", "uninstalling", "suspended", "uninstalled",
     ]);
-    await expect(section.locator(".settings-record").filter({ hasText: "Removed account" })).toContainText("Unknown repository access");
+    const rows = section.locator(".settings-record:not(.settings-list-heading)");
+    await expect(rows.first()).toContainText("Selected repositories");
+    await expect(rows.first().locator('[data-slot="badge"]')).toHaveClass(/bg-emerald/);
+    for (const row of await rows.all()) {
+      if (await row.locator('[data-slot="badge"]').textContent() === "Installed") continue;
+      await expect(row).not.toContainText("repository access");
+      await expect(row).not.toContainText("Selected repositories");
+      await expect(row.locator('[data-slot="badge"]')).not.toHaveClass(/bg-emerald/);
+    }
+    await expect(section.getByRole("button", { name: /^Connect$|^Retry uninstall$/ })).toHaveCount(0);
   }
 });
 
@@ -3200,9 +3261,14 @@ test("GitHub installations refresh on return and connect available accounts", as
   });
   await page.goto("/settings?tab=github");
   await expect(page.getByRole("heading", { name: "No connected installations" })).toBeVisible();
+  const available = page.getByRole("region", { name: "Accounts to connect" });
+  await expect(available).toContainText("Connect a GitHub account to sync its repositories.");
+  await expect(available.locator('[data-slot="badge"]')).toHaveText("Installed");
   connected = true;
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await page.getByRole("button", { name: "Actions for acme" }).click();
+  await page.getByRole("menuitem", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
+  await expect(available).toHaveCount(0);
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
   const before = reads;
   await page.evaluate(() => {
@@ -3212,7 +3278,8 @@ test("GitHub installations refresh on return and connect available accounts", as
     window.dispatchEvent(new Event("visibilitychange"));
   });
   await expect.poll(() => reads).toBeGreaterThan(before);
-  await expect(page.getByRole("article", { name: "acme" }).getByRole("link", { name: "Manage repositories" }))
+  await page.getByRole("article", { name: "acme" }).getByRole("button", { name: "Actions for acme" }).click();
+  await expect(page.getByRole("menuitem", { name: "Manage repositories" }))
     .toHaveAttribute("href", "https://github.com/settings/installations/10");
 });
 
@@ -3265,7 +3332,7 @@ test("settings rows retain labels and fit enlarged text at container breakpoints
       await page.evaluate((size) => { document.documentElement.style.fontSize = `${size}px`; }, fontSize);
       const row = page.getByRole("article", { name: "acme", exact: true });
       await expect(row.locator('[data-slot="badge"]')).toHaveCSS("font-size", `${fontSize * 0.75}px`);
-      await expect(row.getByRole("link", { name: "Manage repositories" })).toHaveCSS("font-size", `${fontSize * 0.875}px`);
+      await expect(row.getByRole("button", { name: "Actions for acme" })).toHaveCSS("font-size", `${fontSize * 0.875}px`);
       const clipped = await row.evaluate((element) => [...element.querySelectorAll('[data-slot="button"], [data-slot="badge"]')]
         .filter((control) => {
           const bounds = control.getBoundingClientRect();

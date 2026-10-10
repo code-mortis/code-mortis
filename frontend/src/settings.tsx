@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Check, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { ArrowUpRight, Check, Copy, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
   api,
   useAction,
@@ -698,11 +698,13 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const [removingMember, setRemovingMember] = useState<Instance["members"][number] | null>(null);
   const [login, setLogin] = useState("");
   const [role, setRole] = useState("member");
+  const [webhookCopy, setWebhookCopy] = useState<"copied" | "failed" | null>(null);
   const memberSubmitLabel = member === "new" ? "Add or update member" : "Save role";
   const returnFocus = useRef<HTMLElement | null>(null);
   const connectionHeading = useRef<HTMLHeadingElement>(null);
   const memberHeading = useRef<HTMLHeadingElement>(null);
   const instance = query.data;
+  const webhookEndpoint = instance?.webhook_url ?? `${instance?.public_url}/api/v1/webhooks/github`;
   const groups = [
     { title: "Shared API connections", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
     { title: "Your subscriptions", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
@@ -848,13 +850,35 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               <div className="grid gap-2 px-5 py-4 sm:grid-cols-[128px_minmax(0,1fr)]">
                 <dt className="text-xs text-muted-foreground">App identity</dt>
                 <dd className="min-w-0">
-                  <p className="flex items-start gap-2 font-medium"><Github aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="break-words">{instance.github_app.slug}</span></p>
+                  <p className="flex items-center gap-2 font-medium">
+                    <Github aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 break-words">{instance.github_app.slug}</span>
+                    {instance.github_app.slug && <Button asChild variant="ghost" size="icon" className="-my-1 size-8 shrink-0 text-muted-foreground">
+                      <a href={`https://github.com/apps/${encodeURIComponent(instance.github_app.slug)}`} target="_blank" rel="noreferrer"
+                        aria-label="Open GitHub App on GitHub" title="Open GitHub App on GitHub"><ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+                    </Button>}
+                  </p>
                   <p className="mt-1 text-xs text-muted-foreground">Comments are published as this GitHub App.</p>
                 </dd>
               </div>
               <div className="grid gap-2 px-5 py-4 sm:grid-cols-[128px_minmax(0,1fr)]">
                 <dt className="text-xs text-muted-foreground">Webhook endpoint</dt>
-                <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{instance.webhook_url ?? `${instance.public_url}/api/v1/webhooks/github`}</dd>
+                <dd className="min-w-0">
+                  <div className="flex items-start gap-2">
+                    <span className="min-w-0 break-all font-mono text-xs leading-relaxed">{webhookEndpoint}</span>
+                    <Button variant="ghost" size="icon" className="-my-1.5 size-8 shrink-0 text-muted-foreground" aria-label="Copy webhook endpoint"
+                      title={webhookCopy === "copied" ? "Copied" : "Copy webhook endpoint"} onClick={async () => {
+                        setWebhookCopy(null);
+                        try {
+                          await navigator.clipboard.writeText(webhookEndpoint);
+                          setWebhookCopy("copied");
+                        } catch { setWebhookCopy("failed"); }
+                      }}>
+                      {webhookCopy === "copied" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
+                    </Button>
+                  </div>
+                  {webhookCopy === "copied" && <span role="status" className="sr-only">Webhook endpoint copied.</span>}
+                  {webhookCopy === "failed" && <p role="alert" className="mt-2 text-xs text-destructive">Could not copy. Select the endpoint and copy it manually.</p>}
+                </dd>
               </div>
             </dl>
           </section>

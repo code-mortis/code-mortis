@@ -18,7 +18,7 @@ export const date = (value: string) =>
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
 export function Status({ value, label, icon }: { value: string; label?: string; icon?: ReactNode }) {
-  const good = ["completed", "published", "resolved", "connected", "success"].includes(
+  const good = ["completed", "published", "resolved", "connected", "success", "active"].includes(
     value,
   );
   const bad = ["failed", "critical", "high", "failure", "timed_out"].includes(value);
