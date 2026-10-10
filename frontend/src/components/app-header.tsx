@@ -28,13 +28,17 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
-  const repositoryRoute = useMatch("/repositories/:repositoryId");
+  const repositoryRoute = useMatch("/repositories/:repositoryId/*");
   const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
   const crumbs: Crumb[] = [{ label: "Inbox", to: inboxReturn ?? "/" }];
 
   if (path === "/repositories" || repositoryRoute) {
     const repository = repos.error ? undefined : repos.data?.find((repo) => String(repo.id) === repositoryRoute?.params.repositoryId);
-    crumbs.push({ label: repository?.full_name || "Repositories", to: path + route.search });
+    const search = new URLSearchParams(params);
+    search.delete("tab");
+    const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
+    crumbs.push({ label: repository?.full_name || "Repositories", to: repositoryPath + (search.size ? `?${search}` : "") });
+    if (repositoryRoute?.params["*"] === "settings") crumbs.push({ label: "Configure", to: path + route.search });
   } else if (detailPath) {
     if (detail.data && !detail.error) {
       const { repository, pull_request: pull } = detail.data;

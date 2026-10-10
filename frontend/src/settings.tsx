@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { ArrowUpRight, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
   api,
   useAction,
@@ -82,16 +82,29 @@ function memberRoleLabel(role: string) {
 export function RepositorySettings({
   repository: repo,
   onSaved,
-  showLimits = false,
 }: {
   repository: Repository;
   onSaved: () => void;
-  showLimits?: boolean;
 }) {
   const connections = useApi<Connection[]>(
     `/connections?repository_id=${repo.id}`,
   );
   const action = useAction();
+  const id = useId();
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const sections = [["reviews", "Review behavior"], ["connection", "AI connection"], ["context", "Project context"], ["limits", "Limits & rules"]];
+  const section = sections.some(([value]) => value === params.get("tab")) ? params.get("tab")! : "reviews";
+  const invalidField = useRef<HTMLInputElement | null>(null);
+  useLayoutEffect(() => {
+    invalidField.current?.focus();
+    invalidField.current = null;
+  }, [section]);
+  function sectionSearch(value: string) {
+    const next = new URLSearchParams(params);
+    next.set("tab", value);
+    return next;
+  }
   const [enabled, setEnabled] = useState(repo.enabled);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState(repo.settings);
@@ -116,7 +129,22 @@ export function RepositorySettings({
   }
   return (
     <form
+      aria-label="Repository configuration"
       className="space-y-6"
+      onInvalidCapture={(event) => {
+        event.preventDefault();
+        const invalid = event.currentTarget.querySelector<HTMLInputElement>(":invalid");
+        if (!invalid || invalid !== event.target) return;
+        const field = invalid.getAttribute("aria-hidden") === "true"
+          ? invalid.parentElement?.querySelector<HTMLInputElement>('input[role="combobox"]') ?? invalid
+          : invalid;
+        const target = invalid.closest<HTMLElement>("[data-settings-section]")?.dataset.settingsSection;
+        setError(new Error(invalid.validationMessage));
+        if (target && target !== section) {
+          invalidField.current = field;
+          setParams(sectionSearch(target), { state: location.state });
+        } else field.focus();
+      }}
       onSubmit={async (e) => {
         e.preventDefault();
         setError(undefined);
@@ -139,229 +167,264 @@ export function RepositorySettings({
         }
       }}
     >
-      <ErrorNotice error={error || connections.error} />
-      <Field label="Enable reviews">
-        {(id) => (
-          <Switch id={id} checked={enabled} onCheckedChange={setEnabled} />
-        )}
-      </Field>
-      <Field label="AI connection">
-        {(id) => (
-          <SearchSelect
-            id={id}
-            value={connection}
-            disabled={connections.isPending}
-            required={enabled}
-            placeholder={connections.isPending ? "Loading connections…" : "Choose a connection"}
-            onChange={(value) => {
-              setConnection(value);
-              change("model", "");
-            }}
-            options={[
-              { value: "", label: "No connection" },
-              ...(connection && !selectedConnection ? [{ value: connection, label: connections.isPending ? "Loading connections…" : "Connection unavailable" }] : []),
-              ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
-            ]}
-          />
-        )}
-      </Field>
-      <Field
-        label="Automatic reviews"
-        hint="Reviews new commits on open, non-draft pull requests. Forks require a manual start."
-      >
-        {(id) => (
-          <Switch
-            id={id}
-            checked={settings.automatic}
-            onCheckedChange={(value) => change("automatic", value)}
-          />
-        )}
-      </Field>
-      <Field
-        label="Automatically resolve verified fixes"
-        hint="Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the remaining review allowance; uncertain findings stay open."
-      >
-        {(id) => (
-          <Switch
-            id={id}
-            checked={settings.auto_resolve ?? false}
-            disabled={!settings.automatic}
-            onCheckedChange={(value) => change("auto_resolve", value)}
-          />
-        )}
-      </Field>
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="Review effort">
-          {(id) => (
-            <NativeSelect
-              id={id}
-              value={settings.effort}
-              onChange={(e) =>
-                change("effort", e.target.value as "low" | "medium" | "high")
-              }
-            >
-              <option>low</option>
-              <option>medium</option>
-              <option>high</option>
-            </NativeSelect>
-          )}
-        </Field>
-        <Field label="Language">
-          {(id) => (
-            <SearchSelect
-              id={id}
-              required
-              value={settings.language}
-              onChange={(value) => change("language", value)}
-              options={languages.map((value) => ({ value, label: value }))}
-              placeholder="Choose or enter a language"
-              allowCustom
-            />
-          )}
-        </Field>
-      </div>
-      <ModelPicker
-        key={connection}
-        label="Model override (optional)"
-        value={settings.model}
-        onChange={(value) => change("model", value)}
-        path={connection ? `/connections/${connection}/models?repository_id=${repo.id}` : undefined}
-        enabled={!!selectedConnection}
-        emptyLabel={selectedConnection?.model || "Use connection model"}
-        hint="Choose an AI connection to load its models."
-      />
-      <Field
-        label="Exclude files"
-        hint="Comma-separated OCR glob patterns, such as **/*.lock,dist/**."
-      >
-        {(id) => (
-          <Input
-            id={id}
-            value={settings.exclusions}
-            onChange={(e) => change("exclusions", e.target.value)}
-          />
-        )}
-      </Field>
-      <BackgroundField
-        repositoryId={repo.id}
-        connectionId={connection}
-        model={settings.model}
-        defaultModel={selectedConnection?.model ?? ""}
-        tokenBudget={settings.token_budget}
-        timeoutSeconds={settings.timeout_seconds}
-        personal={personal}
-        value={settings.background}
-        onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
-      />
-      <details className="space-y-4" open={showLimits || undefined}>
-        <summary className="cursor-pointer text-sm font-medium">
-          Review limits and rules
-        </summary>
-        <div className="grid gap-4 pt-4 sm:grid-cols-2">
-          {([
-            { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
-              hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
-            { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
-              hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
-            { key: "max_files", label: "Maximum files", min: 1, max: undefined,
-              hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
-          ] as const).filter(({ key }) => !personal || key !== "token_budget").map(({ key, label, min, max, hint }) => (
-            <Field key={key} label={label} hint={hint}>
-              {(id) => (
+      <header>
+        <h1 className="text-3xl font-semibold tracking-tight">Repository configuration</h1>
+        <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <FolderGit2 className="size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
+        </p>
+      </header>
+      <div className="grid gap-7 border-t pt-6 lg:grid-cols-[180px_minmax(0,1fr)] lg:gap-10">
+        <nav aria-label="Repository settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
+          {sections.map(([value, label]) => <Link key={value} to={`?${sectionSearch(value)}`} state={location.state}
+            aria-current={section === value ? "page" : undefined}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${section === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+            {label}
+          </Link>)}
+        </nav>
+        <div className="min-w-0 max-w-2xl">
+          <section hidden={section !== "reviews"} data-settings-section="reviews" aria-labelledby={`${id}-reviews`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-reviews`} className="text-xl font-semibold tracking-tight">Review behavior</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Choose when reviews run and how findings are handled.</p>
+            </div>
+            <div className="divide-y rounded-lg border bg-card">
+              <div className="flex items-start justify-between gap-4 p-5">
                 <div className="space-y-2">
-                  <Input
-                    key={settings[key] === null ? "unlimited" : "limited"}
-                    id={id}
-                    type="number"
-                    min={min}
-                    max={max}
-                    required
-                    disabled={settings[key] === null}
-                    defaultValue={settings[key] ?? ""}
-                    onChange={(e) => {
-                      const value = e.target.valueAsNumber;
-                      if (!Number.isFinite(value) || !e.target.validity.valid) return;
-                      limitedValues.current[key] = value;
-                      change(key, value);
-                    }}
-                  />
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                      aria-label={`Unlimited ${label.toLowerCase()}`}
-                      checked={settings[key] === null}
-                      onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
-                    />
-                    Unlimited
-                  </label>
+                  <label htmlFor={`${id}-enabled`} className="text-sm font-medium">Enable reviews</label>
+                  <p id={`${id}-enabled-hint`} className="text-xs leading-relaxed text-muted-foreground">Allow reviews for this repository using the selected AI connection.</p>
                 </div>
+                <Switch id={`${id}-enabled`} aria-describedby={`${id}-enabled-hint`} checked={enabled} onCheckedChange={setEnabled} className="mt-0.5 shrink-0" />
+              </div>
+              <div className="flex items-start justify-between gap-4 p-5">
+                <div className="space-y-2">
+                  <label htmlFor={`${id}-automatic`} className="text-sm font-medium">Automatic reviews</label>
+                  <p id={`${id}-automatic-hint`} className="text-xs leading-relaxed text-muted-foreground">Reviews new commits on open, non-draft pull requests. Forks require a manual start.</p>
+                </div>
+                <Switch id={`${id}-automatic`} aria-describedby={`${id}-automatic-hint`} checked={settings.automatic} onCheckedChange={(value) => change("automatic", value)} className="mt-0.5 shrink-0" />
+              </div>
+              <div className="flex items-start justify-between gap-4 p-5">
+                <div className="space-y-2">
+                  <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
+                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the remaining review allowance; uncertain findings stay open.</p>
+                </div>
+                <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} disabled={!settings.automatic} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Language">
+                {(id) => (
+                  <SearchSelect
+                    id={id}
+                    required
+                    value={settings.language}
+                    onChange={(value) => change("language", value)}
+                    options={languages.map((value) => ({ value, label: value }))}
+                    placeholder="Choose or enter a language"
+                    allowCustom
+                  />
+                )}
+              </Field>
+              <Field label="Review effort">
+                {(id) => (
+                  <SearchSelect
+                    id={id}
+                    required
+                    value={settings.effort}
+                    onChange={(value) =>
+                      change("effort", value as "low" | "medium" | "high")
+                    }
+                    options={["low", "medium", "high"].map((value) => ({ value, label: value }))}
+                    placeholder="Choose review effort"
+                  />
+                )}
+              </Field>
+            </div>
+          </section>
+          <section hidden={section !== "connection"} data-settings-section="connection" aria-labelledby={`${id}-connection`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-connection`} className="text-xl font-semibold tracking-tight">Connection and model</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Choose the connection and model used to review this repository.</p>
+            </div>
+            <ErrorNotice error={connections.error} />
+            <Field label="AI connection">
+              {(id) => (
+                <SearchSelect
+                  id={id}
+                  value={connection}
+                  disabled={connections.isPending}
+                  required={enabled}
+                  placeholder={connections.isPending ? "Loading connections…" : "Choose a connection"}
+                  onChange={(value) => {
+                    setConnection(value);
+                    change("model", "");
+                  }}
+                  options={[
+                    { value: "", label: "No connection" },
+                    ...(connection && !selectedConnection ? [{ value: connection, label: connections.isPending ? "Loading connections…" : "Connection unavailable" }] : []),
+                    ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
+                  ]}
+                />
               )}
             </Field>
-          ))}
-          {personal && (
+            <ModelPicker
+              key={connection}
+              label="Model override (optional)"
+              value={settings.model}
+              onChange={(value) => change("model", value)}
+              path={connection ? `/connections/${connection}/models?repository_id=${repo.id}` : undefined}
+              enabled={!!selectedConnection}
+              emptyLabel={selectedConnection?.model || "Use connection model"}
+              hint="Choose an AI connection to load its models."
+            />
+          </section>
+          <section hidden={section !== "context"} data-settings-section="context" aria-labelledby={`${id}-context`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-context`} className="text-xl font-semibold tracking-tight">Project context</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Give reviewers context and choose which files to exclude.</p>
+            </div>
             <Field
-              label="Native context budget (bytes)"
-              hint="Bounds the code and rules supplied to the official client. Subscription usage limits still apply; this is not an output-token cap."
+              label="Exclude files"
+              hint="Comma-separated OCR glob patterns, such as **/*.lock,dist/**."
             >
               {(id) => (
                 <Input
                   id={id}
-                  type="number"
-                  min={4096}
-                  max={20000000}
-                  required
-                  value={settings.delegated_context_bytes ?? 800000}
-                  onChange={(event) =>
-                    change(
-                      "delegated_context_bytes",
-                      Number(event.target.value),
-                    )
-                  }
+                  value={settings.exclusions}
+                  onChange={(e) => change("exclusions", e.target.value)}
                 />
               )}
             </Field>
-          )}
-          <Field
-            label="Concurrency"
-            hint={
-              personal
-                ? "Personal subscriptions run one review at a time."
-                : undefined
-            }
-          >
-            {(id) => (
-              <Input
-                id={id}
-                type="number"
-                min={1}
-                max={8}
-                required
-                disabled={personal}
-                value={personal ? 1 : settings.concurrency}
-                onChange={(e) => change("concurrency", Number(e.target.value))}
-              />
-            )}
-          </Field>
-        </div>
-        <Field
-          label="OCR rules JSON"
-          hint="Optional rule-file object. Empty uses rules from the trusted base revision."
-        >
-          {(id) => (
-            <Textarea
-              id={id}
-              rows={6}
-              className="font-mono text-xs"
-              value={rules}
-              onChange={(e) => setRules(e.target.value)}
+            <BackgroundField
+              repositoryId={repo.id}
+              connectionId={connection}
+              model={settings.model}
+              defaultModel={selectedConnection?.model ?? ""}
+              tokenBudget={settings.token_budget}
+              timeoutSeconds={settings.timeout_seconds}
+              personal={personal}
+              value={settings.background}
+              onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
             />
-          )}
-        </Field>
-      </details>
-      <Button type="submit" disabled={action.isPending}>
-        {action.isPending ? "Saving…" : "Save configuration"}
-      </Button>
+          </section>
+          <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Limits & rules</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize OCR rules.</p>
+            </div>
+            <div className="grid gap-6 sm:grid-cols-2">
+              {([
+                { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
+                  hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
+                { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
+                  hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
+                { key: "max_files", label: "Maximum files", min: 1, max: undefined,
+                  hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
+              ] as const).filter(({ key }) => !personal || key !== "token_budget").map(({ key, label, min, max, hint }) => (
+                <Field key={key} label={label} hint={hint}>
+                  {(id) => (
+                    <div className="space-y-2">
+                      <Input
+                        key={settings[key] === null ? "unlimited" : "limited"}
+                        id={id}
+                        type="number"
+                        min={min}
+                        max={max}
+                        required
+                        disabled={settings[key] === null}
+                        className="disabled:bg-muted disabled:opacity-100 disabled:shadow-none dark:disabled:bg-muted"
+                        defaultValue={settings[key] ?? ""}
+                        onChange={(e) => {
+                          const value = e.target.valueAsNumber;
+                          if (!Number.isFinite(value) || !e.target.validity.valid) return;
+                          limitedValues.current[key] = value;
+                          change(key, value);
+                        }}
+                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                          aria-label={`Unlimited ${label.toLowerCase()}`}
+                          checked={settings[key] === null}
+                          onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
+                        />
+                        Unlimited
+                      </label>
+                    </div>
+                  )}
+                </Field>
+              ))}
+              {personal && (
+                <Field
+                  label="Native context budget (bytes)"
+                  hint="Bounds the code and rules supplied to the official client. Subscription usage limits still apply; this is not an output-token cap."
+                >
+                  {(id) => (
+                    <Input
+                      id={id}
+                      type="number"
+                      min={4096}
+                      max={20000000}
+                      required
+                      value={settings.delegated_context_bytes ?? 800000}
+                      onChange={(event) =>
+                        change(
+                          "delegated_context_bytes",
+                          Number(event.target.value),
+                        )
+                      }
+                    />
+                  )}
+                </Field>
+              )}
+              <Field
+                label="Concurrency"
+                hint={
+                  personal
+                    ? "Personal subscriptions run one review at a time."
+                    : undefined
+                }
+              >
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="number"
+                    min={1}
+                    max={8}
+                    required
+                    disabled={personal}
+                    value={personal ? 1 : settings.concurrency}
+                    onChange={(e) => change("concurrency", Number(e.target.value))}
+                  />
+                )}
+              </Field>
+            </div>
+            <Field
+              label="OCR rules JSON"
+              hint="Optional rule-file object. Empty uses rules from the trusted base revision."
+            >
+              {(id) => (
+                <Textarea
+                  id={id}
+                  rows={6}
+                  className="font-mono text-xs"
+                  value={rules}
+                  onChange={(e) => setRules(e.target.value)}
+                />
+              )}
+            </Field>
+          </section>
+          <footer className="mt-8 space-y-3 py-5">
+            <ErrorNotice error={error} />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button type="submit" disabled={action.isPending}>
+                {action.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </footer>
+        </div>
+      </div>
     </form>
   );
 }
