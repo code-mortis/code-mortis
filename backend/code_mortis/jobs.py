@@ -212,7 +212,7 @@ def execute(kind: str, payload: dict):
             if connection:
                 connection.last_test, connection.tested_at = result, now()
     else:
-        raise ValueError("Unknown job kind")
+        raise ValueError("This background operation is not supported by the running worker. Ask the administrator to check that the server and workers run the same version.")
 
 
 @celery.task(name="mortis.execute")
@@ -251,7 +251,7 @@ def execute_job(job_id: str):
         message = (
             str(exc)
             if isinstance(exc, (github.GitHubError, ValueError, TimeoutError, ocr.ReviewStopped))
-            else "The operation failed unexpectedly. Inspect the worker logs and retry."
+            else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
         retry = retryable and attempt < 3
@@ -323,7 +323,7 @@ def dispatch():
             if job.attempts < 3:
                 job.status, job.dispatched_at = "queued", None
             else:
-                job.status, job.error = "failed", "Worker stopped repeatedly. Retry the operation manually."
+                job.status, job.error = "failed", "The background worker stopped repeatedly before finishing. Ask the administrator to check the worker logs, then retry the operation."
                 if job.kind == "review":
                     run = db.scalar(select(ReviewRun).where(ReviewRun.id == job.payload["run_id"]).with_for_update())
                     if run and run.status in {"running", "queued"}:

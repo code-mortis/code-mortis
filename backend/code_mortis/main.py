@@ -29,14 +29,64 @@ def github_error(request: Request, exc: GitHubError):
 
 @app.exception_handler(ValueError)
 def invalid_input(request: Request, exc: ValueError):
-    return JSONResponse({"detail": str(exc)}, status_code=422)
+    return JSONResponse({"detail": str(exc) or "This request could not be accepted. Check the values and try again."}, status_code=422)
+
+
+def validation_message(error):
+    kind, context = error["type"], error.get("ctx", {})
+    if kind == "extra_forbidden":
+        return "The request contains an unsupported field. Refresh the page and try again."
+    if kind == "json_invalid":
+        return "The request contains invalid JSON. Check quotes, commas, and braces."
+    labels = {"delegated_context_bytes": "Native context budget (bytes)", "timeout_seconds": "Timeout (seconds)",
+              "base_url": "Endpoint URL", "api_key": "API key"}
+    path = [labels.get(part, str(part).replace("_", " ")) for part in error["loc"]
+            if part not in {"body", "query", "path", "int", "str", "bool", "none", "float"}]
+    field = " / ".join(path) or "Request"
+    field = field[0].upper() + field[1:]
+    messages = {
+        "missing": "This field is required.",
+        "int_type": "Enter a whole number.",
+        "int_parsing": "Enter a whole number.",
+        "int_from_float": "Enter a whole number without decimals.",
+        "bool_type": "Choose true or false.",
+        "bool_parsing": "Choose true or false.",
+        "string_type": "Enter text.",
+        "dict_type": "Enter a JSON object with keys and values.",
+        "model_attributes_type": "Send a JSON object with the required fields and the Content-Type: application/json header.",
+        "list_type": "Enter a list of values.",
+        "string_pattern_mismatch": "Use the required format for this field.",
+    }
+    if kind in {"greater_than_equal", "less_than_equal"}:
+        bound = "ge" if kind == "greater_than_equal" else "le"
+        message = f"Enter a value {'of at least' if bound == 'ge' else 'no greater than'} {context[bound]:,}."
+    elif kind in {"string_too_short", "string_too_long"}:
+        bound = "min_length" if kind == "string_too_short" else "max_length"
+        count = context[bound]
+        message = f"Use {'at least' if bound == 'min_length' else 'no more than'} {count:,} {'character' if count == 1 else 'characters'}."
+    elif kind == "literal_error":
+        message = f"Choose {context['expected']}."
+    else:
+        message = messages.get(kind, error["msg"].removeprefix("Value error, "))
+    return f"{field}: {message}"
 
 
 @app.exception_handler(RequestValidationError)
 def invalid_request(request: Request, exc: RequestValidationError):
     # Pydantic's default response echoes raw input, which may contain provider credentials.
-    details = "; ".join(f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in exc.errors())
+    # Optional values produce an extra null-branch error that obscures the field's actual constraint.
+    errors = [error for error in exc.errors() if error["type"] != "none_required"]
+    details = " ".join(dict.fromkeys(validation_message(error) for error in errors)) or "Check the request fields and try again."
     return JSONResponse({"detail": details}, status_code=422)
+
+
+@app.exception_handler(Exception)
+def unexpected_error(request: Request, exc: Exception):
+    reference = getattr(request.state, "request_id", "unavailable")
+    logging.getLogger(__name__).error("Request %s failed (%s)", reference, type(exc).__name__)
+    return JSONResponse({"detail": "Code Mortis could not complete this request. Try again. "
+                         f"If it keeps failing, share request reference {reference} with the administrator."},
+                        status_code=500, headers={"Cache-Control": "no-store", "X-Request-ID": reference})
 
 
 @app.middleware("http")
@@ -81,7 +131,7 @@ def frontend(path: str):
     root = settings().frontend_dir.resolve()
     asset = (root / path).resolve()
     if path.startswith(("api/", "health/")):
-        return JSONResponse({"detail": "Not found"}, status_code=404)
+        return JSONResponse({"detail": "This API endpoint does not exist. Check the URL and try again."}, status_code=404)
     if asset.is_relative_to(root) and asset.is_file():
         return FileResponse(asset)
     index = root / "index.html"

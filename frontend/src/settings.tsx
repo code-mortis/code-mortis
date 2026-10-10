@@ -62,7 +62,12 @@ const protocols = [
 ] as const;
 const languages = ["Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)", "Croatian", "Czech", "Danish", "Dutch", "English", "Finnish", "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian", "Italian", "Japanese", "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Serbian", "Slovak", "Spanish", "Swedish", "Tamil", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"];
 function parseObject(value: string, label: string) {
-  const data = JSON.parse(value || "{}");
+  let data: unknown;
+  try {
+    data = JSON.parse(value || "{}");
+  } catch {
+    throw new Error(`${label} must contain valid JSON. Check quotes, commas, and braces, then try again.`);
+  }
   if (!data || typeof data !== "object" || Array.isArray(data))
     throw new Error(`${label} must be a JSON object.`);
   return data;

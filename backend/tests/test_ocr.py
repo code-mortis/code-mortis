@@ -43,7 +43,7 @@ def test_coverage_controls_outcome_and_private_reasoning_is_removed():
     assert ocr.parse_report(json.dumps(data), 0)[0] == "partial"
     assert ocr.parse_report(json.dumps(report()), 1)[0] == "failed"
     data["manifest"]["coverage"]["waived"] = []
-    with pytest.raises(ValueError, match="account for every"):
+    with pytest.raises(ValueError, match="missing or overlapping file results"):
         ocr.parse_report(json.dumps(data), 0)
 
 
@@ -85,7 +85,7 @@ def test_selected_provider_is_isolated_and_configuration_removed(protocol, tmp_p
         assert path.stat().st_mode & 0o777 == 0o600
     assert not path.exists()
     path.write_text('{"provider":"operator"}')
-    with pytest.raises(ValueError, match="overwrite"):
+    with pytest.raises(ValueError, match="cannot replace it safely"):
         with ocr.configuration(connection, {}, {}):
             pass
     assert json.loads(path.read_text())["provider"] == "operator"
@@ -141,7 +141,7 @@ def test_endpoints_reject_credentials_and_metadata(monkeypatch):
     with pytest.raises(ValueError, match="credentials"):
         safe_endpoint("https://token@example.com/v1")
     monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("169.254.169.254", 443))])
-    with pytest.raises(ValueError, match="Metadata"):
+    with pytest.raises(ValueError, match="protected system"):
         safe_endpoint("https://metadata.example")
 
 

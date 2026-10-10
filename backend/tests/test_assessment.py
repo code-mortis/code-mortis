@@ -207,6 +207,24 @@ def test_incomplete_assessment_withholds_and_preserves_usage(pipeline, reason):
     assert not pipeline["reviews"]
 
 
+@pytest.mark.parametrize("tokens,reason", [
+    (5232697, "Token budget exhausted: 5,232,697 / 5,000,000 tokens used or reserved."),
+    (None, "Token usage is unavailable or invalid; remaining budget cannot be verified against the 5,000,000-token limit."),
+])
+def test_assessment_reports_exhausted_or_unknown_usage(pipeline, tokens, reason):
+    pipeline["tokens"] = tokens
+    identity = new_run(assessed=True)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 5000000}}
+    reviews.perform_review(identity)
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        assert row.error == reason + " Assessment stopped."
+        assert row.status == "failed" and row.finding_id is None and row.usage == {"tokens": 0}
+    assert pipeline["calls"] == 0
+
+
 def test_preflight_skip_retains_its_status_and_zero_usage(pipeline):
     pipeline["failure"] = verification.VerificationOutputError("Evidence exceeds scope", {"tokens": 0}, "skipped")
     run_and_publish()
@@ -249,7 +267,7 @@ def test_concurrent_history_change_invalidates_new_identity(pipeline):
     run_and_publish()
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate))
-        assert row.status == "skipped" and "context changed" in row.error
+        assert row.status == "skipped" and "history changed during assessment" in row.error
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
     assert not pipeline["reviews"]
 

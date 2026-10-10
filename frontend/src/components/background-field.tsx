@@ -56,7 +56,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
     },
     enabled: !!job,
     retry: (count, error) => count < 3 && (!(error instanceof ApiError)
-      || error.status === 408 || error.status === 429 || error.status >= 500),
+      || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500),
     retryDelay: 1000,
     refetchInterval: (query) => ["done", "failed"].includes(query.state.data?.status ?? "") ? false : 1000,
   });

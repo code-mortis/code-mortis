@@ -30,7 +30,7 @@ def valid_signature(body: bytes, signature: str, secret: str) -> bool:
 def safe_endpoint(url: str) -> str:
     parsed = urlsplit(url)
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-        raise ValueError("Use a complete HTTP(S) provider URL")
+        raise ValueError("Enter a complete provider URL starting with https:// or http://.")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("Provider URLs cannot contain credentials, query parameters, or fragments")
     config = settings()
@@ -38,17 +38,17 @@ def safe_endpoint(url: str) -> str:
     if parsed.hostname.lower() in trusted:
         return url.rstrip("/")
     if parsed.scheme != "https" and not config.allow_private_endpoints:
-        raise ValueError("HTTP endpoints require CM_ALLOW_PRIVATE_ENDPOINTS=true")
+        raise ValueError("This server does not allow unencrypted HTTP provider URLs. Use HTTPS or ask the administrator to review CM_ALLOW_PRIVATE_ENDPOINTS for a trusted local provider.")
     try:
         addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
     except OSError as exc:
-        raise ValueError("Provider hostname could not be resolved") from exc
+        raise ValueError("The provider address could not be found. Check the URL and ask the administrator to check server DNS if it is correct.") from exc
     for entry in addresses:
         address = ipaddress.ip_address(entry[4][0])
         if address.is_link_local or address.is_unspecified or address.is_multicast:
-            raise ValueError("Metadata, link-local, and multicast endpoints are not allowed")
+            raise ValueError("This provider URL points to a protected system or local-network address. Choose a different provider URL.")
         if not address.is_global and not config.allow_private_endpoints:
-            raise ValueError("Private endpoints require CM_ALLOW_PRIVATE_ENDPOINTS=true")
+            raise ValueError("This server does not allow private-network provider addresses. Use an allowed provider or ask the administrator to review CM_ALLOW_PRIVATE_ENDPOINTS for your trusted provider.")
     return url.rstrip("/")
 
 
@@ -65,5 +65,5 @@ def clean_text(value: str, secrets: tuple[str, ...] = ()) -> str:
 
 def safe_repo_name(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
-        raise ValueError("Invalid GitHub repository name")
+        raise ValueError("Enter a GitHub repository in owner/repository format.")
     return value

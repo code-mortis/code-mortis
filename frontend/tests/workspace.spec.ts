@@ -3281,6 +3281,69 @@ test("testing a connection cannot open a trapped deletion dialog", async ({ page
   await expect(actions).toBeFocused();
 });
 
+for (const [status, message] of [
+  [401, "Your session has expired. Sign in with GitHub again."],
+  [403, "You do not have access to this action."],
+  [422, "Some values could not be accepted."],
+  [429, "Too many requests were sent."],
+  [500, "Code Mortis could not complete this request."],
+  [503, "Code Mortis is temporarily unavailable."],
+  [504, "The server took too long to respond."],
+] as const) {
+  test(`error messages explain HTTP ${status} and allow retry`, async ({ page }, info) => {
+    await mock(page);
+    let failed = true;
+    await page.route("**/api/v1/setup/status", (route) => failed
+      ? route.fulfill({ status, contentType: "text/html", body: "<h1>Upstream failure</h1>" })
+      : route.fallback());
+    await page.goto("/");
+    await expect(page.getByRole("alert")).toContainText(message);
+    await expect(page.getByRole("alert")).not.toContainText("Upstream failure");
+    await noOverflow(page);
+    if (status === 500) {
+      await page.evaluate(() => { document.documentElement.style.zoom = "2"; });
+      await noOverflow(page);
+      await page.screenshot({ path: info.outputPath("request-error.png"), fullPage: true });
+      await page.evaluate(() => { document.documentElement.style.zoom = ""; });
+    }
+    failed = false;
+    await page.getByRole("button", { name: "Retry connection", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  });
+}
+
+test("error messages explain network failures", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/setup/status", (route) => route.abort("connectionrefused"));
+  await page.goto("/");
+  await expect(page.getByRole("alert")).toContainText("Could not reach Code Mortis. Check your connection and try again.");
+  await noOverflow(page);
+});
+
+test("error messages identify invalid JSON without exposing draft secrets", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Actions for Team reviews" }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText("Advanced provider settings", { exact: true }).click();
+  await dialog.getByLabel("Extra headers JSON").fill('{"Authorization":"private-provider-key",');
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Headers must contain valid JSON. Check quotes, commas, and braces, then try again.");
+  await expect(dialog.getByRole("alert")).not.toContainText("private-provider-key");
+  expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  await noOverflow(page);
+  await dialog.getByRole("alert").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath("json-error.png"), fullPage: true });
+});
+
+test("review feedback shows recorded usage and the configured token limit", async ({ page }) => {
+  await mock(page, { run: { status: "partial", config: { settings: { token_budget: 5000000 } },
+    report: { summary: { budget_exceeded: true, total_tokens: 5232697 } } } });
+  await page.goto("/runs/run");
+  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("5,232,697 / 5,000,000 tokens used.");
+});
+
 test("connection form errors preserve edits and omit unchanged secrets", async ({ page }, info) => {
   const requests = await mock(page);
   let fail = true;

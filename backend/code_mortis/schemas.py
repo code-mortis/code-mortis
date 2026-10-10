@@ -42,24 +42,24 @@ class ConnectionConfig(StrictModel):
     def allowed_options(cls, value):
         allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header"}
         if set(value) - allowed:
-            raise ValueError("Unsupported provider options")
+            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header.")
         if "timeout_sec" in value and (
             type(value["timeout_sec"]) is not int or not 5 <= value["timeout_sec"] <= 900
         ):
-            raise ValueError("timeout_sec must be between 5 and 900")
+            raise ValueError("timeout_sec must be a whole number from 5 to 900 seconds.")
         if "extra_body" in value:
             if not isinstance(value["extra_body"], dict):
-                raise ValueError("extra_body must be an object")
+                raise ValueError("extra_body must be a JSON object with keys and values.")
             if set(value["extra_body"]) & {"messages", "input", "tools", "model", "stream", "api_key"}:
                 raise ValueError("extra_body cannot replace review inputs, tools, or authentication")
         if "retry_codes" in value and (
             not isinstance(value["retry_codes"], list)
             or any(type(code) is not int or not 400 <= code < 500 for code in value["retry_codes"])
         ):
-            raise ValueError("retry_codes must contain HTTP 4xx integers")
+            raise ValueError("retry_codes must be a list of whole HTTP status codes from 400 to 499.")
         for key in ("aws_region", "aws_profile", "auth_header"):
             if key in value and (not isinstance(value[key], str) or len(value[key]) > 150):
-                raise ValueError(f"Invalid {key}")
+                raise ValueError(f"{key} must be text no longer than 150 characters.")
         return value
 
     @field_validator("extra_headers")
@@ -68,7 +68,7 @@ class ConnectionConfig(StrictModel):
         if value and any(
             "\n" in key + val or "\r" in key + val or len(val) > 20000 for key, val in value.items()
         ):
-            raise ValueError("Invalid provider headers")
+            raise ValueError("Extra header names and values must not contain line breaks; each value must be no longer than 20,000 characters.")
         return value
 
 

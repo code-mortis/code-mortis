@@ -209,7 +209,7 @@ def test_missing_key_bedrock_custom_auth_and_endpoint_validation(monkeypatch):
 @pytest.mark.parametrize(
     "base_url,detail",
     [
-        ("not-a-url", "Use a complete HTTP(S) provider URL"),
+        ("not-a-url", "Enter a complete provider URL starting with https:// or http://."),
         (
             "https://user:private-secret@example.com/v1",
             "Provider URLs cannot contain credentials, query parameters, or fragments",

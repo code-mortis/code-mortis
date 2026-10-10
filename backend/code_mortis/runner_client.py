@@ -14,11 +14,11 @@ class RunnerBlocked(ValueError):
             {
                 "busy": "This personal connection is in use. The review will wait.",
                 "quota": "The subscription limit was reached. Retry when usage is available.",
-                "authentication": "Reconnect this personal account before retrying the review.",
-                "unavailable": "The official client runner is unavailable. Check its health and retry.",
+                "authentication": "This personal account needs to sign in again. Reconnect it in Settings, then retry.",
+                "unavailable": "The service that runs ChatGPT and Claude Code is unavailable. Ask the administrator to check the runner service, then try again.",
             }.get(
                 reason,
-                "The official client could not complete this review. Retry after checking the connection.",
+                "ChatGPT or Claude Code could not complete this request. Check the AI connection account status, then try again.",
             )
         )
 

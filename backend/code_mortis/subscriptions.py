@@ -90,7 +90,7 @@ def disconnect(identity: str, db: DB, user: USER):
         runner_client.request("POST", f"/connections/{identity}/disconnect", {"kind": connection.kind})
     except runner_client.RunnerBlocked:
         connection.auth_message = (
-            "Access revoked. Runner unavailable: retry disconnect to remove the native session."
+            "Code Mortis access was revoked, but the account sign-in service is unavailable. Retry disconnect when the service is back to remove the saved account session."
         )
         return {"status": "disconnected", "message": connection.auth_message}
     return {"status": "disconnected"}

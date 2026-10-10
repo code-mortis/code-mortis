@@ -53,7 +53,7 @@ def snapshot_thread(thread):
     comments = thread.get("comments", {})
     # An incomplete comment list cannot prove the discussion was unchanged.
     if comments.get("pageInfo", {}).get("hasNextPage"):
-        raise ValueError("The thread discussion exceeds the verification context limit.")
+        raise ValueError("The GitHub discussion could not be loaded in full, so the fix cannot be verified automatically. Review the discussion on GitHub.")
     return {
         "id": thread["id"], "isResolved": thread["isResolved"],
         "comments": [
@@ -135,7 +135,7 @@ def validate_result(value, context):
             f"{'.'.join(map(str, error['loc'])) or 'result'}: {error['type']}"
             for error in exc.errors(include_input=False, include_url=False)[:8]
         )
-        raise ValueError("The verifier returned an invalid result: " + problems) from exc
+        raise ValueError("The AI returned a fix verification result in an unsupported format. The finding remains open. Result details: " + problems) from exc
     revisions = set()
     for item in result["evidence"]:
         source = context["sources"].get(item["revision"], {}).get(item["path"])
@@ -167,10 +167,10 @@ def read_source(repo, env, sha, path, stopped):
     ocr.ReviewComment.relative_path(path)
     entry = ocr.git(repo, env, "ls-tree", sha, "--", path, stopped=stopped)
     if not re.match(r"^100(?:644|755) blob [0-9a-f]{40}\t", entry):
-        raise ValueError("Original or relevant current source is missing or is not a regular file.")
+        raise ValueError("A source file needed to verify this finding is missing or is not a regular file. Check the original and current code manually.")
     source = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
     if "\x00" in source or "\ufffd" in source:
-        raise ValueError("Relevant source is binary or cannot be decoded safely.")
+        raise ValueError("A file needed to verify this finding is binary or is not readable as text. Check it manually.")
     return source
 
 
@@ -204,7 +204,7 @@ def filter_context(repo, env, sources, options, stopped):
         else:
             code, output, _ = ocr.command(args, root, env, stopped=stopped)
         if code:
-            raise ValueError("OCR could not validate verification context exclusions.")
+            raise ValueError("The review engine could not check which evidence files are excluded. Check file exclusions and review rules before starting another review.")
         data = json.loads(output)
         selected = {item["path"] for item in data.get("files", []) if item.get("will_review") is True}
         return set(sources) & selected
@@ -212,7 +212,7 @@ def filter_context(repo, env, sources, options, stopped):
 
 def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped, *, focused=False):
     if not re.fullmatch(r"[0-9a-f]{40}", original_sha):
-        raise ValueError("The original occurrence has no valid commit identity.")
+        raise ValueError("The original finding has no valid commit reference, so its original code cannot be checked. Review the finding manually.")
     try:
         ocr.git(repo, env, "cat-file", "-e", f"{original_sha}^{{commit}}", stopped=stopped)
     except ValueError:
@@ -242,7 +242,7 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     if focused:
         paths, original_paths = ({current_path} if current_path else set()), {old_path}
     if len(paths | original_paths) > 100:
-        raise ValueError("Too many changed files to establish complete verification context.")
+        raise ValueError("Fix verification needs more than 100 changed source files, exceeding its evidence limit. Review the finding manually.")
     # Apply scope before loading optional changes. An excluded test must not block an unrelated fix
     # or leak into the diff sent to the provider.
     all_paths = paths | original_paths
@@ -312,7 +312,7 @@ def verification_tools(instructions=INSTRUCTIONS, schema=None):
 
 def terminal_result(root, session_id):
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
-        raise ValueError("OCR did not identify the result session.")
+        raise ValueError("The review engine did not identify which analysis produced this result. It cannot be trusted for automatic resolution. Start a new review.")
     results = []
     for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
         with path.open() as stream:
@@ -324,17 +324,17 @@ def terminal_result(root, session_id):
                 row = json.loads(line)
                 if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
                     if row.get("sessionId") != session_id:
-                        raise ValueError("The terminal response belongs to another session.")
+                        raise ValueError("The review engine returned a result from a different analysis. It cannot be used to verify this finding. Start a new review.")
                     for call in row.get("tool_calls") or []:
                         if call.get("name") != "task_done":
-                            raise ValueError("Unexpected tool in the result transport.")
+                            raise ValueError("The AI returned an unsupported response instead of a finding assessment. Start a new review or check the selected model.")
                         value = json.loads(call["arguments"])
                         if (not isinstance(value, dict) or value.get("state") != "DONE"
                             or not isinstance(value.get("result"), dict)):
-                            raise ValueError("Missing explicit terminal result.")
+                            raise ValueError("The AI finished without returning a final assessment. Start a new review or check the selected model.")
                         results.append(value["result"])
     if len(results) != 1:
-        raise ValueError("Expected exactly one terminal result.")
+        raise ValueError("The AI did not return exactly one final assessment. Start a new review or check the selected model.")
     return results[0]
 
 
@@ -358,8 +358,10 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
                *, instructions=INSTRUCTIONS, schema=None, validator=validate_result):
-    if (token_budget is not None and token_budget <= 0) or (timeout is not None and timeout <= 0):
-        raise ValueError("No verification allowance remains.")
+    if token_budget is not None and token_budget <= 0:
+        raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
+    if timeout is not None and timeout <= 0:
+        raise ValueError("This assessment cannot start because its time limit has expired.")
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
     with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
         root = Path(temp)
@@ -386,7 +388,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                              if item.get("path") == "evidence.py"), {})
         except Exception as exc:
             status = "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
-            raise VerificationOutputError("OCR could not complete the evidence preflight.", {"tokens": 0}, status) from exc
+            raise VerificationOutputError("The review engine could not check the source evidence before analysis. No AI request was made for this assessment. Start a new review.", {"tokens": 0}, status) from exc
         if code or selected.get("will_review") is not True:
             reason = selected.get("exclude_reason", "evidence.py was not selected")
             detail = f"OCR rejected assessment/verification evidence ({reason}; exit code {code})."
@@ -407,7 +409,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             try:
                 data = json.loads(output)
                 if not isinstance(data, dict):
-                    raise ValueError("Expected an OCR result object.")
+                    raise ValueError("The review engine returned an unreadable assessment response.")
             except ValueError as exc:
                 failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
                 raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
@@ -415,11 +417,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             try:
                 raw = terminal_result(root, data.get("session_id"))
             except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
-                result_error = str(exc) or "Missing terminal result."
+                result_error = str(exc) or "The AI did not return a final assessment."
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
-            raise ValueError("Verification usage could not be established. " + diagnostics)
+            raise ValueError("The review engine did not report valid token usage. Further AI checks were stopped to avoid exceeding the run budget. Technical details: " + diagnostics)
         for warning in data.get("warnings") or []:
             if isinstance(warning, dict) and warning.get("type") == "token_threshold_exceeded":
                 message = clean_text(str(warning.get("message", "")), (
@@ -435,7 +437,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
                                  "warnings": data.get("warnings"), "result_error": result_error,
                                  "diagnostics": diagnostics})[:4000]
-            raise VerificationOutputError("OCR did not complete explicit finding verification: " + detail, {"tokens": usage})
+            raise VerificationOutputError("The AI did not finish checking this finding. Technical details: " + detail, {"tokens": usage})
         try:
             validated = validator(raw, context)
             return validated, {"tokens": usage}
@@ -487,7 +489,7 @@ def finish(db, row, *, result=None, status="completed", error=None, usage=None):
         enqueue(db, "resolve", payload)
     elif row.verdict == "fixed":
         row.resolution = "skipped"
-        row.error = "Automatic resolution requires unchanged finding state, enabled automation, and a validated open Code Mortis thread."
+        row.error = "The finding was not resolved on GitHub: its status changed, automatic resolution was disabled, or its original Code Mortis discussion could not be confirmed. Check the finding and repository settings."
     db.add(Activity(finding_id=finding.id, action="verification_" + row.verdict,
                     actor="Code Mortis", source="verification",
                     reason=f"Commit {row.head_sha}: {error or result['explanation']}"[:10000]))
@@ -500,6 +502,21 @@ def skip_pending(db, run, reason):
         FindingVerification.run_id == run.id, FindingVerification.status.in_(["queued", "running"])
     )):
         finish(db, row, status="skipped", error=reason)
+
+
+def limit_error(options, kind, budget, remaining, usage_known):
+    if budget is not None and budget <= 0:
+        if kind == "api":
+            limit = options["token_budget"]
+            if not usage_known:
+                return f"Token usage is unavailable or invalid; remaining budget cannot be verified against the {limit:,}-token limit."
+            return f"Token budget exhausted: {limit - budget:,} / {limit:,} tokens used or reserved."
+        limit = options["delegated_context_bytes"]
+        return f"Context limit exhausted: {limit - budget:,} / {limit:,} bytes used or reserved."
+    if remaining is not None and remaining < 10:
+        return (f"Time limit reached: {max(0, remaining):,} seconds remain of the "
+                f"{options['timeout_seconds']:,}-second run limit; at least 10 seconds are required.")
+    return None
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
@@ -530,7 +547,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 continue
             # A vanished worker may have spent its entire reservation. Never repeat unknown paid work.
             if row.status == "running":
-                finish(db, row, status="failed", error="Worker interrupted verification; consumption is unknown.")
+                finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
                 continue
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
@@ -539,23 +556,26 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             if (not enabled(run, repo) or run.cancel_requested or pr.head_sha != run.head_sha
                 or pr.base_sha != run.base_sha or pr.state != "open" or finding.status != "open"
                 or finding.desired_status or finding.sync_version != row.finding_version):
-                finish(db, row, status="skipped", error="Verification was superseded, disabled, or manually changed.")
+                finish(db, row, status="skipped", error="Fix verification was skipped because the pull request or finding changed, or automatic resolution was disabled. Check the latest finding status and repository settings.")
                 continue
             summary = (run.report or {}).get("summary", {})
             used_tokens = summary.get("total_tokens")
             used_context = (run.report or {}).get("limits", {}).get("context_bytes", 0)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
             prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
+            usage_known = True
             if connection["kind"] == "api":
                 budget = options["token_budget"]
                 if budget is not None:
                     tokens = [used_tokens, *(u.get("tokens", 0) for u in prior_usage)]
-                    budget = budget - sum(tokens) if all(type(value) is int and value >= 0 for value in tokens) else 0
+                    usage_known = all(type(value) is int and value >= 0 for value in tokens)
+                    budget = budget - sum(tokens) if usage_known else 0
             else:
                 budget = options["delegated_context_bytes"] - used_context - sum(u.get("context_bytes", 0) for u in prior_usage)
             if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
-                finish(db, row, status="skipped", error="Review did not leave a verified budget and time allowance.")
+                reason = limit_error(options, connection["kind"], budget, remaining, usage_known)
+                finish(db, row, status="skipped", error=(reason or "The initial review did not complete.") + " Fix verification skipped.")
                 continue
             current_connection = db.get(Connection, run.connection_id)
             try:
@@ -580,7 +600,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             prompt = json.dumps({"instructions": INSTRUCTIONS, "context": context, "language": options["language"]})
             input_bytes = len(prompt.encode()) + 4096
             if connection["kind"] != "api" and input_bytes > budget:
-                raise ValueError("Verification exceeds the remaining subscription context allowance.")
+                raise ValueError(f"Fix verification needs {input_bytes:,} bytes of source context, but only {budget:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
             remaining = int(deadline - now().timestamp()) if deadline is not None else None
             if (remaining is not None and remaining < 10) or stopped():
                 raise ocr.ReviewStopped()
@@ -607,8 +627,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             result, outcome = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
             if isinstance(exc, VerificationOutputError):
                 usage, outcome = exc.usage, exc.status
-            error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ocr.ReviewStopped)) else "Verification could not establish a safe result: " + (
-                str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError} else "Invalid structured provider output."
+            error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ocr.ReviewStopped)) else "The fix could not be verified automatically. " + (
+                str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError} else "The AI returned an unsupported response. Start a new review or check the selected model."
             )
             error = clean_text(error, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:10000]
         with transaction() as db:
@@ -843,7 +863,7 @@ def synchronize(payload):
                           and pr.state == "open" and pr.head_sha == head_sha and pr.base_sha == base_sha
                           and resolution_authorized(db, run, repo))
         if not unchanged:
-            row.resolution, row.error = "superseded", "Manual action arrived during GitHub synchronization."
+            row.resolution, row.error = "superseded", "Someone changed this finding while its status was being updated on GitHub. The manual change takes priority."
             latest = finding.sync_intent or {}
             if (latest.get("status") == "open" and latest.get("version") == finding.sync_version
                 and thread and same_discussion(row, thread) and thread["isResolved"]
@@ -939,13 +959,13 @@ def restore_reopening(payload):
                 return
             thread = owned_thread(db, finding, threads)
             if not thread or not same_discussion(row, thread) or thread["isResolved"]:
-                raise ValueError("The thread changed during reopening; synchronization requires inspection.")
+                raise ValueError("The GitHub discussion changed while it was being reopened. Check its status on GitHub before retrying synchronization.")
             finding.status, finding.desired_status, finding.sync_error = "open", None, None
             finding.updated_at = now()
             # Retain the manual open intent for reconciliation of a late automatic write.
             if payload.get("automatic_reopening"):
                 finding.sync_intent = None
-                row.error = "The PR changed during resolution; the automatic mutation was reverted."
+                row.error = "The pull request changed while the finding was being resolved. The discussion was reopened on GitHub to avoid marking an unverified fix as resolved."
                 action = "auto_resolution_reverted"
             else:
                 row.resolution = "reverted"

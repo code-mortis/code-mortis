@@ -94,13 +94,13 @@ def current_user(request: Request, db: DB) -> User:
     user = db.get(User, session.user_id)
     membership = db.get(Membership, user.id) if user else None
     if not user or not user.enabled or not membership:
-        raise HTTPException(403, "Your account is not allowed on this instance.")
+        raise HTTPException(403, "Your GitHub account does not have access to Code Mortis. Ask the administrator to add you as a member.")
     user.role = membership.role
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
             raise HTTPException(403, "Your session changed. Refresh the page and retry.")
         if request.headers.get("origin") not in {None, settings().public_url}:
-            raise HTTPException(403, "Request origin does not match this instance.")
+            raise HTTPException(403, "This request came from a different website address. Open Code Mortis at its configured address and try again.")
     request.state.login_session = session
     return user
 
@@ -173,7 +173,7 @@ def consume_state(request: Request, db: Session, state: str, purpose: str):
         .returning(OAuthState)
     ).one_or_none()
     if not found:
-        raise HTTPException(400, "This sign-in attempt has expired or was already used.")
+        raise HTTPException(400, "This sign-in attempt has expired or was already used. Start a new sign-in attempt in this browser.")
     # Consume before exchanging a one-use remote code, even if the provider later rejects it.
     db.commit()
     return found
@@ -589,7 +589,7 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     pr_access(db, user, run.pr_id, write=True)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
     if not can_publish(run) or run.publication not in {"failed", "partially_published"}:
-        raise HTTPException(409, "This run has no failed publication to retry.")
+        raise HTTPException(409, "There are no failed GitHub comments to resend for this review. Refresh the page to see its current status.")
     run.publication, run.publication_error = "pending", None
     job = enqueue(db, "publish", {"run_id": run.id})
     return {"job_id": job.id}
@@ -635,7 +635,7 @@ def retry_finding_sync(finding_id: str, db: DB, user: USER) -> dict:
     pr_access(db, user, finding.pr_id, write=True)
     finding = db.scalar(select(Finding).where(Finding.id == finding_id).with_for_update().execution_options(populate_existing=True))
     if not finding.desired_status:
-        raise HTTPException(409, "This finding has no pending synchronization.")
+        raise HTTPException(409, "This finding has no GitHub status update waiting to be retried. Refresh the page to see its current status.")
     if not finding.sync_intent:
         # Compatibility with manual intents queued before the migration.
         finding.sync_intent = {

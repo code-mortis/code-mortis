@@ -253,7 +253,7 @@ def expand_context(repo, env, run, context, paths, stopped):
         ocr.ReviewComment.relative_path(path)
     requested = set(paths) - context["sources"].get("current", {}).keys()
     if not requested:
-        raise ValueError("Assessment requested evidence already supplied; necessary context remains uncertain.")
+        raise ValueError("The AI requested source files it had already received and could not finish checking this proposed finding. Start a new review or check the selected model.")
     allowed = verification.filter_context(repo, env, dict.fromkeys(requested, "# context\n"),
                                           run.config["settings"], stopped)
     if requested != allowed:
@@ -292,7 +292,7 @@ def validate_result(value, context):
         or context["finding"].get("source_sha", context["head_sha"]) != context["head_sha"]
     ):
         result["verdict"] = "uncertain"
-        result["explanation"] = "The proposed finding lacks complete current evidence or identity. " + result["explanation"]
+        result["explanation"] = "The AI could not fully support this proposed finding with current code or determine whether it repeats an earlier finding. " + result["explanation"]
     return result
 
 
@@ -363,7 +363,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             if row.status not in {"queued", "running"}:
                 continue
             if row.status == "running":
-                row.status, row.error, row.finished_at = "failed", "Assessment interrupted; consumption is unknown.", now()
+                row.status, row.error, row.finished_at = "failed", "The review worker stopped while checking this proposed finding. AI usage was not saved, so the reserved budget cannot be reused. Start a new review.", now()
                 record_summary(db, run)
                 continue
             pr = db.get(PullRequest, run.pr_id)
@@ -371,31 +371,33 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             if (run.cancel_requested or run.status in {"cancelled", "superseded"}
                 or pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open"
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
-                withhold_pending(db, run, "Assessment cancelled, superseded, or review incomplete.")
+                withhold_pending(db, run, "Assessment could not continue because the review stopped, was replaced by a newer run, or did not finish. Check the review outcome.")
                 return
             previous, history_key = history(db, run)
             snapshot = dict(row.snapshot)
             used = [item.usage for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run_id))]
             used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
+            usage_known = True
             if connection["kind"] == "api":
                 budget = options["token_budget"]
                 values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
                 if budget is not None:
-                    budget = budget - sum(values) if all(type(value) is int and value >= 0 for value in values) else 0
+                    usage_known = all(type(value) is int and value >= 0 for value in values)
+                    budget = budget - sum(values) if usage_known else 0
             else:
                 budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
                 budget -= sum(item.get("context_bytes", 0) for item in used)
         usage = {"tokens": 0} if connection["kind"] == "api" else {"context_bytes": 0}
         try:
             if stopped():
-                raise ocr.ReviewStopped("Assessment time allowance expired or review stopped.")
+                raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
             context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
             result = exact_repeat(context)
             unit = "tokens" if connection["kind"] == "api" else "context_bytes"
             consumed = 0
             for attempt in range(3):
                 if stopped():
-                    raise ocr.ReviewStopped("Assessment time allowance expired or review stopped.")
+                    raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
                 allowance = None if budget is None else budget - consumed
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
                 input_bytes = len(json.dumps(context).encode()) + len(INSTRUCTIONS.encode()) + 4096
@@ -420,9 +422,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         raise runner_client.RunnerBlocked("authentication")
                     if result is None:
                         if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
-                            raise ValueError("No verified budget or time allowance remains for assessment.")
+                            reason = verification.limit_error(options, connection["kind"], allowance, remaining, usage_known)
+                            raise ValueError(reason + " Assessment stopped.")
                         if connection["kind"] != "api" and input_bytes > allowance:
-                            raise ValueError(f"Assessment requires {input_bytes:,} context bytes; remaining subscription allowance is {allowance:,} bytes.")
+                            raise ValueError(f"Assessment needs {input_bytes:,} bytes of source context, but only {allowance:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
                         usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": consumed + input_bytes}
                     row.status, row.context, row.usage = "running", context, usage
                 if result is None:
@@ -463,7 +466,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             if isinstance(exc, verification.VerificationOutputError):
                 usage = exc.usage
                 status = exc.status
-            error = str(exc) if isinstance(exc, (ValueError, TimeoutError, ocr.ReviewStopped)) else "Assessment could not establish a supported result."
+            error = str(exc) if isinstance(exc, (ValueError, TimeoutError, ocr.ReviewStopped)) else "The AI could not confirm or reject this proposed finding. No comment was published for it. Start a new review to try again."
         secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
@@ -482,7 +485,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 or any(connection[key] != getattr(current_connection, key)
                        for key in ("kind", "owner_id", "provider", "protocol", "base_url"))
                 or history(db, run, lock=True)[1] != history_key):
-                result, status, error = None, "skipped", "Assessment context changed; the candidate was withheld."
+                result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
             elif result:
                 try:
                     actor = db.get(User, run.actor_id) if run.actor_id else None
@@ -492,7 +495,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         github.authorize_repo(db, actor, repo.full_name, write=True)
                     authorize_connection(db, current_connection, repo, run.trigger, actor)
                 except (ValueError, github.GitHubError):
-                    result, status, error = None, "skipped", "Authorization changed during assessment."
+                    result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
             row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None
             row.status, row.error, row.usage, row.finished_at = status, clean_text(error, secrets)[:10000] if error else None, usage, now()
             if result:
