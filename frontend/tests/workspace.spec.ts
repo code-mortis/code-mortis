@@ -1495,7 +1495,7 @@ for (const available of [true, false]) {
     await page.getByRole("switch", { name: "Enable reviews", exact: true }).click();
     await chooseOption(page, picker, "No connection");
     await expect(picker).toHaveValue("");
-    await picker.fill("");
+    await picker.fill("No connection");
     await expect(page.getByRole("option", { name: "No connection", exact: true })).toHaveAttribute("aria-selected", "true");
     await picker.press("Escape");
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
@@ -1540,7 +1540,7 @@ test("pull request connection search preserves the default and submits the selec
   await expect(picker).toHaveValue("Research reviews");
   await chooseOption(page, picker, "Repository default");
   await expect(picker).toHaveValue("");
-  await picker.fill("");
+  await picker.fill("Repository default");
   await expect(page.getByRole("option", { name: "Repository default", exact: true })).toHaveAttribute("aria-selected", "true");
   await picker.press("Escape");
   await chooseOption(page, picker, "Research reviews");
@@ -2397,6 +2397,7 @@ test("personal setup saves without a model then signs in and selects one", async
   await expect(page.getByRole("heading", { name: "Personal setup" })).toBeVisible();
   await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toBeVisible();
   await page.getByRole("button", { name: "Connect ChatGPT", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   const model = page.getByLabel("Model", { exact: true });
   await expectOption(page, model, "personal-model", 1);
   await chooseOption(page, model, "personal-model");

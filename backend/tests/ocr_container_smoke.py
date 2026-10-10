@@ -338,7 +338,7 @@ def main():
                     detail = str(exc)
                     assert "fake-test-key" not in detail, detail
                     if verification_mode in {"no_verdict", "multiple_results"}:
-                        assert "did not complete explicit finding verification" in detail, detail
+                        assert "The AI did not finish checking this finding." in detail, detail
                         assert exc.usage["tokens"] > 0
                     else:
                         assert '"exit_code": 1' in detail and "Smoke provider rejected" in detail, detail
