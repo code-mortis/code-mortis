@@ -471,6 +471,8 @@ function ConnectionForm({
   // Draft credentials stay in component memory, never in query keys or browser storage.
   const context = JSON.stringify([kind, provider, protocol, url, key, headers, options]);
   const initialContext = useRef(context);
+  const customEndpoint = provider === "custom";
+  const preset = providers.find((item) => item.name === connection?.provider);
   function apiBody() {
     return {
       kind, provider, protocol, base_url: url,
@@ -482,11 +484,21 @@ function ConnectionForm({
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);
     setProvider(value);
+    if (value !== provider) setModel("");
     if (preset) {
       setProtocol(preset.protocol);
       setUrl(preset.baseUrl);
     }
   }
+  const endpointFields = <>
+    <Field label="API protocol">
+      {(id) => <SearchSelect id={id} value={protocol} onChange={setProtocol}
+        options={protocols.map((value) => ({ value, label: value }))} />}
+    </Field>
+    {protocol !== "anthropic-bedrock" && <Field label="API base URL">
+      {(id) => <Input id={id} required type="url" value={url} onChange={(event) => setUrl(event.target.value)} />}
+    </Field>}
+  </>;
   return (
     <form
       className="space-y-5"
@@ -498,7 +510,7 @@ function ConnectionForm({
         try {
           const body =
             kind !== "api"
-              ? { name, kind, model }
+              ? { name, kind, model: connection ? model : "" }
               : { name, model, ...apiBody() };
           const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
@@ -547,41 +559,17 @@ function ConnectionForm({
       {kind === "api" && (
         <section className="space-y-4 border-t pt-5" aria-label="Provider and authentication">
           <h3 className="text-sm font-semibold">Provider and authentication</h3>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              {(id) => (
-                <SearchSelect
-                  id={id}
-                  value={provider}
-                  onChange={choose}
-                  options={providers.map((p) => ({ value: p.name, label: p.displayName }))}
-                />
-              )}
-            </Field>
-            <Field label="API protocol">
-              {(id) => (
-                <SearchSelect
-                  id={id}
-                  value={protocol}
-                  onChange={setProtocol}
-                  options={protocols.map((value) => ({ value, label: value }))}
-                />
-              )}
-            </Field>
-          </div>
-          {protocol !== "anthropic-bedrock" && (
-            <Field label="API base URL">
-              {(id) => (
-                <Input
-                  id={id}
-                  required
-                  type="url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                />
-              )}
-            </Field>
-          )}
+          <Field label="Provider">
+            {(id) => (
+              <SearchSelect
+                id={id}
+                value={provider}
+                onChange={choose}
+                options={providers.map((p) => ({ value: p.name, label: p.displayName }))}
+              />
+            )}
+          </Field>
+          {customEndpoint && endpointFields}
           <Field
             label={
               connection?.has_key ? "Replace API key (optional)" : "API key"
@@ -591,7 +579,9 @@ function ConnectionForm({
                 ? "Bedrock can use the worker’s AWS credentials."
                 : connection?.has_key
                   ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
-                  : "For a trusted local endpoint without authentication, enter a placeholder."
+                  : customEndpoint
+                    ? "For a trusted local endpoint without authentication, enter a placeholder."
+                    : "Keys are encrypted and never returned to the browser."
             }
           >
             {(id) => (
@@ -609,7 +599,7 @@ function ConnectionForm({
           </Field>
         </section>
       )}
-      <section className="space-y-4 border-t pt-5" aria-label="Default model">
+      {(kind === "api" || connection) && <section className="space-y-4 border-t pt-5" aria-label="Default model">
         <h3 className="text-sm font-semibold">Default model</h3>
         <ModelPicker
           value={model}
@@ -623,20 +613,20 @@ function ConnectionForm({
           }) : undefined}
           hint={kind !== "api" ? "Save and sign in to load models. You can choose a model afterward." : undefined}
         />
-        {kind !== "api" && (
-          <p className="text-sm text-muted-foreground">
-            Save your personal connection, then complete sign-in with the official
-            client. You control which repositories may use your subscription
-            automatically.
-          </p>
-        )}
-      </section>
+      </section>}
+      {kind !== "api" && !connection && <p className="text-sm text-muted-foreground">
+        First save your connection, then sign in with the official client and choose a model.
+        Automatic reviews require your separate authorization per repository.
+      </p>}
       {kind === "api" && (
-        <details className="border-t pt-5">
+        <details className="border-t pt-5" open={!!connection && !!preset && (
+          connection.protocol !== preset.protocol || connection.base_url !== preset.baseUrl
+        )}>
           <summary className="cursor-pointer text-sm font-medium">
             Advanced provider settings
           </summary>
           <div className="mt-4 space-y-4">
+            {!customEndpoint && endpointFields}
             <Field
               label="Extra headers JSON"
               hint={
@@ -673,9 +663,11 @@ function ConnectionForm({
             </div>
           </details>
       )}
-      <Button disabled={action.isPending} type="submit">
-        {action.isPending ? "Saving…" : "Save connection"}
-      </Button>
+      <div className="sticky bottom-0 border-t bg-background py-4">
+        <Button disabled={action.isPending} type="submit">
+          {action.isPending ? "Saving…" : kind !== "api" && !connection ? "Continue to sign in" : "Save connection"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -769,7 +761,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                 {group.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.items.length}</span>
               </h3>
               <div className="overflow-hidden rounded-lg border bg-card">
-                <div aria-hidden="true" className="settings-record settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
+                <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
                   <span>Connection</span><span>Default model</span><span>Account status</span><span />
                 </div>
                 {group.items.map((connection) => {
@@ -785,8 +777,15 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
                     : connection.last_test.startsWith("Connected.") ? "connected" : "failed";
                   const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
+                  let nextAction = testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection";
+                  if (personalConnection) {
+                    nextAction = "Sign in";
+                    if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Manage" : "Choose model";
+                    else if (connection.auth_status === "connecting") nextAction = "Continue setup";
+                    else if (connection.auth_status === "unavailable") nextAction = "Check account";
+                  }
                   return <article key={connection.id} aria-label={connection.name}
-                    className="settings-record border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
+                    className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
                       <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
                       <div className="min-w-0">
@@ -809,6 +808,14 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                         icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
+                      {canManage && <Button variant="outline" size="sm" disabled={action.isPending || (!personalConnection && testing)}
+                        onClick={(event) => {
+                          returnFocus.current = event.currentTarget;
+                          if (personalConnection) setPersonal(connection);
+                          else { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }
+                        }}>
+                        {nextAction}
+                      </Button>}
                       {canManage && <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="size-8" disabled={action.isPending} aria-label={`Actions for ${connection.name}`}
@@ -818,10 +825,6 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
-                            {personalConnection
-                              ? <DropdownMenuItem onSelect={() => setPersonal(connection)}>Manage<span className="sr-only"> account</span></DropdownMenuItem>
-                              : <DropdownMenuItem disabled={action.isPending || connection.last_test === "Testing connection…"}
-                                onSelect={() => { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }}>Test</DropdownMenuItem>}
                             <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
@@ -953,28 +956,19 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         </details>}
       </div>
     </div>
-    <Dialog open={!!editing} onOpenChange={(open) => { if (!open && !savingConnection) setEditing(null); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl" onCloseAutoFocus={(event) => {
-        event.preventDefault();
-        if (!personal) returnFocus.current?.focus();
-      }}>
+    <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
+      if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
+    }}>
+      <DialogContent className={`max-h-[90dvh] overflow-y-auto ${personal ? "sm:max-w-2xl" : "sm:max-w-xl"}`} onCloseAutoFocus={restoreFocus}>
         <DialogHeader>
-          <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
-          <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
+          <DialogTitle>{personal?.name ?? (editing === "new" ? "Add AI connection" : "Edit AI connection")}</DialogTitle>
+          <DialogDescription>{personal ? "Sign in, choose a model, and optionally authorize automatic reviews." : "Credentials are encrypted on this instance."}</DialogDescription>
         </DialogHeader>
         {editing && providers.data && <ConnectionForm key={editing === "new" ? "new" : editing.id}
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
           onSavingChange={setSavingConnection}
-          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model) setPersonal(saved); }} />}
-      </DialogContent>
-    </Dialog>
-    <Dialog open={!!personal} onOpenChange={(open) => { if (!open) setPersonal(null); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
-        <DialogHeader>
-          <DialogTitle>{personal?.name}</DialogTitle>
-          <DialogDescription>Connect your official account and authorize automatic reviews.</DialogDescription>
-        </DialogHeader>
-        {personal && <PersonalConnection key={personal.id} connection={personal} />}
+          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api") setPersonal(saved); }} />}
+        {personal && <PersonalConnection key={personal.id} connection={personal} onDone={() => setPersonal(null)} />}
       </DialogContent>
     </Dialog>
     <Dialog open={!!deleting} onOpenChange={(open) => { if (!open && !action.isPending) { setDeleting(null); action.reset(); } }}>

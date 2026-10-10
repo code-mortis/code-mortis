@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import {
   api,
   useAction,
@@ -166,11 +167,13 @@ function LoginConsole({
   );
 }
 
-export function PersonalConnection({ connection }: { connection: Connection }) {
+export function PersonalConnection({ connection, onDone }: { connection: Connection; onDone: () => void }) {
   const identity = connection.id;
+  const settingUp = !connection.model.trim();
+  const [authorizationOpen, setAuthorizationOpen] = useState(!settingUp);
   const auth = useApi<AuthState>(`/connections/${identity}/auth`, true);
-  const grants = useApi<Grant[]>(`/connections/${identity}/grants`);
-  const repositories = useApi<Repository[]>("/repositories");
+  const grants = useApi<Grant[]>(`/connections/${identity}/grants`, false, authorizationOpen);
+  const repositories = useApi<Repository[]>("/repositories", false, authorizationOpen);
   const action = useAction();
   const modelAction = useAction<Connection>();
   const grantAction = useAction();
@@ -184,6 +187,11 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const trimmedModel = model.trim();
   const attempt = auth.data?.attempt;
   const connected = auth.data?.status === "connected";
+  const setupComplete = connected && !auth.isError && !!savedModel.trim();
+  const accountHeading = useRef<HTMLHeadingElement>(null);
+  const modelHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { accountHeading.current?.focus(); }, []);
+  useEffect(() => { if (settingUp && connected) modelHeading.current?.focus(); }, [settingUp, connected]);
   const authPending = action.isPending || modelAction.isPending || grantAction.isPending;
   const modelPending = action.isPending || modelAction.isPending;
   const grantPending = action.isPending || grantAction.isPending;
@@ -193,11 +201,18 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   }
   return (
     <div className="min-w-0 space-y-6">
+      {settingUp && <ol aria-label="Subscription setup" className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
+        <li>1. Connection created</li>
+        <li aria-current={!connected ? "step" : undefined} className={!connected ? "font-medium text-foreground" : undefined}>2. Sign in</li>
+        <li aria-current={connected && !setupComplete ? "step" : undefined} className={connected && !setupComplete ? "font-medium text-foreground" : undefined}>3. Choose model</li>
+      </ol>}
       <section className="space-y-4" aria-label="Account connection">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">Account connection</h3>
-          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>
-        </div>
+        <details className="group space-y-4" open={!settingUp || !connected || auth.isError}>
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 [&::-webkit-details-marker]:hidden">
+          <h3 ref={accountHeading} tabIndex={-1} className="text-sm font-semibold">Account connection</h3>
+          <div role="status" className="ml-auto"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>
+          <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+        </summary>
         <ErrorNotice error={auth.error || action.error || auth.data?.message} />
         {auth.data?.account?.email && <p className="break-words text-sm">Signed in as {auth.data.account.email}</p>}
         <p className="text-sm text-muted-foreground">
@@ -308,8 +323,9 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             </pre>
           </details>
         )}
+        </details>
       </section>
-      <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
+      {(!settingUp || connected) && <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
         event.preventDefault();
         if (modelPending) return;
         setModelError(undefined);
@@ -324,7 +340,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           setModel(saved.model);
         } catch (error) { setModelError(error); }
       }}>
-        <h3 className="text-sm font-semibold">Default model</h3>
+        <h3 ref={modelHeading} tabIndex={-1} className="text-sm font-semibold">Default model</h3>
         <ErrorNotice error={modelError} />
         <ModelPicker
           value={model} onChange={(value) => {
@@ -341,8 +357,16 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
         {modelAction.isSuccess && !modelError && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
-      </form>
-      <section aria-label="Repository authorization" className="space-y-4 border-t pt-5">
+      </form>}
+      {settingUp && !connected && <p role="status" className="text-sm text-muted-foreground">Sign in to continue to model selection.</p>}
+      {settingUp && setupComplete && <div className="space-y-3 border-t pt-5">
+        <p role="status" className="text-sm">Setup complete. You can start manual reviews in enabled repositories.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onDone}>Done</Button>
+          {!authorizationOpen && <Button variant="outline" onClick={() => setAuthorizationOpen(true)}>Set up automatic reviews</Button>}
+        </div>
+      </div>}
+      <section hidden={!authorizationOpen} aria-label="Repository authorization" className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
         <ErrorNotice error={grants.error} />
         {grants.isError && <Button type="button" variant="outline" size="sm" disabled={grants.isFetching} onClick={() => { void grants.refetch(); }}>

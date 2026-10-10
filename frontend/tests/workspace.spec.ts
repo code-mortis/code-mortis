@@ -1540,6 +1540,9 @@ test("searchable providers and protocols preserve presets and required model val
   await provider.press("ArrowDown");
   await provider.press("Enter");
   await expect(provider).toHaveValue("Anthropic");
+  await expect(page.getByLabel("API protocol")).not.toBeVisible();
+  await expect(page.getByLabel("API base URL")).not.toBeVisible();
+  await page.getByText("Advanced provider settings", { exact: true }).click();
   const protocol = page.getByRole("combobox", { name: "API protocol", exact: true });
   await expect(protocol).toHaveValue("anthropic");
   await expect(page.getByLabel("API base URL")).toHaveValue("https://api.anthropic.com");
@@ -1778,10 +1781,12 @@ test("saved model selection refreshes without replacing custom IDs", async ({ pa
   expect(requests.find((request) => request.path === "/connections/connection")?.body).toMatchObject({ model: "private-model" });
 });
 
-test("API drafts load models before saving and support keyboard selection", async ({ page }) => {
+test("API drafts load models before saving and support keyboard selection", async ({ page }, info) => {
   const requests = await mock(page);
   await page.goto("/settings");
   await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/connection-api-${info.project.name}.png` });
   await page.getByLabel("Connection name").fill("New connection");
   await page.getByLabel("API key", { exact: true }).fill("draft-key");
   await page.getByRole("button", { name: "Load models", exact: true }).click();
@@ -1796,6 +1801,34 @@ test("API drafts load models before saving and support keyboard selection", asyn
   await page.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "review-model", api_key: "draft-key" });
+});
+
+test("API presets clear the previous model and custom endpoints expose their fields", async ({ page }) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/providers", (route) => route.fulfill({ json: [
+    { name: "openai", displayName: "OpenAI API", protocol: "openai", baseUrl: "https://api.openai.com/v1" },
+    { name: "custom", displayName: "Custom endpoint", protocol: "openai", baseUrl: "" },
+  ] }));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("Connection name").fill("Custom reviews");
+  await page.getByLabel("API key", { exact: true }).fill("draft-key");
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await chooseOption(page, model, "review-model");
+  await chooseOption(page, page.getByLabel("Provider", { exact: true }), "Custom endpoint");
+  await expect(model).toHaveValue("");
+  await expect(page.getByLabel("API protocol", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("API base URL")).toBeVisible();
+  await page.getByLabel("API base URL").fill("https://custom.example/v1");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
+  await chooseOption(page, model, "Enter a custom model ID");
+  await page.getByLabel("Custom model ID").fill("custom-model");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({
+    provider: "custom", protocol: "openai", base_url: "https://custom.example/v1", model: "custom-model",
+  });
 });
 
 test("large model catalogs search labels and retain the selected model ID", async ({ page }) => {
@@ -1833,6 +1866,7 @@ test("changed draft discards late models and keeps manual entry on errors", asyn
   const first = page.waitForRequest("**/api/v1/connections/models");
   await page.getByRole("button", { name: "Load models", exact: true }).click();
   await first;
+  await page.getByText("Advanced provider settings", { exact: true }).click();
   await page.getByLabel("API base URL").fill("https://new.example/v1");
   await page.getByRole("button", { name: "Load models", exact: true }).click();
   const model = page.getByLabel("Model", { exact: true });
@@ -2714,9 +2748,14 @@ test("personal setup saves without a model then signs in and selects one", async
   await type.press("Enter");
   await expect(type).toHaveValue("Personal ChatGPT subscription");
   await page.getByLabel("Connection name").fill("Personal setup");
-  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(page.getByLabel("Model", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Load models", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue to sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Personal setup" })).toBeVisible();
-  await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toBeVisible();
+  await expect(page.getByRole("list", { name: "Subscription setup" })).toBeVisible();
+  await expect(page.getByText("Sign in to continue to model selection.")).toBeVisible();
+  await expect(page.getByRole("form", { name: "Default model" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Repository authorization" })).toHaveCount(0);
   await page.getByRole("button", { name: "Connect ChatGPT", exact: true }).click();
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   const model = page.getByLabel("Model", { exact: true });
@@ -2724,10 +2763,69 @@ test("personal setup saves without a model then signs in and selects one", async
   await chooseOption(page, model, "personal-model");
   await page.getByRole("button", { name: "Save model", exact: true }).click();
   await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toHaveCount(0);
+  await expect(page.getByText("Setup complete. You can start manual reviews in enabled repositories.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Repository authorization" })).toHaveCount(0);
   expect(savedModel).toBe("personal-model");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/personal-model-picker-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Set up automatic reviews", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Repository authorization" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "I authorize automatic reviews with my subscription" })).not.toBeChecked();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add connection", exact: true })).toBeFocused();
 });
+
+for (const [kind, label] of [["chatgpt", "Personal ChatGPT subscription"], ["claude_code", "Personal Claude Code subscription"]] as const) {
+  test(`${kind} subscription setup resumes after closing without creating another connection`, async ({ page }, info) => {
+    await mock(page);
+    const requests: string[] = [];
+    page.on("request", (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}`));
+    let created: typeof connection | undefined;
+    await page.route("**/api/v1/connections", (route) => {
+      if (route.request().method() === "POST") {
+        expect(route.request().postDataJSON()).toEqual({ name: "Subscription setup", kind, model: "" });
+        created = { ...connection, ...route.request().postDataJSON(), id: "personal", owner_id: 7, auth_status: "disconnected" };
+        return route.fulfill({ json: created });
+      }
+      return route.fulfill({ json: created ? [created] : [connection] });
+    });
+    await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: { status: created?.auth_status ?? "disconnected" } }));
+    await page.goto("/settings");
+    await page.getByRole("button", { name: "Add connection", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    const dialogId = await dialog.getAttribute("id");
+    await dialog.getByLabel("API key", { exact: true }).fill("previous-api-key");
+    await chooseOption(page, dialog.getByLabel("Model", { exact: true }), "Enter a custom model ID");
+    await dialog.getByLabel("Custom model ID").fill("previous-api-model");
+    await chooseOption(page, dialog.getByLabel("Connection type"), label);
+    await dialog.getByLabel("Connection name").fill("Subscription setup");
+    await expect(dialog.getByLabel("Model", { exact: true })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Continue to sign in", exact: true }).click();
+    await expect(dialog.getByRole("heading", { name: "Subscription setup", exact: true })).toBeVisible();
+    await expect(dialog).toHaveAttribute("id", dialogId!);
+    await expect(dialog.getByRole("heading", { name: "Account connection", exact: true })).toBeFocused();
+    await expect(dialog.getByRole("form", { name: "Default model" })).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/${kind}-setup-${info.project.name}.png` });
+    await page.keyboard.press("Escape");
+    const row = page.getByRole("article", { name: "Subscription setup", exact: true });
+    const signIn = row.getByRole("button", { name: "Sign in", exact: true });
+    await signIn.click();
+    await expect(dialog.getByText("Sign in to continue to model selection.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(signIn).toBeFocused();
+    expect(requests.filter((request) => request === "POST /api/v1/connections")).toHaveLength(1);
+    expect(created).toMatchObject({ kind, model: "" });
+    expect(requests).not.toContain("POST /api/v1/connections/personal/auth");
+    expect(requests).not.toContain("GET /api/v1/connections/personal/grants");
+    created!.auth_status = "connected";
+    await page.reload();
+    await row.getByRole("button", { name: "Choose model", exact: true }).click();
+    await expect(dialog.getByRole("form", { name: "Default model" })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Default model", exact: true })).toBeFocused();
+  });
+}
 
 test("new instance sends the bootstrap token in the request header", async ({
   page,
@@ -2905,8 +3003,7 @@ test("members manage personal subscriptions without administrative controls", as
   await expect(
     page.getByRole("link", { name: "GitHub", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByText("ABCD-1234")).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Authorize with ChatGPT" }),
@@ -2938,8 +3035,7 @@ test("Claude login uses a private console and closes with its dialog", async ({ 
     socket.onClose(() => { closed = true; });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Connect Claude Code", exact: true }).click();
   await expect(page.getByRole("link", { name: "Open Claude authorization" })).toBeVisible();
   const response = page.getByLabel("Response to the official login prompt");
@@ -2958,7 +3054,7 @@ test("Claude login uses a private console and closes with its dialog", async ({ 
   await expect.poll(() => messages.length).toBe(3);
   await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
   await expect.poll(() => closed).toBe(true);
-  await expect(page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / })).toBeFocused();
+  await expect(page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true })).toBeFocused();
 });
 
 test("OAuth errors remain recoverable inside the app", async ({ page }) => {
@@ -3508,16 +3604,17 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
   await expect(personal.getByRole("article", { name: "Another subscription", exact: true })).toContainText("Personal subscription");
   await expect(personal).not.toContainText("Last test");
-  await expect(page.getByRole("button", { name: "Test", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Manage account", exact: true })).toHaveCount(0);
+  await expect(shared.getByRole("article", { name: "Untested API", exact: true }).getByRole("button", { name: "Test connection", exact: true })).toBeVisible();
+  await expect(personal.getByRole("article", { name: "My subscription", exact: true }).getByRole("button", { name: "Manage", exact: true })).toBeVisible();
+  await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true }).getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
   const apiActions = shared.getByRole("button", { name: "Actions for Untested API", exact: true });
   await apiActions.press("Enter");
-  await expect(page.getByRole("menuitem")).toHaveText(["Test", "Edit", "Delete"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Edit", "Delete"]);
   await page.keyboard.press("Escape");
   await expect(apiActions).toBeFocused();
   const personalActions = personal.getByRole("button", { name: "Actions for My subscription", exact: true });
   await personalActions.press("Enter");
-  await expect(page.getByRole("menuitem")).toHaveText(["Manage account", "Edit", "Delete"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Edit", "Delete"]);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/settings-groups-${info.project.name}.png`, fullPage: true });
   await page.keyboard.press("Escape");
@@ -3544,8 +3641,7 @@ test("API test badges show a spinner while queued and a check after success", as
   const badge = row.locator('[data-slot="badge"]');
   const actions = row.getByRole("button", { name: "Actions for Team reviews" });
   await expect(badge).toHaveText("Not tested");
-  await actions.click();
-  await page.getByRole("menuitem", { name: "Test", exact: true }).click();
+  await row.getByRole("button", { name: "Test connection", exact: true }).click();
   await expect(actions).toBeDisabled();
   await expect(badge).toHaveText("Testing");
   await expect(badge.locator(".lucide-loader-circle")).toHaveClass(/motion-safe:animate-spin/);
@@ -3554,17 +3650,14 @@ test("API test badges show a spinner while queued and a check after success", as
   release();
   await expect(actions).toBeEnabled();
   await expect(row.getByRole("status")).toHaveAttribute("title", "Testing connection…");
-  await actions.click();
-  await expect(page.getByRole("menuitem", { name: "Test", exact: true })).toBeDisabled();
-  await page.keyboard.press("Escape");
+  await expect(row.getByRole("button", { name: "Testing…", exact: true })).toBeDisabled();
   result = connection.last_test;
   await page.clock.runFor(5000);
   await expect(badge).toHaveText("connected");
   await expect(badge.locator(".lucide-loader-circle")).toHaveCount(0);
   await expect(badge.locator(".lucide-check")).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/api-connected-${info.project.name}.png`, fullPage: true });
-  await actions.click();
-  await page.getByRole("menuitem", { name: "Test", exact: true }).click();
+  await row.getByRole("button", { name: "Test again", exact: true }).click();
   await expect(row.getByRole("status")).toHaveAttribute("title", "Testing connection…");
   result = "OCR connection test failed. Check credentials, protocol, and model.";
   await page.clock.runFor(5000);
@@ -3942,8 +4035,7 @@ test("testing a connection cannot open a trapped deletion dialog", async ({ page
     await route.fulfill({ status: 503, json: { detail: "Connection test failed." } });
   });
   await page.goto("/settings");
-  await page.getByRole("button", { name: "Actions for Team reviews" }).click();
-  await page.getByRole("menuitem", { name: "Test", exact: true }).click();
+  await page.getByRole("button", { name: "Test again", exact: true }).click();
   const actions = page.getByRole("button", { name: "Actions for Team reviews" });
   await expect(actions).toBeDisabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -4121,8 +4213,7 @@ test("personal model saves compare and send trimmed model IDs", async ({ page })
     return route.fulfill({ json: { ...connection, ...body } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const form = page.getByRole("form", { name: "Default model" });
   await chooseOption(page, form.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const model = form.getByLabel("Custom model ID");
@@ -4149,7 +4240,8 @@ test("pending personal connection creation keeps its dialog until setup opens", 
   const dialog = page.getByRole("dialog");
   await chooseOption(page, dialog.getByLabel("Connection type"), "Personal ChatGPT subscription");
   await dialog.getByLabel("Connection name").fill("Personal setup");
-  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  const dialogId = await dialog.getAttribute("id");
+  await dialog.getByRole("button", { name: "Continue to sign in", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
   await page.keyboard.press("Escape");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
@@ -4159,6 +4251,7 @@ test("pending personal connection creation keeps its dialog until setup opens", 
   release();
   await expect(dialog.getByRole("heading", { name: "Personal setup", exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(1);
+  await expect(dialog).toHaveAttribute("id", dialogId!);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add connection", exact: true })).toBeFocused();
@@ -4172,8 +4265,7 @@ test("personal model and repository errors stay with their operation", async ({ 
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings?tab=team");
   await expect(page.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const model = page.getByRole("form", { name: "Default model" });
   await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   await model.getByLabel("Custom model ID").fill("custom-model");
@@ -4219,8 +4311,7 @@ test("personal model confirmation stays cleared after editing and reverting", as
     return route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", kind: "chatgpt" } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const model = page.getByRole("form", { name: "Default model" });
   await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const input = model.getByLabel("Custom model ID");
@@ -4248,8 +4339,7 @@ test("personal model saves report invalid success responses and retain an editab
     return route.fulfill(response ?? { json: { ...connection, ...route.request().postDataJSON(), id: "personal" } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const form = page.getByRole("form", { name: "Default model" });
   await chooseOption(page, form.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const input = form.getByLabel("Custom model ID");
@@ -4282,8 +4372,7 @@ test("personal account status distinguishes loading, errors, and the signed-in a
       : { json: { status, account: status === "connected" ? { email: "carlos@example.com" } : null } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const account = page.getByRole("region", { name: "Account connection" });
   await expect(account.getByRole("status")).toHaveText("Checking account…");
   await expect(account.getByRole("status").locator("svg")).toBeVisible();
@@ -4321,8 +4410,7 @@ test("personal account polling stays quiet while manual checks show progress and
     await route.fulfill({ status: 503, json: { detail: "Account refresh failed." } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const account = page.getByRole("region", { name: "Account connection" });
   const check = account.getByRole("button", { name: "Check status", exact: true });
   await expect(account.getByRole("status")).toHaveText("Connected");
@@ -4344,8 +4432,7 @@ test("personal authorizations tolerate an empty response body", async ({ page })
   await mock(page, { role: "member", personal: true });
   await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ status: 204 }));
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("region", { name: "Repository authorization" }).getByText("No repositories authorized yet.")).toBeVisible();
   await expect(page.getByRole("form", { name: "Default model" })).toBeVisible();
 });
@@ -4360,8 +4447,7 @@ test("personal repository choices distinguish loading, empty results, and fetch 
     await route.fulfill(failed ? { status: 503, json: { detail: "Repositories could not be loaded." } } : { json: [] });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
   await expect(grants.getByText("Loading repositories…")).toBeVisible();
   await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
@@ -4372,8 +4458,7 @@ test("personal repository choices distinguish loading, empty results, and fetch 
   await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
   failed = true;
   await page.reload();
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(grants.getByRole("alert")).toContainText("Repositories could not be loaded");
   await expect(grants.getByText("No accessible repositories.")).toHaveCount(0);
   await expect(grants.getByText("Loading repositories…")).toHaveCount(0);
@@ -4398,8 +4483,7 @@ test("personal repository and authorization fetches retry independently without 
     await route.fulfill({ json: [{ repository_id: 22, automatic: false }] });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
   const model = page.getByRole("form", { name: "Default model" });
   await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
@@ -4445,8 +4529,7 @@ test("personal model saves disable controls while retaining the loaded catalog",
     await route.fulfill({ json: { ...connection, ...route.request().postDataJSON(), id: "personal", kind: "chatgpt" } });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const form = page.getByRole("form", { name: "Default model" });
   const select = form.getByLabel("Model", { exact: true });
   await chooseOption(page, select, "next-model");
@@ -4480,8 +4563,7 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
   await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
   await expect(grants.getByRole("status")).toHaveText("Loading authorizations…");
   await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
@@ -4522,8 +4604,7 @@ test("personal authorization confirmations match saved changes and revocations",
     return route.fulfill({ json: saved[0] });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
   const repository = grants.getByRole("combobox", { name: "Repository", exact: true });
   const automatic = grants.getByRole("switch");
@@ -4586,8 +4667,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
       await route.fulfill({ status: 422, json: { detail: "Operation could not be completed." } });
     });
     await page.goto("/settings");
-    await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-    await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+    await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
     const account = page.getByRole("region", { name: "Account connection" });
     const model = page.getByRole("form", { name: "Default model" });
     const grants = page.getByRole("region", { name: "Repository authorization" });
@@ -4651,8 +4731,7 @@ test("personal model and authorization saves run independently while auth stays 
     await route.fulfill({ json: saved[0] });
   });
   await page.goto("/settings");
-  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Sign in", exact: true }).click();
   const account = page.getByRole("region", { name: "Account connection" });
   const model = page.getByRole("form", { name: "Default model" });
   const grants = page.getByRole("region", { name: "Repository authorization" });
