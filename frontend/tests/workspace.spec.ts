@@ -3446,3 +3446,154 @@ test("personal model and authorization saves run independently while auth stays 
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeEnabled();
 });
+
+test("pull detail searches evidence and separates severity, status, and run history", async ({ page }, info) => {
+  await mock(page);
+  const latest = { ...run, status: "completed", publication: "published", head_sha: "c".repeat(40) };
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+    pull_request: { ...pr, draft: true }, repository: repo, can_write: true,
+    runs: [latest, { ...run, id: "older" }],
+    findings: [
+      { ...finding, sync_intent: null },
+      { ...finding, id: "resolved", status: "resolved", severity: "medium", content: "Validate the response before acknowledging a webhook.", path: "src/webhooks/validate.ts", last_seen_run_id: "older" },
+      { ...finding, id: "dismissed", status: "dismissed", severity: "low", category: "performance", content: "Batch dispatches to reduce unnecessary database queries.", path: "src/webhooks/dispatch.ts", desired_status: "open", sync_error: "GitHub unavailable" },
+    ],
+  } }));
+  await page.goto("/pulls/pr");
+  const summary = page.getByRole("region", { name: "Latest review" });
+  await expect(summary).toContainText("Earlier commit");
+  await expect(summary).toContainText("ccccccc");
+  await expect(page.getByText("Draft", { exact: true })).toBeVisible();
+  const list = page.getByRole("region", { name: "Findings", exact: true });
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Edit Status: Open", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved, Dismissed", exact: true })).toBeFocused();
+  await expect(list.getByRole("button")).toHaveCount(3);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
+  await expect(list.getByRole("button", { name: /Validate the response/ })).toContainText("resolved");
+  await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("dismissed");
+  await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
+  await page.getByLabel("Search findings", { exact: true }).fill("VALIDATE.TS");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
+  await page.getByRole("button", { name: "View all findings", exact: true }).click();
+  await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: /Remove (Status|Severity) filter/ })).toHaveCount(0);
+  await page.getByLabel("Search findings", { exact: true }).fill("performance");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.getByRole("checkbox", { name: "Medium", exact: true }).check();
+  await page.keyboard.press("Escape");
+  await expect(list.getByRole("button")).toHaveCount(2);
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await page.getByRole("tab", { name: /Findings/ }).click();
+    await noOverflow(page);
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: `../.impeccable/review/pull-detail-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true }).click();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/pull-filters-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await page.getByRole("tab", { name: "Run history" }).click();
+    await expect(page.getByRole("link", { name: /automatic.*ccccccc/ })).toContainText("GitHub: Published");
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/pull-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await page.getByRole("tab", { name: /Findings/ }).click();
+  await list.getByRole("button", { name: /retry loop has no upper bound/ }).press("Enter");
+  await expect(page.getByRole("dialog", { name: "Finding details" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(list.getByRole("button", { name: /retry loop has no upper bound/ })).toBeFocused();
+});
+
+test("pull detail distinguishes resolved history from unreviewed and incomplete results", async ({ page }, info) => {
+  await mock(page);
+  let findings = [{ ...finding, status: "resolved" }];
+  let runs: typeof run[] = [run];
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: { pull_request: pr, repository: repo, can_write: true, runs, findings } }));
+  await page.goto("/pulls/pr");
+  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("Coverage is incomplete");
+  await page.clock.install();
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.getByLabel("Search findings", { exact: true }).fill("pending search with no matches");
+  await page.getByRole("button", { name: "View all findings", exact: true }).click();
+  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
+  await page.clock.fastForward(500);
+  await expect(page.getByRole("region", { name: "Findings", exact: true })).toContainText("resolved");
+  await page.clock.resume();
+  findings = [];
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "No findings recorded", exact: true })).toBeVisible();
+  await expect(page.getByText("Check run history for completion and coverage. An incomplete review is not a clean result.")).toBeVisible();
+  runs = [];
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Latest review" })).toContainText("No reviews yet");
+  await expect(page.getByRole("heading", { name: "No review findings yet", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/pull-empty-${info.project.name}.png`, fullPage: true });
+});
+
+for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {
+  test(`pull detail explains review availability for ${state}`, async ({ page }) => {
+    await mock(page);
+    await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+      pull_request: { ...pr, state: state === "merged" ? "merged" : "open", fork: state === "fork" },
+      repository: { ...repo, enabled: state !== "paused" }, can_write: state !== "viewer", findings: [],
+      runs: state === "running" ? [{ ...run, status: "running", publication: "pending" }] : [],
+    } }));
+    await page.goto("/pulls/pr");
+    const summary = page.getByRole("region", { name: "Latest review" });
+    const messages = {
+      merged: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
+      running: "A review is already queued or running.", viewer: "You have read-only access",
+      fork: "Fork reviews require a manual start.",
+    };
+    await expect(summary).toContainText(messages[state]);
+    if (state === "viewer") {
+      await expect(summary.getByRole("button")).toHaveCount(0);
+      await expect(page.getByLabel("Review connection")).toHaveCount(0);
+    } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
+    else {
+      await expect(summary.getByRole("button")).toBeDisabled();
+      await expect(page.getByLabel("Review connection")).toBeDisabled();
+    }
+    await noOverflow(page);
+  });
+}
+
+test("pull detail retains evidence on transient errors and hides it after access is denied", async ({ page }) => {
+  await mock(page);
+  await page.goto("/pulls/pr");
+  await expect(page.getByRole("region", { name: "Findings", exact: true })).toBeVisible();
+  let status = 503;
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ status, json: { detail: status === 403 ? "Access denied" : "Service unavailable" } }));
+  await expect(page.getByRole("alert")).toContainText("Service unavailable", { timeout: 10_000 });
+  await expect(page.getByRole("region", { name: "Findings", exact: true })).toBeVisible();
+  status = 403;
+  await expect(page.getByRole("alert")).toContainText("Access denied", { timeout: 10_000 });
+  await expect(page.getByRole("region", { name: "Findings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run review" })).toHaveCount(0);
+});

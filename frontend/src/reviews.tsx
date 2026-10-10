@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { getInboxReturn } from "./lib/inbox-filters";
 import {
   Link,
@@ -25,6 +25,8 @@ import {
   type Schema,
 } from "./api";
 import { Button } from "./components/ui/button";
+import { FilterBar } from "./components/filter-bar";
+import { label } from "./lib/inbox-filters";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
@@ -169,19 +171,22 @@ function RunList({ runs }: { runs: Run[] }) {
       </Empty>
     );
   return (
-    <div className="divide-y rounded-lg border bg-card">
+    <div className="divide-y overflow-hidden rounded-lg border bg-card">
+      <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+        <span>Review run</span><span>Review status</span><span>GitHub publication</span><span />
+      </div>
       {runs.map((run) => {
         const feedback = runFeedback(run);
         return (
           <Link
-            className="flex flex-wrap items-center gap-3 px-5 py-4 hover:bg-muted/50"
+            className="review-row-grid grid items-center gap-y-3 px-5 py-4 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             key={run.id}
             to={`/runs/${run.id}`}
             state={{ inbox: inboxReturn, repository: repositoryReturn }}
           >
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{date(run.created_at)}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
+              <div className="mt-1 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
                 <span className="capitalize">{run.trigger}</span> ·{" "}
                 <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
                 {String(
@@ -193,11 +198,11 @@ function RunList({ runs }: { runs: Run[] }) {
                 <p className="mt-2 text-sm text-muted-foreground break-words">{feedback.summary}</p>
               )}
             </div>
-            <Status value={run.status} />
+            <div><Status value={run.status} /></div>
             <span className="text-xs text-muted-foreground">
-              GitHub: {feedback.publicationLabel}
+              <span className="md:sr-only">GitHub: </span>{feedback.publicationLabel}
             </span>
-            <ChevronRight className="size-4 text-muted-foreground" />
+            <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
           </Link>
         );
       })}
@@ -215,219 +220,134 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [status, setStatus] = useState("open");
-  const [severity, setSeverity] = useState("all");
+  const [statuses, setStatuses] = useState<string[]>(["open"]);
+  const [severities, setSeverities] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [searchResetKey, setSearchResetKey] = useState(0);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const findingTrigger = useRef<HTMLButtonElement>(null);
   const [finding, setFinding] = useState<string | null>(null);
   if (query.isPending) return <Loading />;
-  if (!query.data) return <ErrorNotice error={query.error} />;
-  const {
-    pull_request: pr,
-    repository,
-    runs,
-    findings,
-    can_write,
-  } = query.data;
+  if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
+  const { pull_request: pr, repository, runs, findings, can_write } = query.data;
+  const latest = runs[0];
   const running = runs.some((run) => active(run.status));
-  const observed = runs.find((run) =>
-    ["completed", "partial"].includes(run.status),
+  const observed = runs.find((run) => ["completed", "partial"].includes(run.status));
+  const term = search.trim().toLowerCase();
+  const visible = findings.filter((item) =>
+    (!statuses.length || statuses.includes(item.status)) &&
+    (!severities.length || severities.includes(item.severity)) &&
+    (!term || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(term)),
   );
-  const visible = findings.filter(
-    (item) =>
-      (status === "all" || item.status === status) &&
-      (severity === "all" || item.severity === severity),
-  );
-  const count = (state: string) =>
-    findings.filter((item) => item.status === state).length;
-  return (
-    <>
-      <PageTitle
-        title={pr.title}
-        actions={
-          <>
-            <ExternalLink href={pr.url}>GitHub</ExternalLink>
-            {can_write && (
-              <NativeSelect
-                aria-label="Review connection"
-                value={connection}
-                onChange={(event) => setConnection(event.target.value)}
-                className="max-w-64"
-              >
-                <option value="">Repository default connection</option>
-                {connections.data?.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            )}
-            {can_write && (
-              <Button
-                disabled={
-                  action.isPending ||
-                  running ||
-                  pr.state !== "open" ||
-                  !repository.enabled
-                }
-                onClick={async () => {
-                  const run = await action
-                    .mutateAsync({
-                      path: `/pulls/${id}/runs`,
-                      body: connection ? { connection_id: connection } : {},
-                    })
-                    .catch(() => null);
-                  if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
-                }}
-              >
-                <Play className="size-4" />
-                {running ? "Review in progress" : "Run review"}
-              </Button>
-            )}
-          </>
-        }
-      >
-        <div className="flex flex-wrap items-center gap-3">
-          <Status value={pr.state} />
-          <span>@{pr.author}</span>
-          <code className="max-w-full truncate text-xs">
-            {pr.head_ref} · {pr.head_sha.slice(0, 7)}
-          </code>
-          {pr.fork && <span>Fork reviews require a manual start.</span>}
-        </div>
-      </PageTitle>
-      <ErrorNotice error={action.error || query.error} />
-      {runs[0] && <RunFeedback run={runs[0]} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
-      <div className="mb-8 grid grid-cols-3 border-y py-5">
-        <div>
-          <p className="text-2xl font-semibold tabular">{count("open")}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Open findings</p>
-        </div>
-        <div>
-          <p className="text-2xl font-semibold tabular">{count("resolved")}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Resolved</p>
-        </div>
-        <div>
-          <p className="text-2xl font-semibold tabular">{runs.length}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Review runs</p>
-        </div>
+  const count = (state: string) => findings.filter((item) => item.status === state).length;
+  const noOpenFindings = findings.length > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
+  const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
+    : running ? "A review is already queued or running."
+    : pr.state !== "open" ? "Reviews can only run on open pull requests."
+    : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
+    : pr.fork ? "Fork reviews require a manual start." : null;
+  function showAllFindings() {
+    setStatuses([]);
+    setSeverities([]);
+    setSearch("");
+    setSearchResetKey((key) => key + 1);
+    searchInput.current?.focus();
+  }
+  return <>
+    <header className="mb-6">
+      <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">{pr.title}</h1>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+        <Status value={pr.state} />
+        <span>#{pr.number} · @{pr.author}</span>
+        {pr.draft && <span>Draft</span>}
+        <code className="min-w-0 max-w-full truncate" title={`${pr.head_ref} · ${pr.head_sha}`}>{pr.head_ref} · {pr.head_sha.slice(0, 7)}</code>
+        <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
       </div>
-      <Tabs defaultValue="findings">
-        <TabsList className="mb-6">
-          <TabsTrigger value="findings">Findings</TabsTrigger>
-          <TabsTrigger value="history">Run history</TabsTrigger>
-        </TabsList>
-        <TabsContent value="findings">
-          <div className="mb-4 flex flex-wrap gap-2">
-            <NativeSelect
-              aria-label="Finding status"
-              className="w-40"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-            >
-              <option value="open">Open findings</option>
-              <option value="resolved">Resolved</option>
-              <option value="dismissed">Dismissed</option>
-              <option value="all">All findings</option>
-            </NativeSelect>
-            <NativeSelect
-              aria-label="Finding severity"
-              className="w-36"
-              value={severity}
-              onChange={(e) => setSeverity(e.target.value)}
-            >
-              <option value="all">All severities</option>
-              {["critical", "high", "medium", "low"].map((value) => (
-                <option key={value} value={value}>
-                  {value[0].toUpperCase() + value.slice(1)}
-                </option>
-              ))}
-            </NativeSelect>
+    </header>
+    <ErrorNotice error={action.error || query.error} />
+    <section aria-label="Latest review" className="mb-6 border-y py-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-medium">{latest ? "Latest review" : "No reviews yet"}</span>
+            {latest && <Status value={latest.status} />}
           </div>
-          {visible.length ? (
-            <div className="divide-y overflow-hidden rounded-lg border bg-card">
-              {visible.map((item) => (
-                <button
-                  key={item.id}
-                  className="flex w-full gap-4 p-5 text-left hover:bg-muted/50"
-                  onClick={() => setFinding(item.id)}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-3 flex flex-wrap items-center gap-2">
-                      <Status value={item.severity} />
-                      <span className="text-xs text-muted-foreground">
-                        {item.category}
-                      </span>
-                      {item.desired_status && (
-                        <span className="text-xs text-muted-foreground">
-                          {item.sync_error
-                            ? "Sync needs attention"
-                            : "Sync pending"}
-                        </span>
-                      )}
-                      {observed && item.last_seen_run_id !== observed.id && (
-                        <span className="text-xs text-muted-foreground">
-                          Not observed in latest review
-                        </span>
-                      )}
-                    </div>
-                    <p className="line-clamp-2 text-sm font-medium leading-relaxed">
-                      {item.content.replaceAll(/[*`#]/g, "")}
-                    </p>
-                    <p className="mt-3 truncate font-mono text-xs text-muted-foreground">
-                      {item.path}:{item.start_line}
-                      {item.end_line !== item.start_line && `–${item.end_line}`}
-                    </p>
-                  </div>
-                  <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground" />
-                </button>
-              ))}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {latest ? <>
+              <span>{date(latest.created_at)}</span>
+              <span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span>
+              <Link className="inline-flex items-center gap-1 rounded-sm text-foreground underline-offset-4 hover:underline" to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3" /></Link>
+            </> : <span>A review records findings and coverage for this commit.</span>}
+          </div>
+        </div>
+        {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <NativeSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={(event) => setConnection(event.target.value)} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none">
+            <option value="">Repository default</option>
+            {connections.data?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </NativeSelect>
+          <Button disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} onClick={async () => {
+            const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
+            if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
+          }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
+        </div>}
+      </div>
+      {reviewUnavailable && <p className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
+    </section>
+    {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
+    <Tabs defaultValue="findings">
+      <TabsList className="mb-4">
+        <TabsTrigger value="findings">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings.length}</span></TabsTrigger>
+        <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{runs.length}</span></TabsTrigger>
+      </TabsList>
+      <TabsContent value="findings" className="min-w-0">
+        <div className="mb-4">
+          <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings or files…" searchInputRef={searchInput} onSearch={setSearch}
+            filters={[
+              { key: "status", label: "Status", values: statuses, choices: ["open", "resolved", "dismissed"].map((value) => ({ value, name: label(value), count: count(value) })) },
+              { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
+            ]}
+            onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)}>
+            <span role="status" className="shrink-0 text-xs tabular-nums text-muted-foreground sm:pt-2.5">{visible.length} of {findings.length} findings</span>
+          </FilterBar>
+        </div>
+        {visible.length ? <section aria-label="Findings" className="divide-y overflow-hidden rounded-lg border bg-card">
+          <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+            <span>Finding</span><span>Severity</span><span>Status</span><span />
+          </div>
+          {visible.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
+            <div className="min-w-0">
+              <p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{item.content.replaceAll(/[*`#]/g, "")}</p>
+              <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span className="capitalize">{words(item.category)}</span>
+                {observed && item.last_seen_run_id !== observed.id && <span>Not observed in latest review</span>}
+              </div>
             </div>
-          ) : (
-            <Empty
-              title={
-                findings.length
-                  ? "No findings match these filters"
-                  : runs.length
-                    ? "No findings recorded"
-                    : "This PR is ready for a review"
-              }
-            >
-              {findings.length
-                ? "Choose another status or severity to see more findings."
-                : runs.length
-                  ? "Check run history for completion and coverage. An incomplete review is not a clean result."
-                  : "Run a review to find issues and publish comments to GitHub."}
-            </Empty>
-          )}
-          <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
-            Resolving or reopening a GitHub review thread updates its finding
-            here. A finding missing from a later run stays open until someone
-            resolves it.
-          </p>
-        </TabsContent>
-        <TabsContent value="history">
-          <RunList runs={runs} />
-        </TabsContent>
-      </Tabs>
-      <Sheet
-        open={!!finding}
-        onOpenChange={(open) => {
-          if (!open) setFinding(null);
-        }}
-      >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
-          <SheetHeader>
-            <SheetTitle>Finding details</SheetTitle>
-            <SheetDescription>
-              Review the evidence and its resolution history.
-            </SheetDescription>
-          </SheetHeader>
-          {finding && (
-            <FindingPanel key={finding} id={finding} canWrite={can_write} />
-          )}
-        </SheetContent>
-      </Sheet>
-    </>
-  );
+            <div><Status value={item.severity} /></div>
+            <div className="space-y-1.5">
+              <Status value={item.status} />
+              {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
+            </div>
+            <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+          </button>)}
+        </section> : <Empty title={noOpenFindings ? "No open findings" : findings.length ? "No findings match these filters" : runs.length ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : findings.length ? "Try another search, status, or severity." : runs.length ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          {findings.length > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
+        </Empty>}
+        <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
+      </TabsContent>
+      <TabsContent value="history" className="min-w-0"><RunList runs={runs} /></TabsContent>
+    </Tabs>
+    <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus();
+      }}>
+        <SheetHeader><SheetTitle>Finding details</SheetTitle><SheetDescription>Review the evidence and its resolution history.</SheetDescription></SheetHeader>
+        {finding && <FindingPanel key={finding} id={finding} canWrite={can_write} />}
+      </SheetContent>
+    </Sheet>
+  </>;
 }
 
 function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {

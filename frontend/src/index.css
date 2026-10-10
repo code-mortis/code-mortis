@@ -319,3 +319,13 @@
   .inbox-row-grid { grid-template-columns: minmax(0, 1fr) 10rem 6.5rem 6rem 1rem; }
   .inbox-row-grid > :first-child { grid-column: auto; }
 }
+
+.review-row-grid {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 1rem;
+}
+.review-row-grid > :first-child { grid-column: 1 / -1; }
+@media (min-width: 768px) {
+  .review-row-grid { grid-template-columns: minmax(0, 1fr) 6.5rem 10rem 1rem; }
+  .review-row-grid > :first-child { grid-column: auto; }
+}
