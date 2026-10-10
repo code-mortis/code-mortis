@@ -4606,6 +4606,7 @@ test("pending personal connection creation keeps its dialog until setup opens", 
 
 test("personal model and repository errors stay with their operation", async ({ page }) => {
   const requests = await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
   let fail = true;
   await page.route("**/api/v1/connections/personal", (route) => route.fulfill({ status: 422, json: { detail: "Model could not be saved." } }));
   await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
@@ -4631,7 +4632,7 @@ test("personal model and repository errors stay with their operation", async ({ 
   await expect(model.getByRole("alert")).toContainText("Model could not be saved");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByRole("alert")).toContainText("Repository authorization denied");
-  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "Choose a repository");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
   await expect(grants.getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("switch")).toBeChecked();
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
@@ -4906,6 +4907,7 @@ test("personal model saves disable controls while retaining the loaded catalog",
 
 test("personal authorizations distinguish loading, fetch failure, mutation failure, and empty results", async ({ page }) => {
   await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   let fail = true;
@@ -4933,7 +4935,7 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
     "Authorizations could not be loaded.", "Repository authorization denied.",
   ]);
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
-  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "Choose a repository");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
   await expect(grants.getByRole("alert")).toHaveText("Authorizations could not be loaded.");
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   fail = false;
@@ -4944,6 +4946,7 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
 
 test("personal authorization confirmations match saved changes and revocations", async ({ page }, info) => {
   await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
   let saved: { repository_id: number; automatic: boolean }[] = [];
   let failRevoke = true;
   let releaseRevoke!: () => void;
@@ -4966,11 +4969,15 @@ test("personal authorization confirmations match saved changes and revocations",
   const repository = grants.getByRole("combobox", { name: "Repository", exact: true });
   const automatic = grants.getByRole("switch");
   const save = grants.getByRole("button", { name: "Save authorization" });
-  await repository.fill("payments");
+  await expect(repository).toHaveAttribute("placeholder", "Choose a repository");
+  await expect(save).toBeDisabled();
+  await repository.click();
   await expect(page.getByRole("option", { name: "acme/payments", exact: true })).toBeVisible();
   await expect(page.getByRole("option", { name: "Choose a repository", exact: true })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/subscription-repository-combobox-${info.project.name}.png` });
+  await repository.fill("payments");
+  await expect(page.getByRole("option", { name: "acme/payments", exact: true })).toBeVisible();
   await repository.press("Enter");
   await automatic.check();
   await save.click();
@@ -5003,9 +5010,9 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await automatic.uncheck();
-  await chooseOption(page, repository, "Choose a repository");
+  await chooseOption(page, repository, "acme/orders");
   await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
-  await expect(save).toBeDisabled();
+  await expect(save).toBeEnabled();
 });
 
 for (const operation of ["auth", "model", "grant", "revoke"] as const) {

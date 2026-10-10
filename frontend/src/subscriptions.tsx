@@ -475,10 +475,7 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
                   clearGrantFeedback();
                   setRepository(value);
                 }}
-                options={[
-                  { value: "", label: "Choose a repository" },
-                  ...(repositories.data?.map((repo) => ({ value: String(repo.id), label: repo.full_name })) ?? []),
-                ]}
+                options={repositories.data?.map((repo) => ({ value: String(repo.id), label: repo.full_name })) ?? []}
               />
             )}
           </Field>
