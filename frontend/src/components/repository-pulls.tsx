@@ -17,7 +17,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const [raw, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const params = normalizeFilters(raw);
+  const params = normalizeFilters(raw, "open");
   params.delete("repo");
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
   const filters = withoutPages(params).toString();
@@ -45,13 +45,13 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const search = useCallback((value: string) => {
     const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
-    navigate({ search: normalizeFilters(next).toString() }, { replace: true });
+    navigate({ search: normalizeFilters(next, "open").toString() }, { replace: true });
   }, [filters, navigate]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(normalizeFilters(next));
+    setParams(normalizeFilters(next, "open"));
   }
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;

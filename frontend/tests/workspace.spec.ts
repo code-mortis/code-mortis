@@ -473,7 +473,7 @@ test("sidebar repositories navigate, show activity, and collapse accessibly", as
   await expect(running.locator(".motion-safe\\:animate-spin")).toBeVisible();
   await expect(running.locator(".animate-spin, .motion-safe\\:animate-spin")).toHaveCSS("animation-name", "none");
   await nav.getByRole("link", { name: "other/payments", exact: true }).click();
-  await expect(page).toHaveURL(/\/repositories\/23$/);
+  await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await expect(page.getByRole("heading", { name: "other/payments", exact: true })).toBeVisible();
   if (info.project.name === "mobile") {
     await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
@@ -521,13 +521,13 @@ test("repository paths preserve legacy settings links and never fall back from a
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "other/payments" }] }));
   await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories?repo=23&configure=limits#settings");
-  await expect(page).toHaveURL(/\/repositories\/23\?configure=limits#settings$/);
+  await expect(page).toHaveURL(/\/repositories\/23\?state=open&configure=limits$/);
   await expect(page.getByRole("dialog", { name: "Repository configuration" })).toContainText("other/payments");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("dialog", { name: "Repository configuration" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page).toHaveURL(/\/repositories\/23$/);
+  await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await page.goto("/repositories/999");
   await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
@@ -539,7 +539,7 @@ test("repository paths preserve legacy settings links and never fall back from a
     if (request.isNavigationRequest()) documentRequests.push(request.url());
   });
   await page.getByRole("link", { name: "View available repositories", exact: true }).click();
-  await expect(page).toHaveURL(/\/repositories\/22$/);
+  await expect(page).toHaveURL(/\/repositories\/22\?state=open$/);
   expect(documentRequests).toEqual([]);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
   await page.goto("/repositories");
@@ -772,6 +772,13 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
   const merged = page.getByRole("region", { name: "Merged", exact: true });
+  await expect(page).toHaveURL(/\?state=open$/);
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
+  await expect(merged).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Remove PR state filter" }).click();
+  await expect(page).toHaveURL(/\?state=all$/);
   await expect(merged.getByRole("link")).toHaveCount(10);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
@@ -800,7 +807,9 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
   await page.getByRole("button", { name: "reset your filters" }).click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("");
-  await expect(merged.getByRole("link")).toHaveCount(10);
+  await expect(page).toHaveURL(/\?state=open$/);
+  await expect(merged).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
   await noOverflow(page);
   await mkdir("../.impeccable/review", { recursive: true });
   await page.screenshot({ path: `../.impeccable/review/repository-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -817,15 +826,15 @@ test("repository filters survive configuration and the pull request run round tr
   await expect(page.getByRole("dialog", { name: "Repository configuration" })).toBeVisible();
   await noOverflow(page);
   await page.keyboard.press("Escape");
-  await expect(page).toHaveURL(/q=148&author=maria&findings=open$/);
+  await expect(page).toHaveURL(/q=148&state=open&author=maria&findings=open$/);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await page.getByRole("tab", { name: "Run history" }).click();
   await page.getByRole("link", { name: /automatic.*aaaaaaa/ }).click();
   await openNavigation(page);
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("href", "/repositories/22?q=148&author=maria&findings=open");
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await closeNavigation(page);
   const back = await breadcrumbAncestor(page, repo.full_name);
-  await expect(back).toHaveAttribute("href", "/repositories/22?q=148&author=maria&findings=open");
+  await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await back.click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("Author");
@@ -885,8 +894,8 @@ test("repository state filters retain running reviews and reset when switching r
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
   await openNavigation(page);
   await page.getByRole("link", { name: "acme/other", exact: true }).click();
-  await expect(page).toHaveURL(/repositories\/23$/);
-  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveCount(0);
+  await expect(page).toHaveURL(/repositories\/23\?state=open$/);
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Reviews paused");
 });
 
@@ -2257,7 +2266,7 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   await parent.press("Enter");
   await expect(current).toHaveText("Pull request #148");
   await (await breadcrumbAncestor(page, "acme/payments")).click();
-  await expect(page).toHaveURL(/\/repositories\/22$/);
+  await expect(page).toHaveURL(/\/repositories\/22\?state=open$/);
   await expect(current).toHaveText("acme/payments");
   await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
   await expect(page).toHaveURL(/\?state=open$/);

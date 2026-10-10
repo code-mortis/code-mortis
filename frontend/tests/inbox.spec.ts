@@ -399,7 +399,7 @@ test("empty workspace, no matches, and legacy repository links", async ({ page }
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Your inbox is empty" })).toBeVisible();
   await page.goto("/?repo=22&configure=limits");
-  await expect(page).toHaveURL(/\/repositories\/22\?configure=limits/);
+  await expect(page).toHaveURL(/\/repositories\/22\?state=open&configure=limits/);
   await expect(page.getByRole("dialog", { name: "Repository configuration" })).toBeVisible();
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
 });
