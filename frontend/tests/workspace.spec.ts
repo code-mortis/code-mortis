@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
 
 const at = "2026-10-05T13:20:00Z";
@@ -3694,12 +3694,11 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect(personal.getByRole("article", { name: "My subscription", exact: true })).toContainText("ChatGPT subscription");
   await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
   await expect(personal.getByRole("article", { name: "Another subscription", exact: true })).toContainText("Personal subscription");
-  for (const name of ["My subscription", "My Claude subscription"]) {
-    const logo = personal.getByRole("article", { name, exact: true }).locator(".settings-identity img");
+  for (const name of [longName, "My subscription", "My Claude subscription"]) {
+    const logo = page.getByRole("article", { name, exact: true }).locator(".settings-identity img");
     await expect(logo).toHaveAttribute("alt", "");
     await expect.poll(() => logo.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
   }
-  await expect(shared.getByRole("article").first().locator(".lucide-plug")).toBeVisible();
   await expect(personal.getByRole("article", { name: "Another subscription", exact: true }).locator(".lucide-user-round")).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/subscription-logos-light-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.emulateMedia({ colorScheme: "dark" });
@@ -3734,6 +3733,43 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Escape");
   await expect(personalActions).toBeFocused();
+});
+
+test("shared API logos cover the provider catalog with custom and unknown fallbacks", async ({ page }, info) => {
+  await mock(page);
+  const catalog: { name: string; displayName: string; protocol: string }[] = JSON.parse(
+    await readFile(new URL("../../backend/code_mortis/providers.json", import.meta.url), "utf8"),
+  );
+  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [
+    ...catalog.map((provider) => ({
+      ...connection, id: provider.name, name: provider.displayName, provider: provider.name, protocol: provider.protocol,
+    })),
+    { ...connection, id: "unknown", name: "Unknown provider", provider: "constructor" },
+  ] }));
+  await page.goto("/settings?tab=connections");
+  const shared = page.getByRole("region", { name: "Shared API connections", exact: true });
+  await expect(shared.getByRole("article")).toHaveCount(catalog.length + 1);
+  for (const provider of catalog) {
+    const row = shared.getByRole("article", { name: provider.displayName, exact: true });
+    const logo = row.locator(".settings-identity img");
+    if (provider.name === "custom") {
+      await expect(logo).toHaveCount(0);
+      await expect(row.locator(".lucide-plug")).toBeVisible();
+    } else {
+      await expect(logo, provider.name).toHaveAttribute("src", /^\/brands\/.+\.svg$/);
+      await expect(logo).toHaveAttribute("alt", "");
+      await expect.poll(() => logo.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0), { message: provider.name }).toBe(true);
+    }
+  }
+  const unknown = shared.getByRole("article", { name: "Unknown provider", exact: true });
+  await expect(unknown.locator(".settings-identity img")).toHaveCount(0);
+  await expect(unknown.locator(".lucide-plug")).toBeVisible();
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? "dark" : "");
+    await noOverflow(page);
+    await shared.screenshot({ path: `../.impeccable/review/api-provider-logos-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+  }
 });
 
 for (const kind of ["chatgpt", "claude_code"] as const) {

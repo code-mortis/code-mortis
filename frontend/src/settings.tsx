@@ -58,6 +58,38 @@ const protocols = [
   "anthropic",
   "anthropic-bedrock",
 ] as const;
+const apiProviderLogos = new Map([
+  ["anthropic", "claude"],
+  ["baidu-qianfan", "baiducloud"],
+  ["bedrock", "bedrock"],
+  ["dashscope", "alibabacloud"],
+  ["dashscope-tokenplan", "alibabacloud"],
+  ["deepseek", "deepseek"],
+  ["edenai", "edenai"],
+  ["gemini", "gemini"],
+  ["hy-tokenplan", "hunyuan"],
+  ["iflytek", "iflytekcloud"],
+  ["kimi", "kimi"],
+  ["kimi-global", "kimi"],
+  ["litellm", "litellm"],
+  ["mimo", "xiaomimimo"],
+  ["minimax", "minimax"],
+  ["minimax-cn", "minimax"],
+  ["mistral", "mistral"],
+  ["novita", "novita"],
+  ["ollama-cloud", "ollama"],
+  ["openai", "openai"],
+  ["openai-responses", "openai"],
+  ["openrouter", "openrouter"],
+  ["siliconflow", "siliconcloud"],
+  ["siliconflow-cn", "siliconcloud"],
+  ["tencent-tokenhub", "tencent"],
+  ["volcengine", "volcengine"],
+  ["xai", "xai"],
+  ["z-ai", "zai"],
+  ["z-ai-coding", "zai"],
+  ["opencode", "opencode"],
+]);
 const languages = ["Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)", "Croatian", "Czech", "Danish", "Dutch", "English", "Finnish", "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian", "Italian", "Japanese", "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Serbian", "Slovak", "Spanish", "Swedish", "Tamil", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"];
 function parseObject(value: string, label: string) {
   let data: unknown;
@@ -779,6 +811,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   else if (personalConnection) kindLabel = "Personal subscription";
                   const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
                   const Icon = personalConnection ? UserRound : Plug;
+                  const logo = connection.kind === "chatgpt" ? "openai" : connection.kind === "claude_code" ? "claude"
+                    : !personalConnection ? apiProviderLogos.get(connection.provider) : undefined;
                   const testing = connection.last_test === "Testing connection…"
                     || (action.isPending && action.variables?.path === `/connections/${connection.id}/test`);
                   const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
@@ -794,10 +828,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
-                      {connection.kind === "chatgpt" || connection.kind === "claude_code" ? <img
-                        src={connection.kind === "chatgpt" ? "/brands/openai.svg" : "/brands/claude.svg"}
+                      {logo ? <img
+                        src={`/brands/${logo}.svg`}
                         alt="" aria-hidden="true" width={16} height={16}
-                        className={`mt-0.5 size-4 shrink-0 ${connection.kind === "chatgpt" ? "dark:invert" : ""}`}
+                        className={`mt-0.5 size-4 shrink-0 ${logo === "claude" ? "" : logo === "litellm" ? "dark:brightness-0 dark:invert" : "dark:invert"}`}
                       /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
