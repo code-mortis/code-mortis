@@ -770,6 +770,34 @@ test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ p
   }
 });
 
+test("repository breadcrumbs and sidebar match only supported routes", async ({ page }) => {
+  await mock(page);
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  for (const suffix of ["", "/"]) {
+    await page.goto(`/repositories/22${suffix}`);
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(repo.full_name);
+    await page.goto(`/repositories/22/settings${suffix}?state=all&tab=limits`);
+    await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
+    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", "/repositories/22?state=all");
+    await page.keyboard.press("Escape");
+    await openNavigation(page);
+    const repository = navigation.getByRole("link", { name: repo.full_name, exact: true });
+    await expect(repository).toHaveAttribute("aria-current", "page");
+    await expect(repository).toHaveAttribute("href", "/repositories/22?state=all");
+    await closeNavigation(page);
+  }
+  for (const path of ["/repositories/22/foobar", "/repositories/22/settings/foobar"]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Page not found");
+    await openNavigation(page);
+    await expect(navigation.getByRole("link", { name: repo.full_name, exact: true })).not.toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
+  }
+});
+
 test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {
   await mock(page);
   const completed = { ...run, status: "completed", publication: "published" };
@@ -884,13 +912,16 @@ test("repository configuration validates hidden fields and retains drafts after 
   await page.getByLabel("Timeout (seconds)", { exact: true }).fill("");
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Keep this draft after validation and server errors.");
+  await repositorySection(page, "Review behavior");
+  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).not.toBeVisible();
+  expect(await page.getByLabel("Timeout (seconds)", { exact: true }).evaluate((element: HTMLInputElement) => element.willValidate)).toBe(true);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeFocused();
   expect(requests).toEqual([]);
   await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
   await repositorySection(page, "AI connection");
   await chooseOption(page, page.getByRole("combobox", { name: "AI connection", exact: true }), "No connection");
-  await repositorySection(page, "Project context");
+  await repositorySection(page, "Review behavior");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "AI connection", exact: true })).toBeFocused();
   expect(requests).toEqual([]);
@@ -902,6 +933,29 @@ test("repository configuration validates hidden fields and retains drafts after 
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
   await repositorySection(page, "Limits & rules");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
+});
+
+test("repository configuration shows connection failures across every section", async ({ page }, info) => {
+  const requests = await mock(page);
+  const error = "AI connections could not be loaded. Try again.";
+  await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ status: 503, json: { detail: error } }));
+  await page.goto("/repositories/22/settings");
+  const form = page.getByRole("form", { name: "Repository configuration" });
+  const notice = form.getByRole("alert").filter({ hasText: error });
+  for (const section of ["Review behavior", "Project context", "Limits & rules", "AI connection"]) {
+    await repositorySection(page, section);
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveCount(1);
+  }
+  await chooseOption(page, page.getByRole("combobox", { name: "AI connection", exact: true }), "No connection");
+  await repositorySection(page, "Review behavior");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "AI connection", exact: true })).toBeFocused();
+  await expect(notice).toBeVisible();
+  await expect(form.getByRole("alert")).toHaveCount(2);
+  expect(requests).toEqual([]);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/repository-settings-connection-error-${info.project.name}.png`, fullPage: true, animations: "disabled" });
 });
 
 test("repository configuration sections retain navigation and fit both themes", async ({ page }, info) => {

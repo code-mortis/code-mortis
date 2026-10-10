@@ -246,7 +246,6 @@ export function RepositorySettings({
               <h2 id={`${id}-connection`} className="text-xl font-semibold tracking-tight">Connection and model</h2>
               <p className="mt-1 text-sm text-muted-foreground">Choose the connection and model used to review this repository.</p>
             </div>
-            <ErrorNotice error={connections.error} />
             <Field label="AI connection">
               {(id) => (
                 <SearchSelect
@@ -416,6 +415,7 @@ export function RepositorySettings({
             </Field>
           </section>
           <footer className="mt-8 space-y-3 py-5">
+            <ErrorNotice error={connections.error} />
             <ErrorNotice error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button type="submit" disabled={action.isPending}>

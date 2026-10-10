@@ -46,7 +46,8 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
-  const repositoryRoute = useMatch("/repositories/:repositoryId/*");
+  const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
+  const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const settingsSearch = new URLSearchParams(route.search);
   settingsSearch.delete("tab");
   const selected = repositoryRoute
@@ -92,7 +93,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               const [owner, name = owner] = repo.full_name.split("/");
               const running = !repos.error && repo.has_running_review;
               const path = `/repositories/${repo.id}`;
-              const returnPath = repositoryRoute?.params["*"] === "settings" && selected === repo.id
+              const returnPath = repositorySettingsRoute && selected === repo.id
                 ? path + (settingsSearch.size ? `?${settingsSearch}` : "")
                 : repositoryReturn?.split("?")[0] === path ? repositoryReturn : path;
               return <SidebarMenuItem key={repo.id}>

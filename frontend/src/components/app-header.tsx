@@ -28,7 +28,8 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
-  const repositoryRoute = useMatch("/repositories/:repositoryId/*");
+  const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
+  const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
   const crumbs: Crumb[] = [{ label: "Inbox", to: inboxReturn ?? "/" }];
 
@@ -38,7 +39,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     search.delete("tab");
     const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
     crumbs.push({ label: repository?.full_name || "Repositories", to: repositoryPath + (search.size ? `?${search}` : "") });
-    if (repositoryRoute?.params["*"] === "settings") crumbs.push({ label: "Configure", to: path + route.search });
+    if (repositorySettingsRoute) crumbs.push({ label: "Configure", to: path + route.search });
   } else if (detailPath) {
     if (detail.data && !detail.error) {
       const { repository, pull_request: pull } = detail.data;
