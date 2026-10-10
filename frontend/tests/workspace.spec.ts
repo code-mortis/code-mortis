@@ -1349,8 +1349,7 @@ test("repository language searches suggestions and preserves custom language ent
   await expect(language).toHaveValue("Spanish");
   await language.fill("   ");
   await language.press("Tab");
-  await expect(language).toHaveValue("");
-  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect(language).toHaveValue("Spanish");
   expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
   await language.fill("  Mapudungun  ");
   await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
@@ -1359,6 +1358,25 @@ test("repository language searches suggestions and preserves custom language ent
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "Mapudungun" } });
 });
+
+for (const search of ["", "   "]) {
+  for (const close of ["Tab", "outside", "Save"] as const) {
+    test(`${search ? "whitespace" : "empty"} language search preserves the saved value on ${close}`, async ({ page }) => {
+      const requests = await mock(page);
+      await page.goto("/repositories/22");
+      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      const language = page.getByRole("combobox", { name: "Language", exact: true });
+      await language.fill(search);
+      if (close !== "Save") {
+        if (close === "Tab") await language.press("Tab");
+        else await page.getByRole("heading", { name: "Repository configuration", exact: true }).click();
+        await expect(language).toHaveValue("English");
+      }
+      await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+      await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "English" } });
+    });
+  }
+}
 
 for (const commit of ["Enter", "Save"] as const) {
   test(`custom language commits a trimmed value with ${commit}`, async ({ page }) => {

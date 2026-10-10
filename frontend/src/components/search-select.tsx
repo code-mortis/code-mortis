@@ -36,7 +36,8 @@ export function SearchSelect({
     if (!next) setSearch(null);
   }
   function commitCustom() {
-    if (allowCustom && search !== null && !disabled) onChange(search.trim());
+    const next = search?.trim();
+    if (allowCustom && next && !disabled) onChange(next);
   }
   return (
     <Combobox
