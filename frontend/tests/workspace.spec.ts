@@ -3465,8 +3465,19 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(summary).toContainText("ccccccc");
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
+  await expect(list.getByRole("region")).toHaveCount(3);
+  await expect(list.getByRole("button")).toHaveCount(3);
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: `../.impeccable/review/finding-groups-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Open/ }).check();
   await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Edit Status: Open", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Resolved/ }).check();
   await expect(list.getByRole("button")).toHaveCount(2);
   await page.getByRole("checkbox", { name: /^Dismissed/ }).check();
@@ -3532,6 +3543,12 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   let runs: typeof run[] = [run];
   await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: { pull_request: pr, repository: repo, can_write: true, runs, findings } }));
   await page.goto("/pulls/pr");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
+  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("Coverage is incomplete");
   await page.clock.install();
@@ -3554,6 +3571,70 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/pull-empty-${info.project.name}.png`, fullPage: true });
+});
+
+test("pull detail paginates each finding status independently and resets pages with filters", async ({ page }, info) => {
+  await mock(page);
+  const findings = ["open", "resolved", "dismissed"].flatMap((status) => Array.from({ length: 21 }, (_, index) => ({
+    ...finding, id: `${status}-${index}`, status, sync_intent: null,
+    content: `Test finding ${index + 1}: validate incoming webhook data before processing.`,
+    path: `src/${status}/handler-${index + 1}.ts`, severity: index % 2 ? "medium" : "high",
+  })));
+  await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: {
+    pull_request: pr, repository: repo, can_write: true, runs: [], findings,
+  } }));
+  await page.goto("/pulls/pr");
+  const open = page.getByRole("region", { name: "Open findings", exact: true });
+  const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
+  const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
+  const rows = (section: typeof open) => section.getByRole("button", { name: /Test finding/ });
+  for (const section of [open, resolved, dismissed]) {
+    await expect(rows(section)).toHaveCount(10);
+    await expect(section.getByRole("heading")).toContainText("21");
+    await expect(section.getByText("10 of 21", { exact: true })).toBeVisible();
+  }
+  await noOverflow(page);
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/finding-pagination-${info.project.name}.png`, animations: "disabled" });
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).press("Enter");
+  await expect(rows(open)).toHaveCount(20);
+  await expect(rows(resolved)).toHaveCount(10);
+  await expect(rows(dismissed)).toHaveCount(10);
+  await resolved.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(rows(resolved)).toHaveCount(20);
+  await dismissed.getByRole("button", { name: "Load more dismissed findings", exact: true }).click();
+  await expect(rows(dismissed)).toHaveCount(20);
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await expect(rows(open)).toHaveCount(21);
+  await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+
+  await page.getByLabel("Search findings", { exact: true }).fill("handler-21.ts");
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.keyboard.press("Escape");
+  for (const section of [open, resolved, dismissed]) {
+    await expect(rows(section)).toHaveCount(10);
+    await expect(section.getByRole("heading")).toContainText("11");
+  }
+  await resolved.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(rows(resolved)).toHaveCount(11);
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await expect(rows(resolved)).toHaveCount(10);
+  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(rows(open)).toHaveCount(10);
+  await expect(resolved).toHaveCount(0);
+  await expect(dismissed).toHaveCount(0);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
 });
 
 for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {

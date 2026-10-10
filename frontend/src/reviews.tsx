@@ -210,6 +210,9 @@ function RunList({ runs }: { runs: Run[] }) {
   );
 }
 
+const findingStatuses = ["open", "resolved", "dismissed"] as const;
+const FINDINGS_PAGE_SIZE = 10;
+
 export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -220,13 +223,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [statuses, setStatuses] = useState<string[]>(["open"]);
+  const [statuses, setStatuses] = useState<string[]>([]);
   const [severities, setSeverities] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const [finding, setFinding] = useState<string | null>(null);
+  const filters = JSON.stringify([id, statuses, severities, search]);
+  const [pagination, setPagination] = useState({ filters, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
+  if (pagination.filters !== filters) setPagination({ filters, pages: {} });
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   const { pull_request: pr, repository, runs, findings, can_write } = query.data;
@@ -240,6 +246,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     (!term || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(term)),
   );
   const count = (state: string) => findings.filter((item) => item.status === state).length;
+  const sections = findingStatuses.map((status) => ({ status, items: visible.filter((item) => item.status === status) })).filter(({ items }) => items.length);
   const noOpenFindings = findings.length > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : running ? "A review is already queued or running."
@@ -303,33 +310,46 @@ export function PullDetail({ admin }: { admin: boolean }) {
         <div className="mb-4">
           <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings or files…" searchInputRef={searchInput} onSearch={setSearch}
             filters={[
-              { key: "status", label: "Status", values: statuses, choices: ["open", "resolved", "dismissed"].map((value) => ({ value, name: label(value), count: count(value) })) },
+              { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
             ]}
             onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)}>
             <span role="status" className="shrink-0 text-xs tabular-nums text-muted-foreground sm:pt-2.5">{visible.length} of {findings.length} findings</span>
           </FilterBar>
         </div>
-        {visible.length ? <section aria-label="Findings" className="divide-y overflow-hidden rounded-lg border bg-card">
-          <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
-            <span>Finding</span><span>Severity</span><span>Status</span><span />
-          </div>
-          {visible.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
-            <div className="min-w-0">
-              <p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{item.content.replaceAll(/[*`#]/g, "")}</p>
-              <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span className="capitalize">{words(item.category)}</span>
-                {observed && item.last_seen_run_id !== observed.id && <span>Not observed in latest review</span>}
+        {visible.length ? <section aria-label="Findings" className="space-y-6">
+          {sections.map(({ status, items }) => {
+            const page = pagination.pages[status] ?? 1;
+            const shown = items.slice(0, page * FINDINGS_PAGE_SIZE);
+            return <section key={status} aria-label={`${label(status)} findings`}>
+              <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{items.length}</span></h2>
+              <div className="divide-y overflow-hidden rounded-lg border bg-card">
+                <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+                  <span>Finding</span><span>Severity</span><span>Status</span><span />
+                </div>
+                {shown.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
+                  <div className="min-w-0">
+                    <p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{item.content.replaceAll(/[*`#]/g, "")}</p>
+                    <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span className="capitalize">{words(item.category)}</span>
+                      {observed && item.last_seen_run_id !== observed.id && <span>Not observed in latest review</span>}
+                    </div>
+                  </div>
+                  <div><Status value={item.severity} /></div>
+                  <div className="space-y-1.5">
+                    <Status value={item.status} />
+                    {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
+                  </div>
+                  <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+                </button>)}
+                {shown.length < items.length && <div className="flex items-center justify-between gap-3 px-5 py-3">
+                  <Button variant="ghost" size="sm" onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>Load more<span className="sr-only"> {status} findings</span></Button>
+                  <span className="text-xs tabular-nums text-muted-foreground">{shown.length} of {items.length}</span>
+                </div>}
               </div>
-            </div>
-            <div><Status value={item.severity} /></div>
-            <div className="space-y-1.5">
-              <Status value={item.status} />
-              {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
-            </div>
-            <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
-          </button>)}
+            </section>;
+          })}
         </section> : <Empty title={noOpenFindings ? "No open findings" : findings.length ? "No findings match these filters" : runs.length ? "No findings recorded" : "No review findings yet"}>
           <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : findings.length ? "Try another search, status, or severity." : runs.length ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
           {findings.length > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
