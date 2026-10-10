@@ -534,6 +534,12 @@ test("repository paths preserve legacy settings links and never fall back from a
   await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
   await (await breadcrumbAncestor(page, "other/payments")).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
+  await page.goto("/repositories/22/settings?repo=23&configure=limits&state=all&q=retry&tab=connection");
+  await expect(page).toHaveURL(/\/repositories\/22\/settings\?state=all&q=retry&tab=limits$/);
+  const repositoryCrumb = await breadcrumbAncestor(page, repo.full_name);
+  await expect(repositoryCrumb).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
+  await repositoryCrumb.click();
+  await expect(page).toHaveURL(/\/repositories\/22\?state=all&q=retry$/);
   await page.goto("/repositories/999");
   await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
@@ -796,6 +802,17 @@ test("repository breadcrumbs and sidebar match only supported routes", async ({ 
     await expect(navigation.getByRole("link", { name: repo.full_name, exact: true })).not.toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
   }
+});
+
+test("repository settings breadcrumbs omit Configure for members when access fails", async ({ page }) => {
+  await mock(page, { role: "member" });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
+  await page.goto("/repositories/22/settings?tab=limits");
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access was revoked.");
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Repositories");
+  await expect(breadcrumb.getByText("Configure", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
 });
 
 test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {
@@ -2218,6 +2235,53 @@ test("personal review limits retain their separate context budget", async ({ pag
   await expect(page.getByLabel("Native context budget (bytes)")).toBeEnabled();
   await noOverflow(page);
 });
+
+for (const field of [
+  { label: "Native context budget (bytes)", key: "delegated_context_bytes", personal: true, valid: "6000", excessive: "20000001" },
+  { label: "Concurrency", key: "concurrency", personal: false, valid: "4", excessive: "9" },
+] as const) {
+  test(`repository ${field.label} keeps invalid drafts out of saved settings`, async ({ page }) => {
+    const requests = await mock(page);
+    await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, {
+      ...connection, id: "personal", name: "My ChatGPT", kind: "chatgpt", owner_id: 7, protocol: "native",
+    }] }));
+    await page.goto("/repositories/22/settings?tab=connection");
+    if (field.personal) await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "My ChatGPT");
+    await repositorySection(page, "Limits & rules");
+    const input = page.getByLabel(field.label, { exact: true });
+    for (const invalid of ["", "0", field.excessive, "1e309"]) {
+      await input.fill(invalid);
+      await expect(input).toHaveValue(invalid === "1e309" ? "" : invalid);
+      expect(await input.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
+      await repositorySection(page, "Review behavior");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(input).toBeFocused();
+      expect(requests).toEqual([]);
+    }
+    await input.clear();
+    await input.pressSequentially(field.valid);
+    await expect(input).toHaveValue(field.valid);
+    await input.fill("0");
+    await repositorySection(page, "AI connection");
+    await chooseOption(page, page.getByLabel("AI connection", { exact: true }), field.personal ? "Team reviews" : "My ChatGPT");
+    if (!field.personal) {
+      await repositorySection(page, "Limits & rules");
+      await expect(input).toBeDisabled();
+      await expect(input).toHaveValue("1");
+      await repositorySection(page, "AI connection");
+      await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Team reviews");
+      await repositorySection(page, "Limits & rules");
+      await expect(input).toHaveValue(field.valid);
+      await repositorySection(page, "AI connection");
+      await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "My ChatGPT");
+    }
+    await repositorySection(page, "Review behavior");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+      settings: { [field.key]: field.personal ? Number(field.valid) : 1 },
+    });
+  });
+}
 
 const limitedRun: Partial<Run> = {
   status: "skipped", publication: "not_applicable", publication_error: null,

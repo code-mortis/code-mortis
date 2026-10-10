@@ -39,7 +39,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     search.delete("tab");
     const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
     crumbs.push({ label: repository?.full_name || "Repositories", to: repositoryPath + (search.size ? `?${search}` : "") });
-    if (repositorySettingsRoute) crumbs.push({ label: "Configure", to: path + route.search });
+    if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path + route.search });
   } else if (detailPath) {
     if (detail.data && !detail.error) {
       const { repository, pull_request: pull } = detail.data;

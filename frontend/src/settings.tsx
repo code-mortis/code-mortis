@@ -157,6 +157,7 @@ export function RepositorySettings({
               connection_id: connection || null,
               settings: {
                 ...settings,
+                concurrency: personal ? 1 : settings.concurrency,
                 rules: rules.trim() ? parseObject(rules, "Rules") : null,
               },
             },
@@ -366,13 +367,12 @@ export function RepositorySettings({
                       min={4096}
                       max={20000000}
                       required
-                      value={settings.delegated_context_bytes ?? 800000}
-                      onChange={(event) =>
-                        change(
-                          "delegated_context_bytes",
-                          Number(event.target.value),
-                        )
-                      }
+                      defaultValue={settings.delegated_context_bytes ?? 800000}
+                      onChange={(event) => {
+                        const value = event.target.valueAsNumber;
+                        if (!Number.isFinite(value) || !event.target.validity.valid) return;
+                        change("delegated_context_bytes", value);
+                      }}
                     />
                   )}
                 </Field>
@@ -387,14 +387,19 @@ export function RepositorySettings({
               >
                 {(id) => (
                   <Input
+                    key={personal ? "personal" : "api"}
                     id={id}
                     type="number"
                     min={1}
                     max={8}
                     required
                     disabled={personal}
-                    value={personal ? 1 : settings.concurrency}
-                    onChange={(e) => change("concurrency", Number(e.target.value))}
+                    defaultValue={personal ? 1 : settings.concurrency}
+                    onChange={(event) => {
+                      const value = event.target.valueAsNumber;
+                      if (!Number.isFinite(value) || !event.target.validity.valid) return;
+                      change("concurrency", value);
+                    }}
                   />
                 )}
               </Field>
