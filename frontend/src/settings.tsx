@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { ArrowUpRight, Check, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
   api,
   useAction,
@@ -49,7 +49,7 @@ type Instance = {
   github_app: { id: string; slug: string; install_url: string };
   installations: { id: number; account: string; active: boolean }[];
   members: { id: number; login: string; role: string }[];
-  failed_jobs: { id: string; kind: string; error: string }[];
+  failed_jobs: { id: string; kind: string; error: string; available_at?: string | null; attempts?: number }[];
   public_url: string;
   webhook_url?: string;
   configuration_errors?: string[];
@@ -706,8 +706,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const memberHeading = useRef<HTMLHeadingElement>(null);
   const instance = query.data;
   const groups = [
-    { title: "Shared API connections", personal: false, items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
-    { title: "Your subscriptions", personal: true, items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
+    { title: "Shared API connections", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
+    { title: "Your subscriptions", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
   ].filter((group) => group.items.length);
 
   function openMember(value: Instance["members"][number] | "new") {
@@ -731,7 +731,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
     </header>
     <div className={isAdmin ? "grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]" : "min-w-0"}>
       {isAdmin && <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-        {[["connections", "AI connections"], ["github", "GitHub"], ["team", "Team"]].map(([value, label]) => (
+        {[["connections", "AI providers"], ["github", "GitHub"], ["team", "Team"]].map(([value, label]) => (
           <Link key={value} to={`/settings?tab=${value}`} aria-current={tab === value ? "page" : undefined}
             className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
             {label}
@@ -743,7 +743,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         {tab === "connections" && <section aria-labelledby="connections-heading" className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 id="connections-heading" ref={connectionHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">AI connections</h2>
+              <h2 id="connections-heading" ref={connectionHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">AI providers</h2>
               <p className="mt-1 text-sm text-muted-foreground">Connections and default models for manual and automatic reviews.</p>
             </div>
             <Button disabled={!providers.data} onClick={(event) => {
@@ -766,7 +766,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               </h3>
               <div className="overflow-hidden rounded-lg border bg-card">
                 <div aria-hidden="true" className="settings-record settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
-                  <span>Connection</span><span>Default model</span><span>{group.personal ? "Account status" : "Last test"}</span><span />
+                  <span>Connection</span><span>Default model</span><span>Account status</span><span />
                 </div>
                 {group.items.map((connection) => {
                   const personalConnection = (connection.kind ?? "api") !== "api";
@@ -776,6 +776,11 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   else if (personalConnection) kindLabel = "Personal subscription";
                   const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
                   const Icon = personalConnection ? UserRound : Plug;
+                  const testing = connection.last_test === "Testing connection…"
+                    || (action.isPending && action.variables?.path === `/connections/${connection.id}/test`);
+                  const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
+                    : connection.last_test.startsWith("Connected.") ? "connected" : "failed";
+                  const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
@@ -791,24 +796,16 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Default model</span>
                       <p className="break-words text-xs leading-relaxed"><span className="sr-only">Default model: </span>{connection.model || "Choose a model"}</p>
                     </div>
-                    <div className="min-w-0 text-xs text-muted-foreground">
-                      <span aria-hidden={!personalConnection && !!connection.last_test} className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
-                      {personalConnection && <Status value={connection.auth_status} />}
-                      {!personalConnection && connection.last_test && <>
-                        <p className="break-words text-foreground"><span className="sr-only">Last test: </span>{connection.last_test}</p>
-                        {connection.tested_at && <time dateTime={connection.tested_at} className="mt-1 block tabular-nums">{date(connection.tested_at)}</time>}
-                      </>}
-                      {!personalConnection && !connection.last_test && <span>Not tested</span>}
+                    <div className="min-w-0 text-xs text-muted-foreground" role="status"
+                      title={personalConnection ? undefined : testDetail}
+                      aria-description={personalConnection ? undefined : testDetail}>
+                      <span className="settings-cell-label mb-1">Account status</span>
+                      {personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
+                        label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
+                        icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
-                      {canManage && <>
-                        {personalConnection ? <Button size="sm" variant="outline" onClick={(event) => {
-                          returnFocus.current = event.currentTarget;
-                          setPersonal(connection);
-                        }}>Manage<span className="sr-only"> account</span></Button> : <Button size="sm" variant="outline"
-                          disabled={action.isPending || connection.last_test === "Testing connection…"}
-                          onClick={() => { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }}>Test</Button>}
-                        <DropdownMenu>
+                      {canManage && <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="size-8" disabled={action.isPending} aria-label={`Actions for ${connection.name}`}
                               onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
@@ -816,13 +813,16 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                               <MoreHorizontal className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting) event.preventDefault(); }}>
+                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
+                            {personalConnection
+                              ? <DropdownMenuItem onSelect={() => setPersonal(connection)}>Manage<span className="sr-only"> account</span></DropdownMenuItem>
+                              : <DropdownMenuItem disabled={action.isPending || connection.last_test === "Testing connection…"}
+                                onSelect={() => { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }}>Test</DropdownMenuItem>}
                             <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
-                        </DropdownMenu>
-                      </>}
+                      </DropdownMenu>}
                     </div>
                   </article>;
                 })}
@@ -913,7 +913,15 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           <summary className="cursor-pointer text-sm text-muted-foreground">Recent background errors ({instance.failed_jobs.length})</summary>
           <ul className="mt-4 space-y-3">
             {instance.failed_jobs.map((job) => <li key={job.id} className="rounded-md border p-3 text-xs">
-              <span className="font-semibold">{job.kind}</span><p className="mt-1 break-words text-muted-foreground">{job.error}</p>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <span className="font-semibold">{job.kind}</span>
+                {job.available_at && <time dateTime={job.available_at} className="text-muted-foreground">Scheduled {date(job.available_at)}</time>}
+              </div>
+              <p className="mt-1 break-words text-muted-foreground">{job.error}</p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                {job.attempts !== undefined && <span>{job.attempts} {job.attempts === 1 ? "attempt" : "attempts"}</span>}
+                <span className="min-w-0 break-all">Job <code>{job.id}</code></span>
+              </div>
             </li>)}
           </ul>
         </details>}

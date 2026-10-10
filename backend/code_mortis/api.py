@@ -809,7 +809,10 @@ def instance_settings(db: DB, user: ADMIN) -> dict:
             for row in db.scalars(select(Membership))
         ],
         "failed_jobs": [
-            {"id": row.id, "kind": row.kind, "error": row.error}
+            {
+                "id": row.id, "kind": row.kind, "error": row.error,
+                "available_at": row.available_at, "attempts": row.attempts,
+            }
             for row in db.scalars(
                 select(Job).where(Job.status == "failed").order_by(Job.available_at.desc()).limit(20)
             )

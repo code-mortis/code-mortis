@@ -54,7 +54,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     const tab = admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });
     const tabLabels = new Map([["github", "GitHub"], ["team", "Team"]]);
-    crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI connections", to: path + route.search });
+    crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI providers", to: path + route.search });
   } else if (path !== "/") {
     crumbs.push({ label: "Page not found", to: path });
   }
