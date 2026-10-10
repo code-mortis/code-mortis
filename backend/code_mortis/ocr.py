@@ -85,7 +85,7 @@ def command(
         try:
             while process.poll() is None:
                 if stopped():
-                    raise ReviewStopped("Review cancelled or superseded by a newer commit.")
+                    raise ReviewStopped("The review was cancelled or replaced by a newer commit. Open the pull request to check its latest review.")
                 if deadline is not None and time.monotonic() > deadline:
                     raise TimeoutError("The operation exceeded its configured time limit.")
                 if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
@@ -155,9 +155,9 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
             try:
                 existing = json.loads(path.read_text())
             except (ValueError, OSError) as exc:
-                raise ValueError("The worker OCR directory is not clean.") from exc
+                raise ValueError("The review worker contains leftover review files and cannot start safely. Ask the administrator to restart the review worker.") from exc
             if existing.get("_code_mortis_owned") is not True:
-                raise ValueError("Refusing to overwrite an existing OCR configuration.")
+                raise ValueError("The review worker already has an OCR configuration and cannot replace it safely. Ask the administrator to check the worker configuration.")
         headers = dict(credentials.get("extra_headers", {}))
         endpoint = urlsplit(connection.get("base_url", ""))
         if endpoint.hostname == "opencode.ai" and endpoint.path.rstrip("/") == "/zen/go/v1":
@@ -202,7 +202,7 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
 def check_version(directory: Path, env: dict):
     code, output, _ = command([settings().ocr_binary, "version"], directory, env, timeout=10)
     if code or not re.search(rf"\bv{re.escape(settings().ocr_version)}\b", output):
-        raise ValueError(f"The worker requires OCR {settings().ocr_version}.")
+        raise ValueError(f"The review worker needs Open Code Review (OCR) version {settings().ocr_version}. Ask the administrator to update the worker image.")
 
 
 def test_connection(connection: dict, credentials: dict) -> str:
@@ -228,31 +228,34 @@ def test_connection(connection: dict, credentials: dict) -> str:
 
 
 def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tuple[str, dict, list[dict]]:
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("The review engine returned unreadable JSON. Start a new review; if this repeats, ask the administrator to check the worker logs.") from exc
     if not isinstance(data, dict):
-        raise ValueError("OCR returned a malformed report.")
+        raise ValueError("The review engine returned an unreadable report. Start a new review; if this repeats, ask the administrator to check the worker logs.")
     manifest = data.get("manifest")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != "ocr.run-manifest/v1":
-        raise ValueError("OCR returned an unsupported or missing coverage manifest.")
+        raise ValueError("The review engine did not provide a supported record of which files it reviewed. Coverage cannot be confirmed. Ask the administrator to check the OCR version.")
     state = manifest.get("terminal_state")
     if state not in {"complete", "partial", "failed", "skipped"}:
-        raise ValueError("OCR returned an unknown review outcome.")
+        raise ValueError("The review engine did not return a recognized completion status. The review cannot be marked complete. Start a new review.")
     coverage = manifest.get("coverage", {})
     for key in ("selected", "completed", "reused", "failed", "waived"):
         if not isinstance(coverage.get(key), list):
-            raise ValueError("OCR returned invalid coverage details.")
+            raise ValueError("The review engine returned invalid file review results. Coverage cannot be confirmed. Start a new review.")
     identities = {}
     for key, items in coverage.items():
         if key not in {"selected", "completed", "reused", "failed", "waived"}:
             continue
         if any(not isinstance(item, dict) or not isinstance(item.get("item_id"), str) for item in items):
-            raise ValueError("OCR returned invalid coverage identities.")
+            raise ValueError("The review engine returned file results without valid identifiers. Coverage cannot be confirmed. Start a new review.")
         identities[key] = {item["item_id"] for item in items}
         if len(identities[key]) != len(items):
-            raise ValueError("OCR returned duplicate coverage identities.")
+            raise ValueError("The review engine counted the same file result more than once. Coverage cannot be confirmed. Start a new review.")
     outcomes = [item for key in ("completed", "reused", "failed", "waived") for item in identities[key]]
     if len(set(outcomes)) != len(outcomes) or set(outcomes) != identities["selected"]:
-        raise ValueError("OCR coverage does not account for every selected item exactly once.")
+        raise ValueError("The review engine returned missing or overlapping file results. Coverage cannot be confirmed. Start a new review.")
     if state == "complete" and (coverage["failed"] or coverage["waived"]):
         state = "partial" if coverage["completed"] or coverage["reused"] else "failed"
     if exit_code != 0 and state == "complete":
@@ -321,19 +324,19 @@ def diff_lines(patch: str) -> set[int]:
 
 def preview_paths(files, count):
     if not isinstance(files, list) or type(count) is not int or len(files) != count:
-        raise ValueError("OCR returned inconsistent selected-file coverage.")
+        raise ValueError("The review engine returned conflicting lists of files to review. Start a new review; if this repeats, ask the administrator to check the worker logs.")
     paths = []
     for item in files:
         path = item.get("path") if isinstance(item, dict) else None
         if not isinstance(path, str) or not path:
-            raise ValueError("OCR returned an invalid selected path.")
+            raise ValueError("The review engine selected an invalid file path. The review was stopped because that path cannot be read safely. Ask the administrator to check the worker logs.")
         try:
             ReviewComment.relative_path(path)
         except ValueError:
-            raise ValueError("OCR returned an invalid selected path.") from None
+            raise ValueError("The review engine selected an invalid file path. The review was stopped because that path cannot be read safely. Ask the administrator to check the worker logs.") from None
         paths.append(path)
     if len(set(paths)) != len(paths):
-        raise ValueError("OCR returned repeated selected paths.")
+        raise ValueError("The review engine selected the same file more than once. Start a new review; if this repeats, ask the administrator to check the worker logs.")
     return paths
 
 
@@ -376,12 +379,12 @@ def review(
         if cancelled():
             return True
         if deadline is not None and time.monotonic() >= deadline:
-            raise TimeoutError("The run's time allowance expired.")
+            raise TimeoutError("The review reached its time limit. Increase Timeout or reduce the review scope, then start a new review.")
         return False
 
     safe_repo_name(full_name)
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base_sha, head_sha)):
-        raise ValueError("Invalid commit identity.")
+        raise ValueError("The review has an invalid Git commit reference. Refresh the pull request and start a new review.")
     root = settings().work_dir
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix="review-", dir=root) as temporary:
@@ -478,15 +481,15 @@ def review(
             if review_settings.get("max_files") is not None:
                 code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
                 if code:
-                    raise ValueError("OCR could not prepare the review scope.")
+                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
                 try:
                     preview = json.loads(output)
                 except ValueError as exc:
-                    raise ValueError("OCR could not prepare the review scope.") from exc
+                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.") from exc
                 if not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
-                    raise ValueError("OCR could not prepare the review scope.")
+                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
                 if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
-                    raise ValueError("OCR returned invalid file eligibility.")
+                    raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
                 paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
                 limited = file_limit_result(paths, review_settings["max_files"])
             if limited is None:

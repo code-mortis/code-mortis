@@ -46,13 +46,14 @@ export function Status({ value, label }: { value: string; label?: string }) {
 }
 export function ErrorNotice({ error }: { error: unknown }) {
   if (!error) return null;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return (
     <div
       role="alert"
       className="flex gap-3 rounded-md border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
     >
       <AlertCircle className="mt-0.5 size-4 shrink-0" />
-      <span>{error instanceof Error ? error.message : String(error)}</span>
+      <span className="min-w-0 break-words">{message.trim() || "This action could not be completed. Refresh the page and try again."}</span>
     </div>
   );
 }

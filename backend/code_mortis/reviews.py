@@ -188,7 +188,7 @@ def review_anyway(db: Session, body: dict, delivery_id: str):
         return
     delivery = db.scalar(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id).with_for_update())
     if not delivery or delivery.event != "issue_comment":
-        raise ValueError("The review command is missing its verified delivery identity.")
+        raise ValueError("The GitHub review command could not be verified. Ask the administrator to check the webhook delivery, or start a review in Code Mortis.")
     if delivery.handled_at:
         return
     repo = db.get(Repository, repository["id"])
@@ -275,8 +275,8 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
         if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":
             run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
             run.finished_at = now()
-            verification.skip_pending(db, run, "A newer PR revision superseded this verification.")
-            assessment.withhold_pending(db, run, "A newer PR revision superseded this assessment.")
+            verification.skip_pending(db, run, "New commits replaced the code being verified. Check the latest review for fix verification results.")
+            assessment.withhold_pending(db, run, "New commits replaced the code being assessed. Check the latest review for assessment results.")
     return pr
 
 
@@ -382,16 +382,16 @@ def perform_review(run_id: str, claim: str | None = None):
         if connection.kind == "api" and not saved_review and run.progress.get("analysis_started"):
             # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
             run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
-            run.failure_reason, run.error = "worker_stopped", "Review interrupted before usage was saved; consumption is unknown."
+            run.failure_reason, run.error = "worker_stopped", "The review worker stopped before saving token usage. The remaining budget cannot be verified, so this run cannot resume. Start a new review."
             verification.skip_pending(db, run, run.error)
             return
         allowance = run.config["settings"]["timeout_seconds"]
         remaining = int(allowance - (now() - run.started_at).total_seconds()) if allowance is not None else None
         if remaining is not None and remaining <= 0:
-            verification.skip_pending(db, run, "The run's original time allowance expired.")
+            verification.skip_pending(db, run, "Fix verification was skipped because the review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review.")
             if not complete_saved_review(db, run):
                 run.status, run.finished_at = "failed", now()
-                run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The run's time allowance expired."
+                run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review."
             return
         run.progress = {**run.progress, "analysis_started": True}
         args = (
@@ -440,8 +440,8 @@ def perform_review(run_id: str, claim: str | None = None):
             if run.status != "superseded":
                 run.status = "cancelled" if run.cancel_requested else "superseded"
             run.publication, run.finished_at = "not_applicable", now()
-            verification.skip_pending(db, run, "Verification was cancelled or superseded.")
-            assessment.withhold_pending(db, run, "Assessment was cancelled or superseded.")
+            verification.skip_pending(db, run, "Fix verification stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
+            assessment.withhold_pending(db, run, "Assessment stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
         return
     save_analysis(run_id, claim, status, report, comments)
     with transaction() as db:
@@ -827,7 +827,7 @@ def publish_run(run_id: str):
                     if ({finding.id for finding in claimed} != expected_ids
                         or any(finding.status != "open" or finding.desired_status for finding in claimed)):
                         run.publication = "partially_published" if run.review_ids else "not_applicable"
-                        run.publication_error = "Finding state changed; the saved batch was not published."
+                        run.publication_error = "A finding changed while comments were being prepared. Those comments were not sent to GitHub. Refresh the pull request before retrying publication."
                         return
                 existing = github.request(
                     "POST",

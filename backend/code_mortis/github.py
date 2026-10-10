@@ -61,11 +61,11 @@ def request(method: str, path: str, token: str, **kwargs):
         retry = response.headers.get("retry-after", "0")
         message = {
             401: "GitHub authorization expired. Sign in again.",
-            403: "GitHub denied the request or temporarily rate-limited this app.",
+            403: "GitHub denied this request. Check repository and GitHub App permissions; if you recently sent many requests, wait and try again.",
             404: "The repository or resource is no longer accessible.",
             422: "GitHub could not accept this request. Refresh the PR and retry.",
-            429: "GitHub rate limit reached. The operation will be retried.",
-        }.get(response.status_code, f"GitHub returned HTTP {response.status_code}.")
+            429: "GitHub rate limit reached. Wait for the limit to reset, then retry if the operation has not completed.",
+        }.get(response.status_code, f"GitHub could not complete the request (HTTP {response.status_code}). Try again shortly; if it keeps failing, ask the administrator to check GitHub access.")
         raise GitHubError(response.status_code, message, int(retry) if retry.isdigit() else 0)
     return response.json() if response.content else None
 
@@ -79,7 +79,7 @@ def pages(path: str, token: str, key: str | None = None):
         result.extend(rows)
         if len(rows) < 100:
             return result
-    raise GitHubError(422, "GitHub pagination limit exceeded; narrow the requested scope.")
+    raise GitHubError(422, "GitHub returned more than 10,000 items, exceeding the synchronization limit. Ask the administrator to reduce the repositories accessible to this installation.")
 
 
 def app_config(db: Session) -> AppConfig:
@@ -215,7 +215,7 @@ def graphql(token: str, query: str, variables: dict):
         errors = data["errors"]
         forbidden = any(error.get("type") == "FORBIDDEN" for error in errors)
         detail = "; ".join(str(error.get("message", error.get("type", "Unknown error"))) for error in errors)
-        raise GitHubError(403 if forbidden else 502, "GitHub GraphQL: " + clean_text(detail, (token,))[:1500])
+        raise GitHubError(403 if forbidden else 502, "GitHub could not complete the request. Check repository and app permissions or retry shortly. GitHub details: " + clean_text(detail, (token,))[:1500])
     return data["data"]
 
 
@@ -248,7 +248,7 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
         if not connection["pageInfo"]["hasNextPage"]:
             return result
         cursor = connection["pageInfo"]["endCursor"]
-    raise GitHubError(422, "Too many review threads to synchronize safely.")
+    raise GitHubError(422, "This pull request has too many review discussions to synchronize in one operation. Check finding statuses directly on GitHub.")
 
 
 def set_thread(token: str, thread_id: str, resolved: bool):

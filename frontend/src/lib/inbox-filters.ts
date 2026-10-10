@@ -15,7 +15,7 @@ export const INBOX_MAX_PAGES = 10;
 const MAX_FILTER_VALUES = 100;
 const MAX_AUTHOR_LENGTH = 100;
 
-export function normalizeFilters(input: URLSearchParams) {
+export function normalizeFilters(input: URLSearchParams, defaultState: "open" | "all" = "all") {
   const result = new URLSearchParams();
   const q = input.get("q")?.trim().slice(0, INBOX_QUERY_MAX_LENGTH);
   if (q) result.set("q", q);
@@ -23,8 +23,9 @@ export function normalizeFilters(input: URLSearchParams) {
     let values = [...new Set(input.getAll(key))];
     if (key === "repo") values = values.filter((v) => /^\d+$/.test(v) && Number.isSafeInteger(+v) && +v > 0).map((v) => String(+v));
     if (key === "state") {
-      values = values.includes("all") ? [] : states.filter((v) => values.includes(v));
-      if (values.length === states.length) values = [];
+      values = values.includes("all") ? states : states.filter((v) => values.includes(v));
+      if (values.length === states.length) values = defaultState === "open" ? ["all"] : [];
+      else if (!values.length && defaultState === "open") values = ["open"];
     }
     if (key === "review") values = reviews.filter((v) => values.includes(v));
     if (key === "author") values = values.map((v) => v.trim().replace(/^@+/, "").toLowerCase()).filter((v) => v.length > 0 && v.length <= MAX_AUTHOR_LENGTH);

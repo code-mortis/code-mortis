@@ -228,7 +228,7 @@ def rerequest(db: Session, body: dict, delivery_id: str):
 
     delivery = db.scalar(select(WebhookDelivery).where(WebhookDelivery.id == delivery_id).with_for_update())
     if not delivery:
-        raise ValueError("GitHub Re-run is missing its verified delivery identity.")
+        raise ValueError("The GitHub Re-run request could not be verified. Start a new review from Code Mortis or ask the administrator to check webhook delivery.")
     if delivery.handled_at:
         return
     check = body.get("check_run") or {}

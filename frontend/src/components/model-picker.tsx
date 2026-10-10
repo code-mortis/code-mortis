@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi, type Schema } from "../api";
-import { ErrorNotice, Field, NativeSelect } from "./common";
+import { ErrorNotice, Field } from "./common";
+import { SearchSelect } from "./search-select";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -55,29 +56,24 @@ export function ModelPicker({
       <Field label={label}>
         {(id) => (
           <div className="flex flex-wrap gap-2">
-            <NativeSelect
+            <SearchSelect
               id={id}
               className="min-w-0 flex-1 basis-48"
               value={custom ? "\u0000custom" : value}
               required={required}
               disabled={!enabled || disabled}
-              onChange={(event) => {
-                const next = event.target.value;
+              placeholder={emptyLabel}
+              onChange={(next) => {
                 setCustom(next === "\u0000custom");
                 if (next !== "\u0000custom") onChange(next);
               }}
-            >
-              <option value="">{emptyLabel}</option>
-              {value && !models.some((model) => model.id === value) && (
-                <option value={value}>{value} (current)</option>
-              )}
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name === model.id ? model.id : `${model.name} · ${model.id}`}
-                </option>
-              ))}
-              <option value={"\u0000custom"}>Enter a custom model ID</option>
-            </NativeSelect>
+              options={[
+                { value: "", label: emptyLabel },
+                ...(value && !models.some((model) => model.id === value) ? [{ value, label: value }] : []),
+                ...models.map((model) => ({ value: model.id, label: model.name === model.id ? model.id : `${model.name} · ${model.id}` })),
+                { value: "\u0000custom", label: "Enter a custom model ID" },
+              ]}
+            />
             <Button type="button" variant="outline" disabled={!canLoad || !!pending} onClick={refresh}>
               {pending ? "Loading models…" : catalog || path ? "Refresh models" : "Load models"}
             </Button>

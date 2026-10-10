@@ -42,24 +42,24 @@ class ConnectionConfig(StrictModel):
     def allowed_options(cls, value):
         allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header"}
         if set(value) - allowed:
-            raise ValueError("Unsupported provider options")
+            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header.")
         if "timeout_sec" in value and (
             type(value["timeout_sec"]) is not int or not 5 <= value["timeout_sec"] <= 900
         ):
-            raise ValueError("timeout_sec must be between 5 and 900")
+            raise ValueError("timeout_sec must be a whole number from 5 to 900 seconds.")
         if "extra_body" in value:
             if not isinstance(value["extra_body"], dict):
-                raise ValueError("extra_body must be an object")
+                raise ValueError("extra_body must be a JSON object with keys and values.")
             if set(value["extra_body"]) & {"messages", "input", "tools", "model", "stream", "api_key"}:
                 raise ValueError("extra_body cannot replace review inputs, tools, or authentication")
         if "retry_codes" in value and (
             not isinstance(value["retry_codes"], list)
             or any(type(code) is not int or not 400 <= code < 500 for code in value["retry_codes"])
         ):
-            raise ValueError("retry_codes must contain HTTP 4xx integers")
+            raise ValueError("retry_codes must be a list of whole HTTP status codes from 400 to 499.")
         for key in ("aws_region", "aws_profile", "auth_header"):
             if key in value and (not isinstance(value[key], str) or len(value[key]) > 150):
-                raise ValueError(f"Invalid {key}")
+                raise ValueError(f"{key} must be text no longer than 150 characters.")
         return value
 
     @field_validator("extra_headers")
@@ -68,7 +68,7 @@ class ConnectionConfig(StrictModel):
         if value and any(
             "\n" in key + val or "\r" in key + val or len(val) > 20000 for key, val in value.items()
         ):
-            raise ValueError("Invalid provider headers")
+            raise ValueError("Extra header names and values must not contain line breaks; each value must be no longer than 20,000 characters.")
         return value
 
 
@@ -123,6 +123,11 @@ class RepoSettings(RunLimits):
     @classmethod
     def trim_model(cls, value):
         return value.strip()
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def trim_language(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class RepositoryInput(StrictModel):
@@ -388,8 +393,9 @@ class FindingDetail(BaseModel):
 class PRDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
-    runs: list[RunOut]
-    findings: list[FindingOut]
+    run_count: int
+    has_active_run: bool
+    latest_observed_run_id: str | None
     can_write: bool
 
 
@@ -444,8 +450,18 @@ class RunDetail(BaseModel):
     can_write: bool
 
 
+LIST_PAGE_SIZE = 10
+
+
+class RunPage(BaseModel):
+    items: list[RunOut]
+    total: int
+    page: int
+    has_more: bool
+    page_size: int = LIST_PAGE_SIZE
+
+
 InboxGroup = Literal["active", "merged", "closed"]
-INBOX_PAGE_SIZE = 10
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",
@@ -476,6 +492,8 @@ class InboxPullOut(ORMModel):
     author: str
     state: str
     draft: bool
+    fork: bool = False
+    head_ref: str = ""
     created_at: datetime | None
     updated_at: datetime
     review_status: str
@@ -484,6 +502,7 @@ class InboxPullOut(ORMModel):
     publication: str | None
     publication_error: str | None
     open_findings: int
+    latest_run: RunOut | None = None
 
 
 class InboxPage(BaseModel):
@@ -507,4 +526,39 @@ class InboxOut(BaseModel):
     repositories: list[InboxRepository]
     authors: list[str]
     state_counts: dict[str, int]
-    page_size: int = INBOX_PAGE_SIZE
+    page_size: int = LIST_PAGE_SIZE
+
+
+class RepositoryPullFilters(InboxFilters):
+    state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["all"], max_length=4)
+    ordering: Literal[
+        "created_at", "-created_at", "updated_at", "-updated_at", "title", "-title",
+        "repository", "-repository", "author", "-author",
+    ] = "-updated_at"
+
+
+FindingStatus = Literal["open", "resolved", "dismissed"]
+
+
+class FindingFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    status: list[FindingStatus] = Field(default_factory=list, max_length=3)
+    severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    group: FindingStatus | None = None
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class FindingPage(BaseModel):
+    group: FindingStatus
+    items: list[FindingOut]
+    total: int
+    page: int
+    has_more: bool
+
+
+class FindingsOut(BaseModel):
+    groups: list[FindingPage]
+    total: int
+    registered_total: int
+    status_counts: dict[str, int]
+    page_size: int = LIST_PAGE_SIZE

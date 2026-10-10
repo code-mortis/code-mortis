@@ -85,7 +85,7 @@ function LoginConsole({
         ws.onerror = () =>
           setError(
             new Error(
-              "The login console could not connect. Check the runner and reopen it.",
+              "The login console could not connect. Reopen it to try again. If it keeps failing, ask the administrator to check the account sign-in service.",
             ),
           );
         ws.onclose = () => {

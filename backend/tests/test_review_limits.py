@@ -38,6 +38,19 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
                 RepoSettings(**{key: value})
 
 
+@pytest.mark.parametrize("language,expected", [("  Mapudungun  ", "Mapudungun"), ("\tEnglish\n", "English"),
+                                              (" ", None), ("\t\n", None)])
+def test_repository_language_is_trimmed_and_cannot_be_blank(seed, github_stub, client, language, expected):
+    response = client.put("/api/v1/repositories/22", json={
+        "enabled": True, "connection_id": "connection", "settings": {"language": language},
+    })
+    assert response.status_code == (200 if expected else 422)
+    if expected:
+        assert response.json()["settings"]["language"] == expected
+        with transaction() as db:
+            assert db.get(Repository, 22).settings["language"] == expected
+
+
 def test_old_snapshots_keep_unlimited_files_and_deduplicate_only_matching_scope(seed, github_stub):
     with transaction() as db:
         repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
@@ -137,7 +150,7 @@ def test_invalid_scope_never_passes_file_gate(files, count):
 
 @pytest.mark.parametrize("path", [None, "", 123, "../secret", "/secret", ".git/config", "src\\secret", "bad\0path"])
 def test_invalid_preview_path_has_a_uniform_error(path):
-    with pytest.raises(ValueError, match=r"^OCR returned an invalid selected path\.$"):
+    with pytest.raises(ValueError, match=r"^The review engine selected an invalid file path\. The review was stopped because that path cannot be read safely\. Ask the administrator to check the worker logs\.$"):
         ocr.preview_paths([{"path": path}], 1)
 
 
@@ -160,7 +173,7 @@ def test_invalid_api_preview_stops_with_a_uniform_error(code, output, tmp_path, 
         pytest.fail("Invalid previews must never reach completion or verification")
 
     monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(ValueError, match=r"^OCR could not prepare the review scope\.$"):
+    with pytest.raises(ValueError, match=r"^The review engine could not prepare the files and rules for review\. Check file exclusions and review rules, then start a new review\.$"):
         ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings().model_dump(),
                    "token", lambda: False, after_review=after_review)
 

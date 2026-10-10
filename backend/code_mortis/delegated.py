@@ -69,13 +69,13 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             stopped=stopped,
         )
         if code:
-            raise ValueError("OCR could not prepare the delegated review scope or rules.")
+            raise ValueError("The review engine could not prepare files and rules for ChatGPT or Claude Code. Check repository review settings, then start a new review.")
         try:
             data = json.loads(output)
         except ValueError as exc:
-            raise ValueError("OCR returned invalid delegation metadata.") from exc
+            raise ValueError("The review engine returned unreadable file assignments for ChatGPT or Claude Code. Ask the administrator to check the OCR version and worker logs.") from exc
         if not isinstance(data, dict) or data.get("schema_version") != "1":
-            raise ValueError("OCR returned an unsupported delegation schema.")
+            raise ValueError("The review engine returned file assignments that this version of Code Mortis cannot read. Ask the administrator to check the OCR version.")
         return data
 
     preview = delegate("preview")

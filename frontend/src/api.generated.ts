@@ -266,10 +266,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Pull Runs */
+        get: operations["pull_runs_api_v1_pulls__pr_id__runs_get"];
         put?: never;
         /** Start Run */
         post: operations["start_run_api_v1_pulls__pr_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Findings */
+        get: operations["pull_findings_api_v1_pulls__pr_id__findings_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1045,6 +1063,40 @@ export interface components {
              */
             updated_at: string;
         };
+        /** FindingPage */
+        FindingPage: {
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "open" | "resolved" | "dismissed";
+            /** Items */
+            items: components["schemas"]["FindingOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+        };
+        /** FindingsOut */
+        FindingsOut: {
+            /** Groups */
+            groups: components["schemas"]["FindingPage"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Status Counts */
+            status_counts: {
+                [key: string]: number;
+            };
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
+        };
         /** GrantInput */
         GrantInput: {
             /**
@@ -1116,6 +1168,16 @@ export interface components {
             state: string;
             /** Draft */
             draft: boolean;
+            /**
+             * Fork
+             * @default false
+             */
+            fork: boolean;
+            /**
+             * Head Ref
+             * @default
+             */
+            head_ref: string;
             /** Created At */
             created_at: string | null;
             /**
@@ -1135,6 +1197,7 @@ export interface components {
             publication_error: string | null;
             /** Open Findings */
             open_findings: number;
+            latest_run?: components["schemas"]["RunOut"] | null;
         };
         /** InboxRepository */
         InboxRepository: {
@@ -1282,10 +1345,12 @@ export interface components {
         PRDetail: {
             pull_request: components["schemas"]["PullRequestOut"];
             repository: components["schemas"]["RepositoryOut"];
-            /** Runs */
-            runs: components["schemas"]["RunOut"][];
-            /** Findings */
-            findings: components["schemas"]["FindingOut"][];
+            /** Run Count */
+            run_count: number;
+            /** Has Active Run */
+            has_active_run: boolean;
+            /** Latest Observed Run Id */
+            latest_observed_run_id: string | null;
             /** Can Write */
             can_write: boolean;
         };
@@ -1524,6 +1589,22 @@ export interface components {
             check_error: string | null;
             /** Check Synced At */
             check_synced_at: string | null;
+        };
+        /** RunPage */
+        RunPage: {
+            /** Items */
+            items: components["schemas"]["RunOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
         };
         /** StartRunInput */
         StartRunInput: {
@@ -1946,7 +2027,17 @@ export interface operations {
     };
     pull_requests_api_v1_repositories__repository_id__pulls_get: {
         parameters: {
-            query?: never;
+            query?: {
+                q?: string;
+                repo?: number[];
+                state?: ("open" | "merged" | "closed" | "all")[];
+                review?: ("queued" | "running" | "blocked" | "completed" | "partial" | "failed" | "skipped" | "cancelled" | "superseded" | "not_reviewed" | "outdated")[];
+                author?: string[];
+                findings?: ("open" | "none") | null;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
+                group?: ("active" | "merged" | "closed") | null;
+                page?: number;
+            };
             header?: never;
             path: {
                 repository_id: number;
@@ -1961,7 +2052,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PullRequestOut"][];
+                    "application/json": components["schemas"]["InboxOut"];
                 };
             };
             /** @description Validation Error */
@@ -2078,6 +2169,39 @@ export interface operations {
             };
         };
     };
+    pull_runs_api_v1_pulls__pr_id__runs_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_run_api_v1_pulls__pr_id__runs_post: {
         parameters: {
             query?: never;
@@ -2100,6 +2224,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_findings_api_v1_pulls__pr_id__findings_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                status?: ("open" | "resolved" | "dismissed")[];
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                group?: ("open" | "resolved" | "dismissed") | null;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingsOut"];
                 };
             };
             /** @description Validation Error */

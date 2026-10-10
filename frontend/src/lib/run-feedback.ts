@@ -51,7 +51,7 @@ export function runFeedback(run: Run) {
       authentication: ["The AI connection needs to sign in again.", "The connection owner must reconnect the account, then resume this review."],
       quota: ["The AI connection reached its usage limit.", "The connection owner can resume this review when usage becomes available. No other connection is used automatically."],
       busy: ["The selected personal connection is reviewing another pull request.", "This review will retry automatically when the connection is available."],
-      unavailable: ["The review service is unavailable.", "Ask the instance administrator to check the runner. Queued reviews retry automatically."],
+      unavailable: ["The review service is unavailable.", "Ask the administrator to check the service that runs ChatGPT and Claude Code. Queued reviews retry automatically."],
     };
     [summary, nextStep] = reasons[run.blocked_reason ?? ""] ?? [run.error || "This review needs attention.", "Check the selected AI connection before resuming."];
     if (!["busy", "unavailable"].includes(run.blocked_reason ?? "")) destination = "connections";
@@ -67,10 +67,17 @@ export function runFeedback(run: Run) {
     destination = "pull";
     if (run.failure_reason === "timeout" || failures.some((item) => item.classification === "timeout")) {
       summary = run.status === "partial" ? `${summary} The time limit was reached.` : "The review reached its time limit.";
+      if (typeof settings.timeout_seconds === "number") summary += ` Configured limit: ${settings.timeout_seconds.toLocaleString("en-US")} seconds.`;
       nextStep = "Increase Timeout, choose Unlimited, or reduce the review scope, then start a new review.";
       destination = "repository";
     } else if (record(report.summary).budget_exceeded === true || failures.some((item) => item.classification === "budget")) {
       summary = `${summary} The token budget was reached.`;
+      const used = record(report.summary).total_tokens;
+      if (typeof settings.token_budget === "number") {
+        summary += typeof used === "number" && Number.isFinite(used) && used >= 0
+          ? ` ${used.toLocaleString("en-US")} / ${settings.token_budget.toLocaleString("en-US")} tokens used.`
+          : ` Configured limit: ${settings.token_budget.toLocaleString("en-US")} tokens; usage was not reported.`;
+      }
       nextStep = "Increase Token budget, choose Unlimited, or reduce the review scope, then start a new review.";
       destination = "repository";
     } else if (rows(report.errors).some((item) => text(item.message).startsWith("Delegated context budget"))) {

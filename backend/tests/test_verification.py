@@ -388,6 +388,25 @@ def test_existing_limits_never_reset(scenario, limit):
     assert "verify" not in scenario["calls"] and not scenario["mutations"]
 
 
+@pytest.mark.parametrize("tokens,seconds,reason", [
+    (5232697, 300, "Token budget exhausted: 5,232,697 / 5,000,000 tokens used or reserved."),
+    (None, 300, "Token usage is unavailable or invalid; remaining budget cannot be verified against the 5,000,000-token limit."),
+    (100, 5, "Time limit reached: 5 seconds remain of the 3,600-second run limit; at least 10 seconds are required."),
+])
+def test_verification_reports_the_specific_limit(scenario, monkeypatch, tokens, seconds, reason):
+    current_time = now()
+    monkeypatch.setattr(verification, "now", lambda: current_time)
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 5000000, "timeout_seconds": 3600}}
+        run.started_at = current_time - timedelta(seconds=3600 - seconds)
+        run.progress = {"analysis_saved": True, "analysis_status": "partial"}
+        run.report = {"summary": {"total_tokens": tokens}}
+    row, finding, _ = perform(scenario)
+    assert row.status == "skipped" and row.error == reason + " Fix verification skipped."
+    assert finding.status == "open" and "verify" not in scenario["calls"] and not scenario["mutations"]
+
+
 @pytest.mark.parametrize("tokens,timeout", [(None, None), (None, 900), (200000, None)])
 def test_unlimited_verification_preserves_other_allowances(scenario, monkeypatch, tokens, timeout):
     with transaction() as db:
@@ -858,7 +877,10 @@ def test_subscription_verification_does_not_reset_context_allowance(scenario, mo
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
         run.report = {"limits": {"context_bytes": run.config["settings"]["delegated_context_bytes"]}}
     monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Context allowance was reset"))
-    assert perform(scenario)[0].status == "skipped"
+    row, _, run = perform(scenario)
+    limit = run.config["settings"]["delegated_context_bytes"]
+    assert row.status == "skipped"
+    assert row.error == f"Context limit exhausted: {limit:,} / {limit:,} bytes used or reserved. Fix verification skipped."
 
 
 def test_interrupted_primary_api_review_gets_no_new_allowance(scenario, monkeypatch):
@@ -868,7 +890,7 @@ def test_interrupted_primary_api_review_gets_no_new_allowance(scenario, monkeypa
     monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Unknown usage was given a fresh allowance"))
     reviews.perform_review(scenario["run"])
     row, finding, run = saved()
-    assert run.status == "failed" and "unknown" in run.error
+    assert run.status == "failed" and "remaining budget cannot be verified" in run.error
     assert row.status == "skipped" and finding.status == "open"
 
 
@@ -1092,6 +1114,7 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
     monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
     def preview(args, *a, **k):
         assert "--preview" in args
+        assert args[args.index("--max-tokens") + 1] == "58888"
         if failure == "cancelled":
             raise ocr.ReviewStopped()
         return 0, "not json" if failure == "invalid_preview" else json.dumps({"files": [
@@ -1102,6 +1125,28 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
         verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
     assert caught.value.usage == {"tokens": 0}
     assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
+    if failure == "too_large":
+        assert "47,110 tokens" in str(caught.value) and "max_tokens=58,888" in str(caught.value)
+        assert "too_large" in str(caught.value) and "Evidence size:" in str(caught.value)
+
+
+def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
+    def command(args, *a, **k):
+        assert args[args.index("--max-tokens") + 1] == "58888"
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        return 0, json.dumps({"status": "completed_with_warnings", "summary": {"total_tokens": 0},
+                             "warnings": [{"type": "token_threshold_exceeded",
+                                           "message": "prompt tokens (48475) exceed 80% of max_tokens(58888)"}]}), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(verification.VerificationOutputError, match="47,110-token limit.*48475") as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
 
 
 def test_missing_resolution_permission_skips_analysis_but_preserves_review(scenario, monkeypatch):
