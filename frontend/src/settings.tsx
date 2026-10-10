@@ -704,6 +704,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const connectionHeading = useRef<HTMLHeadingElement>(null);
   const memberHeading = useRef<HTMLHeadingElement>(null);
   const instance = query.data;
+  const administrators = instance?.members.filter((item) => item.role === "admin") ?? [];
+  const lastAdministrator = administrators.length === 1 ? administrators[0].id : undefined;
+  const editedMember = member === "new" ? instance?.members.find((item) => item.login.toLowerCase() === login.toLowerCase()) : member;
+  const memberRoleLocked = editedMember?.role === "admin" && (editedMember.id === user.id || editedMember.id === lastAdministrator);
   const webhookEndpoint = instance?.webhook_url ?? `${instance?.public_url}/api/v1/webhooks/github`;
   const groups = [
     { title: "Shared API connections", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
@@ -895,7 +899,6 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             </Button>
           </div>
           {!member && !removingMember && <ErrorNotice error={memberAction.error} />}
-          <p className="text-xs tabular-nums text-muted-foreground">{instance.members.length} {instance.members.length === 1 ? "member" : "members"}</p>
           <div className="overflow-hidden rounded-lg border bg-card">
             <div aria-hidden="true" className="settings-member-row settings-member-heading border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground sm:px-5">
               <span>Member</span><span>Role</span><span />
@@ -916,9 +919,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                     onFocus={(event) => { returnFocus.current = event.currentTarget; }}><MoreHorizontal className="size-4" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (member || removingMember) event.preventDefault(); }}>
-                  <DropdownMenuItem onSelect={() => openMember(item)}>Edit role</DropdownMenuItem>
+                  <DropdownMenuItem disabled={item.id === user.id || item.id === lastAdministrator}
+                    onSelect={() => openMember(item)}>Edit role</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => {
+                  <DropdownMenuItem variant="destructive" disabled={item.id === user.id || item.id === lastAdministrator} onSelect={() => {
                     memberAction.reset();
                     setRemovingMember(item);
                   }}>Remove</DropdownMenuItem>
@@ -1020,14 +1024,14 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           event.preventDefault();
           if (memberAction.isPending) return;
           try {
-            await memberAction.mutateAsync({ path: "/members", body: { login, role } });
+            await memberAction.mutateAsync({ path: "/members", body: { login, role: memberRoleLocked ? "admin" : role } });
             setMember(null);
           } catch { /* Keep the draft and display the action error. */ }
         }}>
           <ErrorNotice error={memberAction.error} />
           <Field label="GitHub username">{(id) => <Input id={id} required readOnly={member !== "new"} value={login}
             onChange={(event) => setLogin(event.target.value)} placeholder="username" />}</Field>
-          <Field label="Role">{(id) => <SearchSelect id={id} value={role} onChange={setRole}
+          <Field label="Role" hint={memberRoleLocked ? "Administrator access must be retained. Add another administrator before removing the last one." : undefined}>{(id) => <SearchSelect id={id} value={memberRoleLocked ? "admin" : role} disabled={memberRoleLocked} onChange={setRole}
             options={[{ value: "member", label: "Member" }, { value: "admin", label: "Administrator" }]} />}</Field>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" disabled={memberAction.isPending} onClick={() => { setMember(null); memberAction.reset(); }}>Cancel</Button>

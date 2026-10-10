@@ -3655,10 +3655,14 @@ for (const scenario of [
   { tab: "connections", trigger: "Actions for Team reviews", item: "Edit" },
   { tab: "connections", trigger: "Actions for Team reviews", item: "Delete" },
   { tab: "github", trigger: "Actions for acme", item: "Uninstall" },
-  { tab: "team", trigger: "Actions for @carlos", item: "Edit role" },
-  { tab: "team", trigger: "Actions for @carlos", item: "Remove" },
+  { tab: "team", trigger: "Actions for @sam", item: "Edit role" },
+  { tab: "team", trigger: "Actions for @sam", item: "Remove" },
 ]) test(`settings menu hands focus directly to its dialog: ${scenario.item}`, async ({ page }) => {
   await mock(page);
+  if (scenario.tab === "team") await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], failed_jobs: [], public_url: "https://reviews.example.com",
+    members: [{ id: 7, login: "carlos", role: "admin" }, { id: 8, login: "sam", role: "member" }],
+  } }));
   await page.goto(`/settings?tab=${scenario.tab}`);
   const trigger = page.getByRole("button", { name: scenario.trigger, exact: true, includeHidden: true });
   const menu = page.getByRole("menu", { includeHidden: true });
@@ -3750,12 +3754,14 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
       await new Promise<void>((resolve) => { release = resolve; });
       return route.fulfill({ status: 422, json: { detail: "GitHub account could not be verified." } });
     }
-    members = [{ ...members[0], role: body.login === "carlos" ? body.role : "admin" }, ...(body.login === "carlos" ? [] : [{ id: 8, ...body }])];
+    members = members.some((item) => item.login === body.login)
+      ? members.map((item) => item.login === body.login ? { ...item, role: body.role } : item)
+      : [...members, { id: 8, ...body }];
     await route.fulfill({ json: { ok: true } });
   });
-  await page.route("**/api/v1/members/7", async (route) => {
+  await page.route("**/api/v1/members/8", async (route) => {
     await removal;
-    await route.fulfill({ status: 409, json: { detail: "The last administrator cannot be removed." } });
+    await route.fulfill({ status: 409, json: { detail: "Membership changed. Refresh and retry." } });
   });
   await page.goto("/settings?tab=team");
   const add = page.getByRole("button", { name: "Add member", exact: true });
@@ -3786,29 +3792,59 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   await expect(dialog).toHaveCount(0);
   await expect(add).toBeFocused();
   await expect(page.getByText("@sam", { exact: true })).toBeVisible();
-  const actions = page.getByRole("button", { name: "Actions for @carlos" });
+  const actions = page.getByRole("button", { name: "Actions for @sam" });
   await actions.click();
   await page.getByRole("menuitem", { name: "Edit role" }).click();
   await expect(dialog.getByLabel("GitHub username")).toHaveAttribute("readonly", "");
-  await expect(dialog.getByLabel("GitHub username")).toHaveValue("carlos");
+  await expect(dialog.getByLabel("GitHub username")).toHaveValue("sam");
   await chooseOption(page, dialog.getByLabel("Role", { exact: true }), "Member");
   await dialog.getByRole("button", { name: "Save role" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(actions).toBeFocused();
-  expect(bodies.at(-1)).toEqual({ login: "carlos", role: "member" });
+  expect(bodies.at(-1)).toEqual({ login: "sam", role: "member" });
   await actions.click();
   await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
   await dialog.getByRole("button", { name: "Remove member", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Actions for @carlos", includeHidden: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Actions for @sam", includeHidden: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Add member", exact: true, includeHidden: true })).toBeDisabled();
   releaseRemoval();
-  await expect(dialog.getByRole("alert")).toContainText("last administrator");
+  await expect(dialog.getByRole("alert")).toContainText("Membership changed");
   await expect(dialog.getByRole("button", { name: "Remove member", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(actions).toBeFocused();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText("@carlos", { exact: true })).toBeVisible();
+  await expect(page.getByText("@sam", { exact: true })).toBeVisible();
+});
+
+test("team retains the last administrator and protects existing roles in the add form", async ({ page }, info) => {
+  const requests = await mock(page);
+  const bodies: unknown[] = [];
+  await page.route("**/api/v1/members", async (route) => {
+    bodies.push(route.request().postDataJSON());
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/settings?tab=team");
+  await page.getByRole("button", { name: "Actions for @carlos" }).click();
+  await expect(page.getByRole("menuitem", { name: "Remove", exact: true })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "Edit role", exact: true })).toBeDisabled();
+  await expect(page.getByRole("menu")).toHaveText("Edit roleRemove");
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/team-last-administrator-${info.project.name}-${theme}.png` });
+  }
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Add member", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("GitHub username").fill("CARLOS");
+  await expect(dialog.getByRole("combobox", { name: "Role", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "Role", exact: true })).toHaveValue("Administrator");
+  await expect(dialog).toContainText("Administrator access must be retained.");
+  await dialog.getByRole("button", { name: "Add or update member" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(bodies).toEqual([{ login: "CARLOS", role: "admin" }]);
+  expect(requests.some((request) => request.path.startsWith("/members/") && request.method === "DELETE")).toBe(false);
 });
 
 test("member removal requires confirmation and restores focus after cancellation or success", async ({ page }, info) => {
