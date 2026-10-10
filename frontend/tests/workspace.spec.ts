@@ -2668,7 +2668,18 @@ test("personal setup saves without a model then signs in and selects one", async
   });
   await page.goto("/settings");
   await page.getByRole("button", { name: "Add connection", exact: true }).click();
-  await page.getByLabel("Connection type").selectOption("chatgpt");
+  const type = page.getByRole("combobox", { name: "Connection type", exact: true });
+  await type.fill("Claude");
+  await expect(page.getByRole("option", { name: "Personal Claude Code subscription", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Personal ChatGPT subscription", exact: true })).toHaveCount(0);
+  await type.press("Escape");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(type).toHaveValue("Shared API connection");
+  await type.fill("ChatGPT");
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/connection-type-combobox-${info.project.name}.png` });
+  await type.press("Enter");
+  await expect(type).toHaveValue("Personal ChatGPT subscription");
   await page.getByLabel("Connection name").fill("Personal setup");
   await page.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Personal setup" })).toBeVisible();
@@ -3617,7 +3628,13 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   await add.click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("GitHub username").fill("sam");
-  await dialog.getByLabel("Role", { exact: true }).selectOption("admin");
+  const role = dialog.getByRole("combobox", { name: "Role", exact: true });
+  await role.fill("admin");
+  await expect(page.getByRole("option", { name: "Administrator", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Member", exact: true })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/member-role-combobox-${info.project.name}.png` });
+  await role.press("Enter");
   await dialog.getByRole("button", { name: "Add or update member" }).click();
   await expect(dialog.getByRole("button", { name: "Saving…" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Actions for @carlos", includeHidden: true })).toBeDisabled();
@@ -3628,7 +3645,7 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   release!();
   await expect(dialog.getByRole("alert")).toContainText("could not be verified");
   await expect(dialog.getByLabel("GitHub username")).toHaveValue("sam");
-  await expect(dialog.getByLabel("Role", { exact: true })).toHaveValue("admin");
+  await expect(dialog.getByLabel("Role", { exact: true })).toHaveValue("Administrator");
   await page.screenshot({ path: `../.impeccable/review/settings-member-${info.project.name}.png` });
   fail = false;
   await dialog.getByRole("button", { name: "Add or update member" }).click();
@@ -3640,7 +3657,7 @@ test("member dialog preserves drafts, saves roles, and reports removal failures"
   await page.getByRole("menuitem", { name: "Edit role" }).click();
   await expect(dialog.getByLabel("GitHub username")).toHaveAttribute("readonly", "");
   await expect(dialog.getByLabel("GitHub username")).toHaveValue("carlos");
-  await dialog.getByLabel("Role", { exact: true }).selectOption("member");
+  await chooseOption(page, dialog.getByLabel("Role", { exact: true }), "Member");
   await dialog.getByRole("button", { name: "Save role" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(actions).toBeFocused();
@@ -3927,7 +3944,7 @@ test("pending personal connection creation keeps its dialog until setup opens", 
   await page.goto("/settings");
   await page.getByRole("button", { name: "Add connection", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Connection type").selectOption("chatgpt");
+  await chooseOption(page, dialog.getByLabel("Connection type"), "Personal ChatGPT subscription");
   await dialog.getByLabel("Connection name").fill("Personal setup");
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
@@ -3960,10 +3977,10 @@ test("personal model and repository errors stay with their operation", async ({ 
   await model.getByRole("button", { name: "Save model" }).click();
   await expect(model.getByRole("alert")).toContainText("Model could not be saved");
   const grants = page.getByRole("region", { name: "Repository authorization" });
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByRole("alert")).toContainText("Repository authorization denied");
-  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
   await expect(page.getByRole("region", { name: "Account connection" }).getByRole("alert")).toHaveCount(0);
   await expect(model.getByLabel("Custom model ID")).toHaveValue("custom-model");
   await grants.getByRole("switch").check();
@@ -3971,10 +3988,10 @@ test("personal model and repository errors stay with their operation", async ({ 
   await expect(model.getByRole("alert")).toContainText("Model could not be saved");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByRole("alert")).toContainText("Repository authorization denied");
-  await grants.getByLabel("Repository", { exact: true }).selectOption("");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "Choose a repository");
   await expect(grants.getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("switch")).toBeChecked();
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("switch").uncheck();
   await model.getByLabel("Custom model ID").fill("revised-model");
   await expect(model.getByRole("alert")).toHaveCount(0);
@@ -3986,7 +4003,7 @@ test("personal model and repository errors stay with their operation", async ({ 
   expect(requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: false });
   await expect(grants.getByRole("status")).toContainText("Repository authorization updated");
   await grants.getByRole("switch").check();
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect.poll(() => requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: true });
 });
@@ -4193,7 +4210,7 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByRole("button", { name: "Retry authorizations", exact: true })).toBeEnabled();
   releaseRepositories();
   await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled();
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await expect(grants.getByRole("alert")).toHaveText("Authorizations unavailable.");
   await grants.getByRole("button", { name: "Retry authorizations", exact: true }).click();
   await expect(grants.getByText("Loading authorizations…")).toBeVisible();
@@ -4201,7 +4218,7 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByText("Manual use only")).toBeVisible();
   await expect(grants.getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("button", { name: /^Retry / })).toHaveCount(0);
-  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
   await expect(grants.getByRole("switch")).toBeChecked();
   await expect(model.getByLabel("Custom model ID")).toHaveValue("unsaved-model");
 });
@@ -4269,22 +4286,22 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
   await expect(grants.getByRole("alert")).toContainText("Authorizations could not be loaded");
   await expect(grants.getByText("Loading authorizations…")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByRole("alert")).toHaveText([
     "Authorizations could not be loaded.", "Repository authorization denied.",
   ]);
-  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
-  await grants.getByLabel("Repository", { exact: true }).selectOption("");
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "Choose a repository");
   await expect(grants.getByRole("alert")).toHaveText("Authorizations could not be loaded.");
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   fail = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await expect(grants.getByRole("alert")).toHaveCount(0);
 });
 
-test("personal authorization confirmations match saved changes and revocations", async ({ page }) => {
+test("personal authorization confirmations match saved changes and revocations", async ({ page }, info) => {
   await mock(page, { role: "member", personal: true });
   let saved: { repository_id: number; automatic: boolean }[] = [];
   let failRevoke = true;
@@ -4305,10 +4322,15 @@ test("personal authorization confirmations match saved changes and revocations",
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: /^Actions for / }).click();
   await page.getByRole("menuitem", { name: "Manage account", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
-  const repository = grants.getByLabel("Repository", { exact: true });
+  const repository = grants.getByRole("combobox", { name: "Repository", exact: true });
   const automatic = grants.getByRole("switch");
   const save = grants.getByRole("button", { name: "Save authorization" });
-  await repository.selectOption("22");
+  await repository.fill("payments");
+  await expect(page.getByRole("option", { name: "acme/payments", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Choose a repository", exact: true })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/subscription-repository-combobox-${info.project.name}.png` });
+  await repository.press("Enter");
   await automatic.check();
   await save.click();
   await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
@@ -4317,7 +4339,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(repository).toHaveValue("");
   await expect(automatic).not.toBeChecked();
   await expect(save).toBeDisabled();
-  await repository.selectOption("22");
+  await chooseOption(page, repository, "acme/payments");
   await expect(grants.getByRole("status")).toHaveCount(0);
   await save.click();
   await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
@@ -4331,7 +4353,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
-  await repository.selectOption("22");
+  await chooseOption(page, repository, "acme/payments");
   await automatic.check();
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   failRevoke = false;
@@ -4340,7 +4362,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await automatic.uncheck();
-  await repository.selectOption("");
+  await chooseOption(page, repository, "Choose a repository");
   await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
   await expect(save).toBeDisabled();
 });
@@ -4368,7 +4390,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     const grants = page.getByRole("region", { name: "Repository authorization" });
     await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
     await model.getByLabel("Custom model ID").fill("custom-model");
-    await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+    await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
     const triggers = {
       auth: account.getByRole("button", { name: "Reconnect", exact: true }),
       model: model.getByRole("button", { name: "Save model" }),
@@ -4402,7 +4424,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await expect(triggers.grant).toBeEnabled();
     await expect(triggers.revoke).toBeEnabled();
     await expect(model.getByLabel("Custom model ID")).toHaveValue("custom-model");
-    await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("22");
+    await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
   });
 }
 
@@ -4433,7 +4455,7 @@ test("personal model and authorization saves run independently while auth stays 
   const grants = page.getByRole("region", { name: "Repository authorization" });
   await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   await model.getByLabel("Custom model ID").fill("saved-custom");
-  await grants.getByLabel("Repository", { exact: true }).selectOption("22");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("switch").check();
   await model.getByRole("button", { name: "Save model", exact: true }).click();
   await grants.getByRole("button", { name: "Save authorization" }).click();

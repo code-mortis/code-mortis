@@ -9,12 +9,12 @@ import {
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { ModelPicker } from "./components/model-picker";
+import { SearchSelect } from "./components/search-select";
 import { Switch } from "./components/ui/switch";
 import {
   ErrorNotice,
   ExternalLink,
   Field,
-  NativeSelect,
   Status,
 } from "./components/common";
 
@@ -410,23 +410,21 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           {repositories.isSuccess && !repositories.data?.length && <p className="text-sm text-muted-foreground">No accessible repositories.</p>}
           <Field label="Repository">
             {(id) => (
-              <NativeSelect
+              <SearchSelect
                 id={id}
                 required
                 disabled={grantPending || repositories.isPending || !repositories.data?.length}
                 value={repository}
-                onChange={(event) => {
+                placeholder="Choose a repository"
+                onChange={(value) => {
                   clearGrantFeedback();
-                  setRepository(event.target.value);
+                  setRepository(value);
                 }}
-              >
-                <option value="">Choose a repository</option>
-                {repositories.data?.map((repo) => (
-                  <option key={repo.id} value={repo.id}>
-                    {repo.full_name}
-                  </option>
-                ))}
-              </NativeSelect>
+                options={[
+                  { value: "", label: "Choose a repository" },
+                  ...(repositories.data?.map((repo) => ({ value: String(repo.id), label: repo.full_name })) ?? []),
+                ]}
+              />
             )}
           </Field>
           <Field

@@ -34,7 +34,6 @@ import {
   ErrorNotice,
   Field,
   Loading,
-  NativeSelect,
   Status,
 } from "./components/common";
 
@@ -519,18 +518,17 @@ function ConnectionForm({
         <h3 className="text-sm font-semibold">Connection details</h3>
         <Field label="Connection type">
           {(id) => (
-            <NativeSelect
+            <SearchSelect
               id={id}
               value={kind}
               disabled={!!connection}
-              onChange={(e) => setKind(e.target.value)}
-            >
-              {canCreateApi && <option value="api">Shared API connection</option>}
-              <option value="chatgpt">Personal ChatGPT subscription</option>
-              <option value="claude_code">
-                Personal Claude Code subscription
-              </option>
-            </NativeSelect>
+              onChange={setKind}
+              options={[
+                ...(canCreateApi ? [{ value: "api", label: "Shared API connection" }] : []),
+                { value: "chatgpt", label: "Personal ChatGPT subscription" },
+                { value: "claude_code", label: "Personal Claude Code subscription" },
+              ]}
+            />
           )}
         </Field>
         <Field label="Connection name">
@@ -1005,9 +1003,8 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           <ErrorNotice error={memberAction.error} />
           <Field label="GitHub username">{(id) => <Input id={id} required readOnly={member !== "new"} value={login}
             onChange={(event) => setLogin(event.target.value)} placeholder="username" />}</Field>
-          <Field label="Role">{(id) => <NativeSelect id={id} value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="member">Member</option><option value="admin">Administrator</option>
-          </NativeSelect>}</Field>
+          <Field label="Role">{(id) => <SearchSelect id={id} value={role} onChange={setRole}
+            options={[{ value: "member", label: "Member" }, { value: "admin", label: "Administrator" }]} />}</Field>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" disabled={memberAction.isPending} onClick={() => { setMember(null); memberAction.reset(); }}>Cancel</Button>
             <Button type="submit" disabled={memberAction.isPending}>{memberAction.isPending ? "Saving…" : memberSubmitLabel}</Button>

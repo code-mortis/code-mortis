@@ -146,20 +146,6 @@ export function Field({
     </div>
   );
 }
-export function NativeSelect({
-  className,
-  ...props
-}: React.ComponentProps<"select">) {
-  return (
-    <select
-      {...props}
-      className={cn(
-        "h-9 w-full rounded-md border border-input bg-card px-3 text-sm disabled:opacity-50",
-        className,
-      )}
-    />
-  );
-}
 export function Markdown({ children }: { children: string }) {
   return (
     <div className="markdown text-sm">
