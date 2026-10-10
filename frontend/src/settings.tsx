@@ -30,7 +30,6 @@ import {
 } from "./components/ui/dialog";
 import {
   date,
-  Empty,
   ErrorNotice,
   Field,
   Loading,
@@ -437,18 +436,18 @@ function ConnectionForm({
   connection,
   providers,
   canCreateApi,
+  initialKind,
   onSaved,
   onSavingChange,
 }: {
   connection?: Connection;
   providers: Provider[];
   canCreateApi: boolean;
+  initialKind: string;
   onSaved: (connection: Connection) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
-  const [kind, setKind] = useState(
-    connection?.kind ?? (canCreateApi ? "api" : "chatgpt"),
-  );
+  const [kind, setKind] = useState(connection?.kind ?? initialKind);
   const first = providers.find((p) => p.name === "openai") ?? providers[0];
   const [name, setName] = useState(connection?.name ?? "");
   const [provider, setProvider] = useState(
@@ -683,6 +682,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const action = useAction();
   const memberAction = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
+  const [newKind, setNewKind] = useState(isAdmin ? "api" : "chatgpt");
   const [savingConnection, setSavingConnection] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [personal, setPersonal] = useState<Connection | null>(null);
@@ -702,9 +702,9 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const memberRoleLocked = editedMember?.role === "admin" && (editedMember.id === user.id || editedMember.id === lastAdministrator);
   const webhookEndpoint = instance?.webhook_url ?? `${instance?.public_url}/api/v1/webhooks/github`;
   const groups = [
-    { title: "Shared API connections", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
-    { title: "Your subscriptions", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
-  ].filter((group) => group.items.length);
+    { title: "Shared API connections", kind: "api", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
+    { title: "Your subscriptions", kind: "chatgpt", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
+  ];
 
   function openMember(value: Instance["members"][number] | "new") {
     if (memberAction.isPending) return;
@@ -727,7 +727,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
     </header>
     <div className={isAdmin ? "grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]" : "min-w-0"}>
       {isAdmin && <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-        {[["connections", "AI providers"], ["github", "GitHub"], ["team", "Team"]].map(([value, label]) => (
+        {[["connections", "AI connections"], ["github", "GitHub"], ["team", "Team"]].map(([value, label]) => (
           <Link key={value} to={`/settings?tab=${value}`} aria-current={tab === value ? "page" : undefined}
             className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
             {label}
@@ -739,11 +739,12 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
         {tab === "connections" && <section aria-labelledby="connections-heading" className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 id="connections-heading" ref={connectionHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">AI providers</h2>
+              <h2 id="connections-heading" ref={connectionHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">AI connections</h2>
               <p className="mt-1 text-sm text-muted-foreground">Connections and default models for manual and automatic reviews.</p>
             </div>
             <Button disabled={!providers.data} onClick={(event) => {
               returnFocus.current = event.currentTarget;
+              setNewKind(isAdmin ? "api" : "chatgpt");
               setEditing("new");
             }}><Plus className="size-4" />Add connection</Button>
           </div>
@@ -752,15 +753,21 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             Retry providers
           </Button>}
           {connections.isPending && <Loading />}
-          {connections.isSuccess && !connections.data.length && (
-            <Empty title="Choose your review model">Connect an API or your personal subscription, then choose it for reviews.</Empty>
-          )}
-          {!connections.isPending && groups.length > 0 && <div className="space-y-6">
+          {connections.data && <div className="space-y-6">
             {groups.map((group) => <section key={group.title} aria-label={group.title}>
               <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">
                 {group.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.items.length}</span>
               </h3>
-              <div className="overflow-hidden rounded-lg border bg-card">
+              {!group.items.length ? <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed p-5">
+                <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{group.kind === "api"
+                  ? isAdmin ? "Add an API connection for reviews shared with your team." : "An administrator can add an API connection for your team."
+                  : "Connect your ChatGPT or Claude Code subscription for your reviews."}</p>
+                {(group.kind !== "api" || isAdmin) && <Button variant="outline" size="sm" disabled={!providers.data} onClick={(event) => {
+                  returnFocus.current = event.currentTarget;
+                  setNewKind(group.kind);
+                  setEditing("new");
+                }}>{group.kind === "api" ? "Add API connection" : "Connect subscription"}</Button>}
+              </div> : <div className="overflow-hidden rounded-lg border bg-card">
                 <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
                   <span>Connection</span><span>Default model</span><span>Account status</span><span />
                 </div>
@@ -777,13 +784,13 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
                     : connection.last_test.startsWith("Connected.") ? "connected" : "failed";
                   const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
-                  let nextAction = testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection";
+                  let nextAction = "Sign in";
                   if (personalConnection) {
-                    nextAction = "Sign in";
                     if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Manage" : "Choose model";
                     else if (connection.auth_status === "connecting") nextAction = "Continue setup";
                     else if (connection.auth_status === "unavailable") nextAction = "Check account";
                   }
+                  const needsSignIn = personalConnection && (nextAction === "Sign in" || nextAction === "Continue setup");
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
@@ -803,16 +810,19 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       title={personalConnection ? undefined : testDetail}
                       aria-description={personalConnection ? undefined : testDetail}>
                       <span className="settings-cell-label mb-1">Account status</span>
-                      {personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
+                      {canManage && needsSignIn ? <Button variant="link" size="sm" className="px-0 text-xs underline" disabled={action.isPending}
+                        onClick={(event) => {
+                          returnFocus.current = event.currentTarget;
+                          setPersonal(connection);
+                        }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
                         label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
                         icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
-                      {canManage && <Button variant="outline" size="sm" disabled={action.isPending || (!personalConnection && testing)}
+                      {canManage && personalConnection && !needsSignIn && nextAction !== "Manage" && <Button variant="outline" size="sm" disabled={action.isPending}
                         onClick={(event) => {
                           returnFocus.current = event.currentTarget;
-                          if (personalConnection) setPersonal(connection);
-                          else { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }
+                          setPersonal(connection);
                         }}>
                         {nextAction}
                       </Button>}
@@ -826,6 +836,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
                             <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
+                            {personalConnection && nextAction === "Manage" && <DropdownMenuItem onSelect={() => setPersonal(connection)}>Manage</DropdownMenuItem>}
+                            {!personalConnection && <DropdownMenuItem disabled={testing} onSelect={() => {
+                              action.reset(); action.mutate({ path: `/connections/${connection.id}/test` });
+                            }}>{testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection"}</DropdownMenuItem>}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
@@ -833,7 +847,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                     </div>
                   </article>;
                 })}
-              </div>
+              </div>}
             </section>)}
           </div>}
           <p className="text-xs leading-relaxed text-muted-foreground">
@@ -959,13 +973,14 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
     <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
       if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
     }}>
-      <DialogContent className={`max-h-[90dvh] overflow-y-auto ${personal ? "sm:max-w-2xl" : "sm:max-w-xl"}`} onCloseAutoFocus={restoreFocus}>
-        <DialogHeader>
-          <DialogTitle>{personal?.name ?? (editing === "new" ? "Add AI connection" : "Edit AI connection")}</DialogTitle>
-          <DialogDescription>{personal ? "Sign in, choose a model, and optionally authorize automatic reviews." : "Credentials are encrypted on this instance."}</DialogDescription>
-        </DialogHeader>
+      <DialogContent className={`max-h-[90dvh] overflow-y-auto ${personal ? "sm:max-w-lg" : "sm:max-w-xl"}`} onCloseAutoFocus={restoreFocus}>
+        {editing && <DialogHeader>
+          <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
+          <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
+        </DialogHeader>}
         {editing && providers.data && <ConnectionForm key={editing === "new" ? "new" : editing.id}
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
+          initialKind={newKind}
           onSavingChange={setSavingConnection}
           onSaved={(saved) => { setEditing(null); if (saved.kind !== "api") setPersonal(saved); }} />}
         {personal && <PersonalConnection key={personal.id} connection={personal} onDone={() => setPersonal(null)} />}

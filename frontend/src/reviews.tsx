@@ -82,7 +82,7 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
         {feedback.destination === "repository" && admin && (
           <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}/settings?tab=limits`}>Adjust review settings</Link>
         )}
-        {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI providers</Link>}
+        {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
         {detail && feedback.needsAttention && (
           <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>
             {canWrite && ["failed", "partial", "skipped", "cancelled"].includes(run.status) ? "Open pull request to run a new review" : "View pull request"}

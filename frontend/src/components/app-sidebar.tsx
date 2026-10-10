@@ -148,7 +148,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
-                  <Link to="/settings?tab=connections" onClick={closeMobile}><Plug aria-hidden="true" />AI providers</Link>
+                  <Link to="/settings?tab=connections" onClick={closeMobile}><Plug aria-hidden="true" />AI connections</Link>
                 </DropdownMenuItem>
                 {user.role === "admin" && <>
                   <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
