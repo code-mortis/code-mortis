@@ -66,9 +66,9 @@ export function AppSidebar({ user, onLogout, signingOut }: {
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={inboxActive} className="h-10">
-                <Link to={inboxReturn ?? "/"} aria-current={inboxActive ? "page" : undefined} aria-describedby={openPrs !== undefined ? "inbox-open-count" : undefined} onClick={closeMobile}><Inbox aria-hidden="true" /><span>Inbox</span></Link>
+                <Link to={inboxReturn ?? "/"} aria-current={inboxActive ? "page" : undefined} aria-describedby={openPrs !== undefined ? "inbox-open-count" : undefined} title={openPrs !== undefined ? `${openPrs} open pull ${openPrs === 1 ? "request" : "requests"}` : undefined} onClick={closeMobile}><Inbox aria-hidden="true" /><span>Inbox</span></Link>
               </SidebarMenuButton>
-              {openPrs !== undefined && <SidebarMenuBadge id="inbox-open-count" className="right-2 h-6 min-w-6 rounded-md border border-sidebar-border bg-sidebar px-1.5 text-xs font-normal peer-data-[size=default]/menu-button:top-2" title={`${openPrs} open pull ${openPrs === 1 ? "request" : "requests"}`}>{openPrs}<span className="sr-only"> open pull {openPrs === 1 ? "request" : "requests"}</span></SidebarMenuBadge>}
+              {openPrs !== undefined && <SidebarMenuBadge id="inbox-open-count" className="right-2 h-6 min-w-6 rounded-md border border-sidebar-border bg-sidebar px-1.5 text-xs font-normal peer-data-[size=default]/menu-button:top-2">{openPrs}<span className="sr-only"> open pull {openPrs === 1 ? "request" : "requests"}</span></SidebarMenuBadge>}
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>

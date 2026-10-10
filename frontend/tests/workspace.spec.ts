@@ -651,6 +651,7 @@ test("sidebar activity refreshes and does not present failed polling as current"
   const inbox = nav.getByRole("link", { name: "Inbox", exact: true });
   const count = nav.locator('[data-slot="sidebar-menu-badge"]');
   await expect(inbox).toHaveAccessibleDescription("2 open pull requests");
+  await expect(inbox).toHaveAttribute("title", "2 open pull requests");
   await expect(activity).toBeVisible();
   running = false;
   openPrs = 0;
@@ -658,17 +659,20 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await expect(activity).toHaveCount(0);
   await expect(count).toHaveText("0 open pull requests");
   await expect(inbox).toHaveAccessibleDescription("0 open pull requests");
+  await expect(inbox).toHaveAttribute("title", "0 open pull requests");
   running = true;
   openPrs = 1;
   await page.clock.fastForward(6000);
   await expect(activity).toBeVisible();
   await expect(inbox).toHaveAccessibleDescription("1 open pull request");
+  await expect(inbox).toHaveAttribute("title", "1 open pull request");
   failure = 503;
   await page.clock.fastForward(6000);
   await expect(nav.getByRole("alert")).toHaveText("Repository activity unavailable.");
   await expect(nav.getByRole("link", { name: repo.full_name, exact: true })).toBeVisible();
   await expect(activity).toHaveCount(0);
   await expect(count).toHaveCount(0);
+  await expect(inbox).not.toHaveAttribute("title");
   failure = 0;
   await nav.getByRole("button", { name: "Retry repositories" }).click();
   await expect(activity).toBeVisible();
@@ -1279,6 +1283,9 @@ test("searchable providers and protocols preserve presets and required model val
   const provider = page.getByRole("combobox", { name: "Provider", exact: true });
   await provider.fill("anth");
   await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
+  const empty = page.locator('[data-slot="combobox-empty"]');
+  await expect(empty).toHaveText("");
+  await expect(empty).toHaveCSS("height", "0px");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/combobox-provider-${info.project.name}.png`, animations: "disabled" });
   await provider.press("ArrowDown");
@@ -1289,6 +1296,11 @@ test("searchable providers and protocols preserve presets and required model val
   await expect(page.getByLabel("API base URL")).toHaveValue("https://api.anthropic.com");
   await provider.fill("unavailable-provider");
   await expect(page.getByText("No matches found.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(0);
+  await provider.fill("anth");
+  await expect(page.getByRole("option", { name: "Anthropic", exact: true })).toBeVisible();
+  await expect(empty).toHaveText("");
+  await expect(empty).toHaveCSS("height", "0px");
   await provider.press("Escape");
   await expect(provider).toHaveValue("Anthropic");
   await expect(provider).toBeFocused();
@@ -1316,6 +1328,7 @@ test("repository language searches suggestions and preserves custom language ent
   const language = page.getByRole("combobox", { name: "Language", exact: true });
   await language.fill("span");
   await expect(page.getByRole("option", { name: "Spanish", exact: true })).toBeVisible();
+  await expect(page.getByText("Use the language you entered.", { exact: true })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/combobox-language-${info.project.name}.png`, animations: "disabled" });
   await language.press("ArrowDown");
@@ -1327,6 +1340,7 @@ test("repository language searches suggestions and preserves custom language ent
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
   expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
   await language.fill("Mapudungun");
+  await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
   await language.press("Tab");
   await expect(language).toHaveValue("Mapudungun");
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
