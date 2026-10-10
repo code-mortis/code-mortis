@@ -8,4 +8,6 @@ Frontend UI primitives in frontend/src/components/ui are generated from shadcn/u
 
 Other dependencies retain their own licenses, supplied in the installed Python and JavaScript packages. The application uses Inter by Rasmus Andersson, distributed by @fontsource-variable/inter under the SIL Open Font License 1.1. See LICENSES/Inter-OFL.txt.
 
+The OpenAI and Claude marks in frontend/public/brands belong to OpenAI and Anthropic, respectively. They identify connection providers and do not imply affiliation or endorsement. The SVG assets come from [OpenAI's official logo pack](https://cdn.openai.com/brand/OpenAI-Logos-2025.zip) and [Anthropic's press kit](https://anthropic.com/press-kit); trademark rights remain with their owners.
+
 The optional native runner installs the unmodified official @openai/codex 0.160.1 and @anthropic-ai/claude-code 2.1.292 packages from npm. Codex is Apache-2.0 licensed. Claude Code remains subject to Anthropic's applicable software and service terms; it is not relicensed under Code Mortis's MIT license. Each user authenticates their own account through the official client. Package license files remain in the image. See https://github.com/openai/codex and https://code.claude.com/docs/en/legal-and-compliance.

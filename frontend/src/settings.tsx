@@ -761,7 +761,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               {!group.items.length ? <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed p-5">
                 <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{group.kind === "api"
                   ? isAdmin ? "Add an API connection for reviews shared with your team." : "An administrator can add an API connection for your team."
-                  : "Connect your ChatGPT or Claude Code subscription for your reviews."}</p>
+                  : "Connect your ChatGPT or Claude Code subscription."}</p>
                 {(group.kind !== "api" || isAdmin) && <Button variant="outline" size="sm" disabled={!providers.data} onClick={(event) => {
                   returnFocus.current = event.currentTarget;
                   setNewKind(group.kind);
@@ -794,7 +794,11 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
-                      <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+                      {connection.kind === "chatgpt" || connection.kind === "claude_code" ? <img
+                        src={connection.kind === "chatgpt" ? "/brands/openai.svg" : "/brands/claude.svg"}
+                        alt="" aria-hidden="true" width={16} height={16}
+                        className={`mt-0.5 size-4 shrink-0 ${connection.kind === "chatgpt" ? "dark:invert" : ""}`}
+                      /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
                         <p className="mt-1 break-words text-xs text-muted-foreground">

@@ -3694,6 +3694,20 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect(personal.getByRole("article", { name: "My subscription", exact: true })).toContainText("ChatGPT subscription");
   await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
   await expect(personal.getByRole("article", { name: "Another subscription", exact: true })).toContainText("Personal subscription");
+  for (const name of ["My subscription", "My Claude subscription"]) {
+    const logo = personal.getByRole("article", { name, exact: true }).locator(".settings-identity img");
+    await expect(logo).toHaveAttribute("alt", "");
+    await expect.poll(() => logo.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  }
+  await expect(shared.getByRole("article").first().locator(".lucide-plug")).toBeVisible();
+  await expect(personal.getByRole("article", { name: "Another subscription", exact: true }).locator(".lucide-user-round")).toBeVisible();
+  await page.screenshot({ path: `../.impeccable/review/subscription-logos-light-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveClass("dark");
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/subscription-logos-dark-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).not.toHaveClass("dark");
   await expect(personal).not.toContainText("Last test");
   await expect(shared.getByRole("button", { name: /Test connection|Test again|Testing…/ })).toHaveCount(0);
   await expect(personal.getByRole("button", { name: "Manage", exact: true })).toHaveCount(0);
