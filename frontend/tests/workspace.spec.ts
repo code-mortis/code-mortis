@@ -993,16 +993,28 @@ test("repository configuration sections retain navigation and fit both themes", 
   expect(requests).toEqual([]);
 });
 
-test("repository configuration never exposes editing to members or unavailable repositories", async ({ page }) => {
-  const requests = await mock(page, { role: "member" });
-  await page.goto("/repositories/22/settings?tab=limits");
-  await expect(page).toHaveURL(/repositories\/22\?state=open$/);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
-  await page.goto("/repositories/999/settings");
-  await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
-  expect(requests).toEqual([]);
-});
+for (const role of ["admin", "member"]) {
+  test(`repository configuration handles unavailable repositories for ${role}`, async ({ page }) => {
+    const requests = await mock(page, { role });
+    if (role === "member") {
+      await page.goto("/repositories/22/settings?tab=limits");
+      await expect(page).toHaveURL(/repositories\/22\?state=open$/);
+      await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+    }
+    for (const [id, repositories] of [[999, [repo]], [22, []]] as const) {
+      await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: repositories }));
+      await page.goto(`/repositories/${id}/settings?state=all&tab=limits`);
+      await expect(page).toHaveURL(new RegExp(`/repositories/${id}\\?state=all$`));
+      await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
+      await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+    }
+    await page.route("**/api/v1/repositories", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
+    await page.goto("/repositories/22/settings?tab=limits");
+    await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access was revoked.");
+    await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+    expect(requests).toEqual([]);
+  });
+}
 
 test("repository sync pending state stays with its repository", async ({ page }) => {
   await mock(page);

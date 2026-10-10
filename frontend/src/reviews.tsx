@@ -115,12 +115,12 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   }
   if (repos.isPending) return <Loading />;
   if (repos.error && (!repos.data || denied)) return <ErrorNotice error={repos.error} />;
-  const repositoryPath = `/repositories/${selected?.id}`;
+  const repositoryPath = `/repositories/${requested ?? selected?.id}`;
   const returnSearch = new URLSearchParams(params);
   if (configure) returnSearch.delete("tab");
   const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
-  if (configure && selected) {
-    if (!admin) return <Navigate to={returnPath} state={location.state} replace />;
+  if (configure) {
+    if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
     const finish = () => navigate(returnPath, { state: location.state });
     return <RepositorySettings key={selected.id} repository={selected} onSaved={finish} />;
   }
