@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { PersonalConnection } from "./subscriptions";
 import { ModelPicker } from "./components/model-picker";
+import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
@@ -59,6 +60,7 @@ const protocols = [
   "anthropic",
   "anthropic-bedrock",
 ] as const;
+const languages = ["Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)", "Croatian", "Czech", "Danish", "Dutch", "English", "Finnish", "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian", "Italian", "Japanese", "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Serbian", "Slovak", "Spanish", "Swedish", "Tamil", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"];
 function parseObject(value: string, label: string) {
   const data = JSON.parse(value || "{}");
   if (!data || typeof data !== "object" || Array.isArray(data))
@@ -140,22 +142,20 @@ export function RepositorySettings({
       </Field>
       <Field label="AI connection">
         {(id) => (
-          <NativeSelect
+          <SearchSelect
             id={id}
             value={connection}
             required={enabled}
-            onChange={(e) => {
-              setConnection(e.target.value);
+            placeholder="Choose a connection"
+            onChange={(value) => {
+              setConnection(value);
               change("model", "");
             }}
-          >
-            <option value="">Choose a connection</option>
-            {connections.data?.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </NativeSelect>
+            options={[
+              { value: "", label: "Choose a connection" },
+              ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
+            ]}
+          />
         )}
       </Field>
       <Field
@@ -201,11 +201,14 @@ export function RepositorySettings({
         </Field>
         <Field label="Language">
           {(id) => (
-            <Input
+            <SearchSelect
               id={id}
               required
               value={settings.language}
-              onChange={(e) => change("language", e.target.value)}
+              onChange={(value) => change("language", value)}
+              options={languages.map((value) => ({ value, label: value }))}
+              placeholder="Choose or enter a language"
+              allowCustom
             />
           )}
         </Field>
@@ -474,32 +477,22 @@ function ConnectionForm({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Provider">
               {(id) => (
-                <NativeSelect
+                <SearchSelect
                   id={id}
                   value={provider}
-                  onChange={(e) => choose(e.target.value)}
-                >
-                  {providers.map((p) => (
-                    <option key={p.name} value={p.name}>
-                      {p.displayName}
-                    </option>
-                  ))}
-                </NativeSelect>
+                  onChange={choose}
+                  options={providers.map((p) => ({ value: p.name, label: p.displayName }))}
+                />
               )}
             </Field>
             <Field label="API protocol">
               {(id) => (
-                <NativeSelect
+                <SearchSelect
                   id={id}
                   value={protocol}
-                  onChange={(e) => setProtocol(e.target.value)}
-                >
-                  {protocols.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </NativeSelect>
+                  onChange={setProtocol}
+                  options={protocols.map((value) => ({ value, label: value }))}
+                />
               )}
             </Field>
           </div>

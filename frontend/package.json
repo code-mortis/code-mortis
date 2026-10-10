@@ -11,6 +11,7 @@
     "api:types": "openapi-typescript node_modules/.cache/code-mortis-openapi.json -o src/api.generated.ts"
   },
   "dependencies": {
+    "@base-ui/react": "^1.9.0",
     "@fontsource-variable/inter": "^5.2.0",
     "@tailwindcss/vite": "^4.1.0",
     "@tanstack/react-query": "^5.80.0",

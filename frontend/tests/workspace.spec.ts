@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
 
@@ -428,6 +428,17 @@ async function breadcrumbAncestor(page: Page, name: string) {
     return page.getByRole("menuitem", { name, exact: true });
   }
   return page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name, exact: true, disabled: false });
+}
+
+async function chooseOption(page: Page, input: Locator, choice: string) {
+  await input.fill(choice);
+  await page.getByRole("option").filter({ hasText: choice }).click();
+}
+
+async function expectOption(page: Page, input: Locator, choice: string, count = 1) {
+  await input.fill(choice);
+  await expect(page.getByRole("option").filter({ hasText: choice })).toHaveCount(count);
+  await input.press("Escape");
 }
 
 async function noOverflow(page: Page) {
@@ -1244,7 +1255,92 @@ test("connection editing never preloads saved credentials", async ({
   await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   await expect(page.getByLabel("Replace API key (optional)")).toHaveValue("");
-  await expect(page.getByLabel("Model", { exact: true })).toHaveValue("review-model");
+  await expect(page.getByLabel("Model", { exact: true })).toHaveValue("Review model · review-model");
+});
+
+test("searchable providers and protocols preserve presets and required model validation", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/providers", (route) => route.fulfill({ json: [
+    { name: "openai", displayName: "OpenAI API", protocol: "openai", baseUrl: "https://api.openai.com/v1" },
+    { name: "anthropic", displayName: "Anthropic", protocol: "anthropic", baseUrl: "https://api.anthropic.com" },
+  ] }));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("Connection name").fill("Searchable connection");
+  const provider = page.getByRole("combobox", { name: "Provider", exact: true });
+  await provider.fill("anth");
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/combobox-provider-${info.project.name}.png`, animations: "disabled" });
+  await provider.press("ArrowDown");
+  await provider.press("Enter");
+  await expect(provider).toHaveValue("Anthropic");
+  const protocol = page.getByRole("combobox", { name: "API protocol", exact: true });
+  await expect(protocol).toHaveValue("anthropic");
+  await expect(page.getByLabel("API base URL")).toHaveValue("https://api.anthropic.com");
+  await provider.fill("unavailable-provider");
+  await expect(page.getByText("No matches found.", { exact: true })).toBeVisible();
+  await provider.press("Escape");
+  await expect(provider).toHaveValue("Anthropic");
+  await expect(provider).toBeFocused();
+  await provider.fill("");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await provider.press("Escape");
+  await expect(provider).toHaveValue("Anthropic");
+  await chooseOption(page, protocol, "anthropic-bedrock");
+  await expect(page.getByLabel("API base URL")).toHaveCount(0);
+  const save = page.getByRole("button", { name: "Save connection", exact: true });
+  await save.click();
+  expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
+  await chooseOption(page, page.getByLabel("Model", { exact: true }), "Enter a custom model ID");
+  await save.click();
+  expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
+  await page.getByLabel("Custom model ID").fill("regional-model");
+  await save.click();
+  await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({ provider: "anthropic", protocol: "anthropic-bedrock", model: "regional-model" });
+});
+
+test("repository language searches suggestions and preserves custom language entry", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const language = page.getByRole("combobox", { name: "Language", exact: true });
+  await language.fill("span");
+  await expect(page.getByRole("option", { name: "Spanish", exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/combobox-language-${info.project.name}.png`, animations: "disabled" });
+  await language.press("ArrowDown");
+  await language.press("Enter");
+  await expect(language).toHaveValue("Spanish");
+  await language.fill("");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await language.press("Escape");
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
+  await language.fill("Mapudungun");
+  await language.press("Tab");
+  await expect(language).toHaveValue("Mapudungun");
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "Mapudungun" } });
+});
+
+test("pull request connection search preserves the default and submits the selected connection", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [connection, { ...connection, id: "research", name: "Research reviews" }] }));
+  await page.goto("/pulls/pr");
+  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
+  await expect(picker).toHaveAttribute("placeholder", "Repository default");
+  await picker.fill("Research");
+  await expect(page.getByRole("option")).toHaveCount(1);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/combobox-connection-${info.project.name}.png`, animations: "disabled" });
+  await page.getByRole("option", { name: "Research reviews", exact: true }).click();
+  await expect(picker).toHaveValue("Research reviews");
+  await chooseOption(page, picker, "Repository default");
+  await expect(picker).toHaveValue("");
+  await chooseOption(page, picker, "Research reviews");
+  await page.getByRole("button", { name: "Run review", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "research" });
 });
 
 test("saved model selection refreshes without replacing custom IDs", async ({ page }, info) => {
@@ -1253,16 +1349,16 @@ test("saved model selection refreshes without replacing custom IDs", async ({ pa
   await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   const model = page.getByLabel("Model", { exact: true });
-  await expect(model.locator("option", { hasText: "Next model" })).toHaveCount(1);
-  await model.selectOption("next-model");
+  await expectOption(page, model, "Next model");
+  await chooseOption(page, model, "next-model");
   await page.getByRole("button", { name: "Refresh models", exact: true }).click();
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   expect(requests.find((request) => request.path === "/connections/models")?.body).toEqual({
     kind: "api", provider: "openai", protocol: "openai", base_url: "https://api.openai.com/v1",
     options: {}, connection_id: "connection",
   });
-  await expect(model).toHaveValue("next-model");
-  await model.selectOption({ label: "Enter a custom model ID" });
+  await expect(model).toHaveValue("Next model · next-model");
+  await chooseOption(page, model, "Enter a custom model ID");
   await page.getByLabel("Custom model ID").fill("private-model");
   await page.getByRole("button", { name: "Refresh models", exact: true }).click();
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
@@ -1282,13 +1378,13 @@ test("API drafts load models before saving and support keyboard selection", asyn
   await page.getByLabel("API key", { exact: true }).fill("draft-key");
   await page.getByRole("button", { name: "Load models", exact: true }).click();
   const model = page.getByLabel("Model", { exact: true });
-  await expect(model.locator("option", { hasText: "Review model" })).toHaveCount(1);
+  await expectOption(page, model, "Review model");
   expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
   expect(requests.find((request) => request.path === "/connections/models")?.body).toMatchObject({ api_key: "draft-key" });
-  await model.focus();
-  await model.press("r");
-  await model.press("Tab");
-  await expect(model).toHaveValue("review-model");
+  await model.fill("review-model");
+  await model.press("ArrowDown");
+  await model.press("Enter");
+  await expect(model).toHaveValue("Review model · review-model");
   await page.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "review-model", api_key: "draft-key" });
@@ -1312,18 +1408,18 @@ test("changed draft discards late models and keeps manual entry on errors", asyn
   await page.getByLabel("API base URL").fill("https://new.example/v1");
   await page.getByRole("button", { name: "Load models", exact: true }).click();
   const model = page.getByLabel("Model", { exact: true });
-  await expect(model.locator('option[value="new-model"]')).toHaveCount(1);
+  await expectOption(page, model, "new-model", 1);
   const late = page.waitForResponse((response) => response.url().endsWith("/connections/models") && response.request().postDataJSON().base_url === "https://api.openai.com/v1");
   release();
   await late;
-  await expect(model.locator('option[value="old-model"]')).toHaveCount(0);
-  await expect(model.locator('option[value="new-model"]')).toHaveCount(1);
-  await model.selectOption("new-model");
+  await expectOption(page, model, "old-model", 0);
+  await expectOption(page, model, "new-model", 1);
+  await chooseOption(page, model, "new-model");
   await page.route("**/api/v1/connections/models", (route) => route.fulfill({ json: { source: "provider", status: "unsupported", message: "This endpoint does not support model discovery. Enter a custom model ID.", models: [] } }));
   await page.getByRole("button", { name: "Refresh models", exact: true }).click();
   await expect(page.getByText("This endpoint does not support model discovery. Enter a custom model ID.")).toBeVisible();
   await expect(model).toHaveValue("new-model");
-  await model.selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, model, "Enter a custom model ID");
   await page.getByLabel("Custom model ID").fill("fallback");
   await expect(page.getByLabel("Custom model ID")).toHaveValue("fallback");
 });
@@ -1335,14 +1431,21 @@ test("repository model choices follow its selected connection", async ({ page },
   await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const model = page.getByLabel("Model override (optional)");
-  await expect(model.locator("option:checked")).toHaveText("review-model");
-  await expect(model.locator('option[value="next-model"]')).toHaveCount(1);
-  await model.selectOption("next-model");
-  await page.getByLabel("AI connection", { exact: true }).selectOption("second");
+  await expect(model).toHaveAttribute("placeholder", "review-model");
+  await expectOption(page, model, "next-model", 1);
+  await chooseOption(page, model, "next-model");
+  const aiConnection = page.getByRole("combobox", { name: "AI connection", exact: true });
+  await aiConnection.fill("second");
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/repository-connection-search-${info.project.name}.png`, fullPage: true });
+  await aiConnection.press("ArrowDown");
+  await aiConnection.press("Enter");
+  await expect(aiConnection).toHaveValue("Second connection");
   await expect(model).toHaveValue("");
-  await expect(model.locator("option:checked")).toHaveText("second-model");
-  await expect(model.locator('option[value="second-model"]')).toHaveCount(1);
-  await expect(model.locator('option[value="next-model"]')).toHaveCount(0);
+  await expect(model).toHaveAttribute("placeholder", "second-model");
+  await expectOption(page, model, "second-model", 2);
+  await expectOption(page, model, "next-model", 0);
   await model.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `../.impeccable/review/connection-default-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
@@ -1350,8 +1453,11 @@ test("repository model choices follow its selected connection", async ({ page },
     connection_id: "second", settings: { model: "" },
   });
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await page.getByLabel("AI connection", { exact: true }).selectOption("");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
   await expect(model).toBeDisabled();
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(1);
+  await expect(page.getByRole("dialog")).toBeVisible();
 });
 
 test("project background generates an editable draft with unsaved selections and Undo", async ({ page }, info) => {
@@ -1362,8 +1468,8 @@ test("project background generates an editable draft with unsaved selections and
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const field = page.getByLabel("Project background", { exact: true });
   await field.fill("Existing context");
-  await page.getByLabel("AI connection", { exact: true }).selectOption("second");
-  await page.getByLabel("Model override (optional)").selectOption("next-model");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Second connection");
+  await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
   await page.getByRole("button", { name: "Generate background", exact: true }).click();
   await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
   await expect(field).toHaveValue("Existing context");
@@ -1403,8 +1509,8 @@ for (const outcome of ["done", "failed"] as const) {
       await field.fill("Original context");
       await page.getByRole("button", { name: "Generate background", exact: true }).click();
       if (change === "background") await field.fill("Keep this edit");
-      if (change === "model") await page.getByLabel("Model override (optional)").selectOption("next-model");
-      if (change === "connection") await page.getByLabel("AI connection", { exact: true }).selectOption("");
+      if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
+      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
       if (change === "token budget" || change === "timeout") {
         await page.getByText("Review limits and rules", { exact: true }).click();
         await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Token budget", { exact: true })
@@ -1439,8 +1545,8 @@ for (const outcome of ["done", "failed"] as const) {
         await expect(page.getByText("Generation reference: feedback-job")).toBeVisible();
       }
       if (change === "background") await page.getByLabel("Project background", { exact: true }).fill("New manual text");
-      if (change === "model") await page.getByLabel("Model override (optional)").selectOption("next-model");
-      if (change === "connection") await page.getByLabel("AI connection", { exact: true }).selectOption("");
+      if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
+      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
       if (change === "limits") {
         await page.getByText("Review limits and rules", { exact: true }).click();
         await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
@@ -1514,13 +1620,13 @@ test("project background preserves text on failure and explains missing selectio
   await expect(page.getByRole("alert")).toContainText("Reconnect your account before retrying.");
   await expect(field).toHaveValue("Keep my context");
   await expect(generate).toBeEnabled();
-  await page.getByLabel("AI connection", { exact: true }).selectOption("");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
   await expect(generate).toBeDisabled();
   await expect(page.getByText("Choose an AI connection to generate background.")).toBeVisible();
-  await page.getByLabel("AI connection", { exact: true }).selectOption("no-model");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No model");
   await expect(generate).toBeDisabled();
   await expect(page.getByText("Choose a model to generate background.")).toBeVisible();
-  await page.getByLabel("Model override (optional)").selectOption("next-model");
+  await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
   await expect(generate).toBeEnabled();
 });
 
@@ -1664,7 +1770,7 @@ test("personal review limits retain their separate context budget", async ({ pag
   await mock(page, { personal: true });
   await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await page.getByLabel("AI connection", { exact: true }).selectOption("personal");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "My ChatGPT");
   await page.getByText("Review limits and rules", { exact: true }).click();
   await expect(page.getByLabel("Token budget", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Native context budget (bytes)")).toHaveValue("800000");
@@ -2067,8 +2173,8 @@ test("personal setup saves without a model then signs in and selects one", async
   await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toBeVisible();
   await page.getByRole("button", { name: "Connect ChatGPT", exact: true }).click();
   const model = page.getByLabel("Model", { exact: true });
-  await expect(model.locator('option[value="personal-model"]')).toHaveCount(1);
-  await model.selectOption("personal-model");
+  await expectOption(page, model, "personal-model", 1);
+  await chooseOption(page, model, "personal-model");
   await page.getByRole("button", { name: "Save model", exact: true }).click();
   await expect(page.getByText("Choose a model to finish setup and enable reviews.")).toHaveCount(0);
   expect(savedModel).toBe("personal-model");
@@ -3129,7 +3235,7 @@ test("personal model saves compare and send trimmed model IDs", async ({ page })
   await page.goto("/settings");
   await page.getByRole("button", { name: "Manage account" }).click();
   const form = page.getByRole("form", { name: "Default model" });
-  await form.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, form.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const model = form.getByLabel("Custom model ID");
   await model.fill(" review-model ");
   await expect(form.getByRole("button", { name: "Save model" })).toBeDisabled();
@@ -3179,7 +3285,7 @@ test("personal model and repository errors stay with their operation", async ({ 
   await expect(page.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
   await page.getByRole("button", { name: "Manage account" }).click();
   const model = page.getByRole("form", { name: "Default model" });
-  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   await model.getByLabel("Custom model ID").fill("custom-model");
   await model.getByRole("button", { name: "Save model" }).click();
   await expect(model.getByRole("alert")).toContainText("Model could not be saved");
@@ -3225,7 +3331,7 @@ test("personal model confirmation stays cleared after editing and reverting", as
   await page.goto("/settings");
   await page.getByRole("button", { name: "Manage account" }).click();
   const model = page.getByRole("form", { name: "Default model" });
-  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const input = model.getByLabel("Custom model ID");
   await input.fill("saved-custom");
   await model.getByRole("button", { name: "Save model", exact: true }).click();
@@ -3253,7 +3359,7 @@ test("personal model saves report invalid success responses and retain an editab
   await page.goto("/settings");
   await page.getByRole("button", { name: "Manage account" }).click();
   const form = page.getByRole("form", { name: "Default model" });
-  await form.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, form.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   const input = form.getByLabel("Custom model ID");
   for (let attempt = 0; attempt < invalid.length; attempt++) {
     await input.fill(`custom-${attempt}`);
@@ -3398,7 +3504,7 @@ test("personal repository and authorization fetches retry independently without 
   await page.getByRole("button", { name: "Manage account" }).click();
   const grants = page.getByRole("region", { name: "Repository authorization" });
   const model = page.getByRole("form", { name: "Default model" });
-  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   await model.getByLabel("Custom model ID").fill("unsaved-model");
   await grants.getByRole("switch").check();
   await expect(grants.getByRole("alert")).toHaveText(["Authorizations unavailable.", "Repositories unavailable."]);
@@ -3444,17 +3550,16 @@ test("personal model saves disable controls while retaining the loaded catalog",
   await page.getByRole("button", { name: "Manage account" }).click();
   const form = page.getByRole("form", { name: "Default model" });
   const select = form.getByLabel("Model", { exact: true });
-  await select.selectOption("next-model");
+  await chooseOption(page, select, "next-model");
   await form.getByRole("button", { name: "Save model", exact: true }).click();
   await expect(select).toBeDisabled();
   await expect(form.getByRole("button", { name: "Refresh models" })).toBeDisabled();
-  await expect(select.locator('option[value="review-model"]')).toHaveCount(1);
-  await expect(select.locator('option[value="next-model"]')).toHaveCount(1);
+  await expect(select).toHaveValue("Next model · next-model");
   await expect(form.getByText("Official client catalog.")).toBeVisible();
   expect(reads).toBe(1);
   releaseSave();
   await expect.poll(() => reads).toBe(2);
-  await expect(select.locator('option[value="review-model"]')).toHaveCount(1);
+  await expect(select).toHaveValue("Next model · next-model");
   releaseRefresh();
   await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
   await expect(form.getByText("Official client catalog.")).toBeVisible();
@@ -3579,7 +3684,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     const account = page.getByRole("region", { name: "Account connection" });
     const model = page.getByRole("form", { name: "Default model" });
     const grants = page.getByRole("region", { name: "Repository authorization" });
-    await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+    await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
     await model.getByLabel("Custom model ID").fill("custom-model");
     await grants.getByLabel("Repository", { exact: true }).selectOption("22");
     const triggers = {
@@ -3643,7 +3748,7 @@ test("personal model and authorization saves run independently while auth stays 
   const account = page.getByRole("region", { name: "Account connection" });
   const model = page.getByRole("form", { name: "Default model" });
   const grants = page.getByRole("region", { name: "Repository authorization" });
-  await model.getByLabel("Model", { exact: true }).selectOption({ label: "Enter a custom model ID" });
+  await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
   await model.getByLabel("Custom model ID").fill("saved-custom");
   await grants.getByLabel("Repository", { exact: true }).selectOption("22");
   await grants.getByRole("switch").check();

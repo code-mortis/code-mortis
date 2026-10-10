@@ -31,6 +31,7 @@ import {
 } from "./api";
 import { Button } from "./components/ui/button";
 import { FilterBar } from "./components/filter-bar";
+import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
@@ -54,7 +55,6 @@ import {
   Field,
   Loading,
   Markdown,
-  NativeSelect,
   PageTitle,
   Status,
   words,
@@ -328,10 +328,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
           </div>
         </div>
         {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <NativeSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={(event) => setConnection(event.target.value)} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none">
-            <option value="">Repository default</option>
-            {connections.data?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </NativeSelect>
+          <SearchSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
+            options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
           <Button disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} onClick={async () => {
             const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
             if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
