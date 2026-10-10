@@ -1803,33 +1803,55 @@ test("API drafts load models before saving and support keyboard selection", asyn
   expect(requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "review-model", api_key: "draft-key" });
 });
 
-test("API presets clear the previous model and custom endpoints expose their fields", async ({ page }) => {
-  const requests = await mock(page);
-  await page.route("**/api/v1/providers", (route) => route.fulfill({ json: [
-    { name: "openai", displayName: "OpenAI API", protocol: "openai", baseUrl: "https://api.openai.com/v1" },
-    { name: "custom", displayName: "Custom endpoint", protocol: "openai", baseUrl: "" },
-  ] }));
-  await page.goto("/settings");
-  await page.getByRole("button", { name: "Add connection", exact: true }).click();
-  await page.getByLabel("Connection name").fill("Custom reviews");
-  await page.getByLabel("API key", { exact: true }).fill("draft-key");
-  await page.getByRole("button", { name: "Load models", exact: true }).click();
-  const model = page.getByLabel("Model", { exact: true });
-  await chooseOption(page, model, "review-model");
-  await chooseOption(page, page.getByLabel("Provider", { exact: true }), "Custom endpoint");
-  await expect(model).toHaveValue("");
-  await expect(page.getByLabel("API protocol", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("API base URL")).toBeVisible();
-  await page.getByLabel("API base URL").fill("https://custom.example/v1");
-  await page.getByRole("button", { name: "Save connection", exact: true }).click();
-  expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
-  await chooseOption(page, model, "Enter a custom model ID");
-  await page.getByLabel("Custom model ID").fill("custom-model");
-  await page.getByRole("button", { name: "Save connection", exact: true }).click();
-  await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({
-    provider: "custom", protocol: "openai", base_url: "https://custom.example/v1", model: "custom-model",
+for (const editing of [false, true]) {
+  test(`API ${editing ? "edits" : "drafts"} clear credentials and the previous model on provider changes`, async ({ page }, info) => {
+    const requests = await mock(page);
+    await page.route("**/api/v1/providers", (route) => route.fulfill({ json: [
+      { name: "openai", displayName: "OpenAI API", protocol: "openai", baseUrl: "https://api.openai.com/v1" },
+      { name: "custom", displayName: "Custom endpoint", protocol: "openai", baseUrl: "" },
+    ] }));
+    await page.goto("/settings");
+    if (editing) {
+      await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Add connection", exact: true }).click();
+    }
+    await page.getByLabel("Connection name").fill("Custom reviews");
+    const key = page.getByLabel(editing ? "Replace API key (optional)" : "API key", { exact: true });
+    await key.fill("draft-key");
+    await page.getByText("Advanced provider settings", { exact: true }).click();
+    const headers = page.getByLabel("Extra headers JSON");
+    await headers.fill('{"Authorization":"draft-header"}');
+    await page.getByLabel("Provider", { exact: true }).click();
+    await page.getByRole("option", { name: "OpenAI API", exact: true }).click();
+    await expect(key).toHaveValue("draft-key");
+    await expect(headers).toHaveValue('{"Authorization":"draft-header"}');
+    await page.getByRole("button", { name: /^(Load|Refresh) models$/, exact: true }).click();
+    const model = page.getByLabel("Model", { exact: true });
+    await chooseOption(page, model, "next-model");
+    await chooseOption(page, page.getByLabel("Provider", { exact: true }), "Custom endpoint");
+    await expect(model).toHaveValue("");
+    await expect(key).toHaveValue("");
+    await expect(headers).toHaveValue("");
+    await expect(page.getByLabel("API protocol", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("API base URL")).toBeVisible();
+    await page.getByLabel("API base URL").fill("https://custom.example/v1");
+    await page.getByRole("button", { name: "Save connection", exact: true }).click();
+    const path = editing ? "/connections/connection" : "/connections";
+    expect(requests.filter((request) => request.path === path)).toHaveLength(0);
+    await page.screenshot({ path: info.outputPath("cleared-provider-credentials.png"), fullPage: true });
+    await key.fill("custom-key");
+    await chooseOption(page, model, "Enter a custom model ID");
+    await page.getByLabel("Custom model ID").fill("custom-model");
+    await page.getByRole("button", { name: "Save connection", exact: true }).click();
+    await expect.poll(() => requests.find((request) => request.path === path)?.body).toMatchObject({
+      provider: "custom", protocol: "openai", base_url: "https://custom.example/v1", model: "custom-model",
+      api_key: "custom-key",
+    });
+    expect(requests.find((request) => request.path === path)?.body).not.toHaveProperty("extra_headers");
   });
-});
+}
 
 test("large model catalogs search labels and retain the selected model ID", async ({ page }) => {
   const requests = await mock(page);

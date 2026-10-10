@@ -522,7 +522,11 @@ function ConnectionForm({
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);
     setProvider(value);
-    if (value !== provider) setModel("");
+    if (value !== provider) {
+      setModel("");
+      setKey("");
+      setHeaders("");
+    }
     if (preset) {
       setProtocol(preset.protocol);
       setUrl(preset.baseUrl);
