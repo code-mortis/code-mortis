@@ -889,7 +889,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
       authors: [pr.author], state_counts: { open: 1 }, page_size: 10,
     } }));
     await page.route("**/api/v1/pulls/pr/runs", (route) => route.fulfill({ json: run }));
-    const inbox = "/?q=retry&repo=22&ordering=title";
+    const inbox = "/?q=retry&repo=22&state=open&ordering=title";
     await page.goto(inbox);
     await page.getByRole("link", { name: /Add retry handling/ }).click();
     if (entry === "history") {
@@ -2011,7 +2011,7 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   await expect(page).toHaveURL(/\/repositories\/22$/);
   await expect(current).toHaveText("acme/payments");
   await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\?state=open$/);
   await expect(current).toHaveText("Inbox");
   await page.goto("/settings");
   await expect(current).toHaveText("AI connections");

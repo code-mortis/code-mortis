@@ -77,6 +77,7 @@ async function noOverflow(page: Page) {
 }
 
 async function openStateFilter(page: Page) {
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeVisible();
   const edit = page.getByRole("button", { name: /Edit PR state/ });
   if (await edit.isVisible()) await edit.click();
   else {
@@ -114,7 +115,7 @@ test("Filters menu enables conditions, restores them from the URL, and returns f
   await expect(running).toBeFocused();
   await page.keyboard.press("Space");
   await expect(running).toBeChecked();
-  await expect(page).toHaveURL(/\?review=running$/);
+  await expect(page).toHaveURL(/\?state=all&review=running$/);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toBeFocused();
   await page.reload();
@@ -140,24 +141,27 @@ test("Filters menu enables conditions, restores them from the URL, and returns f
   await expect(filters).toBeFocused();
 });
 
-test("inbox defaults to all states and explicit filters survive reload and history", async ({ page }) => {
+test("inbox defaults to open and explicit filters survive reload and history", async ({ page }) => {
   const { requests } = await mockInbox(page);
   await page.goto("/");
-  await expect(page.getByRole("status").first()).toContainText("9 pull requests · 3 repositories");
-  expect(requests.at(-1)?.getAll("state")).toEqual(["all"]);
-  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Merged2", "Closed1"]);
-  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveCount(0);
+  await expect(page.getByRole("status").first()).toContainText("6 pull requests · 3 repositories");
+  expect(requests.at(-1)?.getAll("state")).toEqual(["open"]);
+  await expect(page).toHaveURL(/\?state=open$/);
+  await expect(page.getByRole("region", { name: "Merged", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Closed", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("time")).toHaveAttribute("datetime", at);
   await openStateFilter(page);
-  for (const state of ["Open", "Merged", "Closed"]) await expect(page.getByRole("checkbox", { name: new RegExp(`^${state}`) })).toBeChecked();
-  await page.getByRole("checkbox", { name: /^Merged/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  for (const state of ["Merged", "Closed"]) await expect(page.getByRole("checkbox", { name: new RegExp(`^${state}`) })).not.toBeChecked();
+  await page.getByRole("checkbox", { name: /^Closed/ }).click();
   await expect(page).toHaveURL(/state=open&state=closed$/);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Closed1"]);
   await page.reload();
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Closed1"]);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\?state=all$/);
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Open6", "Merged2", "Closed1"]);
   await page.goBack();
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open, Closed");
@@ -250,7 +254,7 @@ test("loading another page does not restart a pending search debounce", async ({
   await active.getByRole("button", { name: /Load more/ }).click();
   await expect(page).toHaveURL(/active_pages=2/);
   await page.clock.runFor(100);
-  await expect(page).toHaveURL(/\?q=headers$/);
+  await expect(page).toHaveURL(/\?q=headers&state=open$/);
   await page.clock.resume();
   await expect(active.getByRole("link")).toHaveCount(1);
 });
@@ -304,8 +308,8 @@ test("errors retain loaded rows, retry individually and clear denied data", asyn
 test("mixed-case authors stay checked without duplicate options", async ({ page }) => {
   await mockInbox(page, { authors: ["Maria", "maria", "Leo"] });
   await page.goto("/?author=%40MARIA");
-  await expect(page).toHaveURL(/\?author=maria$/);
-  await expect(page.getByRole("status").first()).toContainText("4 pull requests");
+  await expect(page).toHaveURL(/\?state=open&author=maria$/);
+  await expect(page.getByRole("status").first()).toContainText("2 pull requests");
   await page.getByRole("button", { name: /Edit Author/ }).click();
   const maria = page.getByRole("checkbox", { name: /^@maria$/i });
   await expect(maria).toHaveCount(1);
@@ -418,15 +422,13 @@ test("merged running reviews stay visible once, then move into history", async (
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(1);
 });
 
-test("history is visible by default and resetting an open-only filter restores it", async ({ page }) => {
+test("an empty open inbox offers all history and preserves that choice on reload", async ({ page }) => {
   await mockInbox(page, { historyOnly: true });
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Merged2", "Closed1"]);
   await expect(page.getByRole("region", { name: "Open", exact: true })).toHaveCount(0);
-  await page.goto("/?state=open");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
-  await page.getByRole("button", { name: "reset your filters", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole("button", { name: "view all pull requests", exact: true }).click();
+  await expect(page).toHaveURL(/\?state=all$/);
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Merged2", "Closed1"]);
   await page.reload();
   await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Merged2", "Closed1"]);
@@ -442,7 +444,7 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
   expect(requests.at(-1)?.getAll("state")).toEqual(["open"]);
   await page.getByRole("textbox", { name: "Search pull requests", exact: true }).fill("does not exist");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
-  await page.getByRole("button", { name: "reset your filters", exact: true }).click();
+  await page.getByRole("button", { name: "view all pull requests", exact: true }).click();
   await expect(page.getByRole("status").first()).toContainText("9 pull requests");
   await noOverflow(page);
 });
@@ -470,7 +472,7 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
   expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");
   await page.getByRole("button", { name: "Sort descending", exact: true }).click();
-  await expect(page).toHaveURL(/\?ordering=-title$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=-title$/);
   await expect(active.getByRole("link")).toHaveCount(10);
   await expect(active.getByRole("link").nth(2)).toContainText("Persist request filters");
   await page.reload();
@@ -478,26 +480,26 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Z to A");
   await active.getByRole("link").first().click();
   await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
-  await expect(page).toHaveURL(/\?ordering=-title$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=-title$/);
   const sort = page.getByRole("button", { name: "Sort by Title", exact: true });
   await sort.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("menuitemradio", { name: "Title", exact: true })).toBeChecked();
   await page.getByRole("menuitemradio", { name: "Updated", exact: true }).focus();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\?ordering=-updated_at$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=-updated_at$/);
   await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeFocused();
   await page.goBack();
-  await expect(page).toHaveURL(/\?ordering=-title$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=-title$/);
   await page.goForward();
-  await expect(page).toHaveURL(/\?ordering=-updated_at$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=-updated_at$/);
   await page.getByRole("button", { name: "Reset ordering", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: "Sort by Created", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
-  await expect(page).toHaveURL(/\?ordering=created_at$/);
+  await expect(page).toHaveURL(/\?state=open&ordering=created_at$/);
   await page.goto("/");
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Newest first");
   await noOverflow(page);
 });

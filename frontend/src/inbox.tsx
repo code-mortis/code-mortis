@@ -16,8 +16,6 @@ type InboxData = GroupedData<Schema["InboxOut"]>;
 
 async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise<InboxData> {
   const request = withoutPages(params);
-  // The API defaults to open PRs; the Inbox defaults to all states.
-  if (!request.has("state")) request.set("state", "all");
   return fetchGroupedPages<Schema["InboxOut"]>("/pulls", request,
     Object.fromEntries(groups.map((group) => [group, Number(params.get(`${group}_pages`) ?? 1)])), signal);
 }
@@ -25,7 +23,7 @@ async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise
 export function Inbox() {
   const [raw, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const params = normalizeFilters(raw);
+  const params = normalizeFilters(raw, "open");
   const canonical = params.toString();
   const filters = withoutPages(params).toString();
   const location = useLocation();
@@ -59,13 +57,13 @@ export function Inbox() {
     const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
     // Unlike setParams, navigate stays stable when only the loaded pages change.
-    navigate({ search: normalizeFilters(next).toString() }, { replace: true });
+    navigate({ search: normalizeFilters(next, "open").toString() }, { replace: true });
   }, [filters, navigate]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(normalizeFilters(next));
+    setParams(normalizeFilters(next, "open"));
   }
   if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
   const data = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
@@ -82,7 +80,7 @@ export function Inbox() {
     {query.isPending && <Loading />}
     {data && data.total === 0 && !query.isPlaceholderData && <Empty title={emptyTitle}>
       {!data.registered_total && <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
-      {!!data.registered_total && <>Try another search or <button className="underline" onClick={() => setParams({})}>reset your filters</button>.</>}
+      {!!data.registered_total && <>Try another search or <button className="underline" onClick={() => setParams({ state: "all" })}>view all pull requests</button>.</>}
     </Empty>}
     {data && data.total > 0 && <div className="space-y-6" aria-busy={query.isPlaceholderData}>
       {visibleGroups.map((group) => {
@@ -99,11 +97,11 @@ export function Inbox() {
               metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
               status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group.group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry {titles[group.group].toLowerCase()}</Button></div>}
-            {(group.has_more || busy) && group.page < INBOX_MAX_PAGES && !error && <div className="px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
+            {(group.has_more || busy) && group.page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
               const next = new URLSearchParams(params);
               next.set(`${group.group}_pages`, String(group.page + 1));
-              setParams(normalizeFilters(next));
-            }}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {titles[group.group].toLowerCase()}</span></Button></div>}
+              setParams(normalizeFilters(next, "open"));
+            }}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {titles[group.group].toLowerCase()}</span></Button><span className="text-xs tabular-nums text-muted-foreground">{group.items.length} of {group.total}</span></div>}
             {group.has_more && group.page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining pull requests.</p>}
           </div>
         </section>;

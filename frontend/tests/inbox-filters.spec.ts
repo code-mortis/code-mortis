@@ -20,6 +20,19 @@ test("state selection returns independent values and preserves defaults", () => 
   expect(normalizeFilters(new URLSearchParams("state=all")).toString()).toBe("");
 });
 
+test("open-default inbox filters preserve explicit all-state links", () => {
+  for (const query of ["", "state=unknown", "state=open"]) {
+    expect(normalizeFilters(new URLSearchParams(query), "open").toString()).toBe("state=open");
+  }
+  for (const query of ["state=all", "state=open&state=merged&state=closed"]) {
+    const params = normalizeFilters(new URLSearchParams(query), "open");
+    expect(params.toString()).toBe("state=all");
+    expect(normalizeFilters(params, "open").toString()).toBe("state=all");
+    expect(selected(params, "state")).toEqual(["open", "merged", "closed"]);
+  }
+  expect(normalizeFilters(new URLSearchParams("state=closed"), "open").toString()).toBe("state=closed");
+});
+
 test("inbox return accepts only the inbox path and query", () => {
   for (const state of [null, undefined, 42, "/", {}, { inbox: 3 }, { inbox: "//example.com" }, { inbox: "/pulls/pr" }, { inbox: "https://example.com" }]) {
     expect(getInboxReturn(state)).toBeNull();
