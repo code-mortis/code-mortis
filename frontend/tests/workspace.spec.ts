@@ -220,6 +220,7 @@ async function mock(
     finding?: Partial<Schema["FindingOut"]>;
     verifications?: Schema["VerificationOut"][];
     candidates?: Schema["CandidateOut"][];
+    occurrences?: Schema["OccurrenceOut"][];
     assessment?: Schema["AssessmentSummary"] | null;
     background?: Schema["BackgroundJobOut"];
   } = {},
@@ -328,9 +329,9 @@ async function mock(
         run: currentRun,
         pull_request: pr,
         repository: repo,
-        occurrences: currentRun.status === "skipped" ? [] : [
+        occurrences: options.occurrences ?? (currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
-        ],
+        ]),
         candidates: options.candidates ?? [],
         assessment: options.assessment ?? null,
         can_write: options.canWrite !== false,
@@ -1042,13 +1043,115 @@ for (const example of [
   });
 }
 
+test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
+  const occurrences = Array.from({ length: 6 }, (_, index) => ({
+    finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,
+    snapshot: { ...finding, severity: index % 2 ? "medium" : "high", path: `src/webhooks/handler-${index + 1}.ts`,
+      content: index === 0 ? finding.content : `Validate webhook ${index + 1} before processing its payload. Invalid input can interrupt delivery.` },
+  }));
+  await mock(page, {
+    run: { status: "completed", publication: "published", publication_error: null, check_pending: false, check_error: null, check_status: "completed", check_conclusion: "success", finished_at: "2026-10-05T13:37:36Z",
+      progress: { verification: { selected: 13, completed: 7, resolved: 3, pending: 0, still_present: 2, uncertain: 8, skipped: 0, failed: 6 } },
+      report: { manifest: { coverage: { selected: [{ path: "src/retry.ts" }, { path: "src/config.ts" }], completed: [{ path: "src/retry.ts" }], reused: [{ path: "src/config.ts" }], failed: [], waived: [] } } } },
+    occurrences, finding: { status: "resolved", content: "Current evidence has been updated after the fix." },
+  });
+  await page.goto("/runs/run");
+  await expect(page.getByRole("heading", { name: "Review run completed", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
+  await expect(page.locator("main header")).toContainText("17m 36s");
+  await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
+  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toContainText("3 resolved");
+  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toContainText("6 failed");
+  await expect(page.getByText(/7 of 13 findings verified/)).not.toBeVisible();
+  if (info.project.name === "desktop") expect((await page.getByRole("tab", { name: "Findings 6" }).boundingBox())!.y).toBeLessThan(350);
+  await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveAttribute("href", "/pulls/pr");
+  const list = page.getByRole("region", { name: "Findings at this run", exact: true });
+  await expect(list.getByRole("button")).toHaveCount(6);
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("6 of 6 findings");
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `../.impeccable/review/run-workspace-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await page.getByRole("tab", { name: "Findings 6" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByText("Reviewed files (2)", { exact: true }).click();
+  await expect(page.getByRole("region", { name: "Coverage", exact: true })).toContainText("src/config.ts");
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/run-coverage-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.getByRole("tab", { name: "Details", exact: true }).click();
+  await expect(page.getByRole("tabpanel")).toContainText("Shared connection");
+  await expect(page.getByRole("tabpanel")).toContainText(run.head_sha);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/run-details-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.getByRole("tab", { name: "Findings 6" }).click();
+  await page.getByRole("textbox", { name: "Search run findings" }).fill("handler-6");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Clear search" }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^High/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(list.getByRole("button")).toHaveCount(3);
+  const row = list.getByRole("button", { name: /retry loop has no upper bound/ });
+  await row.press("Enter");
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "At this run" })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText(finding.content);
+  await expect(sheet.getByRole("region", { name: "Suggested change diff" })).toBeVisible();
+  await sheet.getByRole("tab", { name: "Current status" }).click();
+  await expect(sheet).toContainText("Current evidence has been updated after the fix.");
+  await expect(sheet.getByText("resolved", { exact: true })).toBeVisible();
+  await sheet.getByRole("tab", { name: "At this run" }).click();
+  await expect(sheet).toContainText(finding.content);
+  await expect(sheet.getByText("Current evidence has been updated after the fix.")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/run-evidence-${info.project.name}.png`, fullPage: false, animations: "disabled" });
+  await page.keyboard.press("Escape");
+  await expect(row).toBeFocused();
+  await page.getByRole("textbox", { name: "Search run findings" }).fill("no match");
+  await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(6);
+});
+
+test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {
+  const requests = await mock(page, { run: { status: "running", publication: "pending", publication_error: null, report: null, finished_at: null, check_enabled: false, progress: { selected: 8, completed: 3 } }, occurrences: [], assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
+  await page.goto("/runs/run");
+  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("The review is in progress.");
+  await expect(page.getByText("3 of 8 assigned files completed.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Inspect coverage", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Coverage is being recorded" })).toBeVisible();
+  await noOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/run-progress-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "Cancel review", exact: true }).click();
+  await expect.poll(() => requests.map((request) => request.path)).toEqual(["/runs/run/cancel"]);
+});
+
+test("review run hides stale evidence after repository access is revoked", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  await page.goto("/runs/run");
+  await expect(page.getByRole("region", { name: "Findings at this run", exact: true })).toBeVisible();
+  await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Repository access revoked" } }));
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert").filter({ hasText: "Repository access revoked" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Findings at this run", exact: true })).toHaveCount(0);
+});
+
 test("partial review and publication retry remain distinct", async ({
   page,
 }, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
-  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
-  await expect(page.locator("main header")).toContainText("· 90s");
+  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
+  await expect(page.locator("main header")).toContainText("· 1m 30s");
   await expect(
     page.getByRole("region", { name: "Review outcome" }),
   ).toContainText("Coverage is incomplete.");
@@ -1060,10 +1163,12 @@ test("partial review and publication retry remain distinct", async ({
   await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Details", exact: true }).click();
   await page.getByText("Configuration used", { exact: true }).click();
   const config = page.locator("pre .language-json").last();
   await expect(config.locator(".hljs-attr").first()).toHaveText('"connection"');
   expect(await config.textContent()).toBe(JSON.stringify(run.config, null, 2));
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
   await page.getByText("Inspect coverage report", { exact: true }).click();
   await expect(page.locator("pre .language-json .hljs-attr").first()).toHaveText('"manifest"');
 });
@@ -1077,7 +1182,7 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   };
   await mock(page, { run: checkState });
   await page.goto("/runs/run");
-  const check = page.getByText("GitHub check", { exact: true }).locator("..");
+  const check = page.getByRole("region", { name: "GitHub publication", exact: true });
   await expect(check.getByRole("status")).toHaveText("Updating the check on GitHub…");
   await expect(check.locator(":scope > :empty")).toHaveCount(0);
   await noOverflow(page);
@@ -1093,7 +1198,7 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
 
   checkState.check_conclusion = null;
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
   await expect(page.getByText("GitHub check", { exact: true })).toHaveCount(0);
   await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
   await noOverflow(page);
@@ -1694,6 +1799,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   });
   await page.goto("/runs/run");
   await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
   await expect(page.getByText(/Assessment is incomplete for 1 candidate/)).toBeVisible();
   const withheld = page.locator("details").filter({ has: page.locator("summary", { hasText: "index.css:315 · Withheld" }) });
@@ -1731,6 +1837,7 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
     ],
   });
   await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
   const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
   await expect(assessment).toContainText("Assessment is incomplete for 1 candidate. This is not a clean review.");
   await expect(assessment).not.toContainText("No new comments");
@@ -1759,6 +1866,7 @@ for (const status of ["running", "completed"]) {
       candidates: [],
     });
     await page.goto("/runs/run");
+    await page.getByRole("tab", { name: /Assessment/ }).click();
     await expect(page.getByText(status === "running" ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment.")).toBeVisible();
     await noOverflow(page);
   });
@@ -1867,6 +1975,7 @@ for (const example of feedbackCases) {
     await expect(outcome).toContainText(example.summary);
     await expect(outcome).toContainText(example.nextStep);
     if (example.fileReason) {
+      await page.getByRole("tab", { name: "Coverage", exact: true }).click();
       const files = page.locator("details").filter({ has: page.getByText("Files not reviewed (1)", { exact: true }) });
       if (await files.getAttribute("open") === null) await files.locator("summary").click();
       await expect(files.getByText(example.fileReason, { exact: true })).toBeVisible();
@@ -1914,9 +2023,11 @@ for (const status of ["partial", "skipped"]) {
     await page.route("**/api/v1/runs/run", (route) => {
       reads += 1;
       currentRun.progress = { selected: 10, completed: reads };
+      currentRun.check_conclusion = reads > 1 ? "success" : null;
       return route.fallback();
     });
     await page.goto("/runs/run");
+    await page.getByRole("tab", { name: "Coverage", exact: true }).click();
     const files = page.locator("details").filter({ hasText: "Files not reviewed (1)" });
     await expect(files).toBeVisible();
     await files.locator("summary").click();
@@ -1924,7 +2035,8 @@ for (const status of ["partial", "skipped"]) {
     const before = reads;
     await page.clock.fastForward(10_000);
     await expect.poll(() => reads).toBeGreaterThan(before);
-    await expect(page.getByText(`${reads} of 10 assigned files completed.`, { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).getByText("success", { exact: true })).toBeVisible();
+    await expect(page.getByText(/of 10 assigned files completed/)).toHaveCount(0);
     if (open === null) await expect(files).not.toHaveAttribute("open");
     else await expect(files).toHaveAttribute("open", "");
   });
@@ -2025,7 +2137,7 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   const current = breadcrumb.locator('[aria-current="page"]');
   await page.goto("/runs/run");
-  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
   await expect(current).toHaveText("Review run");
   await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/");
   await noOverflow(page);
@@ -2240,8 +2352,18 @@ test("run shows verification separately from confirmed resolutions", async ({ pa
   await mock(page, { run: { progress: { verification: {
     selected: 3, completed: 3, fixed: 1, still_present: 1, uncertain: 1, resolved: 0, pending: 1,
   } } } });
+  await page.clock.install();
   await page.goto("/runs/run");
+  const summary = page.locator("summary").filter({ hasText: "Fix verification" });
+  await expect(summary).toContainText("0 resolved");
+  await expect(summary).toContainText("1 pending sync");
+  await expect(page.getByText(/3 of 3 findings verified/)).not.toBeVisible();
+  await summary.press("Enter");
   await expect(page.getByText("3 of 3 findings verified. 0 automatically resolved, 1 pending synchronization.")).toBeVisible();
+  await page.clock.fastForward(5000);
+  await expect(summary.locator("..")).toHaveAttribute("open", "");
+  await summary.press("Enter");
+  await expect(page.getByText(/3 of 3 findings verified/)).not.toBeVisible();
   await noOverflow(page);
 });
 
@@ -2286,7 +2408,7 @@ for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { sel
   test(`invalid verification counts are not presented: ${JSON.stringify(verification)}`, async ({ page }) => {
     await mock(page, { run: { progress: { verification } } });
     await page.goto("/runs/run");
-    await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
     await expect(page.getByText(/findings verified/)).toHaveCount(0);
   });
 }

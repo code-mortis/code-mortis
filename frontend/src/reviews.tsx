@@ -11,6 +11,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import {
+  ChevronDown,
   ChevronRight,
   Play,
   RefreshCw,
@@ -68,9 +69,9 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
   const feedback = runFeedback(run);
-  if (!detail && !feedback.needsAttention) return null;
+  if (!feedback.needsAttention && (!detail || !active(run.status))) return null;
   return (
-    <section aria-label="Review outcome" className="mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm">
+    <section aria-label="Review outcome" className={detail ? "mb-4 space-y-2 text-sm" : "mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm"}>
       <p role="status" className="font-medium break-words">{feedback.summary}</p>
       <p className="text-muted-foreground break-words">
         {feedback.destination === "repository" && !admin ? "Ask your administrator to adjust the repository settings. " : ""}
@@ -600,276 +601,186 @@ type Coverage = {
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
-  const action = useAction();
   if (query.isPending) return <Loading />;
-  if (!query.data) return <ErrorNotice error={query.error} />;
-  const {
-    run,
-    repository,
-    occurrences,
-    candidates = [],
-    assessment,
-    can_write,
-  } = query.data;
-  const coverage = ((
-    run.report?.manifest as { coverage?: Coverage } | undefined
-  )?.coverage ?? {}) as Coverage;
-  const duration =
-    run.started_at && run.finished_at
-      ? `${Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000))}s`
-      : null;
+  if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
+  return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} />;
+}
+
+function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
+  const { run, pull_request: pr, repository, occurrences, candidates = [], assessment, can_write } = detail;
+  const action = useAction();
+  const location = useLocation();
+  const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
+  const [tab, setTab] = useState("findings");
+  const [search, setSearch] = useState("");
+  const [severities, setSeverities] = useState<string[]>([]);
+  const [finding, setFinding] = useState<Schema["OccurrenceOut"] | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const findingTrigger = useRef<HTMLButtonElement>(null);
+  const coverage = ((run.report?.manifest as { coverage?: Coverage } | undefined)?.coverage ?? {}) as Coverage;
+  const seconds = run.started_at && run.finished_at
+    ? Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000)) : null;
+  const duration = seconds === null ? null : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const verification = verificationSummary(run.progress?.verification);
   const feedback = runFeedback(run);
   const files = fileFeedback(run);
-  return (
-    <>
-      <PageTitle
-        title="Review run"
-        actions={
-          can_write && (
-            <>
-              {run.status === "blocked" && (run.owner_id === null || run.owner_id === undefined || run.owner_id === user.id) && (
-                <Button
-                  disabled={action.isPending}
-                  onClick={() => action.mutate({ path: `/runs/${id}/retry` })}
-                >
-                  Resume review
-                </Button>
-              )}
-              {(active(run.status) || run.status === "blocked") && (
-                <Button
-                  variant="outline"
-                  disabled={action.isPending}
-                  onClick={() => action.mutate({ path: `/runs/${id}/cancel` })}
-                >
-                  Cancel review
-                </Button>
-              )}
-              {["failed", "partially_published"].includes(run.publication) && (
-                <Button
-                  disabled={action.isPending}
-                  onClick={() => action.mutate({ path: `/runs/${id}/publish` })}
-                >
-                  Retry GitHub publication
-                </Button>
-              )}
-            </>
-          )
-        }
-      >
-        <span>
-          {date(run.created_at)} · {run.trigger} ·{" "}
-          <code>{run.head_sha.slice(0, 7)}</code>
-          {duration && ` · ${duration}`}
-        </span>
-      </PageTitle>
-      <ErrorNotice error={action.error || query.error} />
-      <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
-      <div className="mb-6 grid gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border bg-card p-5">
-          <p className="mb-3 text-xs text-muted-foreground">Review execution</p>
-          <Status value={run.status} />
-          <p className="mt-3 text-sm text-muted-foreground">
-            {String(
-              (run.config.connection as Record<string, unknown> | undefined)
-                ?.name ?? "",
-            )}{" "}
-            ·{" "}
-            {String(
-              (run.config.connection as Record<string, unknown> | undefined)
-                ?.model ?? "",
-            )}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Engine: {run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review"}
-            {run.owner_id != null && ` · Account owner: GitHub #${run.owner_id}`}
-            {run.actor_id != null && ` · Started by: GitHub #${run.actor_id}`}
-          </p>
+  const term = search.trim().toLowerCase();
+  const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
+    && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
+  const reviewed = [...(coverage.completed ?? []), ...(coverage.reused ?? [])].flatMap((item) =>
+    item && typeof item === "object" && "path" in item && typeof item.path === "string" ? [item.path] : []);
+  const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
+  return <>
+    <PageTitle title={<span className="flex flex-wrap items-center gap-3">Review run <Status value={run.status} /></span>} actions={can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <>
+      {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
+      {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
+      {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
+    </>}>
+      <Link className="mb-2 inline-block break-words text-foreground underline-offset-4 hover:underline" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span>{date(run.created_at)} · {run.trigger} · <code>{run.head_sha.slice(0, 7)}</code>{duration && ` · ${duration}`}</span>
+        <span>{run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span>
+      </div>
+    </PageTitle>
+    <ErrorNotice error={action.error || error} />
+    <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
+    <ErrorNotice error={run.error} />
+    <div className="mb-6 border-y">
+      <section aria-label="GitHub publication" className="space-y-3 py-3 text-xs">
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+          <div className="flex items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} /></div>
+          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">GitHub check</span>{checkValue && <Status value={checkValue} />}
+            {run.check_url && <a className="inline-flex min-h-6 items-center gap-1 underline-offset-4 hover:underline" href={run.check_url} target="_blank" rel="noreferrer" aria-label="View check on GitHub">View check<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
+          </div>}
         </div>
-        <div className="rounded-lg border bg-card p-5">
-          <p className="mb-3 text-xs text-muted-foreground">GitHub comments</p>
-          <Status value={run.publication} label={feedback.publicationLabel} />
-          <p className="mt-3 text-sm text-muted-foreground">
-            {feedback.publicationDetail}
-          </p>
-          <ErrorNotice error={run.publication_error} />
-          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && (
-            <div className="mt-5 space-y-3 border-t pt-4">
-              <p className="text-xs text-muted-foreground">GitHub check</p>
-              {(checkValue || run.check_url) && (
-                <div className="flex flex-wrap items-center gap-3">
-                  {checkValue && <Status value={checkValue} />}
-                  {run.check_url && (
-                    <a className="text-sm underline underline-offset-4" href={run.check_url} target="_blank" rel="noreferrer">
-                      View check on GitHub
-                    </a>
-                  )}
-                </div>
-              )}
-              {run.check_pending && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}
-                </p>
-              )}
-              <ErrorNotice error={run.check_error} />
+        {run.publication !== "published" && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
+        <ErrorNotice error={run.publication_error} />
+        {run.check_enabled && <>
+          {run.check_pending && <p role="status" className="text-muted-foreground">{run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}</p>}
+          <ErrorNotice error={run.check_error} />
+        </>}
+      </section>
+      {!!verification?.selected && <details className="group border-t">
+        <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-1 py-3 text-xs outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+          <span className="font-medium">Fix verification</span>
+          <span className="text-muted-foreground">{verification.resolved ?? 0} resolved</span>
+          {!!verification.pending && <span className="text-muted-foreground">{verification.pending} pending sync</span>}
+          {!!verification.failed && <span className="text-destructive">{verification.failed} failed</span>}
+          <ChevronDown aria-hidden="true" className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="space-y-2 pb-4 text-xs leading-relaxed text-muted-foreground">
+          <p>{verification.completed ?? 0} of {verification.selected} findings verified. {verification.resolved ?? 0} automatically resolved, {verification.pending ?? 0} pending synchronization.</p>
+          <p>{verification.still_present ?? 0} still present, {verification.uncertain ?? 0} uncertain, {verification.skipped ?? 0} skipped, {verification.failed ?? 0} failed.</p>
+          <p>Verified fixes remain open until GitHub confirms resolution. Evidence is saved in each finding’s Activity.</p>
+        </div>
+      </details>}
+    </div>
+    {(active(run.status) || run.status === "blocked") && typeof run.progress?.selected === "number" && <p role="status" className="mb-4 text-sm text-muted-foreground">
+      {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
+      {run.status === "blocked" && " Completed files are saved and reused when you resume."}
+    </p>}
+    {assessment && (assessment.pending > 0 || assessment.incomplete > 0) && tab !== "assessment" && <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <p className="text-muted-foreground">{assessment.incomplete > 0 ? `Assessment is incomplete for ${assessment.incomplete} candidate${assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.` : `${assessment.pending} candidates awaiting assessment.`}</p>
+      <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setTab("assessment")}>Inspect assessment<ChevronRight aria-hidden="true" /></Button>
+    </div>}
+    <Tabs value={tab} onValueChange={setTab}>
+      <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
+        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
+        <TabsTrigger value="coverage">Coverage</TabsTrigger>
+        <TabsTrigger value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
+        <TabsTrigger value="details">Details</TabsTrigger>
+      </TabsList>
+      <TabsContent value="findings" className="min-w-0">
+        <div className="mb-4"><FilterBar query={search} searchLabel="Search run findings" searchPlaceholder="Search findings or files…" searchInputRef={searchInput} onSearch={setSearch}
+          filters={[{ key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) }]}
+          onChange={(_, values) => setSeverities(values)}>
+          <span role="status" className="text-xs tabular-nums text-muted-foreground sm:pt-2.5">{filtered.length} of {occurrences.length} findings</span>
+        </FilterBar></div>
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
+        {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
+        {filtered.length ? <section aria-label="Findings at this run" className="divide-y overflow-hidden rounded-lg border bg-card">
+          <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid"><span>Finding</span><span>Severity</span><span>Comment placement</span><span /></div>
+          {filtered.map((item) => <button key={item.finding_id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item); }}>
+            <div className="min-w-0"><p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(item.snapshot.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</p>
+              <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.snapshot.path}:${item.snapshot.start_line}`}>{String(item.snapshot.path ?? "Path not recorded")}:{String(item.snapshot.start_line ?? "")}</p>
+              {!!item.snapshot.category && <p className="mt-1 text-xs text-muted-foreground">{String(item.snapshot.category)}</p>}
             </div>
-          )}
-        </div>
-      </div>
-      <div className="space-y-3">
-        <ErrorNotice error={run.error} />
-        {!!verification?.selected && (
-          <div className="space-y-2 rounded-lg border p-4 text-sm">
-            <p className="font-medium">Fix verification</p>
-            <p>{verification.completed ?? 0} of {verification.selected} findings verified. {verification.resolved ?? 0} automatically resolved, {verification.pending ?? 0} pending synchronization.</p>
-            <p className="text-muted-foreground">{verification.still_present ?? 0} still present, {verification.uncertain ?? 0} uncertain, {verification.skipped ?? 0} skipped, {verification.failed ?? 0} failed.</p>
-            <p className="text-muted-foreground">Verified fixes remain open until GitHub confirms resolution. Evidence is saved in each finding’s Activity.</p>
-          </div>
-        )}
-        {typeof run.progress?.selected === "number" && (
-          <p role="status" className="text-sm text-muted-foreground">
-            {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
-            {run.status === "blocked" && " Completed files are saved and reused when you resume."}
-          </p>
-        )}
-      </div>
-      {!active(run.status) && (
-        <section className="my-8">
-          <h2 className="mb-4 font-semibold">Coverage</h2>
-          {run.report ? (
-            <>
-              <div className="grid grid-cols-2 gap-4 border-y py-5 sm:grid-cols-5">
-                {(
-                  [
-                    "selected",
-                    "completed",
-                    "reused",
-                    "failed",
-                    "waived",
-                  ] as const
-                ).map((key) => (
-                  <div key={key}>
-                    <p className="text-xl font-semibold tabular">
-                      {coverage[key]?.length ?? 0}
-                    </p>
-                    <p className="mt-1 text-xs capitalize text-muted-foreground">
-                      {key}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              {!!files.length && (
-                <details className="mt-4 text-sm" open={run.status === "skipped"}>
-                  <summary className="cursor-pointer font-medium">Files not reviewed ({files.length})</summary>
-                  <ul className="mt-3 max-h-72 space-y-3 overflow-auto">
-                    {files.map((file) => <li key={file.path} className="space-y-1">
-                      <code className="break-all text-xs">{file.path}</code>
-                      <p className="text-muted-foreground break-words">{file.reason}</p>
-                    </li>)}
-                  </ul>
-                </details>
-              )}
-              <details className="mt-4 text-sm">
-                <summary className="cursor-pointer text-muted-foreground">
-                  Inspect coverage report
-                </summary>
-                <div className="mt-3">
-                  <Code language="json">{JSON.stringify(run.report, null, 2)}</Code>
-                </div>
-              </details>
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No coverage report was produced.
-            </p>
-          )}
+            <div><Status value={String(item.snapshot.severity ?? "unknown")} /></div>
+            <span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>
+            <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+          </button>)}
+        </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
+          <p>{occurrences.length ? "Try another search or severity." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
+          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSeverities([]); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
+        </Empty>}
+      </TabsContent>
+      <TabsContent value="coverage" className="min-w-0">
+        <section aria-label="Coverage">
+          <h2 className="text-sm font-semibold">Coverage</h2>
+          <p className="mt-2 text-sm text-muted-foreground">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
+          {run.report ? <>
+            <dl className="my-4 flex flex-wrap gap-x-8 gap-y-4 border-y py-4">{(["selected", "completed", "reused", "failed", "waived"] as const).map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className="text-sm font-medium tabular-nums">{coverage[key]?.length ?? 0}</dd></div>)}</dl>
+            {!!files.length && <details className="border-b py-4 text-sm" open={run.status === "skipped"}>
+              <summary className="cursor-pointer font-medium">Files not reviewed ({files.length})</summary>
+              <ul className="mt-3 divide-y">{files.map((file) => <li key={file.path} className="space-y-1 py-3"><code className="break-all text-xs">{file.path}</code><p className="break-words text-muted-foreground">{file.reason}</p></li>)}</ul>
+            </details>}
+            {!!reviewed.length && <details className="border-b py-4 text-sm"><summary className="cursor-pointer font-medium">Reviewed files ({reviewed.length})</summary><ul className="mt-3 space-y-2">{reviewed.map((path, index) => <li key={`${path}-${index}`}><code className="break-all text-xs">{path}</code></li>)}</ul></details>}
+            <details className="py-4 text-sm"><summary className="cursor-pointer font-medium">Inspect coverage report</summary><div className="mt-3"><Code language="json">{JSON.stringify(run.report, null, 2)}</Code></div></details>
+          </> : <Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty>}
         </section>
-      )}
-      <section className="mt-8">
-        <h2 className="mb-4 font-semibold">Candidate assessment</h2>
-        {assessment ? (
-          <>
-            <p className="text-sm">
-              {assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published
-            </p>
+      </TabsContent>
+      <TabsContent value="assessment" className="min-w-0">
+        <section aria-label="Candidate assessment">
+          <h2 className="mb-2 text-sm font-semibold">Candidate assessment</h2>
+          <p className="mb-4 text-xs text-muted-foreground">Proposed findings are checked against evidence and earlier reviews before becoming new comments.</p>
+          {assessment ? <>
+            <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
             {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.</p>}
-            {!candidates.length && <p className="mt-4 text-sm text-muted-foreground">{["queued", "running"].includes(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>}
-            <div className="mt-4 space-y-3">
-              {candidates.map((candidate) => (
-                <details key={candidate.id} className="rounded-lg border p-4 text-sm">
-                  <summary className="cursor-pointer break-words">
-                    {String(candidate.snapshot.path)}:{String(candidate.snapshot.start_line)} · {getCandidateLabel(candidate)}
-                  </summary>
-                  <div className="mt-4 space-y-3">
-                    <Markdown>{String(candidate.snapshot.content)}</Markdown>
-                    <ErrorNotice error={candidate.error} />
-                    {candidate.result && (
-                      <>
-                        <p>{candidate.result.explanation}</p>
-                        {candidate.result.history_explanation && <p>{candidate.result.history_explanation}</p>}
-                        {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
-                        {candidate.result.evidence.map((evidence, index) => (
-                          <div key={index}>
-                            <p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
-                            <Code path={evidence.path}>{evidence.quote}</Code>
-                          </div>
-                        ))}
-                      </>
-                    )}
-                    {candidate.finding_id && <p className="break-all text-xs text-muted-foreground">Existing finding: {candidate.finding_id}. Resolution state is preserved.</p>}
-                  </div>
-                </details>
-              ))}
-            </div>
-          </>
-        ) : <p className="text-sm text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-      </section>
-      <section className="mt-8">
-        <h2 className="mb-4 font-semibold">
-          Findings at this run{" "}
-          <span className="ml-2 font-normal text-muted-foreground">
-            {occurrences.length}
-          </span>
-        </h2>
-        {occurrences.length ? (
-          <div className="space-y-4">
-            {occurrences.map((item) => (
-              <article
-                key={item.finding_id}
-                className="rounded-lg border bg-card p-5"
-              >
-                <div className="mb-3 flex flex-wrap items-center gap-3">
-                  <Status value={String(item.snapshot.severity)} />
-                  <code className="break-all text-xs text-muted-foreground">
-                    {String(item.snapshot.path)}:
-                    {String(item.snapshot.start_line)}
-                  </code>
-                  {!item.inline_line && (
-                    <span className="text-xs text-muted-foreground">
-                      Summary comment
-                    </span>
-                  )}
-                </div>
-                <Markdown>{String(item.snapshot.content)}</Markdown>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            No findings recorded in this run.
-          </p>
-        )}
-      </section>
-      <details className="mt-8 text-sm">
-        <summary className="cursor-pointer text-muted-foreground">
-          Configuration used
-        </summary>
-        <div className="mt-3">
-          <Code language="json">{JSON.stringify(run.config, null, 2)}</Code>
-        </div>
-      </details>
-    </>
-  );
+            {candidates.length ? <div className="mt-4 divide-y overflow-hidden rounded-lg border bg-card">{candidates.map((candidate) => <details key={candidate.id} className="group text-sm">
+              <summary className="cursor-pointer break-words px-5 py-4 marker:text-muted-foreground hover:bg-muted/50 [overflow-wrap:anywhere]"><span className="font-medium">{String(candidate.snapshot.path ?? "Path not recorded")}:{String(candidate.snapshot.start_line ?? "")} · {getCandidateLabel(candidate)}</span><p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">{String(candidate.snapshot.content ?? "")}</p></summary>
+              <div className="space-y-3 border-t px-5 py-4">
+                <Markdown>{String(candidate.snapshot.content ?? "")}</Markdown>
+                <ErrorNotice error={candidate.error} />
+                {candidate.result && <>
+                  <p>{candidate.result.explanation}</p>
+                  {candidate.result.history_explanation && <p>{candidate.result.history_explanation}</p>}
+                  {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
+                  {candidate.result.evidence.map((evidence, index) => <div key={`${evidence.revision}-${evidence.path}-${evidence.start_line}-${index}`}><p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p><Code path={evidence.path}>{evidence.quote}</Code></div>)}
+                </>}
+                {candidate.finding_id && <p className="break-all text-xs text-muted-foreground">Existing finding: {candidate.finding_id}. Resolution state is preserved.</p>}
+              </div>
+            </details>)}</div> : <Empty title="No candidates to assess">{active(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</Empty>}
+          </> : <Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty>}
+        </section>
+      </TabsContent>
+      <TabsContent value="details" className="min-w-0">
+        <h2 className="mb-4 text-sm font-semibold">Run details</h2>
+        <dl className="divide-y border-y text-sm">{[
+          ["Connection", String(connection?.name ?? "Not recorded")], ["Model", String(connection?.model ?? "Not recorded")], ["Engine", engine],
+          ["Account owner", run.owner_id == null ? "Shared connection" : `GitHub #${run.owner_id}`], ["Started by", run.actor_id == null ? words(run.trigger) : `GitHub #${run.actor_id}`],
+          ["Head commit", run.head_sha], ["Base commit", run.base_sha], ["Started", run.started_at ? date(run.started_at) : "Not started"], ["Finished", run.finished_at ? date(run.finished_at) : "Not finished"],
+        ].map(([key, value]) => <div key={key} className="grid gap-1 py-3 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-4"><dt className="text-xs text-muted-foreground">{key}</dt><dd className={`break-words [overflow-wrap:anywhere] ${key.includes("commit") ? "font-mono text-xs" : ""}`}>{value}</dd></div>)}</dl>
+        <details className="mt-5 text-sm"><summary className="cursor-pointer font-medium">Configuration used</summary><p className="mt-3 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div></details>
+      </TabsContent>
+    </Tabs>
+    <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus(); }}>
+        <SheetHeader><SheetTitle>Finding details</SheetTitle><SheetDescription>Inspect the evidence saved in this run and its current resolution separately.</SheetDescription></SheetHeader>
+        {finding && <Tabs key={finding.finding_id} defaultValue="snapshot">
+          <TabsList className="mx-6 mb-4"><TabsTrigger value="snapshot">At this run</TabsTrigger><TabsTrigger value="current">Current status</TabsTrigger></TabsList>
+          <TabsContent value="snapshot" className="min-w-0 space-y-4 px-6 pb-8">
+            <div className="flex items-center gap-2"><Status value={String(finding.snapshot.severity ?? "unknown")} /><span className="text-xs text-muted-foreground">Saved at {run.head_sha.slice(0, 7)}</span></div>
+            <p className="break-all font-mono text-xs text-muted-foreground">{String(finding.snapshot.path ?? "")}:{String(finding.snapshot.start_line ?? "")}{finding.snapshot.end_line && finding.snapshot.end_line !== finding.snapshot.start_line ? `–${finding.snapshot.end_line}` : ""}</p>
+            <Markdown>{String(finding.snapshot.content ?? "")}</Markdown>
+            <CodeComparison original={String(finding.snapshot.existing_code ?? "")} suggested={String(finding.snapshot.suggestion ?? "")} path={String(finding.snapshot.path ?? "")} />
+          </TabsContent>
+          <TabsContent value="current" className="min-w-0"><FindingPanel id={finding.finding_id} canWrite={can_write} /></TabsContent>
+        </Tabs>}
+      </SheetContent>
+    </Sheet>
+  </>;
 }

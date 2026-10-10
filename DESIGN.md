@@ -223,6 +223,8 @@ Finding details occupy a right sheet, full width on small screens and capped at 
 
 Finding and run-history rows share a grid: at 768px, a flexible reading column is followed by 104px and 160px state columns and a 16px chevron, with 16px gaps. Below 768px, headings and chevrons disappear, the reading column spans the row, and the two state fields sit beneath it. Rows use 20px horizontal and 16px vertical padding. The shared filter bar search fills the mobile width and uses 224px from 640px; filter chips and review controls wrap.
 
+Review-run tabs use a full-width two-by-two grid below 640px and an inline row from 640px. Metadata in Details uses stacked labels and values on small screens, changing to a 160px label column beside flexible values from 640px.
+
 ## Elevation & Depth
 
 The workspace uses tonal surfaces and thin borders. Cards have no ambient shadow. Inputs, outline buttons, and switches use the small control shadow; active default tabs use a light shadow. Filter popovers use the medium shadow and a 1px border-colored ring without a backdrop. Dialogs and sheets use the overlay shadow with a 50% black backdrop. Exact shadow values are in the sidecar, sourced from the installed Tailwind theme.
@@ -296,6 +298,16 @@ Finding rows separate the two-line explanation preview, truncated file and line 
 Run-history rows separate Review run, Review status, and GitHub publication. The first column shows the date, trigger, short commit, model, and any attention summary; mobile publication text retains a GitHub label when column headings disappear. Whole rows link to run details and retain the originating list context. Finding rows open the evidence sheet; closing it restores focus to that row, falling back to finding search if the row is no longer mounted.
 
 Run history fetches its first server page when the tab opens. Each page contains up to 10 runs, newest first; Load more appends the next page and the footer displays the shown/total count. The pagination footer is hidden when all runs fit on the first page; it remains visible after additional pages have been loaded. The first page refreshes every five seconds, and interval refresh pauses after loading more pages. Failed requests offer a retry without removing loaded rows; an access denial hides them. PR metadata supplies the total run count, active-review state, and latest completed or partial run independently of the history pages, preserving review availability and finding observation labels.
+
+### Review run details
+
+The Review run header pairs its title with the execution Status chip, links to its PR, and shows the saved revision, Current commit or Earlier commit, date, trigger, and duration in minutes and seconds. Permission-appropriate recovery actions sit in the header. Healthy completed runs omit redundant completion and next-step paragraphs; active runs and outcomes needing attention retain their guidance. Connection and model remain in Details.
+
+GitHub comment publication and check status share a compact bordered strip. Published results omit the redundant confirmation sentence; other publication states, errors, and pending check updates remain explicit. Fix verification occupies an expandable row within the strip: confirmed resolutions, pending synchronization, and failed verification counts stay visible, while detailed counts and the resolution explanation expand on demand. Live file progress and pending or incomplete candidate assessment remain visible above the tabs. Disclosure state survives polling.
+
+Findings, Coverage, Assessment, and Details use the shared tabs, with Findings selected initially. Findings reuse the shared filter bar for local search and multiple severity selections, a matching/total count, and the shared row grid. Rows show a two-line explanation preview, file location, category, severity, and inline or summary comment placement. Opening a row shows the shared evidence sheet: At this run contains the immutable saved explanation and code comparison; Current status uses the existing finding panel for resolution and Activity. Closing the sheet restores focus to its row or the search field.
+
+Coverage shows validated selected, completed, reused, failed, and waived counts before expandable file lists and the raw report. Files not reviewed include reasons and expand initially for skipped runs. Assessment keeps pending, incomplete, and legacy states explicit, with expandable candidate explanations and revision evidence. Details presents readable metadata before expandable saved configuration JSON. Empty findings, missing coverage, and incomplete assessment never imply a clean review.
 
 ### Evidence and resolution history
 
