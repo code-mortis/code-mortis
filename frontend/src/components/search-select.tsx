@@ -42,7 +42,7 @@ export function SearchSelect({
   return (
     <Combobox
       items={options.map((option) => option.value)}
-      value={value || null}
+      value={value}
       onValueChange={(next, event) => {
         if (event.reason === "input-clear") return;
         onChange(next ?? "");
@@ -75,7 +75,7 @@ export function SearchSelect({
                 if (allowCustom) changeOpen(false);
               }}
               onKeyDown={(event) => {
-                if (allowCustom && event.key === "Enter" && !event.currentTarget.getAttribute("aria-activedescendant")) {
+                if (open && allowCustom && event.key === "Enter" && !event.currentTarget.getAttribute("aria-activedescendant")) {
                   event.preventDefault();
                   commitCustom();
                   changeOpen(false);

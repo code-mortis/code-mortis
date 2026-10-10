@@ -343,6 +343,31 @@ test("moving rows are deduplicated without changing server totals or page cursor
   await expect(page.getByRole("status").first()).toContainText("6 pull requests");
 });
 
+test("rows moving between groups stay visible once and preserve server totals", async ({ page }) => {
+  await mockInbox(page);
+  const requested: URLSearchParams[] = [];
+  await page.route("**/api/v1/pulls?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requested.push(params);
+    return route.fulfill({ json: {
+      groups: params.has("group")
+        ? [{ group: "merged", items: [{ ...rows[0], state: "merged", has_running_review: false, review_status: "completed" }, rows[7]], total: 3, page: 2, has_more: false }]
+        : [{ group: "active", items: rows.slice(0, 2), total: 2, page: 1, has_more: false },
+          { group: "merged", items: [rows[6]], total: 3, page: 1, has_more: true }],
+      total: 5, repository_count: 3, registered_total: 5, repositories,
+      authors: ["maria", "leo", "sam"], state_counts: { open: 2, merged: 3 }, page_size: 2,
+    } satisfies Schema["InboxOut"] });
+  });
+  await page.goto("/?state=all&merged_pages=2");
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(2);
+  const merged = page.getByRole("region", { name: "Merged", exact: true });
+  await expect(merged.getByRole("link")).toHaveCount(2);
+  await expect(page.getByRole("link", { name: new RegExp(rows[0].title) })).toHaveCount(1);
+  await expect(page.getByRole("status").first()).toContainText("5 pull requests");
+  await expect(merged.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  expect(requested.map((params) => [params.get("group"), params.get("page")])).toEqual([[null, null], ["merged", "2"]]);
+});
+
 test("large shared pagination is bounded and expanded lists do not poll", async ({ page }) => {
   await page.clock.install();
   const { requests } = await mockInbox(page, { many: true, extra: 150 });

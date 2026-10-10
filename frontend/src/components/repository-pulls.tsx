@@ -22,6 +22,11 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
   const filters = withoutPages(params).toString();
   const canonical = params.toString();
+  const configure = raw.get("configure");
+  const withConfiguration = useCallback((next: URLSearchParams) => {
+    if (configure !== null) next.set("configure", configure);
+    return next;
+  }, [configure]);
   const pulls = useQuery<GroupedData<Schema["InboxOut"]>, ApiError>({
     queryKey: ["repository-pulls", repositoryId, canonical],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["InboxOut"]>(`/repositories/${repositoryId}/pulls`, new URLSearchParams(filters),
@@ -31,8 +36,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === repositoryId ? previous : undefined,
   });
   useEffect(() => {
-    const bounded = new URLSearchParams(canonical);
-    if (raw.has("configure")) bounded.set("configure", raw.get("configure")!);
+    const bounded = withConfiguration(new URLSearchParams(canonical));
     if (pulls.data && !pulls.isPlaceholderData && !pulls.isFetching) for (const group of groups) {
       const total = pulls.data.groups.find((item) => item.group === group)?.total ?? 0;
       const maximum = Math.max(1, Math.ceil(total / pulls.data.page_size));
@@ -41,17 +45,17 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
       }
     }
     if (bounded.toString() !== raw.toString()) setParams(bounded, { replace: true });
-  }, [canonical, raw, setParams, pulls.data, pulls.isPlaceholderData, pulls.isFetching]);
+  }, [canonical, raw, setParams, withConfiguration, pulls.data, pulls.isPlaceholderData, pulls.isFetching]);
   const search = useCallback((value: string) => {
     const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
-    navigate({ search: normalizeFilters(next, "open").toString() }, { replace: true });
-  }, [filters, navigate]);
+    navigate({ search: withConfiguration(normalizeFilters(next, "open")).toString() }, { replace: true });
+  }, [filters, navigate, withConfiguration]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(normalizeFilters(next, "open"));
+    setParams(withConfiguration(normalizeFilters(next, "open")));
   }
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;
@@ -64,7 +68,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
     {pulls.error && <div className="mb-4 space-y-2"><ErrorNotice error={pulls.error} />{!denied && <Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry pull requests</Button>}</div>}
     {pulls.isPending && <Loading />}
     {rows && !rows.total && !pulls.isPlaceholderData && <Empty title={rows.registered_total ? "No matching pull requests" : "No pull requests here yet"}>
-      {rows.registered_total ? <>Try another search or <button className="underline underline-offset-4" onClick={() => setParams({})}>reset your filters</button>.</> : "Use Sync to fetch pull requests from GitHub. Reviews begin once this repository is enabled."}
+      {rows.registered_total ? <>Try another search or <button className="underline underline-offset-4" onClick={() => setParams(withConfiguration(new URLSearchParams()))}>reset your filters</button>.</> : "Use Sync to fetch pull requests from GitHub. Reviews begin once this repository is enabled."}
     </Empty>}
     <div className="space-y-6" aria-busy={pulls.isPlaceholderData}>
       {sections.map(({ group, items, page, total, has_more }) => {
@@ -87,7 +91,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
               <Button variant="ghost" size="sm" disabled={busy || pulls.isPlaceholderData} onClick={() => {
                 const next = new URLSearchParams(params);
                 next.set(`${group}_pages`, String(page + 1));
-                setParams(next);
+                setParams(withConfiguration(next));
               }}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {titles[group].toLowerCase()}</span></Button>
               <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {total}</span>
             </div>}

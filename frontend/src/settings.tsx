@@ -149,16 +149,17 @@ export function RepositorySettings({
         {(id) => (
           <SearchSelect
             id={id}
-            value={selectedConnection ? connection : ""}
+            value={connection}
             disabled={connections.isPending}
             required={enabled}
-            placeholder={connections.isPending ? "Loading connections…" : connection && !selectedConnection ? "Connection unavailable" : "Choose a connection"}
+            placeholder={connections.isPending ? "Loading connections…" : "Choose a connection"}
             onChange={(value) => {
               setConnection(value);
               change("model", "");
             }}
             options={[
               { value: "", label: "No connection" },
+              ...(connection && !selectedConnection ? [{ value: connection, label: connections.isPending ? "Loading connections…" : "Connection unavailable" }] : []),
               ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
             ]}
           />
@@ -225,7 +226,7 @@ export function RepositorySettings({
         value={settings.model}
         onChange={(value) => change("model", value)}
         path={connection ? `/connections/${connection}/models?repository_id=${repo.id}` : undefined}
-        enabled={!!connection}
+        enabled={!!selectedConnection}
         emptyLabel={selectedConnection?.model || "Use connection model"}
         hint="Choose an AI connection to load its models."
       />

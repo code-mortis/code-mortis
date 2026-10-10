@@ -122,6 +122,7 @@ export function Repositories({ admin }: { admin: boolean }) {
   if (repos.error && (!repos.data || denied)) return <ErrorNotice error={repos.error} />;
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
+  const syncPending = syncHere && action.isPending;
   const Visibility = selected?.private ? LockKeyhole : Globe;
   return <>
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -133,8 +134,8 @@ export function Repositories({ admin }: { admin: boolean }) {
         </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
       </div>
       {selected && <div className="flex shrink-0 flex-wrap gap-2">
-        <Button variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: syncPath })}>
-          <RefreshCw aria-hidden="true" className={`size-4 ${action.isPending ? "motion-safe:animate-spin" : ""}`} />{action.isPending ? "Queuing sync…" : "Sync"}
+        <Button variant="outline" disabled={syncPending} onClick={() => action.mutate({ path: syncPath })}>
+          <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
         </Button>
         {admin && <Button variant="outline" onClick={() => setEdit(true)}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
       </div>}
@@ -233,7 +234,7 @@ function RunList({ prId }: { prId: string }) {
       {(paginated || query.error) && <div className="space-y-2 px-5 py-3">
         <ErrorNotice error={query.error} />
         <div className="flex items-center justify-between gap-3">
-          {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.fetchNextPage()}>
+          {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
             {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> run history</span>
           </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button> : null}
           {paginated && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{runs.length} of {total}</span>}

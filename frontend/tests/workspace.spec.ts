@@ -844,6 +844,57 @@ test("repository filters survive configuration and the pull request run round tr
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("Author");
 });
 
+test("repository URL updates preserve the open configuration sheet", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  await mockRepositoryPulls(page, 22, () => Array.from({ length: 11 }, (_, index) => ({
+    ...pr, id: `pull-${index}`, title: `Retry change ${index}`,
+  })));
+  await page.goto("/repositories/22?state=open");
+  await expect(page).toHaveURL(/state=open$/);
+  await page.getByLabel("Search pull requests").fill("retry");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const sheet = page.getByRole("dialog", { name: "Repository configuration" });
+  await expect(sheet).toBeVisible();
+  await page.clock.runFor(400);
+  await expect(page).toHaveURL(/q=retry.*configure=true/);
+  await expect(sheet).toBeVisible();
+  const pulls = page.locator('section[aria-labelledby="repository-pulls-heading"]');
+  await pulls.getByRole("button", { name: "Remove PR state filter", includeHidden: true }).dispatchEvent("click");
+  await expect(page).toHaveURL(/state=all.*configure=true/);
+  await expect(sheet).toBeVisible();
+  await pulls.getByRole("button", { name: "Load more open", includeHidden: true }).dispatchEvent("click");
+  await expect(page).toHaveURL(/active_pages=2.*configure=true/);
+  await expect(pulls.getByRole("link", { includeHidden: true })).toHaveCount(11);
+  await expect(sheet).toBeVisible();
+});
+
+test("repository sync pending state stays with its repository", async ({ page }) => {
+  await mock(page);
+  const other = { ...repo, id: 23, full_name: "acme/another" };
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, other] }));
+  await mockRepositoryPulls(page, 23, () => []);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/repositories/22/sync", async (route) => {
+    await held;
+    await route.fulfill({ json: { job_id: "sync-job" } });
+  });
+  await page.goto("/repositories/22");
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: other.full_name, exact: true }).click();
+  const sync = page.getByRole("button", { name: "Sync", exact: true });
+  await expect(sync).toBeEnabled();
+  await expect(sync.locator("svg")).not.toHaveClass(/animate-spin/);
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true }).click();
+  await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
+  release();
+  await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+});
+
 test("repository list distinguishes failed requests, empty data, and revoked access", async ({ page }) => {
   await mock(page);
   let status = 502;
@@ -1396,9 +1447,26 @@ for (const commit of ["Enter", "Save"] as const) {
   });
 }
 
+test("closed custom language input submits the configuration with Enter", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22");
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  const language = page.getByRole("combobox", { name: "Language", exact: true });
+  await language.fill("Mapudungun");
+  await language.press("Enter");
+  await expect(language).toHaveAttribute("aria-expanded", "false");
+  expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
+  await language.press("Enter");
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "Mapudungun" } });
+});
+
 for (const available of [true, false]) {
-  test(`repository connection hides IDs while loading and ${available ? "restores the name" : "handles missing connections"}`, async ({ page }) => {
+  test(`repository connection preserves its saved value while loading and ${available ? "restores the name" : "handles missing connections"}`, async ({ page }) => {
     const requests = await mock(page);
+    const modelRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.endsWith("/connections/connection/models")) modelRequests.push(request.url());
+    });
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     await page.route("**/api/v1/connections?repository_id=22", async (route) => {
@@ -1409,23 +1477,29 @@ for (const available of [true, false]) {
     await page.getByRole("button", { name: "Configure", exact: true }).click();
     const picker = page.getByRole("combobox", { name: "AI connection", exact: true });
     await expect(picker).toBeDisabled();
-    await expect(picker).toHaveValue("");
+    await expect(picker).toHaveValue("Loading connections…");
     await expect(picker).toHaveAttribute("placeholder", "Loading connections…");
+    expect(modelRequests).toHaveLength(0);
     release();
     await expect(picker).toBeEnabled();
     if (available) {
       await expect(picker).toHaveValue("Team reviews");
     } else {
-      await expect(picker).toHaveValue("");
-      await expect(picker).toHaveAttribute("placeholder", "Connection unavailable");
+      await expect(picker).toHaveValue("Connection unavailable");
+      expect(modelRequests).toHaveLength(0);
+      await page.getByRole("switch", { name: "Enable reviews", exact: true }).click();
       await page.getByRole("button", { name: "Save configuration", exact: true }).click();
-      expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
+      await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ enabled: false, connection_id: "connection" });
+      await page.getByRole("button", { name: "Configure", exact: true }).click();
     }
     await page.getByRole("switch", { name: "Enable reviews", exact: true }).click();
     await chooseOption(page, picker, "No connection");
     await expect(picker).toHaveValue("");
+    await picker.fill("");
+    await expect(page.getByRole("option", { name: "No connection", exact: true })).toHaveAttribute("aria-selected", "true");
+    await picker.press("Escape");
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
-    await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ enabled: false, connection_id: null });
+    await expect.poll(() => requests.filter((request) => request.path === "/repositories/22").at(-1)?.body).toMatchObject({ enabled: false, connection_id: null });
   });
 }
 
@@ -1466,6 +1540,9 @@ test("pull request connection search preserves the default and submits the selec
   await expect(picker).toHaveValue("Research reviews");
   await chooseOption(page, picker, "Repository default");
   await expect(picker).toHaveValue("");
+  await picker.fill("");
+  await expect(page.getByRole("option", { name: "Repository default", exact: true })).toHaveAttribute("aria-selected", "true");
+  await picker.press("Escape");
   await chooseOption(page, picker, "Research reviews");
   await page.getByRole("button", { name: "Run review", exact: true }).click();
   await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "research" });
@@ -4152,6 +4229,39 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   expect(requests).toEqual([1, 1, 2, 3]);
   await page.getByRole("tab", { name: "Findings 1" }).click();
   await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+});
+
+test("run history load more stays available during polling and waits for the next page", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  const runs = Array.from({ length: 23 }, (_, index) => ({ ...run, id: `history-${index}` }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
+  let hold = false;
+  let waiting = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/pulls/pr/runs?**", async (route) => {
+    if (hold) {
+      waiting++;
+      await held;
+    }
+    await route.fulfill({ json: runPage(runs, new URL(route.request().url()).searchParams) });
+  });
+  await page.goto("/pulls/pr");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  const history = page.getByRole("tabpanel");
+  const more = history.getByRole("button", { name: "Load more run history" });
+  await expect(history.getByRole("link")).toHaveCount(10);
+  hold = true;
+  await page.clock.fastForward(5000);
+  await expect.poll(() => waiting).toBe(1);
+  await expect(more).toBeEnabled();
+  await more.click();
+  await expect(history.getByRole("button", { name: "Loading… run history" })).toBeDisabled();
+  hold = false;
+  release();
+  await expect(history.getByRole("link")).toHaveCount(20);
+  await expect(more).toBeEnabled();
 });
 
 test("run history retries failed pages and hides loaded runs when access is revoked", async ({ page }) => {
