@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Combobox, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList,
 } from "./ui/combobox";
@@ -23,10 +23,20 @@ export function SearchSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState<string | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
-  const label = (item: string) => options.find((option) => option.value === item)?.label ?? item;
+  const labels = useMemo(() => new Map(options.map((option) => [option.value, option.label])), [options]);
+  const label = (item: string) => labels.get(item) ?? item;
+  useEffect(() => {
+    if (disabled) {
+      setOpen(false);
+      setSearch(null);
+    }
+  }, [disabled]);
   function changeOpen(next: boolean) {
     setOpen(next);
     if (!next) setSearch(null);
+  }
+  function commitCustom() {
+    if (allowCustom && search !== null && !disabled) onChange(search.trim());
   }
   return (
     <Combobox
@@ -50,7 +60,6 @@ export function SearchSelect({
         if (event.reason === "input-change") {
           setSearch(next);
           setOpen(true);
-          if (allowCustom) onChange(next);
         }
       }}
     >
@@ -60,6 +69,17 @@ export function SearchSelect({
           <div ref={anchor} className={cn("w-full min-w-0", className)}>
             <ComboboxInput id={id} aria-label={ariaLabel} aria-expanded={open && !disabled} disabled={disabled}
               placeholder={placeholder} className="w-full bg-card dark:bg-card"
+              onBlur={() => {
+                commitCustom();
+                if (allowCustom) changeOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (allowCustom && event.key === "Enter" && !event.currentTarget.getAttribute("aria-activedescendant")) {
+                  event.preventDefault();
+                  commitCustom();
+                  changeOpen(false);
+                }
+              }}
               maxLength={allowCustom ? 100 : undefined} />
           </div>
         </PopoverAnchor>
@@ -67,7 +87,10 @@ export function SearchSelect({
           className="w-(--radix-popover-trigger-width) max-w-[calc(100vw-2rem)] p-0"
           onOpenAutoFocus={(event) => event.preventDefault()}
           onCloseAutoFocus={(event) => event.preventDefault()}
-          onInteractOutside={(event) => { if (anchor.current?.contains(event.target as Node)) event.preventDefault(); }}>
+          onInteractOutside={(event) => {
+            if (anchor.current?.contains(event.target as Node)) event.preventDefault();
+            else commitCustom();
+          }}>
           <ComboboxEmpty className="block empty:p-0">{allowCustom ? "Use the language you entered." : "No matches found."}</ComboboxEmpty>
           <ComboboxList className="max-h-60">
             {(item: string) => <ComboboxItem key={item} value={item} className="min-h-10 break-words [overflow-wrap:anywhere]">{label(item)}</ComboboxItem>}

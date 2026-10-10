@@ -124,6 +124,11 @@ class RepoSettings(RunLimits):
     def trim_model(cls, value):
         return value.strip()
 
+    @field_validator("language", mode="before")
+    @classmethod
+    def trim_language(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
 
 class RepositoryInput(StrictModel):
     enabled: bool

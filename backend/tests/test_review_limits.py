@@ -38,6 +38,19 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
                 RepoSettings(**{key: value})
 
 
+@pytest.mark.parametrize("language,expected", [("  Mapudungun  ", "Mapudungun"), ("\tEnglish\n", "English"),
+                                              (" ", None), ("\t\n", None)])
+def test_repository_language_is_trimmed_and_cannot_be_blank(seed, github_stub, client, language, expected):
+    response = client.put("/api/v1/repositories/22", json={
+        "enabled": True, "connection_id": "connection", "settings": {"language": language},
+    })
+    assert response.status_code == (200 if expected else 422)
+    if expected:
+        assert response.json()["settings"]["language"] == expected
+        with transaction() as db:
+            assert db.get(Repository, 22).settings["language"] == expected
+
+
 def test_old_snapshots_keep_unlimited_files_and_deduplicate_only_matching_scope(seed, github_stub):
     with transaction() as db:
         repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")

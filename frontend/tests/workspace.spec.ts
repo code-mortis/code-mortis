@@ -1334,17 +1334,104 @@ test("repository language searches suggestions and preserves custom language ent
   await language.press("ArrowDown");
   await language.press("Enter");
   await expect(language).toHaveValue("Spanish");
+  await language.fill("Eng");
+  await page.getByRole("option", { name: "English", exact: true }).click();
+  await expect(language).toHaveValue("English");
+  await language.fill("span");
+  await page.getByRole("option", { name: "Spanish", exact: true }).click();
+  await expect(language).toHaveValue("Spanish");
+  await language.fill("Eng");
+  await language.press("Escape");
+  await expect(language).toHaveValue("Spanish");
   await language.fill("");
   await expect(page.getByRole("listbox")).toBeVisible();
   await language.press("Escape");
+  await expect(language).toHaveValue("Spanish");
+  await language.fill("   ");
+  await language.press("Tab");
+  await expect(language).toHaveValue("");
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
   expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
-  await language.fill("Mapudungun");
+  await language.fill("  Mapudungun  ");
   await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
   await language.press("Tab");
   await expect(language).toHaveValue("Mapudungun");
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "Mapudungun" } });
+});
+
+for (const commit of ["Enter", "Save"] as const) {
+  test(`custom language commits a trimmed value with ${commit}`, async ({ page }) => {
+    const requests = await mock(page);
+    await page.goto("/repositories/22");
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    const language = page.getByRole("combobox", { name: "Language", exact: true });
+    await language.fill("  Mapudungun  ");
+    await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
+    if (commit === "Enter") {
+      await language.press("Enter");
+      await expect(language).toHaveValue("Mapudungun");
+      expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
+    }
+    await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { language: "Mapudungun" } });
+  });
+}
+
+for (const available of [true, false]) {
+  test(`repository connection hides IDs while loading and ${available ? "restores the name" : "handles missing connections"}`, async ({ page }) => {
+    const requests = await mock(page);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/v1/connections?repository_id=22", async (route) => {
+      await held;
+      await route.fulfill({ json: available ? [connection] : [] });
+    });
+    await page.goto("/repositories/22");
+    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    const picker = page.getByRole("combobox", { name: "AI connection", exact: true });
+    await expect(picker).toBeDisabled();
+    await expect(picker).toHaveValue("");
+    await expect(picker).toHaveAttribute("placeholder", "Loading connections…");
+    release();
+    await expect(picker).toBeEnabled();
+    if (available) {
+      await expect(picker).toHaveValue("Team reviews");
+    } else {
+      await expect(picker).toHaveValue("");
+      await expect(picker).toHaveAttribute("placeholder", "Connection unavailable");
+      await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+      expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(0);
+    }
+    await page.getByRole("switch", { name: "Enable reviews", exact: true }).click();
+    await chooseOption(page, picker, "No connection");
+    await expect(picker).toHaveValue("");
+    await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ enabled: false, connection_id: null });
+  });
+}
+
+test("review connection stays closed after a running review disables it", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  let status: Run["status"] = "completed";
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, runs: [{ ...run, status }], findings: [], can_write: true }));
+  await page.goto("/pulls/pr");
+  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
+  await picker.fill("Team");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  status = "running";
+  await page.clock.fastForward(6000);
+  await expect(picker).toBeDisabled();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  status = "completed";
+  await page.clock.fastForward(6000);
+  await expect(picker).toBeEnabled();
+  await expect(picker).toHaveValue("");
+  await expect(picker).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await picker.fill("Team");
+  await expect(page.getByRole("option", { name: "Team reviews", exact: true })).toBeVisible();
 });
 
 test("pull request connection search preserves the default and submits the selected connection", async ({ page }, info) => {
@@ -1413,6 +1500,26 @@ test("API drafts load models before saving and support keyboard selection", asyn
   expect(requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "review-model", api_key: "draft-key" });
 });
 
+test("large model catalogs search labels and retain the selected model ID", async ({ page }) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/connections/models", (route) => route.fulfill({ json: {
+    source: "provider", status: "ready",
+    models: Array.from({ length: 1000 }, (_, index) => ({ id: `catalog-${index}`, name: `Model ${index}` })),
+  } }));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+  await page.getByLabel("Connection name").fill("Catalog connection");
+  await page.getByLabel("API key", { exact: true }).fill("draft-key");
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  const model = page.getByLabel("Model", { exact: true });
+  await model.fill("Model 987");
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
+  await page.getByRole("option", { name: "Model 987 · catalog-987", exact: true }).click();
+  await expect(model).toHaveValue("Model 987 · catalog-987");
+  await page.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({ model: "catalog-987" });
+});
+
 test("changed draft discards late models and keeps manual entry on errors", async ({ page }) => {
   await mock(page);
   let release!: () => void;
@@ -1476,7 +1583,7 @@ test("repository model choices follow its selected connection", async ({ page },
     connection_id: "second", settings: { model: "" },
   });
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
   await expect(model).toBeDisabled();
   await page.getByRole("button", { name: "Save configuration", exact: true }).click();
   expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(1);
@@ -1533,7 +1640,7 @@ for (const outcome of ["done", "failed"] as const) {
       await page.getByRole("button", { name: "Generate background", exact: true }).click();
       if (change === "background") await field.fill("Keep this edit");
       if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
-      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
+      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "token budget" || change === "timeout") {
         await page.getByText("Review limits and rules", { exact: true }).click();
         await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Token budget", { exact: true })
@@ -1569,7 +1676,7 @@ for (const outcome of ["done", "failed"] as const) {
       }
       if (change === "background") await page.getByLabel("Project background", { exact: true }).fill("New manual text");
       if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
-      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
+      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "limits") {
         await page.getByText("Review limits and rules", { exact: true }).click();
         await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
@@ -1643,7 +1750,7 @@ test("project background preserves text on failure and explains missing selectio
   await expect(page.getByRole("alert")).toContainText("Reconnect your account before retrying.");
   await expect(field).toHaveValue("Keep my context");
   await expect(generate).toBeEnabled();
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Choose a connection");
+  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
   await expect(generate).toBeDisabled();
   await expect(page.getByText("Choose an AI connection to generate background.")).toBeVisible();
   await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No model");

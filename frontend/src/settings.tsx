@@ -144,15 +144,16 @@ export function RepositorySettings({
         {(id) => (
           <SearchSelect
             id={id}
-            value={connection}
+            value={selectedConnection ? connection : ""}
+            disabled={connections.isPending}
             required={enabled}
-            placeholder="Choose a connection"
+            placeholder={connections.isPending ? "Loading connections…" : connection && !selectedConnection ? "Connection unavailable" : "Choose a connection"}
             onChange={(value) => {
               setConnection(value);
               change("model", "");
             }}
             options={[
-              { value: "", label: "Choose a connection" },
+              { value: "", label: "No connection" },
               ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
             ]}
           />
