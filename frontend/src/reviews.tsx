@@ -717,7 +717,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       <TabsContent value="coverage" className="min-w-0">
         <section aria-label="Coverage">
           <h2 className="text-sm font-semibold">Coverage</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
+          <p className="mt-2 text-xs text-muted-foreground mb-4">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
           {run.report ? <>
             <dl className="my-4 flex flex-wrap gap-x-8 gap-y-4 border-y py-4">{(["selected", "completed", "reused", "failed", "waived"] as const).map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className="text-sm font-medium tabular-nums">{coverage[key]?.length ?? 0}</dd></div>)}</dl>
             {!!files.length && <details className="border-b py-4 text-sm" open={run.status === "skipped"}>
