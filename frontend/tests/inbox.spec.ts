@@ -438,6 +438,9 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
   const { requests } = await mockInbox(page);
   await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open");
   await expect(page.getByRole("status").first()).toHaveText("1 pull request · 1 repository");
+  if (test.info().project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAccessibleDescription("6 open pull requests");
+  if (test.info().project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toContainText("Running");
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("@maria");
   await expect(page.getByRole("button", { name: /Edit Open findings/ })).toContainText("Has open findings");
