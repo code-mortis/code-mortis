@@ -70,7 +70,9 @@ class Installation(Base):
     __tablename__ = "installations"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     account: Mapped[str] = mapped_column(String(100))
+    account_id: Mapped[int | None] = mapped_column(BigInteger)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Connection(Base):

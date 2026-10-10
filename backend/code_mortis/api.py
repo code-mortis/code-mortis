@@ -802,7 +802,7 @@ def instance_settings(db: DB, user: ADMIN) -> dict:
         },
         "installations": [
             {"id": row.id, "account": row.account, "active": row.active}
-            for row in db.scalars(select(Installation))
+            for row in db.scalars(select(Installation).where(Installation.archived.is_(False)))
         ],
         "members": [
             {"id": row.github_id, "login": row.login, "role": row.role}
@@ -845,6 +845,7 @@ def uninstall_installation(installation_id: int, db: DB, user: ADMIN):
             return InstallationOperation(job_id=job.id)
         raise HTTPException(404, "This GitHub App installation has already been removed. Refresh the list.")
     installations.authorize_uninstall(db, user, remote)
+    installation.account_id = remote.account.id
     if job and job.status in {"queued", "running", "done"}:
         return InstallationOperation(job_id=job.id)
     payload = {"installation_id": installation_id, "actor_id": user.id, "account_id": remote.account.id}
@@ -855,6 +856,12 @@ def uninstall_installation(installation_id: int, db: DB, user: ADMIN):
     else:
         job = enqueue(db, "uninstall_installation", payload)
     return InstallationOperation(job_id=job.id)
+
+
+@router.delete("/installations/{installation_id}/local")
+def remove_installation(installation_id: int, db: DB, user: ADMIN) -> dict:
+    installations.remove_installation(db, installation_id)
+    return {"ok": True}
 
 
 @router.get("/installations/start")
@@ -908,18 +915,18 @@ def available_installations(db: DB, user: ADMIN) -> list[dict]:
 
 @router.post("/installations/{installation_id}", status_code=202)
 def connect_installation(installation_id: int, db: DB, user: ADMIN) -> dict:
-    allowed = available_installations(db, user)
-    remote = next((row for row in allowed if row["id"] == installation_id), None)
-    if not remote:
+    remote = installations.user_installations(db, user).get(installation_id)
+    if not remote or remote.suspended_at:
         raise HTTPException(403, "This installation is not available to your GitHub account.")
     installation = db.scalar(select(Installation).where(Installation.id == installation_id).with_for_update())
     if installations.removing(installations.uninstall_job(db, installation_id)):
         raise HTTPException(409, "Uninstall is in progress. Retry uninstall or install the app again after removal.")
     if installation is None:
-        installation = Installation(id=installation_id, account=remote["account"])
+        installation = Installation(id=installation_id, account=remote.account.login)
         db.add(installation)
     installation.active = True
-    installation.account = remote["account"]
+    installation.archived = False
+    installation.account, installation.account_id = remote.account.login, remote.account.id
     enqueue(db, "sync_repositories", {"installation_id": installation_id})
     return {"ok": True}
 

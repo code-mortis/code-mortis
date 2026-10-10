@@ -54,7 +54,7 @@ celery.conf.update(
 def sync_repositories(installation_id: int):
     with transaction() as db:
         installation = db.scalar(select(Installation).where(Installation.id == installation_id).with_for_update())
-        if not installation:
+        if not installation or installation.archived:
             return
         remote_installation = installations.remote_installation(db, installation_id)
         if remote_installation is None or remote_installation.suspended_at:
@@ -63,6 +63,7 @@ def sync_repositories(installation_id: int):
         if installations.removing(installations.uninstall_job(db, installation_id)):
             return
         installation.active, installation.account = True, remote_installation.account.login
+        installation.account_id = remote_installation.account.id
         token = github.installation_token(db, installation.id)
         remote = github.pages("/installation/repositories", token, "repositories")
         active_ids = set()
@@ -140,7 +141,7 @@ def process_webhook(payload: dict):
         if type(installation_id) is not int or installation_id < 1:
             return
         installation = db.get(Installation, installation_id) if installation_id else None
-        if not installation:
+        if not installation or installation.archived:
             return
         if event == "installation":
             # Read current GitHub state in the sync job instead of replaying stale event state.
@@ -377,7 +378,7 @@ def schedule_reconciliation():
             ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
         )):
             checks.enqueue_sync(db, run)
-        for installation in db.scalars(select(Installation)):
+        for installation in db.scalars(select(Installation).where(Installation.archived.is_(False))):
             enqueue(db, "sync_repositories", {"installation_id": installation.id})
         for repo in db.scalars(
             select(Repository).where(Repository.active.is_(True), Repository.enabled.is_(True))

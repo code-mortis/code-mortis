@@ -53,8 +53,10 @@ export function GitHubInstallations() {
   });
   const action = useAction();
   const uninstallAction = useAction();
-  const mutationPending = action.isPending || uninstallAction.isPending;
+  const removeAction = useAction();
+  const mutationPending = action.isPending || uninstallAction.isPending || removeAction.isPending;
   const [uninstalling, setUninstalling] = useState<Installation | null>(null);
+  const [removing, setRemoving] = useState<Installation | null>(null);
   const [message, setMessage] = useState("");
   const heading = useRef<HTMLHeadingElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -67,6 +69,17 @@ export function GitHubInstallations() {
     setMessage("");
     action.mutate({ path: `/installations/${item.id}` }, {
       onSuccess: () => setMessage(`Repository sync queued for ${item.account}. Updated repositories will appear when synchronization finishes.`),
+    });
+  }
+
+  function remove(item: Installation) {
+    setMessage("");
+    removeAction.mutate({ path: `/installations/${item.id}/local`, method: "DELETE" }, {
+      onSuccess: () => {
+        returnFocus.current = heading.current;
+        setRemoving(null);
+        setMessage(`${item.account} removed from the list. Saved repositories and review history are retained.`);
+      },
     });
   }
 
@@ -111,16 +124,20 @@ export function GitHubInstallations() {
                       icon={status === "active" ? <Check aria-hidden="true" className="size-3" /> : undefined} />
                   </div>
                   <div className="settings-actions flex items-center justify-end gap-1">
-                    {!removed && <>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${item.account}`}
-                            onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
-                            onFocus={(event) => { returnFocus.current = event.currentTarget; }}>
-                            <MoreHorizontal className="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (uninstalling) event.preventDefault(); }}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${item.account}`}
+                          onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
+                          onFocus={(event) => { returnFocus.current = event.currentTarget; }}>
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+                        if (uninstalling || removing || removed) event.preventDefault();
+                        if (removed && !removing) returnFocus.current?.focus();
+                      }}>
+                        {removed ? <DropdownMenuItem disabled={mutationPending || query.isError || !item.can_remove}
+                          onSelect={() => { removeAction.reset(); setRemoving(item); }}>Remove from list</DropdownMenuItem> : <>
                           {item.settings_url && <DropdownMenuItem asChild>
                             <a href={item.settings_url} target="_blank" rel="noreferrer">Manage repositories<ArrowUpRight aria-hidden="true" className="size-4" /></a>
                           </DropdownMenuItem>}
@@ -129,9 +146,9 @@ export function GitHubInstallations() {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem variant="destructive" disabled={mutationPending || query.isError || !item.can_uninstall}
                             onSelect={() => { uninstallAction.reset(); setUninstalling(item); }}>{failed ? "Retry uninstall" : "Uninstall"}</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </>}
+                        </>}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                   {(removed || busy || failed || !item.active) && <p className="settings-row-note text-xs leading-relaxed text-muted-foreground">{installationDescription(item, status)}</p>}
                   {failed && item.operation_error && <p role="alert" className="settings-row-note break-words text-sm text-destructive">{item.operation_error}</p>}
@@ -186,6 +203,24 @@ export function GitHubInstallations() {
                 onSuccess: () => { returnFocus.current = heading.current; setUninstalling(null); setMessage(""); },
               });
             }}>{uninstallAction.isPending ? "Requesting uninstall…" : "Uninstall GitHub App"}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!removing} onOpenChange={(open) => { if (!open && !removeAction.isPending) setRemoving(null); }}>
+        <DialogContent showCloseButton={!removeAction.isPending}
+          onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
+          <DialogHeader>
+            <DialogTitle>Remove {removing?.account} from the list?</DialogTitle>
+            <DialogDescription>
+              This hides the uninstalled account from Connected installations. Saved repositories and review history are retained.
+            </DialogDescription>
+          </DialogHeader>
+          <ErrorNotice error={removeAction.error} />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" disabled={removeAction.isPending} onClick={() => setRemoving(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={removeAction.isPending} onClick={() => { if (removing) remove(removing); }}>
+              {removeAction.isPending ? "Removing…" : "Remove from list"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

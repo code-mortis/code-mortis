@@ -101,9 +101,14 @@ def list_installations(db, user):
     )}
     visible = user_installations(db, user)
     local = {row.id: row for row in db.scalars(select(Installation))}
-    results = []
+    results = {}
     for identity in sorted(local.keys() | visible.keys()):
         saved, current = local.get(identity), remote.get(identity)
+        if saved and current:
+            saved.account_id = current.account.id
+            saved.account = current.account.login
+        if saved and saved.archived:
+            saved = None
         if saved is None and current is None:
             continue
         job = uninstall_job(db, identity)
@@ -121,7 +126,12 @@ def list_installations(db, user):
             settings_url = f"https://github.com/{prefix}/installations/{identity}"
         if current and not owner and reason is None:
             reason = "Uninstall requires the GitHub account owner or an organization owner."
-        results.append(InstallationOut(
+        account_id = current.account.id if current else saved.account_id
+        key = ("account", account_id) if account_id is not None else ("installation", identity)
+        priority = (current is not None, pending, identity)
+        if key in results and results[key][0] > priority:
+            continue
+        results[key] = (priority, InstallationOut(
             id=identity, account=current.account.login if current else saved.account,
             connected=saved is not None, active=bool(saved and saved.active),
             status="uninstalled" if current is None else "suspended" if current.suspended_at else "active",
@@ -129,10 +139,33 @@ def list_installations(db, user):
             repository_selection=current.repository_selection if current else None,
             can_connect=bool(accessible and not current.suspended_at and not removing(job)),
             can_uninstall=bool(saved and owner and not pending), unavailable_reason=reason,
+            can_remove=bool(saved and current is None and not pending),
             job_id=job.id if job else None,
             operation_status=job.status if job else None, operation_error=job.error if job else None,
         ))
-    return sorted(results, key=lambda row: (row.account.casefold(), row.id))
+    return sorted((row for _, row in results.values()), key=lambda row: (row.account.casefold(), row.id))
+
+
+def remove_installation(db, identity):
+    saved = db.get(Installation, identity)
+    if saved is None:
+        raise github.GitHubError(404, "Connected installation not found.")
+    targets = list(db.scalars(select(Installation).where(
+        Installation.account_id == saved.account_id if saved.account_id is not None else Installation.id == identity,
+    ).order_by(Installation.id).with_for_update()))
+    remote = {row.id for row in (
+        parse_remote(db, data) for data in github.pages("/app/installations", github.app_token(db))
+    )}
+    if any(item.id in remote for item in targets):
+        raise github.GitHubError(409, "This account still has an installed GitHub App. Uninstall it before removing it from the list.")
+    if any((job := uninstall_job(db, item.id)) and job.status in {"queued", "running"} for item in targets):
+        raise github.GitHubError(409, "Wait for uninstall to finish before removing this account from the list.")
+    for item in targets:
+        if db.scalar(select(Repository.id).where(Repository.installation_id == item.id).limit(1)):
+            deactivate(db, item, "The GitHub App installation was removed.")
+            item.archived = True
+        else:
+            db.delete(item)
 
 
 def deactivate_repositories(db, repositories, reason):
@@ -172,6 +205,8 @@ def uninstall(payload):
     identity = payload["installation_id"]
     with transaction() as db:
         installation = db.scalar(select(Installation).where(Installation.id == identity).with_for_update())
+        if not installation or installation.archived:
+            return
         job = db.get(Job, payload["_job_id"])
         remote = remote_installation(db, identity)
         if remote is None:

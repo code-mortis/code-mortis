@@ -6,7 +6,7 @@ const at = "2026-10-05T13:20:00Z";
 const installation: Schema["InstallationOut"] = {
   id: 10, account: "acme", connected: true, active: true, status: "active",
   settings_url: "https://github.com/organizations/acme/settings/installations/10",
-  repository_selection: "selected", can_connect: true, can_uninstall: true,
+  repository_selection: "selected", can_connect: true, can_uninstall: true, can_remove: false,
   unavailable_reason: null, job_id: null, operation_status: null, operation_error: null,
 };
 const repo = {
@@ -3144,10 +3144,77 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
   await expect(page.getByRole("menuitem", { name: "Resync repositories" })).toBeDisabled();
   await page.keyboard.press("Escape");
   expect(deletes).toBe(1);
-  current = { ...current, active: false, status: "uninstalled", operation_status: "done", settings_url: null };
+  current = { ...current, active: false, status: "uninstalled", operation_status: "done", settings_url: null, can_remove: true };
   await expect(account).toContainText("Uninstalled from GitHub. Saved review history is retained.");
-  await expect(account.getByRole("button", { name: "Actions for acme" })).toHaveCount(0);
+  await account.getByRole("button", { name: "Actions for acme" }).click();
+  await expect(page.getByRole("menuitem", { name: "Remove from list" })).toBeEnabled();
+  await expect(page.getByRole("menuitem", { name: /^Uninstall$|^Manage repositories$/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await expect(connectedAccounts).toHaveText(["beta", "zeta", "acme"]);
+});
+
+test("GitHub removed accounts require confirmation and retain review history", async ({ page }, info) => {
+  await mock(page);
+  let removed = false;
+  let reject = true;
+  let deletes = 0;
+  let finishRemoval!: () => void;
+  const removalResponse = new Promise<void>((resolve) => { finishRemoval = resolve; });
+  const item = { ...installation, active: false, status: "uninstalled", settings_url: null,
+    can_connect: false, can_uninstall: false, can_remove: true };
+  await page.route("**/api/v1/installations", (route) => route.fulfill({ json: removed ? [] : [item] }));
+  await page.route("**/api/v1/installations/10/local", async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-from-session");
+    deletes++;
+    if (reject) return route.fulfill({ status: 409, json: { detail: "This account still has an installed GitHub App. Refresh and retry." } });
+    await removalResponse;
+    removed = true;
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/settings?tab=github");
+  const account = page.getByRole("article", { name: "acme", exact: true, includeHidden: true });
+  const trigger = account.getByRole("button", { name: "Actions for acme" });
+  await trigger.click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Remove from list"]);
+  await page.getByRole("menuitem", { name: "Remove from list" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Remove acme from the list?" })).toBeVisible();
+  await expect(dialog).toContainText("Saved repositories and review history are retained.");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/github-remove-confirmation-${info.project.name}.png`, fullPage: true });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(deletes).toBe(0);
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Remove from list" }).press("Enter");
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(deletes).toBe(0);
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Remove from list" }).press("Enter");
+  await dialog.getByRole("button", { name: "Remove from list" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("still has an installed GitHub App");
+  await expect(account).toBeVisible();
+  reject = false;
+  await dialog.getByRole("button", { name: "Remove from list" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Removing…" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  expect(deletes).toBe(2);
+  finishRemoval();
+  await expect(dialog).toHaveCount(0);
+  await expect(account).toHaveCount(0);
+  await expect(page.getByRole("status")).toContainText("Saved repositories and review history are retained.");
+  await expect(page.getByRole("heading", { name: /^Connected installations/, level: 3 })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "No connected installations" })).toBeVisible();
+  await noOverflow(page);
 });
 
 test("GitHub installations show recoverable failures and unavailable actions", async ({ page }) => {
@@ -3366,7 +3433,7 @@ test("settings rows stack in narrow containers and keep icon targets and accessi
     const icon = row.getByRole("button", { name: "Actions for acme" });
     await expect(icon).toHaveCSS("width", "32px");
     await expect(icon).toHaveCSS("height", "32px");
-    await expect(page.getByRole("article", { name: "Removed", exact: true }).locator(".settings-actions")).toBeHidden();
+    await expect(page.getByRole("article", { name: "Removed", exact: true }).getByRole("button", { name: "Actions for Removed" })).toBeVisible();
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/settings-narrow-${info.project.name}-${theme}.png`, fullPage: true });
   }

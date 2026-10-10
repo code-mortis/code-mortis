@@ -2,6 +2,8 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import func, select
 
 from code_mortis import github, installations, jobs, reviews
@@ -98,15 +100,145 @@ def test_listing_uses_remote_status_and_separates_available_installations(remote
     assert row == {
         "id": 10, "account": "owner", "connected": True, "active": True, "status": "active",
         "settings_url": "https://github.com/settings/installations/10", "repository_selection": "selected",
-        "can_connect": True, "can_uninstall": True, "unavailable_reason": None,
+        "can_connect": True, "can_uninstall": True, "can_remove": False, "unavailable_reason": None,
         "job_id": None, "operation_status": None, "operation_error": None,
     }
     remote["installation"]["id"] = 11
     rows = client.get("/api/v1/installations").json()
-    assert {(row["id"], row["connected"], row["status"]) for row in rows} == {
-        (10, True, "uninstalled"), (11, False, "active"),
-    }
+    assert [(row["id"], row["connected"], row["status"]) for row in rows] == [(11, False, "active")]
     assert next(row for row in rows if row["id"] == 11)["can_connect"]
+
+
+def test_reinstall_reuses_repositories_settings_and_review_history(remote, client, monkeypatch):
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"model": "custom-model", "automatic": True}
+        add_run(db, "published", "completed", "published", [456])
+        db.flush()
+        db.add(Finding(id="finding", pr_id="pr", fingerprint="fp", path="a.py", start_line=1, end_line=1,
+                       content="Original finding", last_seen_run_id="published", severity="high", status="open"))
+    original = deepcopy(remote["installation"])
+    jobs.execute_job(request_uninstall(client))
+    remote["installation"] = {**original, "id": 11, "account": {**original["account"], "login": "renamed-owner"}}
+    monkeypatch.setattr(installations, "remote_installation", lambda db, identity:
+        installations.parse_remote(db, remote["installation"], identity) if identity == 11 else None)
+    assert client.post("/api/v1/installations/11").status_code == 202
+    jobs.sync_repositories(11)
+    rows = client.get("/api/v1/installations").json()
+    assert [(row["id"], row["account"], row["connected"]) for row in rows] == [(11, "renamed-owner", True)]
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        assert repo.installation_id == 11 and repo.active and not repo.enabled
+        assert repo.settings == {"model": "custom-model", "automatic": True}
+        assert repo.connection_id == "connection"
+        assert db.scalar(select(func.count()).select_from(Repository)) == 1
+        assert db.get(PullRequest, "pr") and db.get(ReviewRun, "published")
+        assert db.get(Finding, "finding").status == "open"
+        assert db.get(Installation, 10).account_id == db.get(Installation, 11).account_id == 7
+
+
+def test_same_name_does_not_merge_different_or_unknown_account_identities(remote, client):
+    with transaction() as db:
+        db.get(Installation, 10).account_id = 7
+        db.add(Installation(id=12, account="owner", active=False))
+    remote["installation"]["id"] = 11
+    remote["installation"]["account"]["id"] = 8
+    rows = client.get("/api/v1/installations").json()
+    assert {row["id"] for row in rows} == {10, 11, 12}
+
+
+def test_pending_predecessor_keeps_account_removal_disabled(remote, client):
+    with transaction() as db:
+        db.get(Installation, 10).account_id = 7
+        db.add(Installation(id=11, account="owner", account_id=7, active=False))
+        db.add(Job(kind="uninstall_installation", payload={"installation_id": 10}, status="queued"))
+    remote["installation"] = None
+    rows = client.get("/api/v1/installations").json()
+    assert len(rows) == 1 and rows[0]["operation_status"] == "queued" and not rows[0]["can_remove"]
+    assert client.delete("/api/v1/installations/11/local").status_code == 409
+
+
+def test_removal_archives_history_deletes_empty_predecessors_and_stays_hidden(remote, client, monkeypatch):
+    with transaction() as db:
+        db.get(Installation, 10).account_id = 7
+        db.add(Installation(id=11, account="owner", account_id=7, active=False))
+        add_run(db, "published", "completed", "published", [456])
+    remote["installation"] = None
+    rows = client.get("/api/v1/installations").json()
+    assert len(rows) == 1 and rows[0]["id"] == 11 and rows[0]["can_remove"]
+    response = client.delete("/api/v1/installations/11/local")
+    assert response.status_code == 200, response.text
+    assert remote["deletes"] == 0
+    assert client.get("/api/v1/installations").json() == []
+    assert client.get("/api/v1/settings").json()["installations"] == []
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        assert saved.archived and not saved.active
+        assert db.get(Installation, 11) is None
+        repo = db.get(Repository, 22)
+        assert not repo.active and not repo.enabled and repo.connection_id == "connection"
+        assert db.get(PullRequest, "pr") and db.get(ReviewRun, "published").review_ids == [456]
+    monkeypatch.setattr(installations, "remote_installation", lambda *args:
+        pytest.fail("Archived installations must not request GitHub access"))
+    jobs.sync_repositories(10)
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        assert not db.scalar(select(Job.id).where(Job.kind == "sync_repositories"))
+
+
+@pytest.mark.parametrize("state", ["active", "suspended", "pending", "unavailable", "invalid"])
+def test_removal_rechecks_github_and_pending_uninstall_before_mutating(remote, client, state):
+    if state == "suspended":
+        remote["installation"]["suspended_at"] = "2026-10-10T00:00:00Z"
+    elif state == "pending":
+        with transaction() as db:
+            db.add(Job(kind="uninstall_installation", payload={"installation_id": 10}, status="queued"))
+        remote["installation"] = None
+    elif state == "unavailable":
+        remote["error"] = 503
+    elif state == "invalid":
+        remote["installation"]["account"]["id"] = True
+    response = client.delete("/api/v1/installations/10/local")
+    assert response.status_code == (502 if state in {"unavailable", "invalid"} else 409)
+    with transaction() as db:
+        assert not db.get(Installation, 10).archived
+        assert db.get(Repository, 22).active and db.get(Repository, 22).enabled
+    assert remote["deletes"] == 0
+
+
+@pytest.mark.parametrize("reason", ["csrf", "member", "disabled"])
+def test_removal_requires_administrator_access_and_csrf(remote, client, reason):
+    remote["installation"] = None
+    if reason == "csrf":
+        client.headers["x-csrf-token"] = "wrong"
+    else:
+        with transaction() as db:
+            if reason == "member":
+                db.get(Membership, 7).role = "member"
+            else:
+                db.get(User, 7).enabled = False
+    assert client.delete("/api/v1/installations/10/local").status_code == 403
+    with transaction() as db:
+        assert not db.get(Installation, 10).archived
+
+
+def test_account_migration_preserves_existing_rows_and_backfills_verified_jobs(seed):
+    with transaction() as db:
+        db.add_all([Installation(id=11, account="other"), Installation(id=12, account="unknown")])
+        for identity, account_id in [(10, 7), (11, True), (12, 10**30)]:
+            db.add(Job(kind="uninstall_installation", status="done",
+                       payload={"installation_id": identity, "account_id": account_id}))
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261009_candidate_assessment")
+        command.upgrade(config, "head")
+        with transaction() as db:
+            assert db.get(Installation, 10).account_id == 7
+            assert db.get(Installation, 11).account_id is None
+            assert db.get(Installation, 12).account_id is None
+            assert all(not row.archived for row in db.scalars(select(Installation)))
+            assert db.get(Repository, 22).enabled and db.get(PullRequest, "pr")
+    finally:
+        command.upgrade(config, "head")
 
 
 @pytest.mark.parametrize("reason", ["csrf", "origin", "member", "disabled", "invisible", "owner", "app", "account_id"])

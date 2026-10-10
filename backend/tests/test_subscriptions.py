@@ -58,7 +58,8 @@ def test_two_login_tabs_pkce_replay_expiration_and_browser_binding(seed, client,
 
 def test_installation_flow_checks_current_access_and_external_login(seed, client, monkeypatch):
     monkeypatch.setattr(github, "user_token", lambda *a: "test-user-token")
-    available = [{"id": 90, "app_id": 123, "account": {"login": "team"}}]
+    available = [{"id": 90, "app_id": 123, "account": {"id": 77, "login": "team", "type": "Organization"},
+                  "repository_selection": "selected", "suspended_at": None}]
     monkeypatch.setattr(github, "pages", lambda *a: available)
     client.get("/api/v1/setup/status")
     location = client.get("/api/v1/installations/start", follow_redirects=False).headers["location"]
