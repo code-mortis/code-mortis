@@ -104,9 +104,6 @@ def list_installations(db, user):
     results = {}
     for identity in sorted(local.keys() | visible.keys()):
         saved, current = local.get(identity), remote.get(identity)
-        if saved and current:
-            saved.account_id = current.account.id
-            saved.account = current.account.login
         if saved and saved.archived:
             saved = None
         if saved is None and current is None:

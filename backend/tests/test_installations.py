@@ -96,6 +96,8 @@ def add_run(db, identity, status="queued", publication="pending", review_ids=Non
 
 
 def test_listing_uses_remote_status_and_separates_available_installations(remote, client):
+    with transaction() as db:
+        db.get(Installation, 10).account_id = 7
     row = client.get("/api/v1/installations").json()[0]
     assert row == {
         "id": 10, "account": "owner", "connected": True, "active": True, "status": "active",
@@ -107,6 +109,23 @@ def test_listing_uses_remote_status_and_separates_available_installations(remote
     rows = client.get("/api/v1/installations").json()
     assert [(row["id"], row["connected"], row["status"]) for row in rows] == [(11, False, "active")]
     assert next(row for row in rows if row["id"] == 11)["can_connect"]
+
+
+@pytest.mark.parametrize("archived", [False, True])
+def test_listing_displays_current_account_without_updating_saved_identity(remote, client, archived):
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        saved.account, saved.account_id, saved.archived = "previous-owner", 42, archived
+    remote["installation"]["account"]["login"] = "renamed-owner"
+
+    response = client.get("/api/v1/installations")
+    assert response.status_code == 200, response.text
+    assert [(row["id"], row["account"], row["connected"]) for row in response.json()] == [
+        (10, "renamed-owner", not archived),
+    ]
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        assert (saved.account, saved.account_id, saved.archived) == ("previous-owner", 42, archived)
 
 
 def test_reinstall_reuses_repositories_settings_and_review_history(remote, client, monkeypatch):
