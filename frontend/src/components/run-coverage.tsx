@@ -15,7 +15,7 @@ const outcomes = {
   excluded: { label: "Outside scope", value: "not_reviewed", reason: "Outside the selected review scope." },
 };
 type Outcome = keyof typeof outcomes;
-type FileResult = { path: string; outcome: Outcome; reason: string; selected: boolean };
+type FileResult = { path: string; outcome: Outcome; reason: string };
 const countKeys = ["selected", "completed", "reused", "failed", "waived"] as const;
 
 function record(value: unknown): Record<string, unknown> {
@@ -36,17 +36,16 @@ function coverageFiles(run: Run) {
   const add = (row: Record<string, unknown> & { path: string }, outcome: Outcome) => {
     const reason = typeof row.reason === "string" && row.reason.trim() ? row.reason
       : typeof row.message === "string" && row.message.trim() ? row.message : reasons.get(row.path) ?? outcomes[outcome].reason;
-    files.set(row.path, { path: row.path, outcome, reason, selected: paths.has(row.path) });
+    files.set(row.path, { path: row.path, outcome, reason });
   };
   selected.forEach((row) => add(row, active(run.status) ? "pending" : "not_reviewed"));
   for (const key of ["completed", "reused", "waived", "failed"] as const) rows(key).forEach((row) => add(row, key));
   const hasScope = Array.isArray(coverage.selected);
   for (const item of feedback) if (!files.has(item.path)) {
-    files.set(item.path, { ...item, selected: paths.has(item.path), outcome: hasScope && !paths.has(item.path) ? "excluded" : "not_reviewed" });
+    files.set(item.path, { ...item, outcome: hasScope && !paths.has(item.path) ? "excluded" : "not_reviewed" });
   }
   const items = [...files.values()];
-  const reviewed = items.filter((item) => item.selected && ["completed", "reused"].includes(item.outcome)).length;
-  return { items, reviewed, hasScope, counts: Object.fromEntries(countKeys.map((key) => [key, rows(key).length])) as Record<typeof countKeys[number], number> };
+  return { items, hasScope, counts: Object.fromEntries(countKeys.map((key) => [key, rows(key).length])) as Record<typeof countKeys[number], number> };
 }
 
 function FileStatus({ file }: { file: FileResult }) {
@@ -56,11 +55,9 @@ function FileStatus({ file }: { file: FileResult }) {
 
 export function RunCoverage({ run }: { run: Run }) {
   const [pages, setPages] = useState<Record<string, number>>({});
-  const { items, reviewed, hasScope, counts } = coverageFiles(run);
-  const complete = counts.selected > 0 && reviewed === counts.selected && !counts.failed && !counts.waived;
-  const scopeLabel = !hasScope ? "Coverage unavailable" : complete ? "Selected scope reviewed" : !counts.selected ? "No selected files" : active(run.status) ? "Coverage in progress" : "Partial coverage";
+  const { items, hasScope, counts } = coverageFiles(run);
   return <section aria-label="Coverage" className="min-w-0">
-    <div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold">Coverage</h2>{run.report && <Status value={complete ? "completed" : counts.selected ? active(run.status) ? "running" : "partial" : "not_reviewed"} label={scopeLabel} />}</div>
+    <p className="text-xs leading-relaxed text-muted-foreground">See which files were reviewed or reused from earlier runs, and why others were left unreviewed.</p>
     {!run.report ? <div className="mt-4"><Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty></div> : <>
       {!hasScope && <p role="status" className="mt-2 text-xs text-muted-foreground">Selected review scope was not recorded.</p>}
       <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{countKeys.map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className={`text-sm tabular-nums ${key === "failed" && counts.failed ? "text-destructive" : ""}`}>{counts[key]}</dd></div>)}</dl>

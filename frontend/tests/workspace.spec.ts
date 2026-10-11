@@ -142,6 +142,7 @@ function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
   const query = (params.get("q") ?? "").toLowerCase();
   const filtered = items.filter((item) => (!params.has("status") || params.getAll("status").includes(item.status))
     && (!params.has("severity") || params.getAll("severity").includes(item.severity))
+    && (!params.has("category") || params.getAll("category").includes(item.category))
     && (!query || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(query)));
   return {
     groups: statuses.filter((group) => (!params.has("status") || params.getAll("status").includes(group)) && (!params.has("group") || params.get("group") === group)).map((group) => {
@@ -151,6 +152,7 @@ function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
     }),
     total: filtered.length, registered_total: items.length, page_size: 10,
     status_counts: Object.fromEntries(statuses.map((status) => [status, items.filter((item) => item.status === status).length])),
+    category_counts: Object.fromEntries([...new Set(items.map((item) => item.category))].map((category) => [category, items.filter((item) => item.category === category).length])),
   };
 }
 
@@ -209,12 +211,14 @@ function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchPa
   const query = (params.get("q") ?? "").toLowerCase();
   const matches = candidates.filter((candidate) => (!params.has("outcome") || params.getAll("outcome").includes(candidateOutcome(candidate)))
     && (!params.has("severity") || params.getAll("severity").includes(String(candidate.snapshot.severity)))
+    && (!params.has("category") || params.getAll("category").includes(String(candidate.snapshot.category)))
     && (!query || [candidate.snapshot.path, candidate.snapshot.content, candidate.snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(query))));
   const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
   return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: candidates.length,
     page, has_more: page * 10 < matches.length, page_size: 10,
     outcome_counts: Object.fromEntries(["new", "repeated", "rejected", "withheld", "pending"].map((outcome) => [outcome, candidates.filter((candidate) => candidateOutcome(candidate) === outcome).length])),
     severity_counts: Object.fromEntries(["critical", "high", "medium", "low"].map((severity) => [severity, candidates.filter((candidate) => candidate.snapshot.severity === severity).length])),
+    category_counts: Object.fromEntries([...new Set(candidates.map((candidate) => String(candidate.snapshot.category ?? "")).filter(Boolean))].map((category) => [category, candidates.filter((candidate) => candidate.snapshot.category === category).length])),
   };
 }
 
@@ -1232,9 +1236,26 @@ test("repository navigation, filtering, and review workspace", async ({
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
-  await expect(page.getByText("Not observed in latest review")).toBeVisible();
+  await expect(page.getByText("Not observed in latest review")).toHaveCount(0);
+  await expect(page.getByText("View details", { exact: true })).toHaveCount(0);
+  const findingCards = page.locator("[data-slot=finding-card]");
+  await expect(findingCards.locator('[data-slot=badge]').filter({ hasText: /^Bug$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-bug/);
+  await expect(findingCards.locator('[data-slot=badge]').filter({ hasText: /^Performance$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-gauge/);
   await noOverflow(page);
   await page.evaluate(() => document.fonts.ready);
+  for (const card of await page.locator("[data-slot=finding-card]").all()) {
+    const gaps = await card.evaluate((element) => {
+      const [header, description, footer] = Array.from(element.children);
+      const location = header.children[0].children[1];
+      const h = header.getBoundingClientRect(), d = description.getBoundingClientRect(), f = footer.getBoundingClientRect();
+      const l = location.getBoundingClientRect(), icon = header.children[0].children[0].getBoundingClientRect();
+      return { before: d.top - h.bottom, after: f.top - d.bottom, location: d.top - l.bottom, iconCenter: icon.top + icon.height / 2, locationCenter: l.top + l.height / 2 };
+    });
+    expect(gaps.before).toBe(16);
+    expect(gaps.after).toBe(16);
+    expect(gaps.iconCenter).toBeCloseTo(gaps.locationCenter);
+    if (info.project.name === "desktop") expect(gaps.location).toBe(gaps.after);
+  }
   await mkdir("../.impeccable/review", { recursive: true });
   await page.screenshot({
     path: `../.impeccable/review/review-detail-${info.project.name}.png`,
@@ -1392,26 +1413,32 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   await page.setViewportSize({ width: 320, height: 844 });
   const requests = await mock(page, {
     run: { status: "completed" },
-    finding: { path: directory + file, content, desired_status: "resolved", sync_error: "GitHub unavailable", last_seen_run_id: "previous" },
+    finding: { path: directory + file, content, category: "custom_rule", desired_status: "resolved", sync_error: "GitHub unavailable", last_seen_run_id: "previous" },
     occurrences: [{ finding_id: "finding", inline_line: null, snapshot: { ...finding, path: directory + file, content } }],
   });
   await page.goto("/pulls/pr");
   const card = page.getByRole("button", { name: /retry loop has no upper bound/ });
   await expect(card.getByText(file, { exact: true })).toBeVisible();
   await expect(card.getByText(directory, { exact: true })).toBeVisible();
+  await expect(card.getByText(file, { exact: true }).locator("..")).toHaveText(directory + file);
   await expect(card).toContainText("42–46");
   await expect(card.getByText("open", { exact: true })).toBeVisible();
   await expect(card).toContainText("Sync needs attention");
-  await expect(card).toContainText("Not observed in latest review");
+  await expect(card).not.toContainText("Not observed in latest review");
+  await expect(card).not.toContainText("View details");
+  await expect(card.locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
   await noOverflow(page);
   await card.press("Space");
   await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(content);
+  await expect(page.getByRole("dialog").locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
   await page.keyboard.press("Escape");
   await expect(card).toBeFocused();
   await page.goto("/runs/run");
   const saved = page.getByRole("region", { name: "Findings at this run" }).getByRole("button");
   await expect(saved).toContainText("Summary comment");
   await expect(saved.getByText(file, { exact: true })).toBeVisible();
+  await expect(saved.getByText(file, { exact: true }).locator("..")).toHaveText(directory + file);
+  await expect(saved).not.toContainText("View details");
   await expect(saved).not.toContainText("Sync needs attention");
   await noOverflow(page);
   await saved.press("Enter");
@@ -1424,7 +1451,7 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
   const occurrences = Array.from({ length: 6 }, (_, index) => ({
     finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,
-    snapshot: { ...finding, severity: index % 2 ? "medium" : "high", path: `src/webhooks/handler-${index + 1}.ts`,
+    snapshot: { ...finding, severity: index % 2 ? "medium" : "high", category: index % 2 ? "performance" : "bug", path: `src/webhooks/handler-${index + 1}.ts`,
       content: index === 0 ? finding.content : `Validate webhook ${index + 1} before processing its payload. Invalid input can interrupt delivery.` },
   }));
   await mock(page, {
@@ -1446,6 +1473,7 @@ test("review run workspace filters saved findings and separates original evidenc
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
   await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("6 of 6 findings");
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveClass("sr-only");
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
@@ -1461,6 +1489,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/run-coverage-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
+  await expect(page.getByRole("tabpanel")).toContainText("Review setup, execution details, revisions, and the configuration saved for this run.");
   await expect(page.getByRole("tabpanel")).toContainText("Shared connection");
   await expect(page.getByRole("tabpanel")).toContainText(run.head_sha);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -1469,6 +1498,14 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.getByRole("textbox", { name: "Search run findings" }).fill("handler-6");
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search" }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("3 of 6 findings");
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(6);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^High/ }).check();
@@ -1511,7 +1548,8 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   const coverage = page.getByRole("region", { name: "Coverage", exact: true });
   const reviewed = coverage.getByRole("region", { name: "Reviewed files", exact: true });
   const gaps = coverage.getByRole("region", { name: "Files not reviewed", exact: true });
-  await expect(coverage.getByText("Partial coverage", { exact: true })).toBeVisible();
+  await expect(coverage.getByText("See which files were reviewed or reused from earlier runs, and why others were left unreviewed.", { exact: true })).toBeVisible();
+  await expect(coverage.getByRole("heading", { name: "Coverage", exact: true })).toHaveCount(0);
   await expect(coverage.getByRole("textbox")).toHaveCount(0);
   await expect(coverage.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
   await expect(reviewed.getByRole("listitem")).toHaveCount(10);
@@ -1553,7 +1591,7 @@ for (const example of [
     await page.goto("/runs/run");
     await page.getByRole("tab", { name: "Coverage", exact: true }).click();
     const coverage = page.getByRole("region", { name: "Coverage", exact: true });
-    await expect(coverage.getByText(example.label, { exact: true })).toBeVisible();
+    await expect(coverage.getByText(example.label, { exact: true })).toHaveCount(0);
     if (example.name === "legacy report") await expect(coverage.getByText(example.summary, { exact: true })).toBeVisible();
     else await expect(coverage.getByText(example.summary, { exact: true })).toHaveCount(0);
     await expect(coverage.getByRole("listitem").filter({ hasText: example.file })).toContainText(example.state);
@@ -1619,7 +1657,7 @@ test("partial review and publication retry remain distinct", async ({
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
-  await expect(page.getByRole("link", { name: "View check on GitHub" })).toHaveAttribute("href", run.check_url);
+  await expect(page.getByRole("link", { name: /^View check on GitHub:/ })).toHaveAttribute("href", run.check_url);
   await expect(page.getByText(run.check_error)).toBeVisible();
   await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
   await noOverflow(page);
@@ -1669,6 +1707,15 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-empty-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_url = run.check_url;
+  await page.reload();
+  const checkLink = page.getByRole("link", { name: "View check on GitHub: Check", exact: true });
+  await expect(checkLink).toHaveText("check");
+  await expect(checkLink).toHaveAttribute("href", run.check_url);
+  await checkLink.focus();
+  await expect(checkLink).toBeFocused();
+  await noOverflow(page);
 });
 
 test("read-only members cannot change findings or instance settings", async ({
@@ -2741,7 +2788,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await expect(page.getByText("No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates.", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
-  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial assessment", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
   await expect(page.getByText(/Assessment is incomplete/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Inspect assessment", exact: true })).toHaveCount(0);
   const withheld = page.getByRole("button", { name: /index.css.*315.*Withheld/ });
@@ -2801,8 +2848,8 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
-  const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
-  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial assessment", { exact: true })).toBeVisible();
+  const assessment = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
   await expect(assessment).not.toContainText("No new comments");
   await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
@@ -2880,9 +2927,9 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   expect(requests).toEqual([]);
 });
 
-test("assessments paginate on the backend and reset pages when filters change", async ({ page }) => {
+test("assessments paginate on the backend and reset pages when filters change", async ({ page }, info) => {
   const candidates: Schema["CandidateOut"][] = Array.from({ length: 23 }, (_, index) => ({
-    id: `candidate-${index}`, snapshot: { path: `src/handler-${index}.ts`, content: `Saved proposal ${index}`, severity: index % 2 ? "low" : "high", category: "bug" },
+    id: `candidate-${index}`, snapshot: { path: `src/handler-${index}.ts`, content: `Saved proposal ${index}`, severity: index % 2 ? "low" : "high", category: index === 22 ? "custom_rule" : index === 21 ? "performance" : "bug" },
     status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null,
   }));
   const writes = await mock(page, { candidates,
@@ -2899,15 +2946,30 @@ test("assessments paginate on the backend and reset pages when filters change", 
   const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
   const cards = list.locator("[data-slot=finding-card]");
   await expect(cards).toHaveCount(10);
-  await expect(list.getByText("23 of 23 assessments", { exact: true })).toBeVisible();
+  await expect(list.getByRole("heading", { name: "Candidate assessment", exact: true })).toHaveCount(0);
+  await expect(list).toContainText("Proposed findings are checked against evidence and earlier reviews before becoming new comments.");
+  await expect(list.getByText("23 of 23 assessments", { exact: true })).toHaveClass("sr-only");
+  await list.getByRole("button", { name: "Load more assessments" }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/assessment-pagination-${info.project.name}.png`, animations: "disabled" });
   await list.getByRole("button", { name: "Load more assessments" }).click();
   await expect(cards).toHaveCount(20);
   await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
   expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByLabel("Search type options", { exact: true }).fill("custom");
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("handler-22.ts");
+  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule"]);
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
   await page.getByLabel("Search assessments", { exact: true }).fill("handler-22.ts");
   await expect(cards).toHaveCount(1);
   await expect(cards).toContainText("New validated finding");
-  await expect(list.getByText("1 of 23 assessments", { exact: true })).toBeVisible();
+  await expect(list.getByText("1 of 23 assessments", { exact: true })).toHaveClass("sr-only");
   expect(requests.at(-1)?.get("q")).toBe("handler-22.ts");
   expect(requests.at(-1)?.get("page")).toBe("1");
   await cards.press("Enter");
@@ -2928,7 +2990,7 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^High/ }).check();
   await page.keyboard.press("Escape");
-  await expect(list.getByText("12 of 23 assessments", { exact: true })).toBeVisible();
+  await expect(list.getByText("12 of 23 assessments", { exact: true })).toHaveClass("sr-only");
   await list.getByRole("button", { name: "Load more assessments" }).click();
   await expect(cards).toHaveCount(12);
   expect(requests.at(-1)?.getAll("severity")).toEqual(["high"]);
@@ -5635,9 +5697,13 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "View all findings", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
-  await expect(page.getByRole("button", { name: /Remove (Status|Severity) filter/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Remove (Status|Severity|Type) filter/ })).toHaveCount(0);
   await page.getByLabel("Search findings", { exact: true }).fill("performance");
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
@@ -5768,7 +5834,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await page.goto("/pulls/pr");
   await expect(page.getByRole("tab", { name: "Run history 23" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review in progress" })).toBeDisabled();
-  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
   expect(requests).toEqual([]);
   await page.getByRole("tab", { name: "Run history 23" }).click();
   const history = page.getByRole("tabpanel");
@@ -5792,7 +5858,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
   expect(requests).toEqual([1, 1, 2, 3]);
   await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
-  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
 });
 
 test("run history load more stays available during polling and waits for the next page", async ({ page }) => {
@@ -5887,6 +5953,7 @@ test("pull detail paginates each finding status independently and resets pages w
     ...finding, id: `${status}-${index}`, status, sync_intent: null,
     content: `Test finding ${index + 1}: validate incoming webhook data before processing.`,
     path: `src/${status}/handler-${index + 1}.ts`, severity: index % 2 ? "medium" : "high",
+    category: index === 20 ? "custom_rule" : index === 19 ? "performance" : "bug",
   })));
   await mockPullDetail(page, () => ({
     pull_request: pr, repository: repo, can_write: true, runs: [], findings,
@@ -5925,6 +5992,19 @@ test("pull detail paginates each finding status independently and resets pages w
   for (const status of ["open", "resolved", "dismissed"]) expect(requests.some((params) => params.get("group") === status && params.get("page") === "2")).toBe(true);
   expect(requests.some((params) => params.get("group") === "open" && params.get("page") === "3")).toBe(true);
   await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).check();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
+  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule", "performance"]);
+  expect(requests.at(-1)?.has("group")).toBe(false);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/finding-type-filter-${info.project.name}.png`, animations: "disabled" });
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
 
   await page.getByLabel("Search findings", { exact: true }).fill("handler-21.ts");
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);

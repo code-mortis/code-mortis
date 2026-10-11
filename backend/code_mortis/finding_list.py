@@ -11,11 +11,16 @@ def list_findings(db: Session, pr_id: str, filters: FindingFilters) -> FindingsO
     counts.update(dict(db.execute(
         select(Finding.status, func.count()).where(scope).group_by(Finding.status)
     ).all()))
+    category_counts = dict(db.execute(
+        select(Finding.category, func.count()).where(scope).group_by(Finding.category)
+    ).all())
     conditions = [scope]
     if filters.status:
         conditions.append(Finding.status.in_(filters.status))
     if filters.severity:
         conditions.append(Finding.severity.in_(filters.severity))
+    if filters.category:
+        conditions.append(Finding.category.in_(filters.category))
     if query := filters.q.strip():
         conditions.append(or_(*[
             column.icontains(query, autoescape=True)
@@ -39,4 +44,5 @@ def list_findings(db: Session, pr_id: str, filters: FindingFilters) -> FindingsO
         ))
     return FindingsOut(
         groups=pages, total=sum(totals.values()), registered_total=sum(counts.values()), status_counts=counts,
+        category_counts=category_counts,
     )

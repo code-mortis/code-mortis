@@ -32,6 +32,12 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
+  LoaderCircle,
+  Bug,
+  Shield,
+  Gauge,
+  Wrench,
+  Tag,
 } from "lucide-react";
 import {
   ApiError,
@@ -43,6 +49,7 @@ import {
   type Schema,
 } from "./api";
 import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
@@ -271,6 +278,11 @@ function RunList({ prId }: { prId: string }) {
 
 const findingStatuses = ["open", "resolved", "dismissed"] as const;
 
+function findingTypeChoices(counts: Record<string, number>) {
+  return Object.entries(counts).filter(([value]) => value).sort(([a], [b]) => a.localeCompare(b))
+    .map(([value, count]) => ({ value, name: label(value), count }));
+}
+
 export function PullDetail({ admin }: { admin: boolean }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -283,18 +295,20 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [connection, setConnection] = useState("");
   const [statuses, setStatuses] = useState<string[]>(["open", "resolved"]);
   const [severities, setSeverities] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const [finding, setFinding] = useState<string | null>(null);
-  const filters = JSON.stringify([id, statuses, severities, search]);
+  const filters = JSON.stringify([id, statuses, severities, categories, search]);
   const [pagination, setPagination] = useState({ filters, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
   if (pagination.filters !== filters) setPagination({ filters, pages: {} });
   const findingFilters = new URLSearchParams();
   if (search.trim()) findingFilters.set("q", search.trim());
   statuses.forEach((value) => findingFilters.append("status", value));
   severities.forEach((value) => findingFilters.append("severity", value));
+  categories.forEach((value) => findingFilters.append("category", value));
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
     queryKey: ["pull-findings", id, filters, pagination.pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
@@ -306,14 +320,14 @@ export function PullDetail({ admin }: { admin: boolean }) {
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
-  const { pull_request: pr, repository, run_count, has_active_run: running, latest_observed_run_id: observed, can_write } = query.data;
+  const { pull_request: pr, repository, run_count, has_active_run: running, can_write } = query.data;
   const findings = findingsQuery.data;
   const total = findings?.registered_total ?? 0;
   const latest = pr.latest_run;
   const term = search.trim().toLowerCase();
   const count = (state: string) => findings?.status_counts[state] ?? 0;
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
-  const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
+  const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : running ? "A review is already queued or running."
     : pr.state !== "open" ? null
@@ -322,6 +336,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   function showAllFindings() {
     setStatuses([]);
     setSeverities([]);
+    setCategories([]);
     setSearch("");
     setSearchResetKey((key) => key + 1);
     searchInput.current?.focus();
@@ -377,8 +392,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
             filters={[
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
+              { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
-            onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)} />
+            onChange={(key, values) => key === "status" ? setStatuses(values) : key === "severity" ? setSeverities(values) : setCategories(values)} />
         </div>
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
@@ -388,25 +404,24 @@ export function PullDetail({ admin }: { admin: boolean }) {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
               <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
-              <div className="space-y-3">
+              <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
                 {items.map((item) => <FindingCard key={item.id} evidence={item}
                   onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}
-                  note={observed && item.last_seen_run_id !== observed ? "Not observed in latest review" : undefined}
-                  state={<div className="space-y-1.5">
+                  state={<div className="flex flex-col items-start gap-1.5">
                     <Status value={item.status} icon={item.status === "resolved" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />
                     {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
                   </div>} />)}
                 {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
                 {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
+                {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
+                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
+                  <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
+                </div>}
               </div>
-              {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
-                <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
-                <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
-              </div>}
             </section>;
           })}
         </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : run_count ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, or severity." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, severity, or type." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
           {total > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
@@ -425,31 +440,37 @@ export function PullDetail({ admin }: { admin: boolean }) {
   </>;
 }
 
-function FindingCard({ evidence, state, note, onClick, actionLabel = "View details" }: {
+function FindingCategory({ value }: { value: string }) {
+  const icons = new Map([["bug", Bug], ["security", Shield], ["performance", Gauge], ["maintainability", Wrench]]);
+  const Icon = icons.get(value) ?? Tag;
+  return <Badge variant="outline" className="gap-1.5 text-muted-foreground"><Icon aria-hidden="true" />{label(value)}</Badge>;
+}
+
+function FindingCard({ evidence, state, note, onClick }: {
   evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
-  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>; actionLabel?: string;
+  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>;
 }) {
   const path = String(evidence.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
   return <button type="button" data-slot="finding-card" onClick={onClick}
-    className="group w-full min-w-0 rounded-lg border bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
+    className="group w-full min-w-0 bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
     <span className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
-      <span className="flex min-w-0 max-w-full items-start gap-2">
-        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 font-mono text-xs">
+      <span className="flex min-w-0 max-w-full items-center gap-2">
+        <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="min-w-0 font-mono text-xs leading-[22px]">
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 [overflow-wrap:anywhere]">
-            <span className="min-w-0 font-medium">{path.slice(slash + 1)}</span>
+            <span className="min-w-0">
+              {slash >= 0 && <span className="text-muted-foreground">{path.slice(0, slash + 1)}</span>}<span className="font-medium">{path.slice(slash + 1)}</span>
+            </span>
             {evidence.start_line != null && <span className="text-muted-foreground">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
           </span>
-          {slash >= 0 && <span className="mt-1 block break-words text-muted-foreground [overflow-wrap:anywhere]">{path.slice(0, slash + 1)}</span>}
         </span>
       </span>
-      <span className="shrink-0">{state}</span>
+      <span className="flex shrink-0">{state}</span>
     </span>
     <span className="mt-4 line-clamp-3 max-w-[75ch] break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
     <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <span className="text-xs capitalize text-muted-foreground">{words(String(evidence.category))}</span>}</span>
-      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground group-hover:text-primary">{actionLabel}<ChevronRight className="size-3.5" aria-hidden="true" /></span>
+      <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</span>
     </span>
     {note && <span className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground"><History className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{note}</span>}
   </button>;
@@ -501,7 +522,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
             <p className="mt-1 text-muted-foreground">Lines {String(evidence.start_line ?? "")}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} /><span className="text-xs text-muted-foreground">{label(String(evidence.category ?? ""))}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} />{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</div>
       </div>
       <div className="grid shrink-0 grid-cols-[18px_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border-y bg-muted/50 px-6 py-4 sm:grid-cols-[18px_minmax(0,1fr)_auto]">
         <StatusIcon className={`mt-0.5 size-[18px] ${f?.status === "resolved" ? "text-emerald-800 dark:text-emerald-300" : "text-muted-foreground"}`} aria-hidden="true" />
@@ -633,11 +654,11 @@ function AssessmentList({ runId, running, onOpen }: {
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);
   const [listVersion, setListVersion] = useState(0);
-  const [filters, setFilters] = useState<{ outcome: string[]; severity: string[] }>({ outcome: [], severity: [] });
+  const [filters, setFilters] = useState<{ outcome: string[]; severity: string[]; category: string[] }>({ outcome: [], severity: [], category: [] });
   const searchInput = useRef<HTMLInputElement>(null);
   const params = new URLSearchParams();
   if (search.trim()) params.set("q", search.trim());
-  for (const key of ["outcome", "severity"] as const) for (const value of filters[key]) params.append(key, value);
+  for (const key of ["outcome", "severity", "category"] as const) for (const value of filters[key]) params.append(key, value);
   const query = useInfiniteQuery<Schema["CandidatePage"], ApiError>({
     queryKey: ["run-candidates", runId, params.toString(), listVersion],
     queryFn: ({ pageParam, signal }) => api<Schema["CandidatePage"]>(`/runs/${runId}/candidates?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
@@ -660,24 +681,27 @@ function AssessmentList({ runId, running, onOpen }: {
       filters={[
         { key: "outcome", label: "Result", values: filters.outcome, choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
         { key: "severity", label: "Severity", values: filters.severity, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
+        { key: "category", label: "Type", values: filters.category, choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
       ]} onChange={(key, values) => { setFilters((current) => ({ ...current, [key]: values })); setListVersion((version) => version + 1); }}>
-      {last && <span role="status" className="text-xs tabular-nums text-muted-foreground sm:pt-2.5">{last.total} of {last.registered_total} assessments</span>}
+      {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} assessments</span>}
     </FilterBar>
     <ErrorNotice error={query.error} />
-    {query.isPending ? <Loading /> : candidates.length ? <div className="space-y-3">{candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
-      state={<CandidateStatus candidate={item} />} actionLabel="View assessment"
-      note={item.error ? "Assessment needs attention" : item.finding_id ? "Linked to a saved finding" : undefined}
-      onClick={(event) => onOpen(item, event.currentTarget)} />)}</div> : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
-      <p>{first?.registered_total ? "Try another search, result, or severity." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
-      {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSearchResetKey((key) => key + 1); setFilters({ outcome: [], severity: [] }); setListVersion((version) => version + 1); searchInput.current?.focus(); }}>View all assessments</Button>}
-    </Empty>}
-    {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
-      {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
-        {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
-      </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
-        : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
-      {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
-    </div>}
+    <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
+      {query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
+        state={<CandidateStatus candidate={item} />}
+        note={item.error ? "Assessment needs attention" : undefined}
+        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
+        <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
+        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSearchResetKey((key) => key + 1); setFilters({ outcome: [], severity: [], category: [] }); setListVersion((version) => version + 1); searchInput.current?.focus(); }}>View all assessments</Button>}
+      </Empty>}
+      {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+        {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
+          {query.isFetchingNextPage && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
+        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
+          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
+        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
+      </div>}
+    </div>
   </div>;
 }
 
@@ -701,7 +725,7 @@ function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
       <div className="flex flex-wrap items-center gap-2">
         {snapshot.start_line != null && <span className="text-xs text-muted-foreground">Lines {String(snapshot.start_line)}{snapshot.end_line && snapshot.end_line !== snapshot.start_line ? `–${snapshot.end_line}` : ""}</span>}
         {snapshot.severity != null && <Status value={String(snapshot.severity)} />}
-        {!!snapshot.category && <span className="text-xs text-muted-foreground">{label(String(snapshot.category))}</span>}
+        {!!snapshot.category && <FindingCategory value={String(snapshot.category)} />}
       </div>
     </div>
     <div className="flex shrink-0 items-start gap-3 border-y bg-muted/50 px-6 py-4">
@@ -770,6 +794,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const [tab, setTab] = useState("findings");
   const [search, setSearch] = useState("");
   const [severities, setSeverities] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [finding, setFinding] = useState<{ finding_id: string; snapshot?: Schema["OccurrenceOut"]["snapshot"] } | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<Schema["CandidateOut"] | null>(null);
   const candidateQuery = useQuery<Schema["CandidateOut"], ApiError>({
@@ -789,7 +814,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const feedback = runFeedback(run);
   const term = search.trim().toLowerCase();
   const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
+    && (!categories.length || categories.includes(String(snapshot.category)))
     && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
+  const categoryCounts = Object.fromEntries([...new Set(occurrences.map(({ snapshot }) => String(snapshot.category ?? "")).filter(Boolean))]
+    .map((value) => [value, occurrences.filter(({ snapshot }) => snapshot.category === value).length]));
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
     <header className="mb-6 min-w-0">
@@ -810,13 +838,17 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </div>
       </div>
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
-        <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
-          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} />
-            {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <span role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial assessment" : "Assessment pending"} /></span>}
-          </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} /></div>
+          {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">Assessment</span>
+            <span role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span>
+          </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">GitHub check</span>{checkValue && <Status value={checkValue} />}
-            {run.check_url && <a className="inline-flex min-h-6 items-center gap-1 underline-offset-4 hover:underline" href={run.check_url} target="_blank" rel="noreferrer" aria-label="View check on GitHub">View check<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
+            <span className="text-muted-foreground">GitHub check</span>
+            {run.check_url ? <a className="inline-flex rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
+              <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
+            </a> : checkValue && <Status value={checkValue} />}
           </div>}
         </div>
         {!["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
@@ -857,19 +889,22 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4"><FilterBar query={search} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={setSearch}
-          filters={[{ key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) }]}
-          onChange={(_, values) => setSeverities(values)}>
-          <span role="status" className="text-xs tabular-nums text-muted-foreground sm:pt-2.5">{filtered.length} of {occurrences.length} findings</span>
+          filters={[
+            { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
+            { key: "category", label: "Type", values: categories, choices: findingTypeChoices(categoryCounts), searchPlaceholder: "Search types…" },
+          ]}
+          onChange={(key, values) => key === "severity" ? setSeverities(values) : setCategories(values)}>
+          <span role="status" className="sr-only">{filtered.length} of {occurrences.length} findings</span>
         </FilterBar></div>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-        {filtered.length ? <section aria-label="Findings at this run" className="space-y-3">
+        {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
             state={<span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>}
             onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item); }} />)}
         </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
-          <p>{occurrences.length ? "Try another search or severity." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
-          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSeverities([]); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
+          <p>{occurrences.length ? "Try another search, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
+          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSeverities([]); setCategories([]); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
         </Empty>}
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
@@ -877,8 +912,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">
-          <h2 className="mb-2 text-sm font-semibold">Candidate assessment</h2>
-          <p className="mb-4 text-xs text-muted-foreground">Proposed findings are checked against evidence and earlier reviews before becoming new comments.</p>
+          <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Proposed findings are checked against evidence and earlier reviews before becoming new comments.</p>
           {assessment ? <>
             <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
@@ -887,6 +921,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </section>
       </TabsContent>
       <TabsContent value="details" className="min-w-0">
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Review setup, execution details, revisions, and the configuration saved for this run.</p>
         <div className="grid min-w-0 gap-x-8 gap-y-6 md:grid-cols-2">{[
           { title: "Review setup", rows: [
             ["Connection", String(connection?.name ?? "Not recorded")], ["Model", String(connection?.model ?? "Not recorded")], ["Engine", engine],

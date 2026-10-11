@@ -21,11 +21,17 @@ def list_candidates(db: Session, run_id: str, filters: CandidateFilters) -> Cand
     severity_counts.update({key: count for key, count in db.execute(
         select(severity, func.count()).where(scope).group_by(severity)
     ) if key in severity_counts})
+    category = ReviewCandidate.snapshot["category"].as_string()
+    category_counts = {key: count for key, count in db.execute(
+        select(category, func.count()).where(scope).group_by(category)
+    ) if key}
     conditions = [scope]
     if filters.outcome:
         conditions.append(outcome.in_(filters.outcome))
     if filters.severity:
         conditions.append(severity.in_(filters.severity))
+    if filters.category:
+        conditions.append(category.in_(filters.category))
     if query := filters.q.strip():
         conditions.append(or_(*[
             ReviewCandidate.snapshot[key].as_string().icontains(query, autoescape=True)
@@ -39,5 +45,6 @@ def list_candidates(db: Session, run_id: str, filters: CandidateFilters) -> Cand
     return CandidatePage(
         items=[CandidateOut.model_validate(item) for item in items], total=total,
         registered_total=sum(counts.values()), outcome_counts=counts, severity_counts=severity_counts,
+        category_counts=category_counts,
         page=page, has_more=page * LIST_PAGE_SIZE < total,
     )

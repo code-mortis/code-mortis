@@ -468,6 +468,7 @@ class CandidateFilters(StrictModel):
     q: str = Field(default="", max_length=256)
     outcome: list[CandidateOutcome] = Field(default_factory=list, max_length=5)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
 
 
@@ -477,6 +478,7 @@ class CandidatePage(BaseModel):
     registered_total: int
     outcome_counts: dict[str, int]
     severity_counts: dict[str, int]
+    category_counts: dict[str, int]
     page: int
     has_more: bool
     page_size: int = LIST_PAGE_SIZE
@@ -565,6 +567,7 @@ class FindingFilters(StrictModel):
     q: str = Field(default="", max_length=256)
     status: list[FindingStatus] = Field(default_factory=list, max_length=3)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     group: FindingStatus | None = None
     page: int = Field(default=1, ge=1, le=1000000)
 
@@ -582,4 +585,5 @@ class FindingsOut(BaseModel):
     total: int
     registered_total: int
     status_counts: dict[str, int]
+    category_counts: dict[str, int]
     page_size: int = LIST_PAGE_SIZE

@@ -980,6 +980,10 @@ export interface components {
             severity_counts: {
                 [key: string]: number;
             };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
             /** Page */
             page: number;
             /** Has More */
@@ -1166,6 +1170,10 @@ export interface components {
             registered_total: number;
             /** Status Counts */
             status_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
                 [key: string]: number;
             };
             /**
@@ -2323,6 +2331,7 @@ export interface operations {
                 q?: string;
                 status?: ("open" | "resolved" | "dismissed")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
                 group?: ("open" | "resolved" | "dismissed") | null;
                 page?: number;
             };
@@ -2391,6 +2400,7 @@ export interface operations {
                 q?: string;
                 outcome?: ("new" | "repeated" | "rejected" | "withheld" | "pending")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
                 page?: number;
             };
             header?: never;
