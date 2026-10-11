@@ -17,6 +17,8 @@ import {
   Play,
   RefreshCw,
   ArrowUpRight,
+  ArrowLeft,
+  ClipboardCheck,
   LockKeyhole,
   Globe,
   FolderGit2,
@@ -52,6 +54,7 @@ import {
   SheetTitle,
   SheetDescription,
   SheetFooter,
+  SheetClose,
 } from "./components/ui/sheet";
 import {
   active,
@@ -420,16 +423,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
   </>;
 }
 
-function FindingCard({ evidence, state, note, onClick }: {
+function FindingCard({ evidence, state, note, onClick, actionLabel = "View details" }: {
   evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
-  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>;
+  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>; actionLabel?: string;
 }) {
   const path = String(evidence.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
   return <button type="button" data-slot="finding-card" onClick={onClick}
     className="group w-full min-w-0 rounded-lg border bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
     <span className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
-      <span className="flex min-w-0 items-start gap-2">
+      <span className="flex min-w-0 max-w-full items-start gap-2">
         <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="min-w-0 font-mono text-xs">
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 [overflow-wrap:anywhere]">
@@ -443,8 +446,8 @@ function FindingCard({ evidence, state, note, onClick }: {
     </span>
     <span className="mt-4 line-clamp-3 max-w-[75ch] break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
     <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <span className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} />{!!evidence.category && <span className="text-xs capitalize text-muted-foreground">{words(String(evidence.category))}</span>}</span>
-      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground group-hover:text-primary">View details<ChevronRight className="size-3.5" aria-hidden="true" /></span>
+      <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <span className="text-xs capitalize text-muted-foreground">{words(String(evidence.category))}</span>}</span>
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground group-hover:text-primary">{actionLabel}<ChevronRight className="size-3.5" aria-hidden="true" /></span>
     </span>
     {note && <span className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground"><History className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{note}</span>}
   </button>;
@@ -606,6 +609,77 @@ function getCandidateLabel(candidate: Schema["CandidateOut"]) {
   return "Withheld";
 }
 
+function CandidateStatus({ candidate }: { candidate: Schema["CandidateOut"] }) {
+  let value = "partial";
+  if (candidate.finding_id) value = "completed";
+  else if (candidate.result?.verdict === "rejected") value = "rejected";
+  else if (active(candidate.status)) value = candidate.status;
+  return <Status value={value} label={getCandidateLabel(candidate)} />;
+}
+
+function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
+  candidate: Schema["CandidateOut"]; headSha: string; onOpenFinding: () => void;
+}) {
+  const [tab, setTab] = useState("assessment");
+  const { snapshot, result } = candidate;
+  const path = String(snapshot.path ?? "Path not recorded");
+  const slash = path.lastIndexOf("/");
+  const heading = candidate.finding_id ? candidate.is_new ? "Why it was validated" : "Why it is repeated" : result?.verdict === "rejected" ? "Why it was not supported" : "Why it was withheld";
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <div className="shrink-0 space-y-3 px-6 pb-5">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div className="min-w-0 font-mono text-xs">
+          <p className="break-words font-medium [overflow-wrap:anywhere]">{path.slice(slash + 1)}</p>
+          {slash >= 0 && <p className="mt-1 break-words text-muted-foreground [overflow-wrap:anywhere]">{path.slice(0, slash + 1)}</p>}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {snapshot.start_line != null && <span className="text-xs text-muted-foreground">Lines {String(snapshot.start_line)}{snapshot.end_line && snapshot.end_line !== snapshot.start_line ? `–${snapshot.end_line}` : ""}</span>}
+        {snapshot.severity != null && <Status value={String(snapshot.severity)} />}
+        {!!snapshot.category && <span className="text-xs text-muted-foreground">{label(String(snapshot.category))}</span>}
+      </div>
+    </div>
+    <div className="flex shrink-0 items-start gap-3 border-y bg-muted/50 px-6 py-4">
+      <ClipboardCheck className="mt-0.5 size-[18px] shrink-0 text-muted-foreground" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">Assessment result</span><CandidateStatus candidate={candidate} /></div>
+        <p className="text-xs leading-relaxed text-muted-foreground">Reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>. Finding resolution is tracked separately.</p>
+      </div>
+    </div>
+    <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
+      <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Assessment information">
+        <TabsTrigger autoFocus value="assessment">Assessment</TabsTrigger>
+        <TabsTrigger value="evidence">Evidence <span className="text-xs font-normal tabular-nums text-muted-foreground">{result?.evidence.length ?? 0}</span></TabsTrigger>
+      </TabsList></div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="assessment-scroll">
+        <TabsContent value="assessment" className="space-y-6">
+          <ErrorNotice error={candidate.error} />
+          {result ? <>
+            <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
+            <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
+            <section className="space-y-3"><h3 className="text-sm font-semibold">Changed conditions</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.changed_conditions || "No changed conditions were recorded."}</p></section>
+          </> : <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
+        </TabsContent>
+        <TabsContent value="evidence" className="space-y-6">
+          <section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>.</p></section>
+          {result?.evidence.length ? result.evidence.map((evidence, index) => <section key={`${evidence.revision}-${evidence.path}-${evidence.start_line}-${index}`} className="space-y-3">
+            <p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
+            <Code path={evidence.path}>{evidence.quote}</Code>
+          </section>) : <p className="text-sm text-muted-foreground">{active(candidate.status) ? "Evidence will appear when assessment completes." : "No supporting evidence was recorded."}</p>}
+        </TabsContent>
+        <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Original proposal</summary><div className="mt-3 max-w-[75ch]"><Markdown>{String(snapshot.content ?? "No proposal text was recorded.")}</Markdown></div></details>
+      </div>
+    </Tabs>
+    <SheetFooter className="shrink-0 border-t px-6 py-4">
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs leading-relaxed text-muted-foreground">{candidate.finding_id ? "Finding resolution is tracked separately." : "This candidate is not linked to a finding."}</p>
+        {candidate.finding_id ? <Button className="min-h-11 sm:min-h-9" onClick={onOpenFinding}><ArrowUpRight aria-hidden="true" />Open finding</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
+      </div>
+    </SheetFooter>
+  </div>;
+}
+
 function verificationSummary(value: unknown): Record<string, number> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const counts: Record<string, number> = {};
@@ -639,9 +713,12 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const [tab, setTab] = useState("findings");
   const [search, setSearch] = useState("");
   const [severities, setSeverities] = useState<string[]>([]);
-  const [finding, setFinding] = useState<Schema["OccurrenceOut"] | null>(null);
+  const [finding, setFinding] = useState<{ finding_id: string; snapshot?: Schema["OccurrenceOut"]["snapshot"] } | null>(null);
+  const [candidateId, setCandidateId] = useState<string | null>(null);
+  const candidate = candidates.find((item) => item.id === candidateId);
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
+  const assessmentTab = useRef<HTMLButtonElement>(null);
   const coverage = ((run.report?.manifest as { coverage?: Coverage } | undefined)?.coverage ?? {}) as Coverage;
   const duration = runDuration(run);
   const connection = run.config.connection as Record<string, unknown> | undefined;
@@ -713,7 +790,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
-        <TabsTrigger value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
+        <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="details">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
@@ -756,20 +833,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
             {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.</p>}
-            {candidates.length ? <div className="mt-4 divide-y overflow-hidden rounded-lg border bg-card">{candidates.map((candidate) => <details key={candidate.id} className="group text-sm">
-              <summary className="cursor-pointer break-words px-5 py-4 marker:text-muted-foreground hover:bg-muted/50 [overflow-wrap:anywhere]"><span className="font-medium">{String(candidate.snapshot.path ?? "Path not recorded")}:{String(candidate.snapshot.start_line ?? "")} · {getCandidateLabel(candidate)}</span><p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">{String(candidate.snapshot.content ?? "")}</p></summary>
-              <div className="space-y-3 border-t px-5 py-4">
-                <Markdown>{String(candidate.snapshot.content ?? "")}</Markdown>
-                <ErrorNotice error={candidate.error} />
-                {candidate.result && <>
-                  <p>{candidate.result.explanation}</p>
-                  {candidate.result.history_explanation && <p>{candidate.result.history_explanation}</p>}
-                  {candidate.result.changed_conditions && <p>{candidate.result.changed_conditions}</p>}
-                  {candidate.result.evidence.map((evidence, index) => <div key={`${evidence.revision}-${evidence.path}-${evidence.start_line}-${index}`}><p className="mb-2 break-all text-xs text-muted-foreground">{evidence.revision}: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p><Code path={evidence.path}>{evidence.quote}</Code></div>)}
-                </>}
-                {candidate.finding_id && <p className="break-all text-xs text-muted-foreground">Existing finding: {candidate.finding_id}. Resolution state is preserved.</p>}
-              </div>
-            </details>)}</div> : <Empty title="No candidates to assess">{active(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</Empty>}
+            {candidates.length ? <div className="mt-4 space-y-3">{candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
+              state={<CandidateStatus candidate={item} />} actionLabel="View assessment"
+              note={item.error ? "Assessment needs attention" : item.finding_id ? "Linked to a saved finding" : undefined}
+              onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(null); setCandidateId(item.id); }} />)}</div> : <Empty title="No candidates to assess">{active(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</Empty>}
           </> : <Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty>}
         </section>
       </TabsContent>
@@ -783,10 +850,15 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         <details className="mt-5 text-sm"><summary className="cursor-pointer font-medium">Configuration used</summary><p className="mt-3 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div></details>
       </TabsContent>
     </Tabs>
-    <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
-      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus(); }}>
-        <SheetHeader className="shrink-0 px-6 pb-4 pt-5"><SheetTitle>Finding details</SheetTitle><SheetDescription className="sr-only">Inspect the evidence saved in this run and its current resolution separately.</SheetDescription></SheetHeader>
-        {finding && <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} />}
+    <Sheet open={!!finding || !!candidate} onOpenChange={(open) => { if (!open) { setFinding(null); setCandidateId(null); } }}>
+      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : searchInput.current)?.focus(); }}>
+        <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
+          {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => setFinding(null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
+          <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>
+          <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
+        </SheetHeader>
+        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
+          onOpenFinding={() => { if (candidate.finding_id) setFinding({ finding_id: candidate.finding_id, snapshot: occurrences.find((item) => item.finding_id === candidate.finding_id)?.snapshot }); }} />}
       </SheetContent>
     </Sheet>
   </>;

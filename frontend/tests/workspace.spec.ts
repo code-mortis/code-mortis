@@ -2613,7 +2613,7 @@ test("oversized review explains its outcome and links to editable limits through
 });
 
 test("candidate assessment separates withheld claims from repeated findings", async ({ page }, info) => {
-  await mock(page, {
+  const requests = await mock(page, {
     run: { status: "completed", publication: "no_new_comments", publication_error: null,
       check_status: "completed", check_conclusion: "neutral", check_pending: false, check_error: null },
     assessment: { candidates: 2, new_findings: 0, repeated_observations: 1, withheld_candidates: 1,
@@ -2636,13 +2636,34 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
   await expect(page.getByText(/Assessment is incomplete for 1 candidate/)).toBeVisible();
-  const withheld = page.locator("details").filter({ has: page.locator("summary", { hasText: "index.css:315 · Withheld" }) });
-  await withheld.locator("summary").focus();
+  const withheld = page.getByRole("button", { name: /index.css.*315.*Withheld/ });
+  await withheld.focus();
   await page.keyboard.press("Enter");
-  await expect(withheld).toContainText("No evidence establishes a build failure at this revision.");
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("No evidence establishes a build failure at this revision.");
+  await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: /Resolve finding|Reopen finding|Dismiss/ })).toHaveCount(0);
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  await expect(sheet).toContainText("Tailwind might fail to process this rule.");
+  await sheet.getByRole("tab", { name: "Evidence 0" }).click();
+  await expect(sheet).toContainText("No supporting evidence was recorded.");
+  await page.keyboard.press("Escape");
+  await expect(withheld).toBeFocused();
+  const repeated = page.getByRole("button", { name: /Same defect with different wording/ });
+  await repeated.click();
+  await sheet.getByRole("button", { name: "Open finding" }).click();
+  const linked = page.getByRole("dialog", { name: "Finding details" });
+  await expect(linked.getByRole("tab", { name: "At this run" })).toHaveAttribute("data-state", "active");
+  await expect(linked.getByRole("button", { name: "Back to assessment" })).toBeFocused();
+  await linked.getByRole("button", { name: "Back to assessment" }).click();
+  await expect(sheet.getByRole("tab", { name: "Assessment", exact: true })).toBeFocused();
+  await expect(sheet).toContainText("Repeated observation");
+  await page.keyboard.press("Escape");
+  await expect(repeated).toBeFocused();
   await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/candidate-assessment-${info.project.name}.png`, fullPage: true });
+  expect(requests).toEqual([]);
 });
 
 test("legacy review findings are not labeled as validated", async ({ page }) => {
@@ -2675,20 +2696,80 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
   await expect(assessment).toContainText("Assessment is incomplete for 1 candidate. This is not a clean review.");
   await expect(assessment).not.toContainText("No new comments");
-  await assessment.locator("summary").filter({ hasText: "client.py:12 · Withheld" }).click();
-  await expect(assessment.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
-  const confirmed = assessment.locator("details").filter({ has: page.locator("summary", { hasText: "retry.py:7 · New validated finding" }) });
-  await confirmed.locator("summary").focus();
+  await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
+  await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  const confirmed = assessment.getByRole("button", { name: /retry.py.*7.*New validated finding/ });
+  await confirmed.focus();
   await page.keyboard.press("Enter");
-  await expect(confirmed.getByText("current: backend/retry.py:7–8", { exact: true })).toBeVisible();
-  const code = confirmed.getByRole("region", { name: "Code snippet" });
+  await expect(sheet).toContainText("Retries never terminate.");
+  await sheet.getByRole("tab", { name: "Evidence 1" }).click();
+  await expect(sheet.getByText("Current evidence: backend/retry.py:7–8", { exact: true })).toBeVisible();
+  const code = sheet.getByRole("region", { name: "Code snippet" });
   await expect(code).toHaveText(source);
   await expect(code.locator("code")).toHaveClass(/language-python/);
   await expect(code.locator(".hljs-keyword").first()).toHaveText("while");
-  await expect(confirmed.getByRole("alert")).toHaveCount(0);
+  await expect(sheet.getByRole("alert")).toHaveCount(0);
+  await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Open finding" })).toBeInViewport();
   await noOverflow(page);
   await mkdir("../.impeccable/review", { recursive: true });
-  await assessment.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
+  await sheet.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
+});
+
+test("assessment sheet preserves polling, full evidence, and focus on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  const path = `frontend/${"nested/".repeat(6)}${"long-filename-".repeat(7)}.tsx`;
+  const source = `const value = "${"saved-evidence-".repeat(30)}";\nexport { value };`;
+  const candidate: Schema["CandidateOut"] = {
+    id: "pending", snapshot: { path, start_line: 10, end_line: 11, content: "Full original proposal remains available after assessment finishes." },
+    status: "running", result: null, finding_id: null, is_new: false, error: null,
+  };
+  const requests = await mock(page, {
+    canWrite: false, candidates: [candidate],
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 1, incomplete: 0, published_comments: 0 },
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const card = page.getByRole("button", { name: /long-filename-/ });
+  await card.focus();
+  await page.keyboard.press("Space");
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Assessment is waiting for the review worker.");
+  await expect(sheet).toContainText(path.slice(path.lastIndexOf("/") + 1));
+  await expect(sheet).toContainText(path.slice(0, path.lastIndexOf("/") + 1));
+  await sheet.getByRole("tab", { name: "Evidence 0" }).click();
+  await expect(sheet).toContainText("Evidence will appear when assessment completes.");
+  candidate.status = "completed";
+  candidate.result = {
+    verdict: "rejected", relationship: "new", finding_id: null,
+    explanation: "The supplied evidence does not establish the alleged defect.",
+    cause: "", trigger: "", consequence: "", history_explanation: "Earlier evidence is preserved.",
+    contradicts_prior: false, changed_conditions: "The reviewed conditions did not change.", suggestion_supported: false,
+    evidence: [
+      { revision: "original", path, start_line: 10, end_line: 11, quote: source },
+      { revision: "current", path, start_line: 10, end_line: 11, quote: "export const unchanged = true;" },
+    ],
+  };
+  await expect(sheet.getByRole("tab", { name: "Evidence 2" })).toHaveAttribute("data-state", "active", { timeout: 10000 });
+  await expect(sheet).toContainText("Not supported");
+  const code = sheet.getByRole("region", { name: "Code snippet" });
+  await expect(code.nth(0)).toHaveText(source);
+  await expect(code.nth(1)).toHaveText("export const unchanged = true;");
+  await code.nth(0).focus();
+  await expect(code.nth(0)).toBeFocused();
+  await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+  await sheet.getByRole("tab", { name: "Assessment", exact: true }).click();
+  await expect(sheet).toContainText("Earlier evidence is preserved.");
+  await expect(sheet).toContainText("The reviewed conditions did not change.");
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  await expect(sheet).toContainText("Full original proposal remains available after assessment finishes.");
+  await expect(sheet.getByRole("button", { name: /Open finding|Resolve finding|Reopen finding|Dismiss/ })).toHaveCount(0);
+  await noOverflow(page);
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  expect(requests).toEqual([]);
 });
 
 for (const status of ["running", "completed"]) {
