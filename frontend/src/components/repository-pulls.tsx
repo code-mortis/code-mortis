@@ -5,10 +5,9 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, type Schema } from "../api";
 import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Property } from "../lib/inbox-filters";
 import { runFeedback } from "../lib/run-feedback";
-import { Empty, ErrorNotice, Loading, Status } from "./common";
+import { Empty, ErrorNotice, Loading } from "./common";
 import { InboxFilters } from "./inbox-filters";
-import { PullRequestListHeading, PullRequestRow } from "./pull-request-row";
-import { Badge } from "./ui/badge";
+import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./pull-request-row";
 import { Button } from "./ui/button";
 
 const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
@@ -87,7 +86,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
                 state={{ repository: `${location.pathname}${location.search}` }}
                 feedback={feedback?.needsAttention ? feedback.summary : undefined}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} /><Badge variant="secondary" className="capitalize">{pr.state}</Badge></div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
+                status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
             })}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry {titles[group].toLowerCase()}</Button></div>}
             {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">

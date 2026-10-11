@@ -3,12 +3,11 @@ import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react
 import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
 import { ApiError, type Schema } from "./api";
-import { Empty, ErrorNotice, Loading, Status } from "./components/common";
-import { PullRequestListHeading, PullRequestRow } from "./components/pull-request-row";
+import { Empty, ErrorNotice, Loading } from "./components/common";
+import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { Button } from "./components/ui/button";
-import { Badge } from "./components/ui/badge";
 import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Property } from "./lib/inbox-filters";
 
 type InboxData = GroupedData<Schema["InboxOut"]>;
@@ -91,7 +90,7 @@ export function Inbox() {
       {list.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
         state={{ inbox: `${location.pathname}${location.search}` }}
         metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
-        status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} /><Badge variant="secondary" className="capitalize">{pr.state}</Badge></div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
+        status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
       {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry pull requests</Button></div>}
       {(list.has_more || busy) && list.page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
         const next = new URLSearchParams(params);

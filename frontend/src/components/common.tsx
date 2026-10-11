@@ -32,7 +32,8 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
-        value === "running" && "border-blue-700/20 bg-blue-700/8 text-blue-800 dark:text-blue-300",
+        // Foreground blend keeps primary text readable over its tint across themes.
+        value === "running" && "border-primary/20 bg-primary/8 text-[color:color-mix(in_srgb,var(--primary)_75%,var(--foreground))]",
         caution &&
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
