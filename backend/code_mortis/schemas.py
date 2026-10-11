@@ -40,9 +40,13 @@ class ConnectionConfig(StrictModel):
     @field_validator("options")
     @classmethod
     def allowed_options(cls, value):
-        allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header"}
+        allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header", "prompt_token_ceiling"}
         if set(value) - allowed:
-            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header.")
+            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header, prompt_token_ceiling.")
+        if "prompt_token_ceiling" in value and (
+            type(value["prompt_token_ceiling"]) is not int or not 4096 <= value["prompt_token_ceiling"] <= 2_000_000
+        ):
+            raise ValueError("prompt_token_ceiling must be a whole number from 4096 to 2000000 tokens.")
         if "timeout_sec" in value and (
             type(value["timeout_sec"]) is not int or not 5 <= value["timeout_sec"] <= 900
         ):

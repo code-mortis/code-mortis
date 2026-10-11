@@ -2,7 +2,7 @@
 
 import json
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from sqlalchemy import func, select
 
 from . import github, ocr, runner_client, verification
@@ -54,13 +54,22 @@ INSTRUCTIONS = (
     "Rewording, moved lines, renamed files, severity/category changes or resolution are not new defects. "
     "Another branch or entry point creating the same state under the same ownership and recovery contract "
     "does not by itself establish a distinct cause. "
-    "Use duplicate and the existing finding_id for the same defect, including resolved or dismissed findings. "
+    "Relationship describes only the relationship to established findings in history. "
+    "Use duplicate and a finding_id copied exactly from history for the same defect, including resolved or dismissed findings. "
+    "IDs in prior_candidates identify proposals, not findings, and must never be used as finding_id. "
+    "Without a matching established finding, use relationship new and finding_id null, even when rejecting "
+    "a repeated proposal; describe the prior candidate in history_explanation. "
     "Two distinct defects may share a snippet. For a new finding, explain why related findings are distinct. "
     "If identity is ambiguous, use relationship uncertain and withhold it. "
     "Compare prior suggestions explicitly. If this advice contradicts them, set contradicts_prior=true "
     "and explain the evidenced changed conditions justifying a distinct current defect; otherwise uncertain. "
     "A prior rejection is evidence to consider, not permanent immunity. Validate a suggested patch separately; "
     "set suggestion_supported=false if it is unrelated, incomplete, or unsafe. "
+    "Evidence must cite the revision, path and source line numbers before | in the supplied source blocks, "
+    "never line numbers in evidence.py, the diff, or a proposal. Copy quotes verbatim after |, preserving "
+    "indentation, case, literals and real newlines; do not include the line-number prefix or double-escape text. "
+    "If validation_feedback is supplied, correct those fields and return a complete assessment using the same "
+    "evidence. A correction must satisfy every validation rule; do not invent citations or finding IDs. "
     "Return exactly the requested assessment schema. Do not resolve, reopen, or invent finding IDs."
 )
 
@@ -69,14 +78,37 @@ class AssessmentResponse(AssessmentResult):
     required_paths: list[str] = Field(default_factory=list, max_length=10)
 
 
-def output_schema():
+def output_schema(context=None):
     schema = AssessmentResponse.model_json_schema()
     schema["required"] = list(schema["properties"])
+    if context is not None:
+        ids = sorted({item["id"] for item in context["history"]})
+        schema["properties"]["finding_id"] = {
+            "anyOf": [{"type": "string", "enum": ids}, {"type": "null"}] if ids else [{"type": "null"}],
+            "description": "Only an established finding ID from history for duplicate; otherwise null. Never a prior candidate ID.",
+        }
+        if not ids:
+            schema["properties"]["relationship"]["enum"] = ["new", "uncertain"]
     return schema
 
 
 def validate_response(value, context):
-    response = AssessmentResponse.model_validate(value, strict=True).model_dump()
+    try:
+        response = AssessmentResponse.model_validate(value, strict=True).model_dump()
+    except ValidationError as exc:
+        problems = exc.errors(include_input=False, include_url=False)
+        if any(not problem["loc"] or problem["loc"][0] not in {"finding_id", "evidence"} for problem in problems):
+            raise
+        problem = problems[0]
+        location = problem["loc"]
+        feedback = {"field": ".".join(map(str, location)), "reason": problem["type"]}
+        if location[0] == "evidence" and len(location) > 1 and isinstance(location[1], int):
+            feedback["field"] = f"evidence[{location[1]}]" + ("." + ".".join(map(str, location[2:])) if len(location) > 2 else "")
+            evidence = value.get("evidence") if isinstance(value, dict) else None
+            if isinstance(evidence, list) and location[1] < len(evidence) and isinstance(evidence[location[1]], dict):
+                feedback.update({key: str(evidence[location[1]][key])[:2000]
+                                 for key in ("revision", "path", "start_line", "end_line") if key in evidence[location[1]]})
+        raise verification.ResultValidationError("Assessment citation or finding ID has an invalid format. " + json.dumps(feedback), feedback) from exc
     paths = response.pop("required_paths")
     for path in paths:
         if not path or len(path) > 2000:
@@ -276,20 +308,32 @@ def expand_context(repo, env, run, context, paths, stopped):
 def validate_result(value, context):
     result = AssessmentResult.model_validate(value, strict=True).model_dump()
     current = False
-    for evidence in result["evidence"]:
+    for index, evidence in enumerate(result["evidence"]):
         source = context["sources"].get(evidence["revision"], {}).get(evidence["path"])
-        if (source is None or evidence["end_line"] < evidence["start_line"]
-            or evidence["end_line"] > len(source.splitlines())
-            or not evidence["quote"].strip()
-            or evidence["quote"] not in "\n".join(source.splitlines()[evidence["start_line"] - 1:evidence["end_line"]])):
-            raise ValueError("Assessment evidence does not match the supplied source.")
+        reason = None
+        if source is None:
+            reason = "unavailable source"
+        elif evidence["end_line"] < evidence["start_line"] or evidence["end_line"] > len(source.splitlines()):
+            reason = "invalid source line range"
+        elif not evidence["quote"].strip():
+            reason = "empty quote"
+        elif evidence["quote"] not in "\n".join(source.splitlines()[evidence["start_line"] - 1:evidence["end_line"]]):
+            reason = "quote is not verbatim text within the cited source lines"
+        if reason:
+            feedback = {"field": f"evidence[{index}]", "reason": reason,
+                        **{key: evidence[key] for key in ("revision", "path", "start_line", "end_line")}}
+            raise verification.ResultValidationError(
+                "Assessment evidence does not match the supplied source. " + json.dumps(feedback), feedback,
+            )
         current |= evidence["revision"] == "current"
     ids = {item["id"] for item in context["history"]}
     if result["relationship"] == "duplicate":
         if result["finding_id"] not in ids:
-            raise ValueError("Assessment references an unavailable finding.")
+            feedback = {"field": "finding_id", "reason": "ID is not an established finding in history; prior candidate IDs are not finding IDs"}
+            raise verification.ResultValidationError("Assessment references an unavailable finding. " + json.dumps(feedback), feedback)
     elif result["finding_id"] is not None:
-        raise ValueError("Only a duplicate may reference an existing finding.")
+        feedback = {"field": "finding_id", "reason": "Only duplicate may reference an established finding; otherwise use null"}
+        raise verification.ResultValidationError("Only a duplicate may reference an existing finding. " + json.dumps(feedback), feedback)
     if result["verdict"] == "confirmed" and (
         not current or result["relationship"] == "uncertain"
         or any(not result[key].strip() for key in ("cause", "trigger", "consequence"))
@@ -401,17 +445,25 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             result = exact_repeat(context)
             unit = "tokens" if connection["kind"] == "api" else "context_bytes"
             consumed = 0
+            feedback, corrected = None, False
             for attempt in range(3):
                 if stopped():
                     raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
                 allowance = None if budget is None else budget - consumed
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
-                input_bytes = len(json.dumps(context).encode()) + len(INSTRUCTIONS.encode()) + 4096
+                request_context = {**context, "validation_feedback": feedback} if feedback else context
+                check_context_size(request_context, options)
+                prompt = INSTRUCTIONS + "\n\n" + verification.evidence_bundle(request_context)
+                input_bytes = len(prompt.encode()) + 4096
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
-                    if current.progress.get("execution") != claim or current.cancel_requested:
+                    if current.progress.get("execution") != claim:
                         return
+                    if current.cancel_requested:
+                        raise ocr.ReviewStopped("The run was cancelled during assessment.")
+                    if feedback and history(db, current, lock=True)[1] != history_key:
+                        raise ocr.ReviewStopped("Finding history changed before the assessment could be corrected.")
                     repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
                     selected = db.get(Connection, current.connection_id)
                     if (not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active
@@ -433,27 +485,40 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         if connection["kind"] != "api" and input_bytes > allowance:
                             raise ValueError(f"Assessment needs {input_bytes:,} bytes of source context, but only {allowance:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
                         usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": consumed + input_bytes}
-                    row.status, row.context, row.usage = "running", context, usage
+                    row.status, row.context, row.usage = "running", request_context, usage
                 if result is None:
-                    if connection["kind"] == "api":
-                        try:
+                    try:
+                        if connection["kind"] == "api":
                             result, spent = verification.api_verify(
-                                repo_path, env, connection, credentials, context, allowance, remaining, stopped,
-                                instructions=INSTRUCTIONS, schema=output_schema(), validator=validate_response,
+                                repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
+                                instructions=INSTRUCTIONS, schema=output_schema(context), validator=validate_response,
                             )
-                        except verification.VerificationOutputError as exc:
-                            exc.usage = {"tokens": consumed + exc.usage["tokens"]}
-                            raise
-                    else:
-                        raw = runner_client.review(connection["id"], "assess-" + identity + (f"-{attempt}" if attempt else ""), {
-                            "kind": connection["kind"], "task": "assessment", "model": connection["model"],
-                            "effort": options["effort"], "prompt": json.dumps({"instructions": INSTRUCTIONS, "context": context}),
-                            "output_schema": output_schema(), "timeout": remaining,
-                        }, stopped)
-                        result = validate_response(raw, context)
-                        spent = {"context_bytes": input_bytes}
-                    consumed += spent[unit]
-                    usage = {unit: consumed}
+                            consumed += spent[unit]
+                        else:
+                            raw = runner_client.review(connection["id"], "assess-" + identity + (f"-{attempt}" if attempt else ""), {
+                                "kind": connection["kind"], "task": "assessment", "model": connection["model"],
+                                "effort": options["effort"], "prompt": prompt,
+                                "output_schema": output_schema(context), "timeout": remaining,
+                            }, stopped)
+                            consumed += input_bytes
+                            usage = {unit: consumed}
+                            result = validate_response(raw, context)
+                    except (verification.VerificationOutputError, verification.ResultValidationError) as exc:
+                        known = True
+                        if isinstance(exc, verification.VerificationOutputError):
+                            spent = exc.usage["tokens"]
+                            known = type(spent) is int and spent >= 0
+                            if known:
+                                consumed += spent
+                            exc.usage = {"tokens": consumed if known else budget}
+                        usage = {unit: consumed} if known else {"tokens": budget}
+                        if exc.feedback and known and not corrected and attempt < 2:
+                            if stopped():
+                                raise ocr.ReviewStopped("The assessment stopped before its invalid response could be corrected.") from exc
+                            feedback, corrected = exc.feedback, True
+                            continue
+                        raise
+                    usage, feedback = {unit: consumed}, None
                 requested = result.pop("required_paths", [])
                 if not requested:
                     break

@@ -505,8 +505,10 @@ function ConnectionForm({
   const [model, setModel] = useState(connection?.model ?? "");
   const [key, setKey] = useState("");
   const [headers, setHeaders] = useState("");
+  const { prompt_token_ceiling: savedCeiling, ...providerOptions } = connection?.options ?? {};
+  const [promptCeiling, setPromptCeiling] = useState(String(savedCeiling ?? 58888));
   const [options, setOptions] = useState(
-    JSON.stringify(connection?.options ?? {}, null, 2),
+    JSON.stringify(providerOptions, null, 2),
   );
   const [error, setError] = useState<unknown>();
   const action = useAction<Connection>();
@@ -520,7 +522,7 @@ function ConnectionForm({
       kind, provider, protocol, base_url: url,
       ...(key ? { api_key: key } : {}),
       ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-      options: parseObject(options, "Options"),
+      options: { ...parseObject(options, "Options"), prompt_token_ceiling: Number(promptCeiling) },
     };
   }
   function choose(value: string) {
@@ -677,6 +679,13 @@ function ConnectionForm({
           </summary>
           <div className="mt-4 space-y-4">
             {!customEndpoint && endpointFields}
+            <Field
+              label="Evidence prompt ceiling (tokens)"
+              hint="For assessments and fix verification. OCR accepts prompts up to 80% of this value. Choose a value your model supports; the total review token budget stays separate."
+            >
+              {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
+                value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
+            </Field>
             <Field
               label="Extra headers JSON"
               hint={

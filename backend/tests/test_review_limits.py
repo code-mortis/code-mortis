@@ -51,7 +51,7 @@ def test_repository_language_is_trimmed_and_cannot_be_blank(seed, github_stub, c
             assert db.get(Repository, 22).settings["language"] == expected
 
 
-def test_old_snapshots_keep_unlimited_files_and_deduplicate_only_matching_scope(seed, github_stub):
+def test_old_snapshots_keep_unlimited_files_and_automatic_edits_do_not_rerun(seed, github_stub):
     with transaction() as db:
         repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
         old = reviews.create_run(db, pr, repo, "automatic")
@@ -62,6 +62,8 @@ def test_old_snapshots_keep_unlimited_files_and_deduplicate_only_matching_scope(
         repo.settings = {"max_files": None}
         assert reviews.create_run(db, pr, repo, "automatic").id == old.id
         repo.settings = {}
+        assert reviews.create_run(db, pr, repo, "automatic").id == old.id
+        pr.head_sha = "c" * 40
         new = reviews.create_run(db, pr, repo, "automatic")
         assert new.id != old.id and new.config["settings"]["max_files"] == 40
         assert old.config["settings"] == original

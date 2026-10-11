@@ -2074,7 +2074,7 @@ test("saved model selection refreshes without replacing custom IDs", async ({ pa
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   expect(requests.find((request) => request.path === "/connections/models")?.body).toEqual({
     kind: "api", provider: "openai", protocol: "openai", base_url: "https://api.openai.com/v1",
-    options: {}, connection_id: "connection",
+    options: { prompt_token_ceiling: 58888 }, connection_id: "connection",
   });
   await expect(model).toHaveValue("Next model · next-model");
   await chooseOption(page, model, "Enter a custom model ID");
@@ -5261,6 +5261,43 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   expect(body).not.toHaveProperty("extra_headers");
 });
 
+test("API connection prompt ceiling defaults, saves, and reloads independently of provider options", async ({ page }, info) => {
+  await mock(page);
+  let current = { ...connection, options: { timeout_sec: 30 } as Record<string, unknown> };
+  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [current] }));
+  await page.route("**/api/v1/connections/connection", (route) => {
+    current = { ...current, ...route.request().postDataJSON() };
+    return route.fulfill({ json: current });
+  });
+  await page.goto("/settings?tab=connections");
+  async function edit() {
+    await page.getByRole("button", { name: "Actions for Team reviews" }).click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    await page.getByText("Advanced provider settings", { exact: true }).click();
+  }
+  await edit();
+  const dialog = page.getByRole("dialog");
+  const ceiling = dialog.getByLabel("Evidence prompt ceiling (tokens)", { exact: true });
+  await expect(ceiling).toHaveValue("58888");
+  await expect(dialog.getByLabel("Provider options JSON")).toHaveValue('{\n  "timeout_sec": 30\n}');
+  await ceiling.fill("200000");
+  await noOverflow(page);
+  await ceiling.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await page.screenshot({ path: `../.impeccable/review/api-prompt-ceiling-${info.project.name}.png` });
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 200000 });
+  await edit();
+  await expect(ceiling).toHaveValue("200000");
+  await expect(dialog.getByLabel("Provider options JSON")).toHaveValue('{\n  "timeout_sec": 30\n}');
+  await ceiling.fill("4095");
+  await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+  await ceiling.fill("58888");
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 58888 });
+});
+
 test("connection editing recovers when providers fail to load", async ({ page }) => {
   await mock(page);
   let fail = true;
@@ -5342,6 +5379,7 @@ for (const kind of ["chatgpt", "claude_code"] as const) {
       await page.getByRole("button", { name: "Actions for My subscription", exact: true }).click();
       await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
       const dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("Evidence prompt ceiling (tokens)")).toHaveCount(0);
       await dialog.getByLabel("Connection name").fill("Updated subscription");
       await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
       await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model });

@@ -369,6 +369,47 @@ def test_api_credentials_encrypted_and_never_returned(seed, client, monkeypatch)
     assert response.status_code == 422 and "secret-only-here" not in response.text
 
 
+def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(seed, client, github_stub, monkeypatch):
+    monkeypatch.setattr("code_mortis.api.safe_endpoint", lambda value: value)
+    monkeypatch.setattr(github, "request", lambda *a, **k: remote())
+    first = client.post("/api/v1/pulls/pr/runs", json={}).json()
+    body = {
+        "name": "Test model", "provider": "openai", "protocol": "openai", "model": "test-model",
+        "base_url": "https://example.com/v1", "options": {"timeout_sec": 30, "prompt_token_ceiling": 200000},
+    }
+    response = client.put("/api/v1/connections/connection", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["options"] == body["options"]
+    assert client.get("/api/v1/connections").json()[0]["options"] == body["options"]
+    second = client.post("/api/v1/pulls/pr/runs", json={}).json()
+    assert second["config"]["connection"]["options"] == body["options"]
+    assert first["config"]["settings"] == second["config"]["settings"]
+    body["options"]["prompt_token_ceiling"] = 100000
+    assert client.put("/api/v1/connections/connection", json=body).status_code == 200
+    with transaction() as db:
+        assert db.get(ReviewRun, first["id"]).config["connection"]["options"] == {}
+        assert db.get(ReviewRun, second["id"]).config["connection"]["options"]["prompt_token_ceiling"] == 200000
+        assert json.loads(unseal(db.get(Connection, "connection").secret))["api_key"] == "provider-secret"
+
+
+@pytest.mark.parametrize("ceiling", [None, True, 4095, 2000001, 58888.0, "200000"])
+def test_api_prompt_ceiling_rejects_invalid_values(seed, client, ceiling):
+    response = client.put("/api/v1/connections/connection", json={
+        "name": "Test model", "provider": "openai", "protocol": "openai", "model": "test-model",
+        "base_url": "https://example.com/v1", "options": {"prompt_token_ceiling": ceiling},
+    })
+    assert response.status_code == 422 and "prompt_token_ceiling" in response.text
+    with transaction() as db:
+        assert db.get(Connection, "connection").options == {}
+
+
+def test_personal_connection_rejects_api_prompt_ceiling(seed, client):
+    response = client.post("/api/v1/connections", json={
+        "name": "Personal", "kind": "chatgpt", "options": {"prompt_token_ceiling": 200000},
+    })
+    assert response.status_code == 422
+
+
 def test_signed_webhooks_are_durable_and_deduplicated(seed, client):
     body = json.dumps(
         {
@@ -400,6 +441,123 @@ def test_runs_deduplicate_and_new_commits_supersede(seed):
         second = reviews.create_run(db, pr, repo, "automatic")
         assert first.status == "superseded" and first.cancel_requested
         assert first.publication == "not_applicable" and second.id != first.id
+
+
+@pytest.mark.parametrize("trigger", ["manual", "automatic"])
+@pytest.mark.parametrize("status", ["queued", "running", "blocked", "completed", "partial", "failed", "cancelled", "skipped"])
+def test_automatic_edits_reuse_any_existing_revision_attempt(seed, trigger, status):
+    with transaction() as db:
+        repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
+        first = reviews.create_run(db, pr, repo, trigger, db.get(User, 7) if trigger == "manual" else None)
+        first.status = status
+        first.cancel_requested = status == "cancelled"
+        db.flush()
+        snapshot = copy.deepcopy({column.key: getattr(first, column.key) for column in first.__table__.columns})
+        repo.settings = {"exclusions": "AGENTS.md"}
+        connection = db.get(Connection, "connection")
+        connection.model, connection.options = "another-model", {"prompt_token_ceiling": 200000}
+        assert reviews.create_run(db, pr, repo, "automatic").id == first.id
+        assert {column.key: getattr(first, column.key) for column in first.__table__.columns} == snapshot
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 1
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "completed"])
+def test_settings_saves_and_periodic_scans_refresh_without_an_extra_review(seed, github_stub, client, monkeypatch, status):
+    with transaction() as db:
+        first = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "manual", db.get(User, 7))
+        first.status = status
+        db.flush()
+        identity, original = first.id, copy.deepcopy(first.config)
+    data = {**remote(), "title": "Updated pull request title"}
+    monkeypatch.setattr(github, "request", lambda *a, **k: data)
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [data])
+    reconciled = []
+    monkeypatch.setattr(jobs, "reconcile_threads", lambda db, pr, *a: reconciled.append(pr.head_sha))
+    for _ in range(2):
+        response = client.put("/api/v1/repositories/22", json={
+            "enabled": True, "connection_id": "connection", "settings": {"exclusions": "AGENTS.md"},
+        })
+        assert response.status_code == 200
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        scans = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "scan_repository"))]
+    assert len(scans) == 3
+    for payload in scans:
+        jobs.execute("scan_repository", payload)
+    with transaction() as db:
+        syncs = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "sync_pr"))]
+    assert len(syncs) >= len(scans)
+    for payload in syncs:
+        jobs.execute("sync_pr", payload)
+    with transaction() as db:
+        assert db.get(PullRequest, "pr").title == data["title"]
+        assert db.get(ReviewRun, identity).config == original
+        assert db.get(ReviewRun, identity).status == status
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 1
+    assert reconciled == [data["head"]["sha"]] * len(syncs)
+
+
+@pytest.mark.parametrize("revision", ["head", "base"])
+def test_first_enablement_and_new_revisions_use_current_settings(seed, github_stub, client, monkeypatch, revision):
+    with transaction() as db:
+        db.get(Repository, 22).enabled = False
+    data = remote()
+    monkeypatch.setattr(github, "request", lambda *a, **k: data)
+    response = client.put("/api/v1/repositories/22", json={
+        "enabled": True, "connection_id": "connection", "settings": {"exclusions": "AGENTS.md"},
+    })
+    assert response.status_code == 200
+    jobs.sync_pr(22, 3)
+    with transaction() as db:
+        first = db.scalar(select(ReviewRun))
+        identity = first.id
+        assert first.trigger == "automatic" and first.config["settings"]["exclusions"] == "AGENTS.md"
+        db.get(Repository, 22).settings = {"exclusions": "AGENTS.md\nPLAN.md"}
+    jobs.sync_pr(22, 3)
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+    data[revision]["sha"] = "c" * 40
+    jobs.sync_pr(22, 3)
+    with transaction() as db:
+        new = db.scalar(select(ReviewRun).where(ReviewRun.id != identity))
+        assert new.trigger == "automatic" and new.config["settings"]["exclusions"] == "AGENTS.md\nPLAN.md"
+        assert getattr(new, revision + "_sha") == "c" * 40
+        assert db.get(ReviewRun, identity).status == "superseded"
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 2
+
+
+@pytest.mark.parametrize("status", ["running", "completed", "cancelled"])
+def test_explicit_manual_rerun_can_apply_changed_settings(seed, status):
+    with transaction() as db:
+        repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
+        first = reviews.create_run(db, pr, repo, "automatic")
+        first.status = status
+        db.flush()
+        original = copy.deepcopy(first.config)
+        repo.settings = {"exclusions": "AGENTS.md"}
+        assert reviews.create_run(db, pr, repo, "automatic").id == first.id
+        manual = reviews.create_run(db, pr, repo, "manual", db.get(User, 7))
+        db.flush()
+        assert manual.id != first.id and manual.trigger == "manual" and manual.actor_id == 7
+        assert manual.config["settings"]["exclusions"] == "AGENTS.md" and first.config == original
+        assert first.status == status
+        assert reviews.create_run(db, pr, repo, "automatic").id == manual.id
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 2
+
+
+def test_existing_revision_does_not_bypass_connection_authorization(seed, monkeypatch):
+    with transaction() as db:
+        repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
+        reviews.create_run(db, pr, repo, "manual", db.get(User, 7))
+        db.flush()
+        def denied(*args):
+            raise ValueError("The owner no longer authorizes automatic reviews.")
+        monkeypatch.setattr(reviews, "authorize_connection", denied)
+        with pytest.raises(ValueError, match="no longer authorizes"):
+            reviews.create_run(db, pr, repo, "automatic")
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 1
 
 
 def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):

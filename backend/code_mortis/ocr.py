@@ -169,6 +169,7 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
             }
             headers.update({"User-Agent": "code-mortis/0.1.0", "x-opencode-session": str(uuid4())})
         entry = dict(connection["options"])
+        entry.pop("prompt_token_ceiling", None)
         entry.update(
             {
                 "protocol": connection["protocol"],
