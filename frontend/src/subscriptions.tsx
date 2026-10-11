@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ArrowUpRight, ChevronDown, RefreshCw } from "lucide-react";
 import {
   api,
   useAction,
@@ -9,12 +10,13 @@ import {
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { ModelPicker } from "./components/model-picker";
+import { SearchSelect } from "./components/search-select";
 import { Switch } from "./components/ui/switch";
+import { DialogDescription, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import {
   ErrorNotice,
   ExternalLink,
   Field,
-  NativeSelect,
   Status,
 } from "./components/common";
 
@@ -166,11 +168,14 @@ function LoginConsole({
   );
 }
 
-export function PersonalConnection({ connection }: { connection: Connection }) {
+export function PersonalConnection({ connection, onDone }: { connection: Connection; onDone: () => void }) {
   const identity = connection.id;
+  const settingUp = !connection.model.trim();
+  const provider = connection.kind === "chatgpt" ? "ChatGPT" : "Claude Code";
+  const [authorizationOpen, setAuthorizationOpen] = useState(!settingUp);
   const auth = useApi<AuthState>(`/connections/${identity}/auth`, true);
-  const grants = useApi<Grant[]>(`/connections/${identity}/grants`);
-  const repositories = useApi<Repository[]>("/repositories");
+  const grants = useApi<Grant[]>(`/connections/${identity}/grants`, false, authorizationOpen);
+  const repositories = useApi<Repository[]>("/repositories", false, authorizationOpen);
   const action = useAction();
   const modelAction = useAction<Connection>();
   const grantAction = useAction();
@@ -183,7 +188,14 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   const [modelError, setModelError] = useState<unknown>();
   const trimmedModel = model.trim();
   const attempt = auth.data?.attempt;
+  const awaitingAuthorization = attempt?.status === "pending" && !!attempt.verificationUrl;
   const connected = auth.data?.status === "connected";
+  const setupComplete = connected && !auth.isError && !!savedModel.trim();
+  const accountHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { accountHeading.current?.focus(); }, []);
+  useEffect(() => {
+    if (settingUp && connected) accountHeading.current?.focus();
+  }, [settingUp, connected, setupComplete]);
   const authPending = action.isPending || modelAction.isPending || grantAction.isPending;
   const modelPending = action.isPending || modelAction.isPending;
   const grantPending = action.isPending || grantAction.isPending;
@@ -191,21 +203,53 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
   function clearGrantFeedback() {
     if (!revoking && (grantAction.isSuccess || grantAction.isError)) grantAction.reset();
   }
+  const checkStatus = (connected || attempt?.status === "pending" || consoleOpen || auth.isError || auth.data?.status === "unavailable") && <Button
+    variant={awaitingAuthorization && !connected ? "ghost" : !connected ? "link" : "outline"}
+    size={awaitingAuthorization && !connected ? "sm" : "default"}
+    className={!connected && !awaitingAuthorization ? "px-0" : undefined}
+    aria-label="Check status"
+    aria-busy={checkingAccount}
+    disabled={action.isPending || auth.isPending || checkingAccount}
+    onClick={async () => {
+      setCheckingAccount(true);
+      try {
+        await auth.refetch({ cancelRefetch: false });
+      } finally {
+        setCheckingAccount(false);
+      }
+    }}
+  >
+    {awaitingAuthorization && !connected && <RefreshCw aria-hidden="true" className={`size-3.5 ${checkingAccount ? "motion-safe:animate-spin" : ""}`} />}
+    {checkingAccount ? "Checking…" : "Check status"}
+  </Button>;
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="min-w-0 space-y-5">
+      <DialogHeader>
+        <DialogTitle ref={accountHeading} tabIndex={-1} className="break-words">
+          {!connected ? `Sign in to ${provider}` : settingUp ? setupComplete ? "Connection ready" : "Choose a default model" : connection.name}
+        </DialogTitle>
+        <DialogDescription className="sr-only">
+          Manage your {provider} connection.
+        </DialogDescription>
+      </DialogHeader>
       <section className="space-y-4" aria-label="Account connection">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <details className="group space-y-4" open={!settingUp || !connected || auth.isError}>
+        <summary className={`${connected ? "flex" : "hidden"} cursor-pointer list-none flex-wrap items-center gap-2 [&::-webkit-details-marker]:hidden`}>
           <h3 className="text-sm font-semibold">Account connection</h3>
-          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>
-        </div>
+          {connected && <div role="status" className="ml-auto"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>}
+          <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+        </summary>
+        {!connected && !awaitingAuthorization && (!settingUp || auth.isPending || checkingAccount || auth.isError || auth.data?.status === "unavailable") &&
+          <div role="status"><Status {...accountStatus(auth.data?.status, auth.isPending || checkingAccount, auth.isError)} /></div>}
         <ErrorNotice error={auth.error || action.error || auth.data?.message} />
         {auth.data?.account?.email && <p className="break-words text-sm">Signed in as {auth.data.account.email}</p>}
-        <p className="text-sm text-muted-foreground">
-          Your official client runs on this server. Your computer can be off
-          during reviews. No API connection is used as a fallback.
-        </p>
-        <div className="flex flex-wrap gap-2">
+        {!connected && !awaitingAuthorization && <p className="text-sm leading-relaxed text-muted-foreground">
+          Use your {provider} account for reviews.{settingUp && " After signing in, choose a default model."}
+        </p>}
+        {(connected || !awaitingAuthorization || auth.data?.message) && <div className="flex flex-wrap gap-2">
+          {(connected || !awaitingAuthorization) &&
           <Button
+            className={!connected ? "w-full" : undefined}
             disabled={authPending}
             onClick={async () => {
               const result = await action
@@ -221,21 +265,8 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
               : connection.kind === "chatgpt"
                 ? "Connect ChatGPT"
                 : "Connect Claude Code"}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={action.isPending || auth.isPending || checkingAccount}
-            onClick={async () => {
-              setCheckingAccount(true);
-              try {
-                await auth.refetch({ cancelRefetch: false });
-              } finally {
-                setCheckingAccount(false);
-              }
-            }}
-          >
-            Check status
-          </Button>
+          </Button>}
+          {(connected || !awaitingAuthorization) && checkStatus}
           {(connected || auth.data?.message) && (
             <Button
               variant="outline"
@@ -248,25 +279,32 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
               Disconnect and revoke access
             </Button>
           )}
-        </div>
+        </div>}
         {attempt?.status === "pending" && attempt.verificationUrl && (
-          <div className="space-y-3 rounded-md border p-4">
+          <div className="space-y-4">
             <p className="text-sm">
-              Open the official authorization page and enter this code:
+              Enter this code on the ChatGPT authorization page.
             </p>
-            <p className="select-all font-mono text-xl tracking-wider">
+            <p className="select-all rounded-md bg-muted p-4 text-center font-mono text-2xl tracking-wider">
               {attempt.userCode}
             </p>
-            <ExternalLink href={attempt.verificationUrl}>
-              Authorize with ChatGPT
-            </ExternalLink>
+            <Button asChild className="w-full">
+              <a href={attempt.verificationUrl} target="_blank" rel="noreferrer">
+                Authorize with ChatGPT <ArrowUpRight aria-hidden="true" className="size-4" />
+              </a>
+            </Button>
             <p className="text-xs text-muted-foreground">
               Device code authorization must be enabled in your ChatGPT security
               settings and permitted by your workspace.
             </p>
+            {!connected && <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+              <p role="status" className="text-xs text-muted-foreground">
+                {checkingAccount ? "Checking account…" : auth.isError ? "Could not check sign-in" : "Waiting for sign-in"}
+              </p>
+              {checkStatus}
+            </div>}
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
               disabled={authPending}
               onClick={() =>
                 action.mutate({
@@ -308,8 +346,18 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
             </pre>
           </details>
         )}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">How this connection works</summary>
+          <p className="mt-2 leading-relaxed">
+            Your official client runs on this server. Your computer can be off
+            during reviews. No API connection is used as a fallback.
+          </p>
+        </details>
+        </details>
       </section>
-      <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
+      <details hidden={settingUp && !connected} open={settingUp || connected} className="space-y-5">
+        <summary className={`${settingUp || connected ? "hidden" : "cursor-pointer"} text-sm text-muted-foreground`}>Connection settings</summary>
+      {(!settingUp || (connected && !setupComplete)) && <form aria-label="Default model" className="space-y-4 border-t pt-5" onSubmit={async (event) => {
         event.preventDefault();
         if (modelPending) return;
         setModelError(undefined);
@@ -324,7 +372,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           setModel(saved.model);
         } catch (error) { setModelError(error); }
       }}>
-        <h3 className="text-sm font-semibold">Default model</h3>
+        <h3 className={settingUp ? "sr-only" : "text-sm font-semibold"}>Default model</h3>
         <ErrorNotice error={modelError} />
         <ModelPicker
           value={model} onChange={(value) => {
@@ -334,15 +382,22 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           }} required disabled={modelPending}
           path={connected ? `/connections/${identity}/models` : undefined}
           context={`${identity}:${connected}`}
-          hint="Sign in to load this connection’s models, or enter a custom model ID."
+          hint={connected ? "Choose a model or enter a custom model ID." : "Sign in to load this connection’s models, or enter a custom model ID."}
         />
-        {!savedModel && <p className="text-sm text-muted-foreground">Choose a model to finish setup and enable reviews.</p>}
-        <Button type="submit" disabled={modelPending || !trimmedModel || trimmedModel === savedModel.trim()}>
+        <Button className={settingUp ? "w-full" : undefined} type="submit" disabled={modelPending || !trimmedModel || trimmedModel === savedModel.trim()}>
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
         {modelAction.isSuccess && !modelError && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
-      </form>
-      <section aria-label="Repository authorization" className="space-y-4 border-t pt-5">
+      </form>}
+      {settingUp && setupComplete && <div className="space-y-3 border-t pt-5">
+        <p className="break-all text-sm"><span className="text-muted-foreground">Default model: </span>{savedModel}</p>
+        <p role="status" className="text-sm text-muted-foreground">You can start manual reviews in enabled repositories.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onDone}>Done</Button>
+          {!authorizationOpen && <Button variant="outline" onClick={() => setAuthorizationOpen(true)}>Set up automatic reviews</Button>}
+        </div>
+      </div>}
+      <section hidden={!authorizationOpen} aria-label="Repository authorization" className="space-y-4 border-t pt-5">
         <h3 className="text-sm font-semibold">Repository authorization</h3>
         <ErrorNotice error={grants.error} />
         {grants.isError && <Button type="button" variant="outline" size="sm" disabled={grants.isFetching} onClick={() => { void grants.refetch(); }}>
@@ -410,23 +465,18 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           {repositories.isSuccess && !repositories.data?.length && <p className="text-sm text-muted-foreground">No accessible repositories.</p>}
           <Field label="Repository">
             {(id) => (
-              <NativeSelect
+              <SearchSelect
                 id={id}
                 required
                 disabled={grantPending || repositories.isPending || !repositories.data?.length}
                 value={repository}
-                onChange={(event) => {
+                placeholder="Choose a repository"
+                onChange={(value) => {
                   clearGrantFeedback();
-                  setRepository(event.target.value);
+                  setRepository(value);
                 }}
-              >
-                <option value="">Choose a repository</option>
-                {repositories.data?.map((repo) => (
-                  <option key={repo.id} value={repo.id}>
-                    {repo.full_name}
-                  </option>
-                ))}
-              </NativeSelect>
+                options={repositories.data?.map((repo) => ({ value: String(repo.id), label: repo.full_name })) ?? []}
+              />
             )}
           </Field>
           <Field
@@ -451,6 +501,7 @@ export function PersonalConnection({ connection }: { connection: Connection }) {
           {!revoking && grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Repository authorization updated.</p>}
         </form>
       </section>
+      </details>
     </div>
   );
 }

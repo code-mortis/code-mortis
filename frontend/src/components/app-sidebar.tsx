@@ -1,11 +1,11 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { FolderGit2, Inbox, LoaderCircle, LogOut, MoreVertical, Plus, Settings, X } from "lucide-react";
+import { FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Plug, Plus, Settings, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
 import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupAction,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuBadge, SidebarMenuButton,
@@ -134,11 +134,33 @@ export function AppSidebar({ user, onLogout, signingOut }: {
                 {signingOut ? <LoaderCircle aria-hidden="true" className="size-4 motion-safe:animate-spin" /> : <MoreVertical aria-hidden="true" className="size-4 text-muted-foreground" />}
               </SidebarMenuButton>
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="end" sideOffset={8} className="w-(--radix-dropdown-menu-trigger-width) min-w-48">
-              <DropdownMenuItem asChild>
-                <Link to="/settings" onClick={closeMobile}><Settings aria-hidden="true" />Settings</Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onLogout} disabled={signingOut}><LogOut aria-hidden="true" />Sign out</DropdownMenuItem>
+            <DropdownMenuContent side="top" align="end" sideOffset={8} collisionPadding={16} className="w-60 max-w-[calc(100vw-2rem)] rounded-lg">
+              <DropdownMenuLabel className="flex items-center gap-2 px-2 py-2 font-normal">
+                <Avatar className="shrink-0 rounded-lg">
+                  <AvatarImage src={user.avatar_url || undefined} alt="" className="object-cover" />
+                  <AvatarFallback className="rounded-lg bg-sidebar-accent text-xs font-medium text-sidebar-accent-foreground">{user.login.slice(0, 2).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span className="min-w-0">
+                  <span className="block truncate font-medium" title={user.login}>{user.login}</span>
+                  <span className="block text-xs text-muted-foreground">{user.role === "admin" ? "Administrator" : "Member"}</span>
+                </span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
+                  <Link to="/settings?tab=connections" onClick={closeMobile}><Plug aria-hidden="true" />AI connections</Link>
+                </DropdownMenuItem>
+                {user.role === "admin" && <>
+                  <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
+                    <Link to="/settings?tab=github" onClick={closeMobile}><Github aria-hidden="true" />GitHub</Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
+                    <Link to="/settings?tab=team" onClick={closeMobile}><Users aria-hidden="true" />Team</Link>
+                  </DropdownMenuItem>
+                </>}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onLogout} disabled={signingOut} className="min-h-10 lg:min-h-8"><LogOut aria-hidden="true" />Sign out</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </SidebarMenuItem>

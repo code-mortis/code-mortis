@@ -310,6 +310,9 @@
   .settings-installation-row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 6.5rem) minmax(0, 9rem);
   }
+  .settings-connection-row {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) 11rem;
+  }
   .settings-identity, .settings-actions { grid-column: auto; }
   .settings-list-heading { display: grid; }
   .settings-cell-label { @apply sr-only; }

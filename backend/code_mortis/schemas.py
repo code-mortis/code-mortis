@@ -229,6 +229,7 @@ class InstallationOut(StrictModel):
     repository_selection: Literal["all", "selected"] | None = None
     can_connect: bool = False
     can_uninstall: bool = False
+    can_remove: bool = False
     unavailable_reason: str | None = None
     job_id: str | None = None
     operation_status: str | None = None

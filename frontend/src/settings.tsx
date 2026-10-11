@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { ArrowUpRight, Check, Copy, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
   api,
   useAction,
@@ -30,11 +30,9 @@ import {
 } from "./components/ui/dialog";
 import {
   date,
-  Empty,
   ErrorNotice,
   Field,
   Loading,
-  NativeSelect,
   Status,
 } from "./components/common";
 
@@ -49,7 +47,7 @@ type Instance = {
   github_app: { id: string; slug: string; install_url: string };
   installations: { id: number; account: string; active: boolean }[];
   members: { id: number; login: string; role: string }[];
-  failed_jobs: { id: string; kind: string; error: string }[];
+  failed_jobs: { id: string; kind: string; error: string; available_at?: string | null; attempts?: number }[];
   public_url: string;
   webhook_url?: string;
   configuration_errors?: string[];
@@ -60,6 +58,45 @@ const protocols = [
   "anthropic",
   "anthropic-bedrock",
 ] as const;
+const apiProviderLogos = new Map([
+  ["anthropic", "claude"],
+  ["baidu-qianfan", "baiducloud"],
+  ["bedrock", "bedrock"],
+  ["dashscope", "alibabacloud"],
+  ["dashscope-tokenplan", "alibabacloud"],
+  ["deepseek", "deepseek"],
+  ["edenai", "edenai"],
+  ["gemini", "gemini"],
+  ["hy-tokenplan", "hunyuan"],
+  ["iflytek", "iflytekcloud"],
+  ["kimi", "kimi"],
+  ["kimi-global", "kimi"],
+  ["litellm", "litellm"],
+  ["mimo", "xiaomimimo"],
+  ["minimax", "minimax"],
+  ["minimax-cn", "minimax"],
+  ["mistral", "mistral"],
+  ["novita", "novita"],
+  ["ollama-cloud", "ollama"],
+  ["openai", "openai"],
+  ["openai-responses", "openai"],
+  ["openrouter", "openrouter"],
+  ["siliconflow", "siliconcloud"],
+  ["siliconflow-cn", "siliconcloud"],
+  ["tencent-tokenhub", "tencent"],
+  ["volcengine", "volcengine"],
+  ["xai", "xai"],
+  ["z-ai", "zai"],
+  ["z-ai-coding", "zai"],
+  ["opencode", "opencode"],
+]);
+function ProviderLogo({ logo, className = "" }: { logo: string; className?: string }) {
+  return <img
+    src={`/brands/${logo}.svg`}
+    alt="" aria-hidden="true" width={16} height={16}
+    className={`size-4 shrink-0 ${logo === "claude" ? "" : logo === "litellm" ? "dark:brightness-0 dark:invert" : "dark:invert"} ${className}`}
+  />;
+}
 const languages = ["Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese (Simplified)", "Chinese (Traditional)", "Croatian", "Czech", "Danish", "Dutch", "English", "Finnish", "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Indonesian", "Italian", "Japanese", "Korean", "Malay", "Norwegian", "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Serbian", "Slovak", "Spanish", "Swedish", "Tamil", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"];
 function parseObject(value: string, label: string) {
   let data: unknown;
@@ -438,18 +475,18 @@ function ConnectionForm({
   connection,
   providers,
   canCreateApi,
+  initialKind,
   onSaved,
   onSavingChange,
 }: {
   connection?: Connection;
   providers: Provider[];
   canCreateApi: boolean;
+  initialKind: string;
   onSaved: (connection: Connection) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
-  const [kind, setKind] = useState(
-    connection?.kind ?? (canCreateApi ? "api" : "chatgpt"),
-  );
+  const [kind, setKind] = useState(connection?.kind ?? initialKind);
   const first = providers.find((p) => p.name === "openai") ?? providers[0];
   const [name, setName] = useState(connection?.name ?? "");
   const [provider, setProvider] = useState(
@@ -472,6 +509,8 @@ function ConnectionForm({
   // Draft credentials stay in component memory, never in query keys or browser storage.
   const context = JSON.stringify([kind, provider, protocol, url, key, headers, options]);
   const initialContext = useRef(context);
+  const customEndpoint = provider === "custom";
+  const preset = providers.find((item) => item.name === connection?.provider);
   function apiBody() {
     return {
       kind, provider, protocol, base_url: url,
@@ -483,11 +522,25 @@ function ConnectionForm({
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);
     setProvider(value);
+    if (value !== provider) {
+      setModel("");
+      setKey("");
+      setHeaders("");
+    }
     if (preset) {
       setProtocol(preset.protocol);
       setUrl(preset.baseUrl);
     }
   }
+  const endpointFields = <>
+    <Field label="API protocol">
+      {(id) => <SearchSelect id={id} value={protocol} onChange={setProtocol}
+        options={protocols.map((value) => ({ value, label: value }))} />}
+    </Field>
+    {protocol !== "anthropic-bedrock" && <Field label="API base URL">
+      {(id) => <Input id={id} required type="url" value={url} onChange={(event) => setUrl(event.target.value)} />}
+    </Field>}
+  </>;
   return (
     <form
       className="space-y-5"
@@ -499,7 +552,7 @@ function ConnectionForm({
         try {
           const body =
             kind !== "api"
-              ? { name, kind, model }
+              ? { name, kind, model: connection ? model : "" }
               : { name, model, ...apiBody() };
           const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
@@ -519,18 +572,17 @@ function ConnectionForm({
         <h3 className="text-sm font-semibold">Connection details</h3>
         <Field label="Connection type">
           {(id) => (
-            <NativeSelect
+            <SearchSelect
               id={id}
               value={kind}
               disabled={!!connection}
-              onChange={(e) => setKind(e.target.value)}
-            >
-              {canCreateApi && <option value="api">Shared API connection</option>}
-              <option value="chatgpt">Personal ChatGPT subscription</option>
-              <option value="claude_code">
-                Personal Claude Code subscription
-              </option>
-            </NativeSelect>
+              onChange={setKind}
+              options={[
+                ...(canCreateApi ? [{ value: "api", label: "Shared API connection", icon: <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> }] : []),
+                { value: "chatgpt", label: "Personal ChatGPT subscription", icon: <ProviderLogo logo="openai" /> },
+                { value: "claude_code", label: "Personal Claude Code subscription", icon: <ProviderLogo logo="claude" /> },
+              ]}
+            />
           )}
         </Field>
         <Field label="Connection name">
@@ -549,41 +601,20 @@ function ConnectionForm({
       {kind === "api" && (
         <section className="space-y-4 border-t pt-5" aria-label="Provider and authentication">
           <h3 className="text-sm font-semibold">Provider and authentication</h3>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              {(id) => (
-                <SearchSelect
-                  id={id}
-                  value={provider}
-                  onChange={choose}
-                  options={providers.map((p) => ({ value: p.name, label: p.displayName }))}
-                />
-              )}
-            </Field>
-            <Field label="API protocol">
-              {(id) => (
-                <SearchSelect
-                  id={id}
-                  value={protocol}
-                  onChange={setProtocol}
-                  options={protocols.map((value) => ({ value, label: value }))}
-                />
-              )}
-            </Field>
-          </div>
-          {protocol !== "anthropic-bedrock" && (
-            <Field label="API base URL">
-              {(id) => (
-                <Input
-                  id={id}
-                  required
-                  type="url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                />
-              )}
-            </Field>
-          )}
+          <Field label="Provider">
+            {(id) => (
+              <SearchSelect
+                id={id}
+                value={provider}
+                onChange={choose}
+                options={providers.map((p) => {
+                  const logo = apiProviderLogos.get(p.name);
+                  return { value: p.name, label: p.displayName, icon: logo ? <ProviderLogo logo={logo} /> : <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> };
+                })}
+              />
+            )}
+          </Field>
+          {customEndpoint && endpointFields}
           <Field
             label={
               connection?.has_key ? "Replace API key (optional)" : "API key"
@@ -593,7 +624,9 @@ function ConnectionForm({
                 ? "Bedrock can use the worker’s AWS credentials."
                 : connection?.has_key
                   ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
-                  : "For a trusted local endpoint without authentication, enter a placeholder."
+                  : customEndpoint
+                    ? "For a trusted local endpoint without authentication, enter a placeholder."
+                    : "Keys are encrypted and never returned to the browser."
             }
           >
             {(id) => (
@@ -611,7 +644,7 @@ function ConnectionForm({
           </Field>
         </section>
       )}
-      <section className="space-y-4 border-t pt-5" aria-label="Default model">
+      {(kind === "api" || connection) && <section className="space-y-4 border-t pt-5" aria-label="Default model">
         <h3 className="text-sm font-semibold">Default model</h3>
         <ModelPicker
           value={model}
@@ -625,20 +658,20 @@ function ConnectionForm({
           }) : undefined}
           hint={kind !== "api" ? "Save and sign in to load models. You can choose a model afterward." : undefined}
         />
-        {kind !== "api" && (
-          <p className="text-sm text-muted-foreground">
-            Save your personal connection, then complete sign-in with the official
-            client. You control which repositories may use your subscription
-            automatically.
-          </p>
-        )}
-      </section>
+      </section>}
+      {kind !== "api" && !connection && <p className="text-sm text-muted-foreground">
+        First save your connection, then sign in with the official client and choose a model.
+        Automatic reviews require your separate authorization per repository.
+      </p>}
       {kind === "api" && (
-        <details className="border-t pt-5">
+        <details className="border-t pt-5" open={!!connection && !!preset && (
+          connection.protocol !== preset.protocol || connection.base_url !== preset.baseUrl
+        )}>
           <summary className="cursor-pointer text-sm font-medium">
             Advanced provider settings
           </summary>
           <div className="mt-4 space-y-4">
+            {!customEndpoint && endpointFields}
             <Field
               label="Extra headers JSON"
               hint={
@@ -675,9 +708,11 @@ function ConnectionForm({
             </div>
           </details>
       )}
-      <Button disabled={action.isPending} type="submit">
-        {action.isPending ? "Saving…" : "Save connection"}
-      </Button>
+      <div className="sticky bottom-0 border-t bg-background py-4">
+        <Button disabled={action.isPending} type="submit">
+          {action.isPending ? "Saving…" : kind !== "api" && !connection ? "Continue to sign in" : "Save connection"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -693,6 +728,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const action = useAction();
   const memberAction = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
+  const [newKind, setNewKind] = useState(isAdmin ? "api" : "chatgpt");
   const [savingConnection, setSavingConnection] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [personal, setPersonal] = useState<Connection | null>(null);
@@ -700,15 +736,21 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
   const [removingMember, setRemovingMember] = useState<Instance["members"][number] | null>(null);
   const [login, setLogin] = useState("");
   const [role, setRole] = useState("member");
+  const [webhookCopy, setWebhookCopy] = useState<"copied" | "failed" | null>(null);
   const memberSubmitLabel = member === "new" ? "Add or update member" : "Save role";
   const returnFocus = useRef<HTMLElement | null>(null);
   const connectionHeading = useRef<HTMLHeadingElement>(null);
   const memberHeading = useRef<HTMLHeadingElement>(null);
   const instance = query.data;
+  const administrators = instance?.members.filter((item) => item.role === "admin") ?? [];
+  const lastAdministrator = administrators.length === 1 ? administrators[0].id : undefined;
+  const editedMember = member === "new" ? instance?.members.find((item) => item.login.toLowerCase() === login.toLowerCase()) : member;
+  const memberRoleLocked = editedMember?.role === "admin" && (editedMember.id === user.id || editedMember.id === lastAdministrator);
+  const webhookEndpoint = instance?.webhook_url ?? `${instance?.public_url}/api/v1/webhooks/github`;
   const groups = [
-    { title: "Shared API connections", personal: false, items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
-    { title: "Your subscriptions", personal: true, items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
-  ].filter((group) => group.items.length);
+    { title: "Shared API connections", kind: "api", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
+    { title: "Your subscriptions", kind: "chatgpt", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
+  ];
 
   function openMember(value: Instance["members"][number] | "new") {
     if (memberAction.isPending) return;
@@ -748,6 +790,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             </div>
             <Button disabled={!providers.data} onClick={(event) => {
               returnFocus.current = event.currentTarget;
+              setNewKind(isAdmin ? "api" : "chatgpt");
               setEditing("new");
             }}><Plus className="size-4" />Add connection</Button>
           </div>
@@ -756,17 +799,23 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             Retry providers
           </Button>}
           {connections.isPending && <Loading />}
-          {connections.isSuccess && !connections.data.length && (
-            <Empty title="Choose your review model">Connect an API or your personal subscription, then choose it for reviews.</Empty>
-          )}
-          {!connections.isPending && groups.length > 0 && <div className="space-y-6">
+          {connections.data && <div className="space-y-6">
             {groups.map((group) => <section key={group.title} aria-label={group.title}>
               <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">
                 {group.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.items.length}</span>
               </h3>
-              <div className="overflow-hidden rounded-lg border bg-card">
-                <div aria-hidden="true" className="settings-record settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
-                  <span>Connection</span><span>Default model</span><span>{group.personal ? "Account status" : "Last test"}</span><span />
+              {!group.items.length ? <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed p-5">
+                <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{group.kind === "api"
+                  ? isAdmin ? "Add an API connection for reviews shared with your team." : "An administrator can add an API connection for your team."
+                  : "Connect your ChatGPT or Claude Code subscription."}</p>
+                {(group.kind !== "api" || isAdmin) && <Button variant="outline" size="sm" disabled={!providers.data} onClick={(event) => {
+                  returnFocus.current = event.currentTarget;
+                  setNewKind(group.kind);
+                  setEditing("new");
+                }}>{group.kind === "api" ? "Add API connection" : "Connect subscription"}</Button>}
+              </div> : <div className="overflow-hidden rounded-lg border bg-card">
+                <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
+                  <span>Connection</span><span>Default model</span><span>Account status</span><span />
                 </div>
                 {group.items.map((connection) => {
                   const personalConnection = (connection.kind ?? "api") !== "api";
@@ -776,10 +825,24 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                   else if (personalConnection) kindLabel = "Personal subscription";
                   const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
                   const Icon = personalConnection ? UserRound : Plug;
+                  const logo = connection.kind === "chatgpt" ? "openai" : connection.kind === "claude_code" ? "claude"
+                    : !personalConnection ? apiProviderLogos.get(connection.provider) : undefined;
+                  const testing = connection.last_test === "Testing connection…"
+                    || (action.isPending && action.variables?.path === `/connections/${connection.id}/test`);
+                  const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
+                    : connection.last_test.startsWith("Connected.") ? "connected" : "failed";
+                  const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
+                  let nextAction = "Sign in";
+                  if (personalConnection) {
+                    if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Manage" : "Choose model";
+                    else if (connection.auth_status === "connecting") nextAction = "Continue setup";
+                    else if (connection.auth_status === "unavailable") nextAction = "Check account";
+                  }
+                  const needsSignIn = personalConnection && (nextAction === "Sign in" || nextAction === "Continue setup");
                   return <article key={connection.id} aria-label={connection.name}
-                    className="settings-record border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
+                    className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
-                      <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+                      {logo ? <ProviderLogo logo={logo} className="mt-0.5" /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
                         <p className="mt-1 break-words text-xs text-muted-foreground">
@@ -791,24 +854,27 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                       <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Default model</span>
                       <p className="break-words text-xs leading-relaxed"><span className="sr-only">Default model: </span>{connection.model || "Choose a model"}</p>
                     </div>
-                    <div className="min-w-0 text-xs text-muted-foreground">
-                      <span aria-hidden={!personalConnection && !!connection.last_test} className="settings-cell-label mb-1">{personalConnection ? "Account status" : "Last test"}</span>
-                      {personalConnection && <Status value={connection.auth_status} />}
-                      {!personalConnection && connection.last_test && <>
-                        <p className="break-words text-foreground"><span className="sr-only">Last test: </span>{connection.last_test}</p>
-                        {connection.tested_at && <time dateTime={connection.tested_at} className="mt-1 block tabular-nums">{date(connection.tested_at)}</time>}
-                      </>}
-                      {!personalConnection && !connection.last_test && <span>Not tested</span>}
-                    </div>
-                    <div className="settings-actions flex items-center justify-end gap-1">
-                      {canManage && <>
-                        {personalConnection ? <Button size="sm" variant="outline" onClick={(event) => {
+                    <div className="min-w-0 text-xs text-muted-foreground" role="status"
+                      title={personalConnection ? undefined : testDetail}
+                      aria-description={personalConnection ? undefined : testDetail}>
+                      <span className="settings-cell-label mb-1">Account status</span>
+                      {canManage && needsSignIn ? <Button variant="link" size="sm" className="px-0 text-xs underline" disabled={action.isPending}
+                        onClick={(event) => {
                           returnFocus.current = event.currentTarget;
                           setPersonal(connection);
-                        }}>Manage<span className="sr-only"> account</span></Button> : <Button size="sm" variant="outline"
-                          disabled={action.isPending || connection.last_test === "Testing connection…"}
-                          onClick={() => { action.reset(); action.mutate({ path: `/connections/${connection.id}/test` }); }}>Test</Button>}
-                        <DropdownMenu>
+                        }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
+                        label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
+                        icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
+                    </div>
+                    <div className="settings-actions flex items-center justify-end gap-1">
+                      {canManage && personalConnection && !needsSignIn && nextAction !== "Manage" && <Button variant="outline" size="sm" disabled={action.isPending}
+                        onClick={(event) => {
+                          returnFocus.current = event.currentTarget;
+                          setPersonal(connection);
+                        }}>
+                        {nextAction}
+                      </Button>}
+                      {canManage && <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="size-8" disabled={action.isPending} aria-label={`Actions for ${connection.name}`}
                               onPointerDown={(event) => { returnFocus.current = event.currentTarget; }}
@@ -816,17 +882,20 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                               <MoreHorizontal className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting) event.preventDefault(); }}>
+                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
                             <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
+                            {personalConnection && nextAction === "Manage" && <DropdownMenuItem onSelect={() => setPersonal(connection)}>Manage</DropdownMenuItem>}
+                            {!personalConnection && <DropdownMenuItem disabled={testing} onSelect={() => {
+                              action.reset(); action.mutate({ path: `/connections/${connection.id}/test` });
+                            }}>{testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection"}</DropdownMenuItem>}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
-                        </DropdownMenu>
-                      </>}
+                      </DropdownMenu>}
                     </div>
                   </article>;
                 })}
-              </div>
+              </div>}
             </section>)}
           </div>}
           <p className="text-xs leading-relaxed text-muted-foreground">
@@ -850,13 +919,35 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
               <div className="grid gap-2 px-5 py-4 sm:grid-cols-[128px_minmax(0,1fr)]">
                 <dt className="text-xs text-muted-foreground">App identity</dt>
                 <dd className="min-w-0">
-                  <p className="flex items-start gap-2 font-medium"><Github aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="break-words">{instance.github_app.slug}</span></p>
+                  <p className="flex items-center gap-2 font-medium">
+                    <Github aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 break-words">{instance.github_app.slug}</span>
+                    {instance.github_app.slug && <Button asChild variant="ghost" size="icon" className="-my-1 size-8 shrink-0 text-muted-foreground">
+                      <a href={`https://github.com/apps/${encodeURIComponent(instance.github_app.slug)}`} target="_blank" rel="noreferrer"
+                        aria-label="Open GitHub App on GitHub" title="Open GitHub App on GitHub"><ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+                    </Button>}
+                  </p>
                   <p className="mt-1 text-xs text-muted-foreground">Comments are published as this GitHub App.</p>
                 </dd>
               </div>
               <div className="grid gap-2 px-5 py-4 sm:grid-cols-[128px_minmax(0,1fr)]">
                 <dt className="text-xs text-muted-foreground">Webhook endpoint</dt>
-                <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{instance.webhook_url ?? `${instance.public_url}/api/v1/webhooks/github`}</dd>
+                <dd className="min-w-0">
+                  <div className="flex items-start gap-2">
+                    <span className="min-w-0 break-all font-mono text-xs leading-relaxed">{webhookEndpoint}</span>
+                    <Button variant="ghost" size="icon" className="-my-1.5 size-8 shrink-0 text-muted-foreground" aria-label="Copy webhook endpoint"
+                      title={webhookCopy === "copied" ? "Copied" : "Copy webhook endpoint"} onClick={async () => {
+                        setWebhookCopy(null);
+                        try {
+                          await navigator.clipboard.writeText(webhookEndpoint);
+                          setWebhookCopy("copied");
+                        } catch { setWebhookCopy("failed"); }
+                      }}>
+                      {webhookCopy === "copied" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
+                    </Button>
+                  </div>
+                  {webhookCopy === "copied" && <span role="status" className="sr-only">Webhook endpoint copied.</span>}
+                  {webhookCopy === "failed" && <p role="alert" className="mt-2 text-xs text-destructive">Could not copy. Select the endpoint and copy it manually.</p>}
+                </dd>
               </div>
             </dl>
           </section>
@@ -873,7 +964,6 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             </Button>
           </div>
           {!member && !removingMember && <ErrorNotice error={memberAction.error} />}
-          <p className="text-xs tabular-nums text-muted-foreground">{instance.members.length} {instance.members.length === 1 ? "member" : "members"}</p>
           <div className="overflow-hidden rounded-lg border bg-card">
             <div aria-hidden="true" className="settings-member-row settings-member-heading border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground sm:px-5">
               <span>Member</span><span>Role</span><span />
@@ -894,9 +984,10 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
                     onFocus={(event) => { returnFocus.current = event.currentTarget; }}><MoreHorizontal className="size-4" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (member || removingMember) event.preventDefault(); }}>
-                  <DropdownMenuItem onSelect={() => openMember(item)}>Edit role</DropdownMenuItem>
+                  <DropdownMenuItem disabled={item.id === user.id || item.id === lastAdministrator}
+                    onSelect={() => openMember(item)}>Edit role</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => {
+                  <DropdownMenuItem variant="destructive" disabled={item.id === user.id || item.id === lastAdministrator} onSelect={() => {
                     memberAction.reset();
                     setRemovingMember(item);
                   }}>Remove</DropdownMenuItem>
@@ -913,34 +1004,34 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           <summary className="cursor-pointer text-sm text-muted-foreground">Recent background errors ({instance.failed_jobs.length})</summary>
           <ul className="mt-4 space-y-3">
             {instance.failed_jobs.map((job) => <li key={job.id} className="rounded-md border p-3 text-xs">
-              <span className="font-semibold">{job.kind}</span><p className="mt-1 break-words text-muted-foreground">{job.error}</p>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <span className="font-semibold">{job.kind}</span>
+                {job.available_at && <time dateTime={job.available_at} className="text-muted-foreground">Scheduled {date(job.available_at)}</time>}
+              </div>
+              <p className="mt-1 break-words text-muted-foreground">{job.error}</p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                {job.attempts !== undefined && <span>{job.attempts} {job.attempts === 1 ? "attempt" : "attempts"}</span>}
+                <span className="min-w-0 break-all">Job <code>{job.id}</code></span>
+              </div>
             </li>)}
           </ul>
         </details>}
       </div>
     </div>
-    <Dialog open={!!editing} onOpenChange={(open) => { if (!open && !savingConnection) setEditing(null); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl" onCloseAutoFocus={(event) => {
-        event.preventDefault();
-        if (!personal) returnFocus.current?.focus();
-      }}>
-        <DialogHeader>
+    <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
+      if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
+    }}>
+      <DialogContent className={`max-h-[90dvh] overflow-y-auto ${personal ? "sm:max-w-lg" : "sm:max-w-xl"}`} onCloseAutoFocus={restoreFocus}>
+        {editing && <DialogHeader>
           <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
           <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
-        </DialogHeader>
+        </DialogHeader>}
         {editing && providers.data && <ConnectionForm key={editing === "new" ? "new" : editing.id}
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
+          initialKind={newKind}
           onSavingChange={setSavingConnection}
-          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model) setPersonal(saved); }} />}
-      </DialogContent>
-    </Dialog>
-    <Dialog open={!!personal} onOpenChange={(open) => { if (!open) setPersonal(null); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
-        <DialogHeader>
-          <DialogTitle>{personal?.name}</DialogTitle>
-          <DialogDescription>Connect your official account and authorize automatic reviews.</DialogDescription>
-        </DialogHeader>
-        {personal && <PersonalConnection key={personal.id} connection={personal} />}
+          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model.trim()) setPersonal(saved); }} />}
+        {personal && <PersonalConnection key={personal.id} connection={personal} onDone={() => setPersonal(null)} />}
       </DialogContent>
     </Dialog>
     <Dialog open={!!deleting} onOpenChange={(open) => { if (!open && !action.isPending) { setDeleting(null); action.reset(); } }}>
@@ -990,16 +1081,15 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
           event.preventDefault();
           if (memberAction.isPending) return;
           try {
-            await memberAction.mutateAsync({ path: "/members", body: { login, role } });
+            await memberAction.mutateAsync({ path: "/members", body: { login, role: memberRoleLocked ? "admin" : role } });
             setMember(null);
           } catch { /* Keep the draft and display the action error. */ }
         }}>
           <ErrorNotice error={memberAction.error} />
           <Field label="GitHub username">{(id) => <Input id={id} required readOnly={member !== "new"} value={login}
             onChange={(event) => setLogin(event.target.value)} placeholder="username" />}</Field>
-          <Field label="Role">{(id) => <NativeSelect id={id} value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="member">Member</option><option value="admin">Administrator</option>
-          </NativeSelect>}</Field>
+          <Field label="Role" hint={memberRoleLocked ? "Administrator access must be retained. Add another administrator before removing the last one." : undefined}>{(id) => <SearchSelect id={id} value={memberRoleLocked ? "admin" : role} disabled={memberRoleLocked} onChange={setRole}
+            options={[{ value: "member", label: "Member" }, { value: "admin", label: "Administrator" }]} />}</Field>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" disabled={memberAction.isPending} onClick={() => { setMember(null); memberAction.reset(); }}>Cancel</Button>
             <Button type="submit" disabled={memberAction.isPending}>{memberAction.isPending ? "Saving…" : memberSubmitLabel}</Button>

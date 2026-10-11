@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Combobox, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList,
 } from "./ui/combobox";
 import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
+import { InputGroupAddon } from "./ui/input-group";
 import { cn } from "../lib/utils";
 
 export function SearchSelect({
@@ -12,7 +13,7 @@ export function SearchSelect({
   id?: string;
   value: string;
   onChange: (value: string) => void;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; icon?: ReactNode }[];
   placeholder?: string;
   disabled?: boolean;
   required?: boolean;
@@ -23,8 +24,9 @@ export function SearchSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState<string | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
-  const labels = useMemo(() => new Map(options.map((option) => [option.value, option.label])), [options]);
-  const label = (item: string) => labels.get(item) ?? item;
+  const choices = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
+  const label = (item: string) => choices.get(item)?.label ?? item;
+  const selectedIcon = open && search !== null ? undefined : choices.get(value)?.icon;
   useEffect(() => {
     if (disabled) {
       setOpen(false);
@@ -81,7 +83,9 @@ export function SearchSelect({
                   changeOpen(false);
                 }
               }}
-              maxLength={allowCustom ? 100 : undefined} />
+              maxLength={allowCustom ? 100 : undefined}>
+              {selectedIcon && <InputGroupAddon align="inline-start"><span aria-hidden="true" className="flex">{selectedIcon}</span></InputGroupAddon>}
+            </ComboboxInput>
           </div>
         </PopoverAnchor>
         <PopoverContent role="presentation" align="start" sideOffset={6} collisionPadding={16}
@@ -94,7 +98,10 @@ export function SearchSelect({
           }}>
           <ComboboxEmpty className="block empty:p-0">{allowCustom ? "Use the language you entered." : "No matches found."}</ComboboxEmpty>
           <ComboboxList className="max-h-60">
-            {(item: string) => <ComboboxItem key={item} value={item} className="min-h-10 break-words [overflow-wrap:anywhere]">{label(item)}</ComboboxItem>}
+            {(item: string) => <ComboboxItem key={item} value={item} className="min-h-10 break-words [overflow-wrap:anywhere]">
+              {choices.get(item)?.icon}
+              <span className="min-w-0">{label(item)}</span>
+            </ComboboxItem>}
           </ComboboxList>
         </PopoverContent>
       </Popover>

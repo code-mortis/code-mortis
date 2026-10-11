@@ -2,7 +2,7 @@ import copy
 import hashlib
 import hmac
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -23,6 +23,28 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.security import unseal
+
+
+def test_settings_failed_jobs_include_saved_metadata_without_payloads(seed, client):
+    scheduled = now().replace(microsecond=0)
+    with transaction() as db:
+        db.add_all([
+            Job(id="failed-job", kind="generate_background", status="failed", attempts=2,
+                available_at=scheduled, error="Check the connection and retry.",
+                payload={"api_key": "must-not-be-returned"}),
+            Job(id="queued-job", kind="review", status="queued", payload={}),
+        ])
+    response = client.get("/api/v1/settings")
+    assert response.status_code == 200
+    failed = response.json()["failed_jobs"]
+    assert len(failed) == 1
+    assert failed[0]["id"] == "failed-job"
+    assert failed[0]["kind"] == "generate_background"
+    assert failed[0]["error"] == "Check the connection and retry."
+    assert failed[0]["attempts"] == 2
+    assert datetime.fromisoformat(failed[0]["available_at"]) == scheduled
+    assert "payload" not in failed[0]
+    assert "must-not-be-returned" not in response.text
 
 
 def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatch):

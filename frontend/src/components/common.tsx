@@ -17,8 +17,8 @@ export const date = (value: string) =>
     timeStyle: "short",
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
-export function Status({ value, label }: { value: string; label?: string }) {
-  const good = ["completed", "published", "resolved", "connected", "success"].includes(
+export function Status({ value, label, icon }: { value: string; label?: string; icon?: ReactNode }) {
+  const good = ["completed", "published", "resolved", "connected", "success", "active"].includes(
     value,
   );
   const bad = ["failed", "critical", "high", "failure", "timed_out"].includes(value);
@@ -37,10 +37,11 @@ export function Status({ value, label }: { value: string; label?: string }) {
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
     >
+      {label || words(value)}
       {["queued", "running", "in_progress"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
-      {label || words(value)}
+      {icon}
     </Badge>
   );
 }
@@ -143,20 +144,6 @@ export function Field({
         <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
       )}
     </div>
-  );
-}
-export function NativeSelect({
-  className,
-  ...props
-}: React.ComponentProps<"select">) {
-  return (
-    <select
-      {...props}
-      className={cn(
-        "h-9 w-full rounded-md border border-input bg-card px-3 text-sm disabled:opacity-50",
-        className,
-      )}
-    />
   );
 }
 export function Markdown({ children }: { children: string }) {
