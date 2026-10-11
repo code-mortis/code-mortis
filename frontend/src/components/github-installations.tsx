@@ -159,10 +159,10 @@ export function GitHubInstallations() {
           </div>
         ) : !query.isError && <Empty title="No connected installations">Install the app on GitHub and connect an account to sync its repositories.</Empty>}
       </section>
-      {!query.isPending && !query.isError && available.length > 0 && <section aria-label="Accounts to connect" className="settings-container">
+      {!query.isPending && !query.isError && <section aria-label="Accounts to connect" className="settings-container">
         <h3 className="mb-2.5 flex items-baseline gap-2 text-sm font-semibold">Accounts to connect<span className="text-xs font-normal tabular-nums text-muted-foreground">{available.length}</span></h3>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Connect a GitHub account to sync its repositories.</p>
-        <div className="overflow-hidden rounded-lg border bg-card">
+        {available.length ? <div className="overflow-hidden rounded-lg border bg-card">
           <div aria-hidden="true" className="settings-record settings-installation-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
             <span>Account</span><span>Repository access</span><span>Status</span><span />
           </div>
@@ -183,7 +183,7 @@ export function GitHubInstallations() {
             </div>
             {item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
           </div>)}
-        </div>
+        </div> : <p className="text-xs leading-relaxed text-muted-foreground">No additional installations available. Install the app on another account, then refresh.</p>}
       </section>}
       <Dialog open={!!uninstalling} onOpenChange={(open) => { if (!open && !uninstallAction.isPending) setUninstalling(null); }}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>

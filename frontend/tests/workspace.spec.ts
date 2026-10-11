@@ -3559,7 +3559,7 @@ test("GitHub installation rows adapt without the settings page container", async
   }
 });
 
-test("GitHub installations refresh on return and connect available accounts", async ({ page }) => {
+test("GitHub installations refresh on return and connect available accounts", async ({ page }, info) => {
   const requests = await mock(page);
   let connected = false;
   let reads = 0;
@@ -3577,7 +3577,10 @@ test("GitHub installations refresh on return and connect available accounts", as
   await page.getByRole("button", { name: "Actions for acme" }).click();
   await page.getByRole("menuitem", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
-  await expect(available).toHaveCount(0);
+  await expect(available).toContainText("No additional installations available. Install the app on another account, then refresh.");
+  await expect(available.getByRole("button")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: info.outputPath("installation-empty-state.png"), fullPage: true });
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
   const before = reads;
   await page.evaluate(() => {
