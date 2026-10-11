@@ -5179,10 +5179,13 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("button")).toHaveCount(2);
   await expect(page.getByRole("heading", { name: `#${pr.number} ${pr.title}`, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
   await expect(list.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   await expect(list.getByRole("region")).toHaveCount(3);
   await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
@@ -5207,11 +5210,13 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
   await page.getByLabel("Search findings", { exact: true }).fill("VALIDATE.TS");
   await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: "High", exact: true }).check();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "View all findings", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: /Remove (Status|Severity) filter/ })).toHaveCount(0);
@@ -5337,7 +5342,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await expect(history.getByRole("status")).toHaveText("23 of 23");
   await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
   expect(requests).toEqual([1, 1, 2, 3]);
-  await page.getByRole("tab", { name: "Findings 1" }).click();
+  await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
   await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
 });
 

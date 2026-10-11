@@ -346,7 +346,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
     <Tabs defaultValue="findings">
       <TabsList className="mb-4">
-        <TabsTrigger value="findings">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : ""}</span></TabsTrigger>
+        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
@@ -356,9 +356,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
             ]}
-            onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)}>
-            <span role="status" className="shrink-0 text-xs tabular-nums text-muted-foreground sm:pt-2.5">{findings ? `${findings.total} of ${total} findings` : findingsQuery.error ? "Findings unavailable" : "Loading findings…"}</span>
-          </FilterBar>
+            onChange={(key, values) => key === "status" ? setStatuses(values) : setSeverities(values)} />
         </div>
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
