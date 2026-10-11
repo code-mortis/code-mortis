@@ -1367,6 +1367,42 @@ for (const example of [
   });
 }
 
+test("focused finding cards preserve long file locations, state, and keyboard access on narrow screens", async ({ page }) => {
+  const file = `${"long-finding-filename-".repeat(4)}.tsx`;
+  const directory = `src/${"deeply-nested-directory/".repeat(4)}`;
+  const content = `${finding.content} ${"Additional saved evidence. ".repeat(30)}`;
+  await page.setViewportSize({ width: 320, height: 844 });
+  const requests = await mock(page, {
+    run: { status: "completed" },
+    finding: { path: directory + file, content, desired_status: "resolved", sync_error: "GitHub unavailable", last_seen_run_id: "previous" },
+    occurrences: [{ finding_id: "finding", inline_line: null, snapshot: { ...finding, path: directory + file, content } }],
+  });
+  await page.goto("/pulls/pr");
+  const card = page.getByRole("button", { name: /retry loop has no upper bound/ });
+  await expect(card.getByText(file, { exact: true })).toBeVisible();
+  await expect(card.getByText(directory, { exact: true })).toBeVisible();
+  await expect(card).toContainText("42–46");
+  await expect(card.getByText("open", { exact: true })).toBeVisible();
+  await expect(card).toContainText("Sync needs attention");
+  await expect(card).toContainText("Not observed in latest review");
+  await noOverflow(page);
+  await card.press("Space");
+  await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(content);
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  await page.goto("/runs/run");
+  const saved = page.getByRole("region", { name: "Findings at this run" }).getByRole("button");
+  await expect(saved).toContainText("Summary comment");
+  await expect(saved.getByText(file, { exact: true })).toBeVisible();
+  await expect(saved).not.toContainText("Sync needs attention");
+  await noOverflow(page);
+  await saved.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Finding details" }).getByRole("tab", { name: "At this run" })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(saved).toBeFocused();
+  expect(requests).toEqual([]);
+});
+
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
   const occurrences = Array.from({ length: 6 }, (_, index) => ({
     finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,

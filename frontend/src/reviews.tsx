@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
@@ -383,26 +383,14 @@ export function PullDetail({ admin }: { admin: boolean }) {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
               <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
-              <div className="divide-y overflow-hidden rounded-lg border bg-card">
-                <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
-                  <span>Finding</span><span>Severity</span><span>Status</span><span />
-                </div>
-                {items.map((item) => <button key={item.id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}>
-                  <div className="min-w-0">
-                    <p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{item.content.replaceAll(/[*`#]/g, "")}</p>
-                    <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.path}:${item.start_line}${item.end_line !== item.start_line ? `–${item.end_line}` : ""}`}>{item.path}:{item.start_line}{item.end_line !== item.start_line && `–${item.end_line}`}</p>
-                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span className="capitalize">{words(item.category)}</span>
-                      {observed && item.last_seen_run_id !== observed && <span>Not observed in latest review</span>}
-                    </div>
-                  </div>
-                  <div><Status value={item.severity} /></div>
-                  <div className="space-y-1.5">
-                    <Status value={item.status} />
+              <div className="space-y-3">
+                {items.map((item) => <FindingCard key={item.id} evidence={item}
+                  onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}
+                  note={observed && item.last_seen_run_id !== observed ? "Not observed in latest review" : undefined}
+                  state={<div className="space-y-1.5">
+                    <Status value={item.status} icon={item.status === "resolved" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />
                     {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
-                  </div>
-                  <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
-                </button>)}
+                  </div>} />)}
                 {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
                 {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
                   <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
@@ -430,6 +418,36 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </SheetContent>
     </Sheet>
   </>;
+}
+
+function FindingCard({ evidence, state, note, onClick }: {
+  evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
+  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>;
+}) {
+  const path = String(evidence.path ?? "Path not recorded");
+  const slash = path.lastIndexOf("/");
+  return <button type="button" data-slot="finding-card" onClick={onClick}
+    className="group w-full min-w-0 rounded-lg border bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
+    <span className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
+      <span className="flex min-w-0 items-start gap-2">
+        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="min-w-0 font-mono text-xs">
+          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 [overflow-wrap:anywhere]">
+            <span className="min-w-0 font-medium">{path.slice(slash + 1)}</span>
+            {evidence.start_line != null && <span className="text-muted-foreground">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
+          </span>
+          {slash >= 0 && <span className="mt-1 block break-words text-muted-foreground [overflow-wrap:anywhere]">{path.slice(0, slash + 1)}</span>}
+        </span>
+      </span>
+      <span className="shrink-0">{state}</span>
+    </span>
+    <span className="mt-4 line-clamp-3 max-w-[75ch] break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
+    <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
+      <span className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} />{!!evidence.category && <span className="text-xs capitalize text-muted-foreground">{words(String(evidence.category))}</span>}</span>
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground group-hover:text-primary">View details<ChevronRight className="size-3.5" aria-hidden="true" /></span>
+    </span>
+    {note && <span className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground"><History className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{note}</span>}
+  </button>;
 }
 
 function FindingPanel({ id, canWrite, snapshot, headSha }: {
@@ -706,17 +724,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </FilterBar></div>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-        {filtered.length ? <section aria-label="Findings at this run" className="divide-y overflow-hidden rounded-lg border bg-card">
-          <div aria-hidden="true" className="review-row-grid hidden items-center bg-muted/35 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid"><span>Finding</span><span>Severity</span><span>Comment placement</span><span /></div>
-          {filtered.map((item) => <button key={item.finding_id} className="review-row-grid grid w-full items-center gap-y-3 px-5 py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item); }}>
-            <div className="min-w-0"><p className="line-clamp-2 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(item.snapshot.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</p>
-              <p className="mt-1.5 truncate font-mono text-xs text-muted-foreground" title={`${item.snapshot.path}:${item.snapshot.start_line}`}>{String(item.snapshot.path ?? "Path not recorded")}:{String(item.snapshot.start_line ?? "")}</p>
-              {!!item.snapshot.category && <p className="mt-1 text-xs text-muted-foreground">{String(item.snapshot.category)}</p>}
-            </div>
-            <div><Status value={String(item.snapshot.severity ?? "unknown")} /></div>
-            <span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>
-            <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
-          </button>)}
+        {filtered.length ? <section aria-label="Findings at this run" className="space-y-3">
+          {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
+            state={<span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>}
+            onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item); }} />)}
         </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
           <p>{occurrences.length ? "Try another search or severity." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
           {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSeverities([]); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-08T21:09:21.135458+00:00",
+  "generatedAt": "2026-10-11T03:35:22.643Z",
   "title": "Design System: Code Mortis",
   "extensions": {
     "colorMeta": {
@@ -8,14 +8,14 @@
         "role": "neutral",
         "displayName": "Background",
         "tonalRamp": [
-          "oklch(15% 0.0041 121.56)",
-          "oklch(26% 0.0041 121.56)",
-          "oklch(38% 0.0041 121.56)",
-          "oklch(49% 0.0041 121.56)",
-          "oklch(61% 0.0041 121.56)",
-          "oklch(72% 0.0041 121.56)",
-          "oklch(84% 0.0041 121.56)",
-          "oklch(95% 0.0041 121.56)"
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26% 0.0000 0.00)",
+          "oklch(38% 0.0000 0.00)",
+          "oklch(49% 0.0000 0.00)",
+          "oklch(61% 0.0000 0.00)",
+          "oklch(72% 0.0000 0.00)",
+          "oklch(84% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
         ]
       },
       "foreground": {
@@ -36,14 +36,14 @@
         "role": "neutral",
         "displayName": "Card",
         "tonalRamp": [
-          "oklch(15% 0.0000 89.88)",
-          "oklch(26% 0.0000 89.88)",
-          "oklch(38% 0.0000 89.88)",
-          "oklch(49% 0.0000 89.88)",
-          "oklch(61% 0.0000 89.88)",
-          "oklch(72% 0.0000 89.88)",
-          "oklch(84% 0.0000 89.88)",
-          "oklch(95% 0.0000 89.88)"
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26% 0.0000 0.00)",
+          "oklch(38% 0.0000 0.00)",
+          "oklch(49% 0.0000 0.00)",
+          "oklch(61% 0.0000 0.00)",
+          "oklch(72% 0.0000 0.00)",
+          "oklch(84% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
         ]
       },
       "card-foreground": {
@@ -64,14 +64,14 @@
         "role": "neutral",
         "displayName": "Popover",
         "tonalRamp": [
-          "oklch(15% 0.0000 89.88)",
-          "oklch(26% 0.0000 89.88)",
-          "oklch(38% 0.0000 89.88)",
-          "oklch(49% 0.0000 89.88)",
-          "oklch(61% 0.0000 89.88)",
-          "oklch(72% 0.0000 89.88)",
-          "oklch(84% 0.0000 89.88)",
-          "oklch(95% 0.0000 89.88)"
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26% 0.0000 0.00)",
+          "oklch(38% 0.0000 0.00)",
+          "oklch(49% 0.0000 0.00)",
+          "oklch(61% 0.0000 0.00)",
+          "oklch(72% 0.0000 0.00)",
+          "oklch(84% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
         ]
       },
       "popover-foreground": {
@@ -106,14 +106,14 @@
         "role": "neutral",
         "displayName": "Primary foreground",
         "tonalRamp": [
-          "oklch(15% 0.0000 89.88)",
-          "oklch(26% 0.0000 89.88)",
-          "oklch(38% 0.0000 89.88)",
-          "oklch(49% 0.0000 89.88)",
-          "oklch(61% 0.0000 89.88)",
-          "oklch(72% 0.0000 89.88)",
-          "oklch(84% 0.0000 89.88)",
-          "oklch(95% 0.0000 89.88)"
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26% 0.0000 0.00)",
+          "oklch(38% 0.0000 0.00)",
+          "oklch(49% 0.0000 0.00)",
+          "oklch(61% 0.0000 0.00)",
+          "oklch(72% 0.0000 0.00)",
+          "oklch(84% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
         ]
       },
       "secondary": {
@@ -508,6 +508,230 @@
           "oklch(95% 0.0745 154.20)"
         ]
       },
+      "code-keyword": {
+        "role": "semantic",
+        "displayName": "code keyword",
+        "tonalRamp": [
+          "oklch(15% 0.1673 298.54)",
+          "oklch(26% 0.1673 298.54)",
+          "oklch(38% 0.1673 298.54)",
+          "oklch(49% 0.1673 298.54)",
+          "oklch(61% 0.1673 298.54)",
+          "oklch(72% 0.1673 298.54)",
+          "oklch(84% 0.1673 298.54)",
+          "oklch(95% 0.1673 298.54)"
+        ]
+      },
+      "code-string": {
+        "role": "semantic",
+        "displayName": "code string",
+        "tonalRamp": [
+          "oklch(15% 0.0671 164.68)",
+          "oklch(26% 0.0671 164.68)",
+          "oklch(38% 0.0671 164.68)",
+          "oklch(49% 0.0671 164.68)",
+          "oklch(61% 0.0671 164.68)",
+          "oklch(72% 0.0671 164.68)",
+          "oklch(84% 0.0671 164.68)",
+          "oklch(95% 0.0671 164.68)"
+        ]
+      },
+      "code-number": {
+        "role": "semantic",
+        "displayName": "code number",
+        "tonalRamp": [
+          "oklch(15% 0.1199 52.80)",
+          "oklch(26% 0.1199 52.80)",
+          "oklch(38% 0.1199 52.80)",
+          "oklch(49% 0.1199 52.80)",
+          "oklch(61% 0.1199 52.80)",
+          "oklch(72% 0.1199 52.80)",
+          "oklch(84% 0.1199 52.80)",
+          "oklch(95% 0.1199 52.80)"
+        ]
+      },
+      "code-function": {
+        "role": "semantic",
+        "displayName": "code function",
+        "tonalRamp": [
+          "oklch(15% 0.1002 241.66)",
+          "oklch(26% 0.1002 241.66)",
+          "oklch(38% 0.1002 241.66)",
+          "oklch(49% 0.1002 241.66)",
+          "oklch(61% 0.1002 241.66)",
+          "oklch(72% 0.1002 241.66)",
+          "oklch(84% 0.1002 241.66)",
+          "oklch(95% 0.1002 241.66)"
+        ]
+      },
+      "code-added": {
+        "role": "semantic",
+        "displayName": "code added",
+        "tonalRamp": [
+          "oklch(15% 0.0696 155.16)",
+          "oklch(26% 0.0696 155.16)",
+          "oklch(38% 0.0696 155.16)",
+          "oklch(49% 0.0696 155.16)",
+          "oklch(61% 0.0696 155.16)",
+          "oklch(72% 0.0696 155.16)",
+          "oklch(84% 0.0696 155.16)",
+          "oklch(95% 0.0696 155.16)"
+        ]
+      },
+      "code-added-background": {
+        "role": "semantic",
+        "displayName": "code added background",
+        "tonalRamp": [
+          "oklch(15% 0.0184 150.55)",
+          "oklch(26% 0.0184 150.55)",
+          "oklch(38% 0.0184 150.55)",
+          "oklch(49% 0.0184 150.55)",
+          "oklch(61% 0.0184 150.55)",
+          "oklch(72% 0.0184 150.55)",
+          "oklch(84% 0.0184 150.55)",
+          "oklch(95% 0.0184 150.55)"
+        ]
+      },
+      "code-removed": {
+        "role": "semantic",
+        "displayName": "code removed",
+        "tonalRamp": [
+          "oklch(15% 0.1375 19.36)",
+          "oklch(26% 0.1375 19.36)",
+          "oklch(38% 0.1375 19.36)",
+          "oklch(49% 0.1375 19.36)",
+          "oklch(61% 0.1375 19.36)",
+          "oklch(72% 0.1375 19.36)",
+          "oklch(84% 0.1375 19.36)",
+          "oklch(95% 0.1375 19.36)"
+        ]
+      },
+      "code-removed-background": {
+        "role": "semantic",
+        "displayName": "code removed background",
+        "tonalRamp": [
+          "oklch(15% 0.0187 9.31)",
+          "oklch(26% 0.0187 9.31)",
+          "oklch(38% 0.0187 9.31)",
+          "oklch(49% 0.0187 9.31)",
+          "oklch(61% 0.0187 9.31)",
+          "oklch(72% 0.0187 9.31)",
+          "oklch(84% 0.0187 9.31)",
+          "oklch(95% 0.0187 9.31)"
+        ]
+      },
+      "dark-code-keyword": {
+        "role": "semantic",
+        "displayName": "dark code keyword",
+        "tonalRamp": [
+          "oklch(15% 0.1032 305.50)",
+          "oklch(26% 0.1032 305.50)",
+          "oklch(38% 0.1032 305.50)",
+          "oklch(49% 0.1032 305.50)",
+          "oklch(61% 0.1032 305.50)",
+          "oklch(72% 0.1032 305.50)",
+          "oklch(84% 0.1032 305.50)",
+          "oklch(95% 0.1032 305.50)"
+        ]
+      },
+      "dark-code-string": {
+        "role": "semantic",
+        "displayName": "dark code string",
+        "tonalRamp": [
+          "oklch(15% 0.0734 149.62)",
+          "oklch(26% 0.0734 149.62)",
+          "oklch(38% 0.0734 149.62)",
+          "oklch(49% 0.0734 149.62)",
+          "oklch(61% 0.0734 149.62)",
+          "oklch(72% 0.0734 149.62)",
+          "oklch(84% 0.0734 149.62)",
+          "oklch(95% 0.0734 149.62)"
+        ]
+      },
+      "dark-code-number": {
+        "role": "semantic",
+        "displayName": "dark code number",
+        "tonalRamp": [
+          "oklch(15% 0.0858 70.81)",
+          "oklch(26% 0.0858 70.81)",
+          "oklch(38% 0.0858 70.81)",
+          "oklch(49% 0.0858 70.81)",
+          "oklch(61% 0.0858 70.81)",
+          "oklch(72% 0.0858 70.81)",
+          "oklch(84% 0.0858 70.81)",
+          "oklch(95% 0.0858 70.81)"
+        ]
+      },
+      "dark-code-function": {
+        "role": "semantic",
+        "displayName": "dark code function",
+        "tonalRamp": [
+          "oklch(15% 0.0748 227.42)",
+          "oklch(26% 0.0748 227.42)",
+          "oklch(38% 0.0748 227.42)",
+          "oklch(49% 0.0748 227.42)",
+          "oklch(61% 0.0748 227.42)",
+          "oklch(72% 0.0748 227.42)",
+          "oklch(84% 0.0748 227.42)",
+          "oklch(95% 0.0748 227.42)"
+        ]
+      },
+      "dark-code-added": {
+        "role": "semantic",
+        "displayName": "dark code added",
+        "tonalRamp": [
+          "oklch(15% 0.0626 152.80)",
+          "oklch(26% 0.0626 152.80)",
+          "oklch(38% 0.0626 152.80)",
+          "oklch(49% 0.0626 152.80)",
+          "oklch(61% 0.0626 152.80)",
+          "oklch(72% 0.0626 152.80)",
+          "oklch(84% 0.0626 152.80)",
+          "oklch(95% 0.0626 152.80)"
+        ]
+      },
+      "dark-code-added-background": {
+        "role": "semantic",
+        "displayName": "dark code added background",
+        "tonalRamp": [
+          "oklch(15% 0.0429 156.24)",
+          "oklch(26% 0.0429 156.24)",
+          "oklch(38% 0.0429 156.24)",
+          "oklch(49% 0.0429 156.24)",
+          "oklch(61% 0.0429 156.24)",
+          "oklch(72% 0.0429 156.24)",
+          "oklch(84% 0.0429 156.24)",
+          "oklch(95% 0.0429 156.24)"
+        ]
+      },
+      "dark-code-removed": {
+        "role": "semantic",
+        "displayName": "dark code removed",
+        "tonalRamp": [
+          "oklch(15% 0.0716 12.19)",
+          "oklch(26% 0.0716 12.19)",
+          "oklch(38% 0.0716 12.19)",
+          "oklch(49% 0.0716 12.19)",
+          "oklch(61% 0.0716 12.19)",
+          "oklch(72% 0.0716 12.19)",
+          "oklch(84% 0.0716 12.19)",
+          "oklch(95% 0.0716 12.19)"
+        ]
+      },
+      "dark-code-removed-background": {
+        "role": "semantic",
+        "displayName": "dark code removed background",
+        "tonalRamp": [
+          "oklch(15% 0.0496 12.38)",
+          "oklch(26% 0.0496 12.38)",
+          "oklch(38% 0.0496 12.38)",
+          "oklch(49% 0.0496 12.38)",
+          "oklch(61% 0.0496 12.38)",
+          "oklch(72% 0.0496 12.38)",
+          "oklch(84% 0.0496 12.38)",
+          "oklch(95% 0.0496 12.38)"
+        ]
+      },
       "status-good-fill": {
         "role": "semantic",
         "displayName": "Status good fill",
@@ -633,6 +857,48 @@
           "oklch(84% 0.1690 91.61)",
           "oklch(95% 0.1690 91.61)"
         ]
+      },
+      "status-running-fill": {
+        "role": "semantic",
+        "displayName": "status running fill",
+        "tonalRamp": [
+          "oklch(15% 0.2430 264.38)",
+          "oklch(26% 0.2430 264.38)",
+          "oklch(38% 0.2430 264.38)",
+          "oklch(49% 0.2430 264.38)",
+          "oklch(61% 0.2430 264.38)",
+          "oklch(72% 0.2430 264.38)",
+          "oklch(84% 0.2430 264.38)",
+          "oklch(95% 0.2430 264.38)"
+        ]
+      },
+      "status-running-text": {
+        "role": "semantic",
+        "displayName": "status running text",
+        "tonalRamp": [
+          "oklch(15% 0.1990 265.64)",
+          "oklch(26% 0.1990 265.64)",
+          "oklch(38% 0.1990 265.64)",
+          "oklch(49% 0.1990 265.64)",
+          "oklch(61% 0.1990 265.64)",
+          "oklch(72% 0.1990 265.64)",
+          "oklch(84% 0.1990 265.64)",
+          "oklch(95% 0.1990 265.64)"
+        ]
+      },
+      "status-running-dark-text": {
+        "role": "semantic",
+        "displayName": "status running dark text",
+        "tonalRamp": [
+          "oklch(15% 0.1050 251.81)",
+          "oklch(26% 0.1050 251.81)",
+          "oklch(38% 0.1050 251.81)",
+          "oklch(49% 0.1050 251.81)",
+          "oklch(61% 0.1050 251.81)",
+          "oklch(72% 0.1050 251.81)",
+          "oklch(84% 0.1050 251.81)",
+          "oklch(95% 0.1050 251.81)"
+        ]
       }
     },
     "typographyMeta": {
@@ -642,7 +908,7 @@
       },
       "headline-wide": {
         "displayName": "Headline wide",
-        "purpose": "Page titles at 640px and wider; Inbox title at every width."
+        "purpose": "Inbox, repository, Settings and repository-configuration titles at every width; PR/run titles from 640px."
       },
       "body": {
         "displayName": "Body",
@@ -659,6 +925,14 @@
       "code": {
         "displayName": "Code",
         "purpose": "Evidence blocks and code identifiers."
+      },
+      "section": {
+        "displayName": "Section heading",
+        "purpose": "Settings sections and repository Pull requests heading."
+      },
+      "finding-preview": {
+        "displayName": "Finding preview",
+        "purpose": "Three-line explanation preview with a 75ch maximum reading measure."
       }
     },
     "shadows": [
@@ -738,6 +1012,23 @@
         "name": "lg",
         "value": "1024px"
       }
+    ],
+    "containerBreakpoints": [
+      {
+        "name": "settings-information-columns",
+        "value": "320px",
+        "purpose": "Two information columns while identity and actions span the row."
+      },
+      {
+        "name": "settings-member-columns",
+        "value": "400px",
+        "purpose": "Member identity, role, and action align in one row."
+      },
+      {
+        "name": "settings-record-columns",
+        "value": "640px",
+        "purpose": "Aligned installation and connection records with column headings."
+      }
     ]
   },
   "components": [
@@ -763,7 +1054,7 @@
       "refersTo": "button-outline",
       "description": "Secondary workspace action.",
       "html": "<button type=\"button\" class=\"ds-button-outline\">Dismiss</button>",
-      "css": ".ds-button-outline{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);border-width:1px;border-color:var(--border, #dce1d9);background:var(--background, #f7f8f5);color:var(--foreground, #202c26);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05);}.ds-button-outline:hover{background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-button-outline:focus-visible{outline:none;border-color:var(--ring, #377c59);box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}.ds-button-outline:disabled{pointer-events:none;opacity:.5;}:host-context(.dark) .ds-button-outline{border-color:var(--input, #c5cec3);background:color-mix(in oklab,var(--input, #c5cec3) 30%,transparent);}:host-context(.dark) .ds-button-outline:hover{background:color-mix(in oklab,var(--input, #c5cec3) 50%,transparent);}@media(prefers-reduced-motion:reduce){.ds-button-outline{transition-duration:0.01ms;animation-duration:0.01ms;}}"
+      "css": ".ds-button-outline{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);border-width:1px;border-color:var(--border, #dce1d9);background:var(--background, #ffffff);color:var(--foreground, #202c26);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05);}.ds-button-outline:hover{background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-button-outline:focus-visible{outline:none;border-color:var(--ring, #377c59);box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}.ds-button-outline:disabled{pointer-events:none;opacity:.5;}:host-context(.dark) .ds-button-outline{border-color:var(--input, #c5cec3);background:color-mix(in oklab,var(--input, #c5cec3) 30%,transparent);}:host-context(.dark) .ds-button-outline:hover{background:color-mix(in oklab,var(--input, #c5cec3) 50%,transparent);}@media(prefers-reduced-motion:reduce){.ds-button-outline{transition-duration:0.01ms;animation-duration:0.01ms;}}"
     },
     {
       "name": "Secondary button",
@@ -801,8 +1092,8 @@
       "name": "Native select",
       "kind": "input",
       "refersTo": "native-select",
-      "description": "Compact browser-native filter.",
-      "html": "<select class=\"ds-select\" aria-label=\"Finding status\"><option>Open findings</option><option>Resolved findings</option><option>All findings</option></select>",
+      "description": "Available native select primitive for simple fixed choices; current finding filters use checkbox popovers.",
+      "html": "<select class=\"ds-select\" aria-label=\"Example selection\"><option>First option</option><option>Second option</option></select>",
       "css": ".ds-select{font-family:'Inter Variable',sans-serif;height:36px;width:160px;padding:0 12px;border:1px solid var(--input, #c5cec3);border-radius:var(--radius,8px);background:var(--card, #ffffff);color:var(--foreground, #202c26);font-size:14px;line-height:20px;cursor:pointer;}.ds-select:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}.ds-select:disabled{opacity:.5;}"
     },
     {
@@ -810,8 +1101,8 @@
       "kind": "nav",
       "refersTo": "navigation",
       "description": "Theme-matching shadcn sidebar with filled selection, owner/name repository labels, and visible running activity. The 256px desktop sidebar hides fully; below 1024px it opens as a 288px drawer. This preview shows the navigation rows.",
-      "html": "<nav class=\"ds-sidebar\" aria-label=\"Main navigation\"><a class=\"ds-nav-link\" href=\"#inbox\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg><span>Inbox</span></a><p class=\"ds-nav-group\">Repositories</p><a class=\"ds-nav-link ds-nav-repository\" href=\"#repositories\" aria-current=\"page\" aria-label=\"acme/payments, review running\" title=\"acme/payments\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5\"/><circle cx=\"13\" cy=\"12\" r=\"2\"/><path d=\"M18 19c-2.8 0-5-2.2-5-5v8\"/><circle cx=\"20\" cy=\"19\" r=\"2\"/></svg><span class=\"ds-nav-identity\"><span class=\"ds-nav-name\">payments</span><span class=\"ds-nav-owner\">acme</span></span><span class=\"ds-nav-running\"><svg class=\"ds-nav-spinner\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></svg>Running</span></a></nav>",
-      "css": ".ds-sidebar{box-sizing:border-box;width:256px;max-width:100%;padding:16px;background:var(--sidebar,var(--muted,#eef0ec));color:var(--sidebar-foreground,var(--foreground,#202c26));font-family:'Inter Variable',sans-serif;}.ds-nav-link{box-sizing:border-box;display:flex;align-items:center;gap:8px;height:40px;padding:8px;border-radius:var(--radius,8px);font-size:14px;line-height:20px;color:inherit;text-decoration:none;}.ds-nav-link>svg{flex-shrink:0;}.ds-nav-link:hover,.ds-nav-link:active,.ds-nav-link[aria-current=page]{background:var(--sidebar-accent,var(--accent,#e1ebe2));color:var(--sidebar-accent-foreground,var(--accent-foreground,#173e2a));}.ds-nav-link[aria-current=page]{font-weight:500;}.ds-nav-link:focus-visible{outline:none;box-shadow:0 0 0 2px var(--sidebar-ring,var(--ring,#377c59));}.ds-nav-group{margin:24px 0 0;padding:8px;font-size:12px;line-height:16px;font-weight:500;color:var(--muted-foreground,#606a62);}.ds-nav-repository{height:48px;}.ds-nav-repository>svg,.ds-nav-owner{color:var(--muted-foreground,#606a62);}.ds-nav-identity{min-width:0;flex:1;}.ds-nav-name,.ds-nav-owner{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}.ds-nav-name{font-weight:500;}.ds-nav-owner{font-size:12px;line-height:16px;}.ds-nav-running{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12px;line-height:16px;color:var(--sidebar-primary,var(--primary,#245944));}@media(prefers-reduced-motion:no-preference){.ds-nav-spinner{animation:ds-sidebar-spin 1s linear infinite;}}@keyframes ds-sidebar-spin{to{transform:rotate(360deg);}}"
+      "html": "<nav class=\"ds-sidebar\" aria-label=\"Main navigation\"><a class=\"ds-nav-link\" href=\"#inbox\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg><span>Inbox</span><span class=\"ds-nav-count\" aria-label=\"0 open pull requests\">0</span></a><p class=\"ds-nav-group\">Repositories</p><a class=\"ds-nav-link ds-nav-repository\" href=\"#repositories\" aria-current=\"page\" aria-label=\"acme/payments, review running\" title=\"acme/payments\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5\"/><circle cx=\"13\" cy=\"12\" r=\"2\"/><path d=\"M18 19c-2.8 0-5-2.2-5-5v8\"/><circle cx=\"20\" cy=\"19\" r=\"2\"/></svg><span class=\"ds-nav-identity\"><span class=\"ds-nav-name\">payments</span><span class=\"ds-nav-owner\">acme</span></span><span class=\"ds-nav-running\"><svg class=\"ds-nav-spinner\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></svg></span></a></nav>",
+      "css": ".ds-sidebar{box-sizing:border-box;width:256px;max-width:100%;padding:16px;background:var(--sidebar,var(--muted,#eef0ec));color:var(--sidebar-foreground,var(--foreground,#202c26));font-family:'Inter Variable',sans-serif;}.ds-nav-link{box-sizing:border-box;display:flex;align-items:center;gap:8px;height:40px;padding:8px;border-radius:var(--radius,8px);font-size:14px;line-height:20px;color:inherit;text-decoration:none;}.ds-nav-link>svg{flex-shrink:0;}.ds-nav-link:hover,.ds-nav-link:active,.ds-nav-link[aria-current=page]{background:var(--sidebar-accent,var(--accent,#e1ebe2));color:var(--sidebar-accent-foreground,var(--accent-foreground,#173e2a));}.ds-nav-link[aria-current=page]{font-weight:500;}.ds-nav-link:focus-visible{outline:none;box-shadow:0 0 0 2px var(--sidebar-ring,var(--ring,#377c59));}.ds-nav-group{margin:24px 0 0;padding:8px;font-size:12px;line-height:16px;font-weight:500;color:var(--muted-foreground,#606a62);}.ds-nav-repository{height:48px;}.ds-nav-repository>svg,.ds-nav-owner{color:var(--muted-foreground,#606a62);}.ds-nav-identity{min-width:0;flex:1;}.ds-nav-name,.ds-nav-owner{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}.ds-nav-name{font-weight:500;}.ds-nav-owner{font-size:12px;line-height:16px;}.ds-nav-running{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12px;line-height:16px;color:var(--sidebar-primary,var(--primary,#245944));}@media(prefers-reduced-motion:no-preference){.ds-nav-spinner{animation:ds-sidebar-spin 1s linear infinite;}}@keyframes ds-sidebar-spin{to{transform:rotate(360deg);}}.ds-nav-count{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border:1px solid var(--sidebar-border,var(--border,#dce1d9));border-radius:var(--radius,8px);background:var(--sidebar,var(--muted,#eef0ec));font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;}"
     },
     {
       "name": "Semantic status chips",
@@ -833,17 +1124,33 @@
       "name": "Editable filter chip",
       "kind": "chip",
       "refersTo": "filter-chip",
-      "description": "URL-backed selections use separate edit and remove buttons; long summaries truncate within the available width.",
-      "html": "<div class=\"ds-filter-chip\"><button class=\"ds-filter-edit\" aria-label=\"Edit PR state: Open, Merged\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span>PR state</span><span class=\"ds-filter-divider\" aria-hidden=\"true\"></span><span class=\"ds-filter-summary\">Open, Merged</span><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"/></svg></button><button class=\"ds-filter-remove\" aria-label=\"Remove PR state filter\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button></div>",
-      "css": ".ds-filter-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:var(--radius,8px);background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-filter-edit,.ds-filter-remove{display:inline-flex;align-items:center;justify-content:center;height:36px;border:0;background:transparent;color:inherit;font-family:\"Inter Variable\",sans-serif;font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-filter-edit{min-width:0;gap:8px;padding:0 12px;border-radius:var(--radius,8px) 0 0 var(--radius,8px);}.ds-filter-edit>span:first-child,.ds-filter-edit svg{flex-shrink:0;}.ds-filter-divider{height:16px;border-left:1px solid color-mix(in oklab,currentColor 20%,transparent);}.ds-filter-summary{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.ds-filter-remove{width:36px;flex-shrink:0;padding:0;border-left:1px solid color-mix(in oklab,currentColor 10%,transparent);border-radius:0 var(--radius,8px) var(--radius,8px) 0;}.ds-filter-edit:hover,.ds-filter-remove:hover{background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-filter-edit:focus-visible,.ds-filter-remove:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}@media(prefers-reduced-motion:reduce){.ds-filter-edit,.ds-filter-remove{transition-duration:.01ms;}}"
+      "description": "Outlined card surface, separate edit/remove controls, secondary selection badges, and a count on mobile.",
+      "html": "<div class=\"ds-filter-chip\"><button type=\"button\" class=\"ds-filter-edit\" aria-label=\"Edit PR state: Open, Merged\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M8 12h8m-4-4v8\"/></svg><span>PR state</span><span class=\"ds-filter-divider\" aria-hidden=\"true\"></span><span class=\"ds-filter-values\"><span class=\"ds-filter-badge\">Open</span><span class=\"ds-filter-badge\">Merged</span></span><span class=\"ds-filter-count ds-filter-badge\">2</span></button><button type=\"button\" class=\"ds-filter-remove\" aria-label=\"Remove PR state filter\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button></div>",
+      "css": ".ds-filter-chip{display:inline-flex;align-items:center;max-width:100%;min-width:0;border:1px solid var(--border,#dce1d9);border-radius:var(--radius,8px);background:var(--card,#ffffff);color:var(--foreground,#202c26);box-shadow:0 1px 2px rgb(0 0 0/.05);font-family:\"Inter Variable\",sans-serif;}.ds-filter-edit,.ds-filter-remove{display:inline-flex;align-items:center;justify-content:center;height:34px;border:0;background:transparent;color:inherit;font-family:inherit;font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-filter-edit{min-width:0;gap:8px;padding:0 12px;border-radius:var(--radius,8px) 0 0 var(--radius,8px);}.ds-filter-edit>svg,.ds-filter-edit>span:nth-child(2){flex-shrink:0;}.ds-filter-edit>svg,.ds-filter-remove>svg{color:var(--muted-foreground,#606a62);}.ds-filter-divider{height:16px;border-left:1px solid var(--border,#dce1d9);}.ds-filter-values{display:none;min-width:0;gap:4px;}.ds-filter-badge{display:inline-flex;min-width:0;max-width:160px;padding:2px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:calc(var(--radius,8px) - 2px);background:var(--secondary,#e9eee8);color:var(--secondary-foreground,#254533);font-size:12px;line-height:16px;font-weight:500;}.ds-filter-remove{width:32px;flex-shrink:0;padding:0;border-radius:0 var(--radius,8px) var(--radius,8px) 0;}.ds-filter-edit:hover,.ds-filter-remove:hover{background:var(--accent,#e1ebe2);color:var(--accent-foreground,#173e2a);}.ds-filter-edit:focus-visible,.ds-filter-remove:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in oklab,var(--ring,#377c59) 50%,transparent);}:host-context(.dark) .ds-filter-chip{border-color:var(--input,#53685a);}:host-context(.dark) .ds-filter-edit:hover,:host-context(.dark) .ds-filter-remove:hover{background:color-mix(in oklab,var(--accent,#304a39) 50%,transparent);}@media(min-width:640px){.ds-filter-values{display:inline-flex;}.ds-filter-count{display:none;}}@media(prefers-reduced-motion:reduce){.ds-filter-edit,.ds-filter-remove{transition-duration:.01ms;}}"
     },
     {
       "name": "Filter popover",
       "kind": "custom",
       "refersTo": "popover",
-      "description": "Shared Radix popover surface for searchable filter choices, with an 8px trigger offset, 16px collision padding, and native checkboxes. This preview shows its content.",
-      "html": "<section class=\"ds-filter-popover\" aria-label=\"Filter by PR state\"><p class=\"ds-filter-title\">PR state</p><div class=\"ds-filter-options\" role=\"group\" aria-label=\"PR state\"><label class=\"ds-filter-option\"><input type=\"checkbox\" checked><span>Open</span></label><label class=\"ds-filter-option\"><input type=\"checkbox\" checked><span>Merged</span></label><label class=\"ds-filter-option\"><input type=\"checkbox\"><span>Closed</span></label></div></section>",
-      "css": ".ds-filter-popover{box-sizing:border-box;width:288px;max-width:calc(100vw - 2rem);padding:8px;border-radius:var(--radius,8px);background:var(--popover, #ffffff);color:var(--popover-foreground, #202c26);font-family:\"Inter Variable\",sans-serif;box-shadow:0 0 0 1px var(--border, #dce1d9),0 4px 6px -1px rgb(0 0 0 / .1),0 2px 4px -2px rgb(0 0 0 / .1);}.ds-filter-title{margin:0;padding:8px;font-size:14px;line-height:20px;font-weight:500;}.ds-filter-options{max-height:256px;overflow-y:auto;}.ds-filter-option{box-sizing:border-box;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px;border-radius:calc(var(--radius,8px) - 2px);font-size:14px;line-height:20px;cursor:pointer;}.ds-filter-option input{width:16px;height:16px;margin:0;flex-shrink:0;accent-color:var(--primary, #245944);}.ds-filter-option:hover{background:var(--accent, #e1ebe2);}.ds-filter-option:has(:focus-visible){box-shadow:0 0 0 2px var(--ring, #377c59);}.ds-filter-option input:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}"
+      "description": "Shared Radix popover surface with an 8px trigger offset and 16px collision padding. This standalone preview styles native inputs to match the application’s shadcn Checkbox choices.",
+      "html": "<section class=\"ds-filter-popover\" aria-label=\"Filter by PR state\"><p class=\"ds-filter-title\">PR state</p><div class=\"ds-filter-options\" role=\"group\" aria-label=\"PR state\"><label class=\"ds-filter-option\"><span class=\"ds-option-checkbox\"><input type=\"checkbox\" checked><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 12 2 2 4-4\"/></svg></span><span>Open</span></label><label class=\"ds-filter-option\"><span class=\"ds-option-checkbox\"><input type=\"checkbox\" checked><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 12 2 2 4-4\"/></svg></span><span>Merged</span></label><label class=\"ds-filter-option\"><span class=\"ds-option-checkbox\"><input type=\"checkbox\" ><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 12 2 2 4-4\"/></svg></span><span>Closed</span></label></div></section>",
+      "css": ".ds-filter-popover{box-sizing:border-box;width:288px;max-width:calc(100vw - 2rem);padding:8px;border-radius:var(--radius,8px);background:var(--popover, #ffffff);color:var(--popover-foreground, #202c26);font-family:\"Inter Variable\",sans-serif;box-shadow:0 0 0 1px var(--border, #dce1d9),0 4px 6px -1px rgb(0 0 0 / .1),0 2px 4px -2px rgb(0 0 0 / .1);}.ds-filter-title{margin:0;padding:8px;font-size:14px;line-height:20px;font-weight:500;}.ds-filter-options{max-height:256px;overflow-y:auto;}.ds-filter-option{box-sizing:border-box;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px;border-radius:calc(var(--radius,8px) - 2px);font-size:14px;line-height:20px;cursor:pointer;}.ds-filter-option input{width:16px;height:16px;margin:0;flex-shrink:0;accent-color:var(--primary, #245944);}.ds-filter-option:hover{background:var(--accent, #e1ebe2);}.ds-filter-option:has(:focus-visible){box-shadow:0 0 0 2px var(--ring, #377c59);}.ds-filter-option input:focus-visible{outline:2px solid var(--ring, #377c59);outline-offset:3px;}.ds-option-checkbox{position:relative;display:flex;width:16px;height:16px;flex-shrink:0;}.ds-option-checkbox>input{appearance:none;border:1px solid var(--input,#c5cec3);border-radius:4px;background:transparent;box-shadow:0 1px 2px rgb(0 0 0/.05);}.ds-option-checkbox>input:checked{border-color:var(--primary,#245944);background:var(--primary,#245944);}.ds-option-checkbox>svg{position:absolute;inset:1px;pointer-events:none;display:none;color:var(--primary-foreground,#ffffff);}.ds-option-checkbox:has(input:checked)>svg{display:block;}"
+    },
+    {
+      "name": "Focused finding card",
+      "kind": "custom",
+      "refersTo": "finding-card",
+      "description": "Illustrative content in the shared location-first finding card; PR status and not-observed history remain separate. Saved-run cards replace status with comment placement.",
+      "html": "<button type=\"button\" class=\"ds-finding-card\"><span class=\"ds-finding-header\"><span class=\"ds-finding-location\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"m5 12-3 3 3 3m4 0 3-3-3-3\"/></svg><span class=\"ds-finding-path\"><span class=\"ds-finding-file\">client.ts <span>42–46</span></span><span class=\"ds-finding-directory\">src/api/</span></span></span><span class=\"ds-finding-chip ds-finding-good\">Resolved <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg></span></span><span class=\"ds-finding-explanation\">Retries continue without a maximum attempt count. Set a bound so a failed request cannot keep the worker active indefinitely.</span><span class=\"ds-finding-footer\"><span class=\"ds-finding-tags\"><span class=\"ds-finding-chip ds-finding-caution\">Medium</span><span>Bug</span></span><span class=\"ds-finding-details\">View details <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 18 6-6-6-6\"/></svg></span></span><span class=\"ds-finding-note\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2\"/></svg>Not observed in latest review</span></button>",
+      "css": ".ds-finding-card{display:block;width:100%;min-width:0;padding:16px;border:1px solid var(--border,#dce1d9);border-radius:calc(var(--radius,8px) + 2px);background:var(--card,#ffffff);color:var(--card-foreground,#202c26);text-align:left;font-family:\"Inter Variable\",sans-serif;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-finding-card:hover{background:color-mix(in oklab,var(--muted,#eef0ec) 50%,transparent);}.ds-finding-card:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--ring,#377c59);}.ds-finding-header{display:flex;flex-direction:column;align-items:flex-start;gap:12px;}.ds-finding-location{display:flex;min-width:0;align-items:flex-start;gap:8px;}.ds-finding-location>svg{margin-top:2px;flex-shrink:0;color:var(--muted-foreground,#606a62);}.ds-finding-path{min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:16px;overflow-wrap:anywhere;}.ds-finding-file{font-weight:500;}.ds-finding-file>span{margin-left:8px;font-weight:400;color:var(--muted-foreground,#606a62);}.ds-finding-directory{display:block;margin-top:4px;color:var(--muted-foreground,#606a62);}.ds-finding-explanation{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;max-width:75ch;margin-top:16px;font-size:14px;line-height:1.625;font-weight:500;overflow-wrap:anywhere;}.ds-finding-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;}.ds-finding-tags{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--muted-foreground,#606a62);}.ds-finding-chip{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border:1px solid var(--border,#dce1d9);border-radius:9999px;padding:2px 8px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;}.ds-finding-good{border-color:color-mix(in oklab,oklch(50.8% .118 165.612) 20%,transparent);background:color-mix(in oklab,oklch(50.8% .118 165.612) 8%,transparent);color:oklch(43.2% .095 166.913);}.ds-finding-caution{border-color:color-mix(in oklab,oklch(55.5% .163 48.998) 20%,transparent);background:color-mix(in oklab,oklch(55.5% .163 48.998) 8%,transparent);color:oklch(47.3% .137 46.201);}.ds-finding-details,.ds-finding-note{display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:16px;color:var(--muted-foreground,#606a62);}.ds-finding-note{display:flex;align-items:flex-start;gap:6px;margin-top:12px;}.ds-finding-note>svg{margin-top:2px;flex-shrink:0;}.ds-finding-card:hover .ds-finding-details{color:var(--primary,#245944);}:host-context(.dark) .ds-finding-good{color:oklch(84.5% .143 164.978);}:host-context(.dark) .ds-finding-caution{color:oklch(87.9% .169 91.605);}@media(min-width:640px){.ds-finding-card{padding:20px;}.ds-finding-header{flex-direction:row;justify-content:space-between;}}@media(prefers-reduced-motion:reduce){.ds-finding-card{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Focused finding evidence",
+      "kind": "custom",
+      "refersTo": "finding-sheet",
+      "description": "Illustrative sheet content showing fixed context, tabs, a scrolling evidence area, and persistent actions. The application adds Radix focus trapping, dismissal, polling, and saved-run tabs.",
+      "html": "<section class=\"ds-finding-sheet\" aria-label=\"Illustrative finding details\"><header class=\"ds-evidence-heading\"><h2>Finding details</h2><button type=\"button\" class=\"ds-evidence-close\" aria-label=\"Close\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button></header><div class=\"ds-evidence-location\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"m5 12-3 3 3 3m4 0 3-3-3-3\"/></svg><div><p><span>src/api/</span><strong>client.ts</strong></p><p>Lines 42–46</p></div></div><div class=\"ds-evidence-meta\"><span class=\"ds-finding-chip ds-finding-caution\">Medium</span><span>Bug</span></div><div class=\"ds-evidence-status\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg><div><p>Current status <span class=\"ds-finding-chip ds-finding-good\">Resolved</span></p><p>Original review evidence and resolution history are preserved.</p></div><button type=\"button\" class=\"ds-evidence-activity\">View activity</button></div><div class=\"ds-evidence-tabs\" role=\"tablist\" aria-label=\"Finding information\"><button type=\"button\" role=\"tab\" aria-selected=\"true\" aria-controls=\"ds-evidence-panel\" id=\"ds-evidence-tab\">Evidence</button><button type=\"button\" role=\"tab\" aria-selected=\"false\">Activity <span>2</span></button></div><div class=\"ds-evidence-scroll\" role=\"tabpanel\" id=\"ds-evidence-panel\" aria-labelledby=\"ds-evidence-tab\"><h3>Explanation</h3><p>Retries continue without a maximum attempt count. Set a bound so a failed request cannot keep the worker active indefinitely.</p><h3>Suggested change</h3><div class=\"ds-evidence-diff\"><div>client.ts <span>Original → Suggested</span></div><pre tabindex=\"0\" role=\"region\" aria-label=\"Suggested change diff\"><code><span class=\"ds-code-removed\">- while (true) {</span><span class=\"ds-code-added\">+ for (let attempt = 0; attempt &lt; 3; attempt++) {</span></code></pre></div><p class=\"ds-evidence-history\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2\"/></svg>Each review keeps its original evidence.</p></div><footer class=\"ds-evidence-footer\"><a href=\"#github-thread\" class=\"ds-evidence-thread\">GitHub thread</a><button type=\"button\" class=\"ds-button-primary\">Reopen finding</button></footer></section>",
+      "css": ".ds-finding-card{display:block;width:100%;min-width:0;padding:16px;border:1px solid var(--border,#dce1d9);border-radius:calc(var(--radius,8px) + 2px);background:var(--card,#ffffff);color:var(--card-foreground,#202c26);text-align:left;font-family:\"Inter Variable\",sans-serif;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-finding-card:hover{background:color-mix(in oklab,var(--muted,#eef0ec) 50%,transparent);}.ds-finding-card:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--ring,#377c59);}.ds-finding-header{display:flex;flex-direction:column;align-items:flex-start;gap:12px;}.ds-finding-location{display:flex;min-width:0;align-items:flex-start;gap:8px;}.ds-finding-location>svg{margin-top:2px;flex-shrink:0;color:var(--muted-foreground,#606a62);}.ds-finding-path{min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:16px;overflow-wrap:anywhere;}.ds-finding-file{font-weight:500;}.ds-finding-file>span{margin-left:8px;font-weight:400;color:var(--muted-foreground,#606a62);}.ds-finding-directory{display:block;margin-top:4px;color:var(--muted-foreground,#606a62);}.ds-finding-explanation{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;max-width:75ch;margin-top:16px;font-size:14px;line-height:1.625;font-weight:500;overflow-wrap:anywhere;}.ds-finding-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;}.ds-finding-tags{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--muted-foreground,#606a62);}.ds-finding-chip{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border:1px solid var(--border,#dce1d9);border-radius:9999px;padding:2px 8px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;}.ds-finding-good{border-color:color-mix(in oklab,oklch(50.8% .118 165.612) 20%,transparent);background:color-mix(in oklab,oklch(50.8% .118 165.612) 8%,transparent);color:oklch(43.2% .095 166.913);}.ds-finding-caution{border-color:color-mix(in oklab,oklch(55.5% .163 48.998) 20%,transparent);background:color-mix(in oklab,oklch(55.5% .163 48.998) 8%,transparent);color:oklch(47.3% .137 46.201);}.ds-finding-details,.ds-finding-note{display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:16px;color:var(--muted-foreground,#606a62);}.ds-finding-note{display:flex;align-items:flex-start;gap:6px;margin-top:12px;}.ds-finding-note>svg{margin-top:2px;flex-shrink:0;}.ds-finding-card:hover .ds-finding-details{color:var(--primary,#245944);}:host-context(.dark) .ds-finding-good{color:oklch(84.5% .143 164.978);}:host-context(.dark) .ds-finding-caution{color:oklch(87.9% .169 91.605);}@media(min-width:640px){.ds-finding-card{padding:20px;}.ds-finding-header{flex-direction:row;justify-content:space-between;}}@media(prefers-reduced-motion:reduce){.ds-finding-card{transition-duration:.01ms;}}.ds-button-primary{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);background:var(--primary, #245944);color:var(--primary-foreground, #ffffff);}.ds-button-primary:hover{background:color-mix(in oklab,var(--primary, #245944) 90%,transparent);}.ds-button-primary:focus-visible{outline:none;border-color:var(--ring, #377c59);box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}.ds-button-primary:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition-duration:0.01ms;animation-duration:0.01ms;}}.ds-button-outline{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);border-width:1px;border-color:var(--border, #dce1d9);background:var(--background, #ffffff);color:var(--foreground, #202c26);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05);}.ds-button-outline:hover{background:var(--accent, #e1ebe2);color:var(--accent-foreground, #173e2a);}.ds-button-outline:focus-visible{outline:none;border-color:var(--ring, #377c59);box-shadow:0 0 0 3px color-mix(in oklab,var(--ring, #377c59) 50%,transparent);}.ds-button-outline:disabled{pointer-events:none;opacity:.5;}:host-context(.dark) .ds-button-outline{border-color:var(--input, #c5cec3);background:color-mix(in oklab,var(--input, #c5cec3) 30%,transparent);}:host-context(.dark) .ds-button-outline:hover{background:color-mix(in oklab,var(--input, #c5cec3) 50%,transparent);}@media(prefers-reduced-motion:reduce){.ds-button-outline{transition-duration:0.01ms;animation-duration:0.01ms;}}.ds-finding-sheet{display:flex;flex-direction:column;width:100%;max-width:672px;height:640px;background:var(--background,#ffffff);color:var(--foreground,#202c26);font-family:\"Inter Variable\",sans-serif;text-align:left;}.ds-evidence-heading{position:relative;padding:20px 24px 16px;}.ds-evidence-heading h2{margin:0;font-size:16px;font-weight:600;line-height:24px;}.ds-evidence-close{position:absolute;right:12px;top:12px;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;background:transparent;color:inherit;opacity:.7;cursor:pointer;}.ds-evidence-close:hover{opacity:1;}.ds-evidence-location{display:flex;align-items:flex-start;gap:10px;padding:0 24px;}.ds-evidence-location>svg{flex-shrink:0;margin-top:2px;color:var(--muted-foreground,#606a62);}.ds-evidence-location>div{min-width:0;overflow-wrap:anywhere;font-family:ui-monospace,monospace;font-size:12px;line-height:16px;}.ds-evidence-location p{margin:0;}.ds-evidence-location p+p{margin-top:4px;color:var(--muted-foreground,#606a62);}.ds-evidence-location p>span{color:var(--muted-foreground,#606a62);}.ds-evidence-location strong{font-weight:500;}.ds-evidence-meta{display:flex;align-items:center;gap:8px;padding:12px 24px 20px;font-size:12px;color:var(--muted-foreground,#606a62);}.ds-evidence-status{display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:12px;row-gap:4px;padding:16px 24px;border-top:1px solid var(--border,#dce1d9);border-bottom:1px solid var(--border,#dce1d9);background:color-mix(in oklab,var(--muted,#eef0ec) 50%,transparent);}.ds-evidence-status>svg{width:18px;height:18px;margin-top:2px;color:oklch(43.2% .095 166.913);}.ds-evidence-status p{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;color:var(--muted-foreground,#606a62);font-size:12px;line-height:1.625;}.ds-evidence-status p+p{display:block;margin-top:4px;}.ds-evidence-activity{grid-column:2;justify-self:start;min-height:44px;border:0;padding:0;background:transparent;color:var(--primary,#245944);font-family:inherit;font-size:12px;cursor:pointer;}.ds-evidence-activity:hover{text-decoration:underline;}.ds-evidence-tabs{display:flex;width:fit-content;gap:4px;margin:20px 24px 0;padding:3px;background:var(--muted,#eef0ec);border-radius:var(--radius,8px);}.ds-evidence-tabs button{border:0;padding:4px 8px;background:transparent;color:var(--muted-foreground,#606a62);font-family:inherit;font-size:14px;line-height:20px;cursor:pointer;border-radius:calc(var(--radius,8px) - 2px);}.ds-evidence-tabs button[aria-selected=true]{background:var(--background,#ffffff);color:var(--foreground,#202c26);box-shadow:0 1px 3px rgb(0 0 0/.1),0 1px 2px -1px rgb(0 0 0/.1);}.ds-evidence-tabs span{font-size:12px;font-variant-numeric:tabular-nums;}.ds-evidence-scroll{min-height:0;flex:1;overflow-y:auto;padding:24px;scrollbar-width:thin;scrollbar-color:var(--input,#c5cec3) transparent;}.ds-evidence-scroll h3{margin:0 0 12px;font-size:14px;line-height:20px;font-weight:600;}.ds-evidence-scroll p{margin:0 0 24px;font-size:14px;line-height:1.7;overflow-wrap:anywhere;}.ds-evidence-diff{overflow:hidden;margin-bottom:24px;border:1px solid var(--border,#dce1d9);border-radius:var(--radius,8px);}.ds-evidence-diff>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border,#dce1d9);background:var(--muted,#eef0ec);font-family:ui-monospace,monospace;font-size:12px;line-height:16px;}.ds-evidence-diff>div>span{font-family:\"Inter Variable\",sans-serif;color:var(--muted-foreground,#606a62);}.ds-evidence-diff pre{margin:0;max-width:100%;overflow-x:auto;padding:12px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.625;}.ds-evidence-diff code{display:block;min-width:max-content;font-family:inherit;}.ds-code-added,.ds-code-removed{display:block;min-width:100%;}.ds-code-added{color:var(--code-added,#18472c);background:var(--code-added-background,#e5f1e7);}.ds-code-removed{color:var(--code-removed,#8c2530);background:var(--code-removed-background,#fbeaec);}.ds-evidence-scroll .ds-evidence-history{display:flex;align-items:center;gap:8px;margin:0;font-size:12px;line-height:1.625;color:var(--muted-foreground,#606a62);}.ds-evidence-history>svg{flex-shrink:0;}.ds-evidence-footer{display:flex;flex-direction:column-reverse;gap:12px;flex-shrink:0;max-height:50dvh;overflow-y:auto;padding:16px 24px;border-top:1px solid var(--border,#dce1d9);}.ds-evidence-thread{display:inline-flex;align-items:center;justify-content:center;min-height:44px;font-size:14px;color:var(--primary,#245944);text-underline-offset:3px;}.ds-evidence-thread:hover{text-decoration:underline;}.ds-evidence-footer .ds-button-primary{min-height:44px;}.ds-finding-sheet :focus-visible{outline:2px solid var(--ring,#377c59);outline-offset:3px;}:host-context(.dark) .ds-evidence-status>svg{color:oklch(84.5% .143 164.978);}@media(min-width:640px){.ds-evidence-status{grid-template-columns:18px minmax(0,1fr) auto;}.ds-evidence-activity{grid-column:auto;min-height:32px;}.ds-evidence-footer{flex-direction:row;align-items:center;justify-content:space-between;}.ds-evidence-thread,.ds-evidence-footer .ds-button-primary{min-height:36px;}}"
     }
   ],
   "narrative": {
@@ -860,7 +1167,10 @@
       "Do use semantic CSS properties so light, dark, and system appearance stay consistent.",
       "Do keep status wording visible alongside color, including partial coverage and publication failures.",
       "Do retain clear focus indicators, associated field labels, and reduced-motion behavior.",
-      "Do wrap long prose and filenames appropriately while allowing code blocks to scroll horizontally."
+      "Do wrap long prose and filenames appropriately while allowing code blocks to scroll horizontally.",
+      "Do keep finding previews to three lines and 75ch while preserving the full explanation in the details sheet.",
+      "Do distinguish saved review evidence, current resolution, not-observed history, and pending GitHub synchronization.",
+      "Do keep finding tabs and resolution actions outside the scrolling evidence area, and restore focus to the card when the sheet closes."
     ],
     "donts": [
       "Don't add decorative eyebrow labels above page titles; retain functional repository and pull-request breadcrumbs.",
