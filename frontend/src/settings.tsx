@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Check, Copy, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
 import {
@@ -199,6 +200,7 @@ export function RepositorySettings({
               },
             },
           });
+          toast.success("Repository configuration saved.");
           onSaved();
         } catch (e) {
           setError(e);
@@ -559,6 +561,7 @@ function ConnectionForm({
             method: connection ? "PUT" : "POST",
             body,
           });
+          toast.success(connection ? "Connection saved." : "Connection created.");
           onSaved(saved);
         } catch (e) {
           setError(e);

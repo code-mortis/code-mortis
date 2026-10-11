@@ -962,6 +962,9 @@ test("repository configuration keeps drafts across sections and restores filtere
   await page.screenshot({ path: `../.impeccable/review/repository-settings-context-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page).toHaveURL(/repositories\/22\?q=retry&state=all&active_pages=2$/);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository configuration saved." })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/repository-save-toast-${info.project.name}.png` });
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     settings: { automatic: false, effort: "high", background: "Keep this draft while changing sections.", max_files: 75 },
   });
@@ -991,6 +994,7 @@ test("repository configuration validates hidden fields and retains drafts after 
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Repository settings could not be saved");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
   await repositorySection(page, "Limits & rules");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
@@ -1122,7 +1126,7 @@ for (const theme of ["light", "dark"]) {
     await expect(toast).toContainText("Sync queued");
     await expect(toast).toContainText("Pull requests will refresh when it finishes.");
     await expect(page.getByRole("main").getByText(/Sync queued/)).toHaveCount(0);
-    await expect(sync).toBeFocused();
+    await expect(toast).not.toBeFocused();
     await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", theme);
     await expect(page.getByRole("region", { name: /^Notifications/ })).toHaveAttribute("aria-live", "polite");
     await noOverflow(page);
@@ -1616,6 +1620,7 @@ test("searchable providers and protocols preserve presets and required model val
   await page.getByLabel("Custom model ID").fill("regional-model");
   await save.click();
   await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({ provider: "anthropic", protocol: "anthropic-bedrock", model: "regional-model" });
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Connection created." })).toBeVisible();
 });
 
 test("repository language searches suggestions and preserves custom language entry", async ({ page }, info) => {
@@ -3403,7 +3408,8 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
   await account.getByRole("button", { name: "Actions for acme" }).click();
   await expect(page.getByRole("menuitem", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);
   await page.getByRole("menuitem", { name: "Resync repositories" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Repository sync queued" })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository sync queued for acme" })).toBeVisible();
+  await expect(page.getByRole("main").getByText(/Repository sync queued/)).toHaveCount(0);
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/github-installations-${info.project.name}.png`, fullPage: true });
@@ -3486,6 +3492,7 @@ test("GitHub removed accounts require confirmation and retain review history", a
   await page.getByRole("menuitem", { name: "Remove from list" }).press("Enter");
   await dialog.getByRole("button", { name: "Remove from list" }).click();
   await expect(dialog.getByRole("alert")).toContainText("still has an installed GitHub App");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(account).toBeVisible();
   reject = false;
   await dialog.getByRole("button", { name: "Remove from list" }).focus();
@@ -3498,7 +3505,7 @@ test("GitHub removed accounts require confirmation and retain review history", a
   finishRemoval();
   await expect(dialog).toHaveCount(0);
   await expect(account).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Saved repositories and review history are retained.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "acme removed from the list." })).toContainText("Saved repositories and review history are retained.");
   await expect(page.getByRole("heading", { name: /^Connected installations/, level: 3 })).toBeFocused();
   await expect(page.getByRole("heading", { name: "No connected installations" })).toBeVisible();
   await noOverflow(page);
@@ -3622,6 +3629,7 @@ test("GitHub installations refresh on return and connect available accounts", as
   await page.getByRole("button", { name: "Actions for acme" }).click();
   await page.getByRole("menuitem", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository sync queued for acme" })).toBeVisible();
   await expect(available).toContainText("No additional installations available. Install the app on another account, then refresh.");
   await expect(available.getByRole("button")).toHaveCount(0);
   await noOverflow(page);
@@ -4533,6 +4541,7 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
   release();
   await expect(dialog.getByRole("alert")).toContainText("could not be saved");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Save connection", exact: true })).toBeEnabled();
   await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
   await noOverflow(page);
@@ -4546,6 +4555,9 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   fail = false;
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Connection saved." })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/connection-save-toast-${info.project.name}-dark.png` });
   const body = requests.find((request) => request.path === "/connections/connection")!.body;
   expect(body).toMatchObject({ name: "Updated connection", model: "review-model" });
   expect(body).not.toHaveProperty("api_key");
@@ -4614,7 +4626,7 @@ test("personal model saves compare and send trimmed model IDs", async ({ page })
   await expect(form.getByRole("button", { name: "Save model" })).toBeDisabled();
   await model.fill(" custom-model ");
   await form.getByRole("button", { name: "Save model" }).click();
-  await expect(form.getByRole("status").filter({ hasText: /^Model saved\.$/ })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   expect(body?.model).toBe("custom-model");
   await expect(model).toHaveValue("custom-model");
 });
@@ -4720,14 +4732,14 @@ test("personal model and repository errors stay with their operation", async ({ 
   fail = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   expect(requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: false });
-  await expect(grants.getByRole("status")).toContainText("Repository authorization updated");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
   await grants.getByRole("switch").check();
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect.poll(() => requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: true });
 });
 
-test("personal model confirmation stays cleared after editing and reverting", async ({ page }) => {
+test("personal model saves use toasts while edits retain saved state", async ({ page }) => {
   await mock(page, { role: "member", personal: true });
   let saves = 0;
   await page.route("**/api/v1/connections/personal", (route) => {
@@ -4742,16 +4754,15 @@ test("personal model confirmation stays cleared after editing and reverting", as
   const input = model.getByLabel("Custom model ID");
   await input.fill("saved-custom");
   await model.getByRole("button", { name: "Save model", exact: true }).click();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
+  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await input.fill("edited-custom");
-  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await input.fill("saved-custom");
-  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await expect(model.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
   expect(saves).toBe(1);
   await input.fill("next-custom");
   await model.getByRole("button", { name: "Save model", exact: true }).click();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." }).last()).toBeVisible();
   expect(saves).toBe(2);
 });
 
@@ -4775,12 +4786,12 @@ test("personal model saves report invalid success responses and retain an editab
     await form.getByRole("button", { name: "Save model", exact: true }).click();
     await expect(form.getByRole("alert")).toHaveText("The server did not return a valid model. Please retry.");
     await expect(input).toHaveValue(`custom-${attempt}`);
-    await expect(form.getByText("Model saved.", { exact: true })).toHaveCount(0);
+    await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toHaveCount(0);
     await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeEnabled();
   }
   await form.getByRole("button", { name: "Save model", exact: true }).click();
   await expect(form.getByRole("alert")).toHaveCount(0);
-  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   await expect(input).toHaveValue(`custom-${invalid.length - 1}`);
   await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
   expect(saves).toBe(invalid.length + 1);
@@ -4974,7 +4985,7 @@ test("personal model saves disable controls while retaining the loaded catalog",
   await expect.poll(() => reads).toBe(2);
   await expect(select).toHaveValue("Next model · next-model");
   releaseRefresh();
-  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   await expect(form.getByText("Official client catalog.")).toBeVisible();
   await expect(select).toBeEnabled();
   expect(reads).toBe(2);
@@ -5056,8 +5067,8 @@ test("personal authorization confirmations match saved changes and revocations",
   await repository.press("Enter");
   await automatic.check();
   await save.click();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
-  await expect(grants.locator("form").getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
+  await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(repository).toHaveValue("");
   await expect(automatic).not.toBeChecked();
@@ -5065,7 +5076,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await chooseOption(page, repository, "acme/payments");
   await expect(grants.getByRole("status")).toHaveCount(0);
   await save.click();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." }).last()).toBeVisible();
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await grants.getByRole("button", { name: "Revoke" }).click();
   await expect(grants.getByRole("button", { name: "Revoking…", exact: true })).toBeDisabled();
@@ -5074,6 +5085,7 @@ test("personal authorization confirmations match saved changes and revocations",
   releaseRevoke();
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await chooseOption(page, repository, "acme/payments");
@@ -5081,12 +5093,12 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   failRevoke = false;
   await grants.getByRole("button", { name: "Revoke" }).click();
-  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toBeVisible();
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await automatic.uncheck();
   await chooseOption(page, repository, "acme/orders");
-  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(save).toBeEnabled();
 });
 
@@ -5184,8 +5196,8 @@ test("personal model and authorization saves run independently while auth stays 
   await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeDisabled();
   await expect(account.getByRole("button", { name: "Disconnect and revoke access" })).toBeDisabled();
   release();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
   await expect(model.getByLabel("Custom model ID")).toHaveValue("saved-custom");
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeEnabled();

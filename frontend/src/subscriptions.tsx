@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ArrowUpRight, ChevronDown, RefreshCw } from "lucide-react";
 import {
   api,
@@ -370,6 +371,7 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
             throw new Error("The server did not return a valid model. Please retry.");
           setSavedModel(saved.model);
           setModel(saved.model);
+          toast.success("Model saved.");
         } catch (error) { setModelError(error); }
       }}>
         <h3 className={settingUp ? "sr-only" : "text-sm font-semibold"}>Default model</h3>
@@ -387,7 +389,6 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
         <Button className={settingUp ? "w-full" : undefined} type="submit" disabled={modelPending || !trimmedModel || trimmedModel === savedModel.trim()}>
           {modelAction.isPending ? "Saving…" : "Save model"}
         </Button>
-        {modelAction.isSuccess && !modelError && model === savedModel && <p role="status" className="text-xs text-muted-foreground">Model saved.</p>}
       </form>}
       {settingUp && setupComplete && <div className="space-y-3 border-t pt-5">
         <p className="break-all text-sm"><span className="text-muted-foreground">Default model: </span>{savedModel}</p>
@@ -437,7 +438,7 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
                 grantAction.mutate({
                   path: `/connections/${identity}/grants/${grant.repository_id}`,
                   method: "DELETE",
-                })
+                }, { onSuccess: () => toast.success("Authorization revoked.") })
               }
             >
               {grantAction.isPending && revoking && grantAction.variables?.path === `/connections/${identity}/grants/${grant.repository_id}` ? "Revoking…" : "Revoke"}
@@ -445,7 +446,6 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
           </div>
         ))}</div>}
         {revoking && <ErrorNotice error={grantAction.error} />}
-        {revoking && grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Authorization revoked.</p>}
         <form
           className="space-y-4"
           onSubmit={(event) => {
@@ -456,7 +456,7 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
               method: "PUT",
               body: { automatic },
             }, {
-              onSuccess: () => { setRepository(""); setAutomatic(false); },
+              onSuccess: () => { setRepository(""); setAutomatic(false); toast.success("Repository authorization updated."); },
             });
           }}
         >
@@ -498,7 +498,6 @@ export function PersonalConnection({ connection, onDone }: { connection: Connect
           <Button disabled={grantPending || !repository} type="submit">
             {grantAction.isPending && !revoking ? "Saving…" : "Save authorization"}
           </Button>
-          {!revoking && grantAction.isSuccess && <p role="status" className="text-xs text-muted-foreground">Repository authorization updated.</p>}
         </form>
       </section>
       </details>
