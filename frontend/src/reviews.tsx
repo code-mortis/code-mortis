@@ -29,6 +29,9 @@ import {
   FileCode2,
   History,
   RotateCcw,
+  UserRound,
+  GitBranch,
+  GitCommitHorizontal,
 } from "lucide-react";
 import {
   ApiError,
@@ -67,7 +70,6 @@ import {
   Field,
   Loading,
   Markdown,
-  PageTitle,
   Status,
   words,
 } from "./components/common";
@@ -313,7 +315,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : running ? "A review is already queued or running."
-    : pr.state !== "open" ? "Reviews can only run on open pull requests."
+    : pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -324,45 +326,44 @@ export function PullDetail({ admin }: { admin: boolean }) {
     searchInput.current?.focus();
   }
   return <>
-    <header className="mb-6">
-      <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
-        <span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}
-      </h1>
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-        <Status value={pr.state} />
-        <span>@{pr.author}</span>
-        {pr.draft && <span>Draft</span>}
-        <code className="min-w-0 max-w-full truncate" title={`${pr.head_ref} · ${pr.head_sha}`}>{pr.head_ref} · {pr.head_sha.slice(0, 7)}</code>
-        <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+    <header className="mb-6 min-w-0">
+      <div>
+        <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
+          <span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}
+        </h1>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          <Status value={pr.state} />
+          <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound aria-hidden="true" className="size-3.5 shrink-0" /><span className="break-words [overflow-wrap:anywhere]">@{pr.author}</span></span>
+          {pr.draft && <span>Draft</span>}
+          <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1"><GitBranch aria-hidden="true" className="size-3.5 shrink-0" /><code className="min-w-0 break-words [overflow-wrap:anywhere]">{pr.head_ref}</code><span>·</span><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></span>
+          <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+        </div>
       </div>
+      <section aria-label="Latest review" className="mt-6 border-t pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium">{latest ? "Latest review" : "No reviews yet"}</span>
+              {latest && <Status value={latest.status} />}
+              {latest && <Link className="inline-flex min-h-6 items-center gap-1 rounded-sm text-xs underline-offset-4 hover:text-primary hover:underline" to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              {latest ? <><span>{date(latest.created_at)}</span><span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span></> : <span>A review records findings and coverage for this commit.</span>}
+            </div>
+          </div>
+          {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+            <SearchSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
+              options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
+            <Button disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} onClick={async () => {
+              const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
+              if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
+            }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
+          </div>}
+        </div>
+        {reviewUnavailable && <p className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
+      </section>
     </header>
     <ErrorNotice error={action.error || query.error} />
-    <section aria-label="Latest review" className="mb-6 border-y py-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="min-w-0 space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-medium">{latest ? "Latest review" : "No reviews yet"}</span>
-            {latest && <Status value={latest.status} />}
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {latest ? <>
-              <span>{date(latest.created_at)}</span>
-              <span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span>
-              <Link className="inline-flex items-center gap-1 rounded-sm text-foreground underline-offset-4 hover:underline" to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3" /></Link>
-            </> : <span>A review records findings and coverage for this commit.</span>}
-          </div>
-        </div>
-        {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <SearchSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
-            options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
-          <Button disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} onClick={async () => {
-            const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
-            if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
-          }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
-        </div>}
-      </div>
-      {reviewUnavailable && <p className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
-    </section>
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
     <Tabs defaultValue="findings">
       <TabsList className="mb-4">
@@ -395,12 +396,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
                     {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
                   </div>} />)}
                 {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
-                {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
-                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
-                  <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
-                </div>}
                 {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
               </div>
+              {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+                <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
+                <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
+              </div>}
             </section>;
           })}
         </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : run_count ? "No findings recorded" : "No review findings yet"}>
@@ -801,22 +802,24 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     item && typeof item === "object" && "path" in item && typeof item.path === "string" ? [item.path] : []);
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
-    <PageTitle title={<span className="flex flex-wrap items-center gap-3">Review run <Status value={run.status} /></span>} actions={can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <>
-      {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
-      {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
-      {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
-    </>}>
-      <Link className="mb-2 inline-block break-words text-foreground underline-offset-4 hover:underline" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span>{date(run.created_at)} · {run.trigger} · <code>{run.head_sha.slice(0, 7)}</code>{duration && ` · ${duration}`}</span>
-        <span>{run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span>
+    <header className="mb-6 min-w-0">
+      <div>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
+          {can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
+            {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
+            {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
+            {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
+          </div>}
+        </div>
+        <Link className="mt-2 block break-words rounded-sm text-sm underline-offset-4 hover:text-primary hover:underline [overflow-wrap:anywhere]" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          <span>{date(run.created_at)}</span>
+          <span>{words(run.trigger)}{duration && ` · ${duration}`}</span>
+          <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
+        </div>
       </div>
-    </PageTitle>
-    <ErrorNotice error={action.error || error} />
-    <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
-    <ErrorNotice error={run.error} />
-    <div className="mb-6 border-y">
-      <section aria-label="GitHub publication" className="space-y-3 py-3 text-xs">
+      <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} />
             {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <span role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial assessment" : "Assessment pending"} /></span>}
@@ -833,21 +836,24 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           <ErrorNotice error={run.check_error} />
         </>}
       </section>
-      {!!verification?.selected && <details className="group border-t">
-        <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-1 py-3 text-xs outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+      {!!verification?.selected && <details className="group mt-3">
+        <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">
           <span className="font-medium">Fix verification</span>
           <span className="text-muted-foreground">{verification.resolved ?? 0} resolved</span>
           {!!verification.pending && <span className="text-muted-foreground">{verification.pending} pending sync</span>}
           {!!verification.failed && <span className="text-destructive">{verification.failed} failed</span>}
-          <ChevronDown aria-hidden="true" className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+          <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
         </summary>
-        <div className="space-y-2 pb-4 text-xs leading-relaxed text-muted-foreground">
+        <div className="space-y-2 pt-2 text-xs leading-relaxed text-muted-foreground">
           <p>{verification.completed ?? 0} of {verification.selected} findings verified. {verification.resolved ?? 0} automatically resolved, {verification.pending ?? 0} pending synchronization.</p>
           <p>{verification.still_present ?? 0} still present, {verification.uncertain ?? 0} uncertain, {verification.skipped ?? 0} skipped, {verification.failed ?? 0} failed.</p>
           <p>Verified fixes remain open until GitHub confirms resolution. Evidence is saved in each finding’s Activity.</p>
         </div>
       </details>}
-    </div>
+    </header>
+    <ErrorNotice error={action.error || error} />
+    <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
+    <ErrorNotice error={run.error} />
     {(active(run.status) || run.status === "blocked") && typeof run.progress?.selected === "number" && <p role="status" className="mb-4 text-sm text-muted-foreground">
       {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
       {run.status === "blocked" && " Completed files are saved and reused when you resume."}

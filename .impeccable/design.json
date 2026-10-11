@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-11T03:35:22.643Z",
+  "generatedAt": "2026-10-11T15:58:12.154Z",
   "title": "Design System: Code Mortis",
   "extensions": {
     "colorMeta": {
@@ -1116,7 +1116,7 @@
       "name": "Content card",
       "kind": "card",
       "refersTo": "card",
-      "description": "Flat bordered container used for installation and review information.",
+      "description": "Flat bordered container for bounded records and evidence. Pull-request and review-run page headers remain unframed.",
       "html": "<section class=\"ds-card\"><h3 class=\"ds-card-title\">Connected installations</h3><p class=\"ds-card-copy\">Install the app on GitHub, then connect the installation below.</p></section>",
       "css": ".ds-card{font-family:'Inter Variable',sans-serif;padding:20px;border:1px solid var(--border, #dce1d9);border-radius:calc(var(--radius,8px) + 2px);background:var(--card, #ffffff);color:var(--card-foreground, #202c26);}.ds-card-title{margin:0 0 12px;font-size:14px;line-height:20px;font-weight:600;}.ds-card-copy{margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground, #606a62);}"
     },
@@ -1140,7 +1140,7 @@
       "name": "Focused finding card",
       "kind": "custom",
       "refersTo": "finding-card",
-      "description": "Illustrative content in the shared location-first finding card; PR status and not-observed history remain separate. Saved-run cards replace status with comment placement.",
+      "description": "Illustrative content in the shared location-first finding and assessment card. PR status and not-observed history remain separate; saved-run cards show comment placement, and assessment cards show the candidate outcome with View assessment.",
       "html": "<button type=\"button\" class=\"ds-finding-card\"><span class=\"ds-finding-header\"><span class=\"ds-finding-location\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"m5 12-3 3 3 3m4 0 3-3-3-3\"/></svg><span class=\"ds-finding-path\"><span class=\"ds-finding-file\">client.ts <span>42–46</span></span><span class=\"ds-finding-directory\">src/api/</span></span></span><span class=\"ds-finding-chip ds-finding-good\">Resolved <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg></span></span><span class=\"ds-finding-explanation\">Retries continue without a maximum attempt count. Set a bound so a failed request cannot keep the worker active indefinitely.</span><span class=\"ds-finding-footer\"><span class=\"ds-finding-tags\"><span class=\"ds-finding-chip ds-finding-caution\">Medium</span><span>Bug</span></span><span class=\"ds-finding-details\">View details <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 18 6-6-6-6\"/></svg></span></span><span class=\"ds-finding-note\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2\"/></svg>Not observed in latest review</span></button>",
       "css": ".ds-finding-card{display:block;width:100%;min-width:0;padding:16px;border:1px solid var(--border,#dce1d9);border-radius:calc(var(--radius,8px) + 2px);background:var(--card,#ffffff);color:var(--card-foreground,#202c26);text-align:left;font-family:\"Inter Variable\",sans-serif;cursor:pointer;transition:background-color 150ms cubic-bezier(.4,0,.2,1);}.ds-finding-card:hover{background:color-mix(in oklab,var(--muted,#eef0ec) 50%,transparent);}.ds-finding-card:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--ring,#377c59);}.ds-finding-header{display:flex;flex-direction:column;align-items:flex-start;gap:12px;}.ds-finding-location{display:flex;min-width:0;align-items:flex-start;gap:8px;}.ds-finding-location>svg{margin-top:2px;flex-shrink:0;color:var(--muted-foreground,#606a62);}.ds-finding-path{min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:16px;overflow-wrap:anywhere;}.ds-finding-file{font-weight:500;}.ds-finding-file>span{margin-left:8px;font-weight:400;color:var(--muted-foreground,#606a62);}.ds-finding-directory{display:block;margin-top:4px;color:var(--muted-foreground,#606a62);}.ds-finding-explanation{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;max-width:75ch;margin-top:16px;font-size:14px;line-height:1.625;font-weight:500;overflow-wrap:anywhere;}.ds-finding-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;}.ds-finding-tags{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--muted-foreground,#606a62);}.ds-finding-chip{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border:1px solid var(--border,#dce1d9);border-radius:9999px;padding:2px 8px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;}.ds-finding-good{border-color:color-mix(in oklab,oklch(50.8% .118 165.612) 20%,transparent);background:color-mix(in oklab,oklch(50.8% .118 165.612) 8%,transparent);color:oklch(43.2% .095 166.913);}.ds-finding-caution{border-color:color-mix(in oklab,oklch(55.5% .163 48.998) 20%,transparent);background:color-mix(in oklab,oklch(55.5% .163 48.998) 8%,transparent);color:oklch(47.3% .137 46.201);}.ds-finding-details,.ds-finding-note{display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:16px;color:var(--muted-foreground,#606a62);}.ds-finding-note{display:flex;align-items:flex-start;gap:6px;margin-top:12px;}.ds-finding-note>svg{margin-top:2px;flex-shrink:0;}.ds-finding-card:hover .ds-finding-details{color:var(--primary,#245944);}:host-context(.dark) .ds-finding-good{color:oklch(84.5% .143 164.978);}:host-context(.dark) .ds-finding-caution{color:oklch(87.9% .169 91.605);}@media(min-width:640px){.ds-finding-card{padding:20px;}.ds-finding-header{flex-direction:row;justify-content:space-between;}}@media(prefers-reduced-motion:reduce){.ds-finding-card{transition-duration:.01ms;}}"
     },
@@ -1170,12 +1170,16 @@
       "Do wrap long prose and filenames appropriately while allowing code blocks to scroll horizontally.",
       "Do keep finding previews to three lines and 75ch while preserving the full explanation in the details sheet.",
       "Do distinguish saved review evidence, current resolution, not-observed history, and pending GitHub synchronization.",
-      "Do keep finding tabs and resolution actions outside the scrolling evidence area, and restore focus to the card when the sheet closes."
+      "Do keep finding tabs and resolution actions outside the scrolling evidence area, and restore focus to the card when the sheet closes.",
+      "Do reuse the Focused card and right-sheet structure for assessments, keeping assessment outcomes separate from finding resolution.",
+      "Do keep finding and assessment pagination aligned with their cards, with 16px above the separator and 12px below it."
     ],
     "donts": [
       "Don't add decorative eyebrow labels above page titles; retain functional repository and pull-request breadcrumbs.",
       "Don't replace native selects or the existing shadcn primitives without a concrete interaction need.",
       "Don't imply a finding is resolved merely because it is absent from a later review.",
+      "Don't wrap pull-request or review-run page headers in cards.",
+      "Don't replace the compact partial-assessment badge with a separate warning banner.",
       "Don't introduce a mascot, approved metaphor, or additional brand assets as if they were already established."
     ]
   }

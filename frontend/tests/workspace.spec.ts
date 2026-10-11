@@ -5869,7 +5869,7 @@ test("pull detail paginates each finding status independently and resets pages w
 });
 
 for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {
-  test(`pull detail explains review availability for ${state}`, async ({ page }) => {
+  test(`pull detail handles review availability for ${state}`, async ({ page }) => {
     await mock(page);
     await mockPullDetail(page, () => ({
       pull_request: { ...pr, state: state === "merged" ? "merged" : "open", fork: state === "fork" },
@@ -5883,7 +5883,8 @@ for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) 
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    await expect(summary).toContainText(messages[state]);
+    if (state === "merged") await expect(page.getByText(messages.merged, { exact: true })).toHaveCount(0);
+    else await expect(summary).toContainText(messages[state]);
     if (state === "viewer") {
       await expect(summary.getByRole("button")).toHaveCount(0);
       await expect(page.getByLabel("Review connection")).toHaveCount(0);
