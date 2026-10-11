@@ -90,7 +90,7 @@ function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
   const feedback = runFeedback(run);
-  if (!feedback.needsAttention && (!detail || !active(run.status))) return null;
+  if (!feedback.needsAttention && (!detail || run.status !== "queued")) return null;
   return (
     <section aria-label="Review outcome" className={detail ? "mb-4 space-y-2 text-sm" : "mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm"}>
       <p role="status" className="font-medium break-words">{feedback.summary}</p>
@@ -332,8 +332,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
-    : running ? "A review is already queued or running."
-    : pr.state !== "open" ? null
+    : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -823,7 +822,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     <header className="mb-6 min-w-0">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
+          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run {run.status !== "running" && <Status value={run.status} />}</h1>
           {can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
@@ -851,7 +850,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             </a> : checkValue && <Status value={checkValue} />}
           </div>}
         </div>
-        {!["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
+        {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <>
           {run.check_pending && <p role="status" className="text-muted-foreground">{run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}</p>}

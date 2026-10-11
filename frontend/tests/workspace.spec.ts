@@ -1678,9 +1678,19 @@ test("run coverage updates file rows through polling and hides them after access
 test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {
   const requests = await mock(page, { run: { status: "running", publication: "pending", publication_error: null, report: null, finished_at: null, check_enabled: false, progress: { selected: 8, completed: 3 } }, occurrences: [], assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
   await page.goto("/runs/run");
-  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("The review is in progress.");
+  await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
+  await expect(page.getByText("The review is in progress.", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("This page updates automatically as results are saved. You can cancel the review if needed.", { exact: true })).toHaveCount(0);
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await expect(publication).toContainText("Waiting to publish");
+  await expect(publication.getByText("Comments are published after review results are saved.", { exact: true })).toHaveCount(0);
+  await expect(publication.locator(":scope > p")).toHaveCount(0);
+  const heading = page.getByRole("heading", { name: "Review run", exact: true });
+  await expect(heading).toBeVisible();
+  await expect(heading.locator("[data-slot=badge]")).toHaveCount(0);
   await expect(page.getByText("3 of 8 assigned files completed.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
+  await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Inspect coverage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Coverage is being recorded" })).toBeVisible();
   await noOverflow(page);
@@ -6303,7 +6313,7 @@ for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) 
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    if (state === "merged") await expect(page.getByText(messages.merged, { exact: true })).toHaveCount(0);
+    if (state === "merged" || state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
     else await expect(summary).toContainText(messages[state]);
     if (state === "viewer") {
       await expect(summary.getByRole("button")).toHaveCount(0);
