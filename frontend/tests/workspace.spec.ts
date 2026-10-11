@@ -858,6 +858,8 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22");
+  const count = page.getByRole("heading", { name: "Pull requests", exact: true }).locator("..").getByRole("status");
+  await expect(count).toHaveText("1 of 14 pull request");
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
   const merged = page.getByRole("region", { name: "Merged", exact: true });
@@ -868,6 +870,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/\?state=all$/);
+  await expect(count).toHaveText("14 pull requests");
   await expect(merged.getByRole("link")).toHaveCount(10);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
@@ -875,6 +878,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page).toHaveURL(/merged_pages=2/);
   await page.reload();
   await expect(merged.getByRole("link")).toHaveCount(12);
+  await expect(count).toHaveText("14 pull requests");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings"]);
@@ -882,6 +886,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await page.getByRole("checkbox", { name: "Completed", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/merged_pages/);
+  await expect(count).toHaveText("12 of 14 pull requests");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
   await expect(merged.getByRole("link")).toHaveCount(10);
   await page.getByRole("button", { name: "Remove Review status filter" }).click();
@@ -889,14 +894,19 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("menuitemradio")).toHaveText(["Updated", "Title", "Author"]);
   await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
   await expect(page).toHaveURL(/ordering=title/);
+  await expect(page.getByRole("button", { name: "Reset ordering", exact: true })).toHaveCount(0);
+  await expect(count).toHaveText("14 pull requests");
   await page.getByLabel("Search pull requests").fill("#148");
   await expect(page.getByRole("region", { name: "Merged", exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await expect(count).toHaveText("2 of 14 pull requests");
   await page.getByLabel("Search pull requests").fill("unmatched");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
+  await expect(count).toHaveText("0 of 14 pull requests");
   await page.getByRole("button", { name: "reset your filters" }).click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("");
   await expect(page).toHaveURL(/\?state=open$/);
+  await expect(count).toHaveText("1 of 14 pull request");
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
   await noOverflow(page);

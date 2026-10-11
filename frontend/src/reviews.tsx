@@ -18,6 +18,7 @@ import {
   ArrowUpRight,
   LockKeyhole,
   Globe,
+  FolderGit2,
   SlidersHorizontal,
 } from "lucide-react";
 import {
@@ -131,7 +132,10 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   return <>
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0 flex-1 basis-80">
-        <h1 className="break-words text-3xl font-semibold tracking-tight [overflow-wrap:anywhere]">{selected?.full_name ?? "Repositories"}</h1>
+        <h1 className="flex items-start gap-3 text-3xl font-semibold tracking-tight">
+          {selected && <FolderGit2 aria-hidden="true" className="mt-1 size-7 shrink-0 text-muted-foreground" />}
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{selected?.full_name ?? "Repositories"}</span>
+        </h1>
         {selected ? <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
           <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>

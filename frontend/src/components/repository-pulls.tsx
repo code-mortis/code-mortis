@@ -60,11 +60,14 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;
   const sections = rows?.groups.filter((group) => group.total > 0) ?? [];
+  const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings"].some((key) => params.has(key));
 
   return <section aria-labelledby="repository-pulls-heading">
-    <h2 id="repository-pulls-heading" className="mb-4 text-xl font-semibold tracking-tight">Pull requests</h2>
-    <InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} />
-    <p role="status" className="my-4 text-xs text-muted-foreground">{rows ? `${rows.total} pull ${rows.total === 1 ? "request" : "requests"}` : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</p>
+    <div className="mb-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <h2 id="repository-pulls-heading" className="text-xl font-semibold tracking-tight">Pull requests</h2>
+      <span role="status" className="text-xs tabular-nums text-muted-foreground">{rows ? <>{filtered ? `${rows.total} of ${rows.registered_total}` : rows.total}<span className="sr-only"> pull {rows.total === 1 ? "request" : "requests"}</span></> : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</span>
+    </div>
+    <div className="mb-4"><InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} /></div>
     {pulls.error && <div className="mb-4 space-y-2"><ErrorNotice error={pulls.error} />{!denied && <Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry pull requests</Button>}</div>}
     {pulls.isPending && <Loading />}
     {rows && !rows.total && !pulls.isPlaceholderData && <Empty title={rows.registered_total ? "No matching pull requests" : "No pull requests here yet"}>

@@ -1,5 +1,4 @@
-import { useRef } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { Schema } from "../api";
 import { label, orderings, properties, reviews, selected, states, type OrderingField, type Property } from "../lib/inbox-filters";
 import { FilterBar, type FilterDefinition } from "./filter-bar";
@@ -13,7 +12,6 @@ export function InboxFilters({ params, data, onChange, onSearch, repository = fa
   onChange: (property: Property | "ordering", values: string[]) => void;
   onSearch: (value: string) => void;
 }) {
-  const sortButton = useRef<HTMLButtonElement>(null);
   const ordering = params.get("ordering") ?? (repository ? "-updated_at" : "-created_at");
   const field = ordering.replace(/^-/, "") as OrderingField;
   const descending = ordering.startsWith("-");
@@ -41,7 +39,7 @@ export function InboxFilters({ params, data, onChange, onSearch, repository = fa
   return <FilterBar query={params.get("q") ?? ""} searchLabel="Search pull requests" searchPlaceholder="Search pull requests…" filters={filters} onChange={onChange} onSearch={onSearch}>
     <div className="flex shrink-0 items-center gap-2" role="group" aria-label="Ordering">
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button ref={sortButton} variant="outline" className="bg-card" aria-label={`Sort by ${orderings[field]}`}><ArrowUpDown className="text-muted-foreground" />{orderings[field]}</Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button variant="outline" className="bg-card" aria-label={`Sort by ${orderings[field]}`}><ArrowUpDown className="text-muted-foreground" />{orderings[field]}</Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]">
           <DropdownMenuRadioGroup value={field} onValueChange={(value) => { if (value !== field) onChange("ordering", [value.endsWith("_at") ? `-${value}` : value]); }}>
             {(Object.keys(orderings) as OrderingField[]).filter((key) => !repository || (key !== "repository" && key !== "created_at")).map((key) => <DropdownMenuRadioItem key={key} value={key}>{orderings[key]}</DropdownMenuRadioItem>)}
@@ -51,7 +49,6 @@ export function InboxFilters({ params, data, onChange, onSearch, repository = fa
         </DropdownMenuContent>
       </DropdownMenu>
       <Button variant="outline" size="icon" className="bg-card" title={direction} aria-label={descending ? "Sort ascending" : "Sort descending"} onClick={() => onChange("ordering", [descending ? field : `-${field}`])}>{descending ? <ArrowDown /> : <ArrowUp />}</Button>
-      {params.has("ordering") && <Button variant="ghost" size="icon" aria-label="Reset ordering" title="Reset to newest first" onClick={() => { onChange("ordering", []); sortButton.current?.focus(); }}><X /></Button>}
     </div>
   </FilterBar>;
 }

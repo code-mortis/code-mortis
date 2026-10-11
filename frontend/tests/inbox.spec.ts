@@ -496,6 +496,7 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
 test("ordering survives sharing, history and details and resets loaded pages", async ({ page }) => {
   const { requests } = await mockInbox(page, { many: true });
   await page.goto("/?ordering=title&active_pages=2");
+  await expect(page.getByRole("button", { name: "Reset ordering", exact: true })).toHaveCount(0);
   const active = page.getByRole("region", { name: "Open", exact: true });
   await expect(active.getByRole("link")).toHaveCount(20);
   await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
@@ -522,7 +523,8 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await expect(page).toHaveURL(/\?state=open&ordering=-title$/);
   await page.goForward();
   await expect(page).toHaveURL(/\?state=open&ordering=-updated_at$/);
-  await page.getByRole("button", { name: "Reset ordering", exact: true }).click();
+  await page.getByRole("button", { name: "Sort by Updated", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Created", exact: true }).click();
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: "Sort by Created", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
