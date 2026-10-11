@@ -84,7 +84,7 @@ export function SearchSelect({
                 }
               }}
               maxLength={allowCustom ? 100 : undefined}>
-              {selectedIcon && <InputGroupAddon align="inline-start" aria-hidden="true">{selectedIcon}</InputGroupAddon>}
+              {selectedIcon && <InputGroupAddon align="inline-start"><span aria-hidden="true" className="flex">{selectedIcon}</span></InputGroupAddon>}
             </ComboboxInput>
           </div>
         </PopoverAnchor>

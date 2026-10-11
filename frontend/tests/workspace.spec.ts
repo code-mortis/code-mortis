@@ -3816,7 +3816,12 @@ test("connection selectors show logos in options and selected values, but hide t
     await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? "dark" : "");
     await expect(typeIcon.locator(".lucide-plug")).toBeVisible();
     await expect(providerIcon.locator("img")).toHaveAttribute("src", "/brands/openai.svg");
-    await expect(typeIcon).toHaveAttribute("aria-hidden", "true");
+    await expect(typeIcon).toHaveAttribute("role", "group");
+    await expect(typeIcon).not.toHaveAttribute("aria-hidden");
+    await expect(typeIcon.locator("span")).toHaveAttribute("aria-hidden", "true");
+    await typeIcon.click();
+    await expect(type).toBeFocused();
+    await dialog.getByLabel("Connection name", { exact: true }).focus();
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/selected-connection-logos-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
     await type.fill("");
