@@ -470,9 +470,9 @@ async function noOverflow(page: Page) {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  for (const dialog of await page.getByRole("dialog").all()) {
-    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  }
+  expect(await page.getByRole("dialog").evaluateAll((dialogs) =>
+    dialogs.every((element) => element.scrollWidth <= element.clientWidth),
+  )).toBe(true);
 }
 
 async function repositorySection(page: Page, name: string) {
@@ -680,8 +680,8 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
   await mock(page, { role });
   await page.goto("/repositories/22");
   const sections = role === "admin"
-    ? [["connections", "AI connections"], ["github", "GitHub"], ["team", "Team"]]
-    : [["connections", "AI connections"]];
+    ? [["connections", "AI connections"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
+    : [["connections", "AI connections"], ["appearance", "Appearance"]];
   for (const [tab, label] of sections) {
     await openNavigation(page);
     await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
@@ -5396,7 +5396,9 @@ test("personal model and repository errors stay with their operation", async ({ 
   await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings?tab=team");
-  await expect(page.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
+  const sections = page.getByRole("navigation", { name: "Settings sections" });
+  await expect(sections.getByRole("link")).toHaveText(["AI connections", "Appearance"]);
+  await expect(sections.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
   await page.getByText("Connection settings", { exact: true }).click();
   const model = page.getByRole("form", { name: "Default model" });

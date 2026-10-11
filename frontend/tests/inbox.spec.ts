@@ -451,9 +451,14 @@ test("an empty open inbox offers all history and preserves that choice on reload
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
   await page.getByRole("button", { name: "view all pull requests", exact: true }).click();
   await expect(page).toHaveURL(/\?state=all$/);
-  await expect(page.getByRole("region", { name: "Pull requests", exact: true }).getByRole("link")).toHaveCount(3);
+  const list = page.getByRole("region", { name: "Pull requests", exact: true });
+  await expect(list.getByRole("link")).toHaveCount(3);
+  await expect(list.getByText("merged", { exact: true })).toHaveCount(2);
+  await expect(list.getByText("closed", { exact: true })).toHaveCount(1);
   await page.reload();
-  await expect(page.getByRole("region", { name: "Pull requests", exact: true }).getByRole("link")).toHaveCount(3);
+  await expect(list.getByRole("link")).toHaveCount(3);
+  await expect(list.getByText("merged", { exact: true })).toHaveCount(2);
+  await expect(list.getByText("closed", { exact: true })).toHaveCount(1);
 });
 
 test("shared combined filters and a search with no matches", async ({ page }) => {
