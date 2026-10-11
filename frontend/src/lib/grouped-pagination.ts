@@ -16,7 +16,10 @@ export async function fetchGroupedPages<T extends GroupedResponse>(path: string,
     for (let page = 2; page <= wanted; page++) {
       signal.throwIfAborted();
       try {
-        const response = await api<T>(`${path}?${filters}&group=${group.group}&page=${page}`, "GET", undefined, undefined, signal);
+        const params = new URLSearchParams(filters);
+        params.set("group", group.group);
+        params.set("page", String(page));
+        const response = await api<T>(`${path}?${params}`, "GET", undefined, undefined, signal);
         const next = response.groups.find((item) => item.group === group.group);
         if (!next) break;
         group.items.push(...next.items);

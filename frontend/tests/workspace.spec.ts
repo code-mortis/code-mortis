@@ -1273,7 +1273,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
   test(`inbox context survives run ${entry} navigation and return`, async ({ page }) => {
     await mock(page);
     await page.route("**/api/v1/pulls?**", (route) => route.fulfill({ json: {
-      groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [{
+      groups: [{ group: "all", total: 1, page: 1, has_more: false, items: [{
         ...pr, repository_name: repo.full_name, created_at: at, review_status: run.status,
         has_running_review: false, run_id: run.id, publication: run.publication, publication_error: run.publication_error,
       }] }],

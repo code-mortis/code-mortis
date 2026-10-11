@@ -484,7 +484,7 @@ class CandidatePage(BaseModel):
     page_size: int = LIST_PAGE_SIZE
 
 
-InboxGroup = Literal["active", "merged", "closed"]
+InboxGroup = Literal["active", "merged", "closed", "all"]
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",

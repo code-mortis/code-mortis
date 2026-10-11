@@ -1225,7 +1225,7 @@ export interface components {
              * Group
              * @enum {string}
              */
-            group: "active" | "merged" | "closed";
+            group: "active" | "merged" | "closed" | "all";
             /** Items */
             items: components["schemas"]["InboxPullOut"][];
             /** Total */
@@ -2123,7 +2123,7 @@ export interface operations {
                 author?: string[];
                 findings?: ("open" | "none") | null;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
-                group?: ("active" | "merged" | "closed") | null;
+                group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
             };
             header?: never;
@@ -2197,7 +2197,7 @@ export interface operations {
                 author?: string[];
                 findings?: ("open" | "none") | null;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
-                group?: ("active" | "merged" | "closed") | null;
+                group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
             };
             header?: never;

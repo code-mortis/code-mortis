@@ -1,7 +1,4 @@
-import type { Schema } from "../api";
-
 export const groups = ["active", "merged", "closed"] as const;
-export type Group = Schema["InboxPage"]["group"];
 export const states = ["open", "merged", "closed"];
 export const reviews = ["running", "queued", "blocked", "not_reviewed", "outdated", "completed", "partial", "failed", "skipped", "cancelled", "superseded"];
 export const properties = { repo: "Repository", state: "PR state", review: "Review status", author: "Author", findings: "Open findings" };
@@ -34,7 +31,7 @@ export function normalizeFilters(input: URLSearchParams, defaultState: "open" | 
   }
   const ordering = input.get("ordering");
   if (ordering && ordering !== "-created_at" && Object.prototype.hasOwnProperty.call(orderings, ordering.replace(/^-/, ""))) result.set("ordering", ordering);
-  for (const group of groups) {
+  for (const group of [...groups, "all"]) {
     const value = input.get(`${group}_pages`) ?? (group === "active" ? input.get("reviewed_pages") : null) ?? "1";
     if (/^\d+$/.test(value) && +value > 1) result.set(`${group}_pages`, String(Math.min(+value, INBOX_MAX_PAGES)));
   }
@@ -52,7 +49,7 @@ export function selected(params: URLSearchParams, property: Property) {
 
 export function withoutPages(params: URLSearchParams) {
   const result = new URLSearchParams(params);
-  for (const group of groups) result.delete(`${group}_pages`);
+  for (const group of [...groups, "all"]) result.delete(`${group}_pages`);
   result.delete("reviewed_pages");
   return result;
 }

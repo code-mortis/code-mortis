@@ -11,7 +11,7 @@ import { PullRequestListHeading, PullRequestRow } from "./pull-request-row";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 
-const titles = { active: "Open", merged: "Merged", closed: "Closed" };
+const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
 
 export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const [raw, setParams] = useSearchParams();
