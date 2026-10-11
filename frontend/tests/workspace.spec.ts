@@ -1101,7 +1101,41 @@ test("repository sync pending state stays with its repository", async ({ page })
   await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
   release();
   await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(1);
+  await expect(page.locator("[data-sonner-toast]")).toContainText("Sync queued");
 });
+
+for (const theme of ["light", "dark"]) {
+  test(`repository sync uses a ${theme} toast and keeps failures inline`, async ({ page }, info) => {
+    await mock(page);
+    await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
+    let fail = false;
+    await page.route("**/api/v1/repositories/22/sync", (route) => route.fulfill(fail
+      ? { status: 502, json: { detail: "GitHub unavailable. Try again shortly." } }
+      : { json: { job_id: "sync-job" } }));
+    await page.goto("/repositories/22");
+    const sync = page.getByRole("button", { name: "Sync", exact: true });
+    const toast = page.locator("[data-sonner-toast]");
+    await expect(toast).toHaveCount(0);
+    await sync.click();
+    await expect(toast).toHaveCount(1);
+    await expect(toast).toContainText("Sync queued");
+    await expect(toast).toContainText("Pull requests will refresh when it finishes.");
+    await expect(page.getByRole("main").getByText(/Sync queued/)).toHaveCount(0);
+    await expect(sync).toBeFocused();
+    await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", theme);
+    await expect(page.getByRole("region", { name: /^Notifications/ })).toHaveAttribute("aria-live", "polite");
+    await noOverflow(page);
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: `../.impeccable/review/sync-toast-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await expect(toast.getByRole("button", { name: "Close toast" })).toHaveCount(0);
+    await expect(toast).toHaveCount(0);
+    fail = true;
+    await sync.click();
+    await expect(page.getByRole("main").getByRole("alert")).toHaveText("GitHub unavailable. Try again shortly.");
+    await expect(toast).toHaveCount(0);
+  });
+}
 
 test("repository list distinguishes failed requests, empty data, and revoked access", async ({ page }) => {
   await mock(page);

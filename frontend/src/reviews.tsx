@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
@@ -142,14 +143,15 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
       </div>
       {selected && <div className="flex shrink-0 flex-wrap gap-2">
-        <Button variant="outline" disabled={syncPending} onClick={() => action.mutate({ path: syncPath })}>
+        <Button variant="outline" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
+          onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
+        })}>
           <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
         </Button>
         {admin && <Button variant="outline" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
       </div>}
     </header>
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
-    {syncHere && action.isSuccess && <p role="status" className="mb-4 text-sm text-muted-foreground">Sync queued. Pull requests will refresh when it finishes.</p>}
     {requested && !selected && <Empty title="Repository unavailable">
       This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
     </Empty>}

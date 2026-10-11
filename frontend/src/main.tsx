@@ -25,6 +25,7 @@ import { Inbox } from "./inbox";
 import { AppSidebar, Brand } from "./components/app-sidebar";
 import { AppHeader } from "./components/app-header";
 import { SidebarProvider } from "./components/ui/sidebar";
+import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
 import "./index.css";
 
@@ -281,6 +282,7 @@ function App() {
           </div>
         </main>
       </div>
+      <Toaster theme={dark ? "dark" : "light"} />
     </SidebarProvider>
   );
 }
