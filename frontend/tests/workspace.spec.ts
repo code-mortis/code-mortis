@@ -3288,7 +3288,7 @@ for (const webhook of [undefined, "https://hooks.example.com/a-long-webhook-chan
     await page.goto("/settings?tab=github");
     const app = page.getByRole("region", { name: "GitHub App", exact: true });
     await expect(page.getByRole("article", { name: "acme", exact: true }).locator('[data-slot="badge"]')).toHaveText("Installed");
-    await expect(page.getByRole("region", { name: "Accounts to connect" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Accounts to connect" })).toContainText("No additional installations available. Install the app on another account, then refresh.");
     const link = app.getByRole("link", { name: "Open GitHub App on GitHub", exact: true });
     await expect(link).toHaveAttribute("href", "https://github.com/apps/code-mortis-acme");
     await expect(link).toHaveAttribute("target", "_blank");
