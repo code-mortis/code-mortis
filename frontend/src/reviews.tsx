@@ -258,7 +258,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [statuses, setStatuses] = useState<string[]>(["open"]);
+  const [statuses, setStatuses] = useState<string[]>(["open", "resolved"]);
   const [severities, setSeverities] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);
@@ -305,10 +305,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
   }
   return <>
     <header className="mb-6">
-      <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">{pr.title}</h1>
+      <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
+        <span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}
+      </h1>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
         <Status value={pr.state} />
-        <span>#{pr.number} · @{pr.author}</span>
+        <span>@{pr.author}</span>
         {pr.draft && <span>Draft</span>}
         <code className="min-w-0 max-w-full truncate" title={`${pr.head_ref} · ${pr.head_sha}`}>{pr.head_ref} · {pr.head_sha.slice(0, 7)}</code>
         <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
@@ -349,7 +351,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings or files…" searchInputRef={searchInput} onSearch={setSearch}
+          <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={setSearch}
             filters={[
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
@@ -695,7 +697,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         <TabsTrigger value="details">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        <div className="mb-4"><FilterBar query={search} searchLabel="Search run findings" searchPlaceholder="Search findings or files…" searchInputRef={searchInput} onSearch={setSearch}
+        <div className="mb-4"><FilterBar query={search} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={setSearch}
           filters={[{ key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) }]}
           onChange={(_, values) => setSeverities(values)}>
           <span role="status" className="text-xs tabular-nums text-muted-foreground sm:pt-2.5">{filtered.length} of {occurrences.length} findings</span>
