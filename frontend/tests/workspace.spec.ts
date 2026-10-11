@@ -1318,7 +1318,10 @@ test("finding code shows a unified diff and safe Markdown highlighting in both t
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const panel = page.getByRole("dialog");
   const patch = panel.getByRole("region", { name: "Suggested change diff" });
-  await expect(patch).toContainText("--- original\n+++ suggested\n@@ -1,3 +1,3 @@");
+  await expect(patch).toContainText("@@ -1,3 +1,3 @@");
+  await expect(patch).not.toContainText("--- original");
+  await expect(patch).not.toContainText("No newline at end of file");
+  await expect(panel.getByLabel("Changed lines")).toHaveText("+2−2");
   await expect(patch.locator(".hljs-deletion").first()).toHaveText("-while (!delivered) {");
   await expect(patch.locator(".hljs-addition").first()).toContainText("+for (let attempt = 0;");
   expect(await patch.textContent()).toContain("-  delivered = await sendWebhook(payload);\n");
@@ -2376,6 +2379,54 @@ test("personal review limits retain their separate context budget", async ({ pag
   await noOverflow(page);
 });
 
+test("finding sheet keeps actions visible and preserves its active tab through polling", async ({ page }) => {
+  const requests = await mock(page, { finding: { content: `${finding.content}\n\n` + "Long saved evidence.\n\n".repeat(50) } });
+  await page.clock.install();
+  await page.goto("/pulls/pr");
+  const trigger = page.getByRole("button", { name: /retry loop has no upper bound/ });
+  await trigger.click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await sheet.locator('[data-slot="finding-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toBeInViewport();
+  await expect(sheet.getByRole("link", { name: "GitHub thread", exact: true })).toBeInViewport();
+  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  const activity = sheet.getByRole("tab", { name: "Activity 1", exact: true });
+  await expect(activity).toBeFocused();
+  await expect(activity).toHaveAttribute("aria-selected", "true");
+  await page.clock.fastForward(5000);
+  await expect(activity).toHaveAttribute("aria-selected", "true");
+  await activity.press("ArrowLeft");
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await sheet.getByRole("button", { name: "Dismiss", exact: true }).click();
+  const reason = sheet.getByRole("textbox", { name: "Why dismiss this finding?" });
+  await expect(reason).toBeFocused();
+  await expect(sheet.getByRole("button", { name: "Confirm dismissal", exact: true })).toBeDisabled();
+  await reason.fill("This behavior is intentional and covered by tests.");
+  await sheet.getByRole("button", { name: "Confirm dismissal", exact: true }).click();
+  expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "dismissed", reason: "This behavior is intentional and covered by tests." } });
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+});
+
+test("saved finding evidence remains readable when current status cannot be loaded", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/findings/finding", (route) => route.fulfill({ status: 503, json: { detail: "Current finding unavailable" } }));
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText(finding.content);
+  await expect(sheet.getByRole("region", { name: "Suggested change diff" })).toBeVisible();
+  await expect(sheet.getByRole("alert")).toContainText("Current finding unavailable");
+  await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toHaveCount(0);
+  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await expect(sheet).toContainText("Current evidence could not be loaded.");
+  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await expect(sheet).toContainText(finding.content);
+  await noOverflow(page);
+});
+
 for (const field of [
   { label: "Native context budget (bytes)", key: "delegated_context_bytes", personal: true, valid: "6000", excessive: "20000001" },
   { label: "Concurrency", key: "concurrency", personal: false, valid: "4", excessive: "9" },
@@ -3249,6 +3300,7 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   });
   await page.goto("/pulls/pr");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await page.getByRole("button", { name: "View verification", exact: true }).click();
   await expect(page.getByText("The retry loop now stops after three attempts.")).toBeVisible();
   await expect(page.getByText("Automatic resolution: failed")).toBeVisible();
   await page.getByText("Current evidence: src/retry.ts:1–1").click();
@@ -3311,6 +3363,7 @@ test("pending verification has one status and failed verification has an alert",
   ] });
   await page.goto("/pulls/pr");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await page.getByRole("button", { name: "View verification", exact: true }).click();
   const panel = page.getByRole("dialog");
   await expect(panel.getByText("queued", { exact: true })).toHaveCount(1);
   await expect(panel.getByRole("alert")).toContainText("Verification context is unavailable");

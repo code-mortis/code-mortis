@@ -21,6 +21,12 @@ import {
   Globe,
   FolderGit2,
   SlidersHorizontal,
+  CircleCheck,
+  CircleDot,
+  CircleSlash,
+  FileCode2,
+  History,
+  RotateCcw,
 } from "lucide-react";
 import {
   ApiError,
@@ -45,6 +51,7 @@ import {
   SheetHeader,
   SheetTitle,
   SheetDescription,
+  SheetFooter,
 } from "./components/ui/sheet";
 import {
   active,
@@ -414,30 +421,40 @@ export function PullDetail({ admin }: { admin: boolean }) {
       <TabsContent value="history" className="min-w-0"><RunList prId={pr.id} /></TabsContent>
     </Tabs>
     <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(event) => {
+      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => {
         event.preventDefault();
         (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus();
       }}>
-        <SheetHeader><SheetTitle>Finding details</SheetTitle><SheetDescription>Review the evidence and its resolution history.</SheetDescription></SheetHeader>
+        <SheetHeader className="shrink-0 px-6 pb-4 pt-5"><SheetTitle>Finding details</SheetTitle><SheetDescription className="sr-only">Review the evidence and its resolution history.</SheetDescription></SheetHeader>
         {finding && <FindingPanel key={finding} id={finding} canWrite={can_write} />}
       </SheetContent>
     </Sheet>
   </>;
 }
 
-function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
+function FindingPanel({ id, canWrite, snapshot, headSha }: {
+  id: string; canWrite: boolean; snapshot?: Schema["OccurrenceOut"]["snapshot"]; headSha?: string;
+}) {
   const query = useApi<Schema["FindingDetail"]>(`/findings/${id}`, true);
   const action = useAction();
   const [dismiss, setDismiss] = useState(false);
   const [reason, setReason] = useState("");
-  if (query.isPending)
+  const [tab, setTab] = useState(snapshot ? "snapshot" : "evidence");
+  const activityTab = useRef<HTMLButtonElement>(null);
+  if (query.isPending && !snapshot)
     return (
       <div className="px-6">
         <Loading />
       </div>
     );
-  if (!query.data) return <ErrorNotice error={query.error} />;
-  const { finding: f, activities, verifications = [] } = query.data;
+  if (!query.data && !snapshot) return <div className="px-6"><ErrorNotice error={query.error} /></div>;
+  const f = query.data?.finding;
+  const activities = query.data?.activities ?? [];
+  const verifications = query.data?.verifications ?? [];
+  const evidence = tab === "snapshot" && snapshot ? snapshot : f ?? snapshot!;
+  const path = String(evidence.path ?? "");
+  const latestVerification = verifications[0];
+  const StatusIcon = f?.status === "resolved" ? CircleCheck : f?.status === "dismissed" ? CircleSlash : CircleDot;
   async function change(status: string) {
     await action
       .mutateAsync({
@@ -452,84 +469,41 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
     await action.mutateAsync({ path: `/findings/${id}/sync`, method: "POST" }).catch(() => null);
   }
   return (
-    <div className="space-y-6 px-6 pb-10">
-      <div className="flex flex-wrap items-center gap-2">
-        <Status value={f.severity} />
-        <Status value={f.status} />
-        {f.github_url && (
-          <span className="ml-auto">
-            <ExternalLink href={f.github_url}>GitHub thread</ExternalLink>
-          </span>
-        )}
-      </div>
-      <p className="break-all font-mono text-xs text-muted-foreground">
-        {f.path}:{f.start_line}–{f.end_line}
-      </p>
-      <Markdown>{f.content}</Markdown>
-      <CodeComparison original={f.existing_code} suggested={f.suggestion} path={f.path} />
-      <ErrorNotice error={action.error || f.sync_error || query.error} />
-      {f.desired_status && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {f.sync_error
-            ? "GitHub has not confirmed the change. Retry to sync again."
-            : `Waiting for GitHub to confirm: ${f.desired_status}.`}
-        </p>
-      )}
-      {canWrite && (
-        <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={action.isPending || (!!f.desired_status && !f.sync_error)}
-            onClick={() =>
-              f.sync_error ? retrySync() : change(
-                f.desired_status ?? (f.status === "open" ? "resolved" : "open"),
-              )
-            }
-          >
-            {findingActionLabel(f)}
-          </Button>
-          {f.desired_status === "resolved" && !!f.sync_intent?.verification_id && (
-            <Button variant="outline" disabled={action.isPending} onClick={() => change("open")}>
-              Keep finding open
-            </Button>
-          )}
-          {f.status === "open" && !f.desired_status && (
-            <Button variant="outline" onClick={() => setDismiss(!dismiss)}>
-              Dismiss
-            </Button>
-          )}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 space-y-3 px-6 pb-5">
+        <div className="flex items-start gap-2.5">
+          <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0 font-mono text-xs">
+            <p className="break-words [overflow-wrap:anywhere]"><span className="text-muted-foreground">{path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : ""}</span><span className="font-medium">{path.slice(path.lastIndexOf("/") + 1)}</span></p>
+            <p className="mt-1 text-muted-foreground">Lines {String(evidence.start_line ?? "")}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</p>
+          </div>
         </div>
-      )}
-      {dismiss && (
-        <form
-          className="space-y-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void change("dismissed");
-          }}
-        >
-          <Field label="Why dismiss this finding?">
-            {(id) => (
-              <Textarea
-                id={id}
-                required
-                maxLength={2000}
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="For example, this is intentional and covered by…"
-              />
-            )}
-          </Field>
-          <Button disabled={!reason.trim() || action.isPending}>
-            Confirm dismissal
-          </Button>
-        </form>
-      )}
-      <div className="border-t pt-6">
-        <h3 className="mb-5 text-sm font-semibold">Activity</h3>
-        {verifications.map((item) => (
-          <div key={item.id} className="mb-5 space-y-3 rounded-lg border p-4">
+        <div className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} /><span className="text-xs text-muted-foreground">{label(String(evidence.category ?? ""))}</span></div>
+      </div>
+      <div className="grid shrink-0 grid-cols-[18px_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border-y bg-muted/50 px-6 py-4 sm:grid-cols-[18px_minmax(0,1fr)_auto]">
+        <StatusIcon className={`mt-0.5 size-[18px] ${f?.status === "resolved" ? "text-emerald-800 dark:text-emerald-300" : "text-muted-foreground"}`} aria-hidden="true" />
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">Current status</span>{f ? <Status value={f.status} /> : <span className="text-xs">{query.isPending ? "Loading…" : "Unavailable"}</span>}</div>
+          <p className="text-xs leading-relaxed text-muted-foreground">{latestVerification ? <>Latest verification: {words(latestVerification.verdict ?? latestVerification.status)} at <span className="font-mono">{latestVerification.head_sha.slice(0, 7)}</span>.</> : "Original review evidence and resolution history are preserved."}</p>
+        </div>
+        <Button variant="link" size="sm" className="col-start-2 min-h-11 justify-self-start px-0 text-xs sm:col-start-auto sm:min-h-8" onClick={() => { setTab("activity"); activityTab.current?.focus(); }}>{verifications.length ? "View verification" : "View activity"}</Button>
+      </div>
+      <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
+        <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>
+          {snapshot && <TabsTrigger value="snapshot">At this run</TabsTrigger>}
+          <TabsTrigger value="evidence">{snapshot ? "Current status" : "Evidence"}</TabsTrigger>
+          <TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data ? activities.length : "…"}</span></TabsTrigger>
+        </TabsList></div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="finding-scroll">
+          {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs text-muted-foreground">Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></p><FindingEvidence evidence={snapshot} /></TabsContent>}
+          <TabsContent value="evidence" className="space-y-6">{f ? <FindingEvidence evidence={f} /> : query.isPending ? <Loading /> : <p className="text-sm text-muted-foreground">Current evidence could not be loaded.</p>}</TabsContent>
+          <TabsContent value="activity" className="space-y-6">
+          {query.isPending && <Loading />}
+          {!query.isPending && !query.data && <p className="text-sm text-muted-foreground">Activity could not be loaded.</p>}
+          {verifications.map((item) => (
+          <section key={item.id} className="space-y-3 border-b pb-6">
             <div className="flex flex-wrap gap-2">
-              <span className="text-sm font-medium">Fix verification</span>
+              <h3 className="text-sm font-semibold">Fix verification</h3>
               {item.verdict && <Status value={item.verdict} />}
               <Status value={item.status} />
             </div>
@@ -554,28 +528,50 @@ function FindingPanel({ id, canWrite }: { id: string; canWrite: boolean }) {
               Automatic resolution: {words(item.resolution)}
             </p>
             <ErrorNotice error={item.error} />
-          </div>
+          </section>
         ))}
+        <h3 className="text-sm font-semibold">Activity</h3>
         <ol className="space-y-5">
           {activities.map((event) => (
-            <li key={event.id} className="relative border-l-2 pl-4">
-              <p className="text-sm">
-                <span className="font-medium">{event.actor}</span> ·{" "}
-                {event.action}{" "}
-                <span className="text-muted-foreground">
-                  via {event.source}
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {date(event.created_at)}
-              </p>
-              {event.reason && <p className="mt-2 text-sm">{event.reason}</p>}
+            <li key={event.id} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground">
+              <p className="text-sm font-medium">{label(event.action)}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{event.actor} · {words(event.source)} · {date(event.created_at)}</p>
+              {event.reason && <details className="mt-2 text-sm"><summary className="cursor-pointer text-xs text-primary">View reason</summary><p className="mt-2 break-words leading-relaxed">{event.reason}</p></details>}
             </li>
           ))}
         </ol>
-      </div>
+        {query.data && !activities.length && <p className="text-sm text-muted-foreground">No activity recorded.</p>}
+          </TabsContent>
+        </div>
+      </Tabs>
+      <SheetFooter className="max-h-[50dvh] shrink-0 gap-3 overflow-y-auto border-t px-6 py-4">
+        <ErrorNotice error={action.error || f?.sync_error || query.error} />
+        {f?.desired_status && <p role="status" className="text-xs leading-relaxed text-muted-foreground">{f.sync_error ? "GitHub has not confirmed the change. Retry to sync again." : `Waiting for GitHub to confirm: ${f.desired_status}.`}</p>}
+        {f && <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {f.github_url && <span className="[&>a]:min-h-11 [&>a]:w-full sm:[&>a]:min-h-9 sm:[&>a]:w-auto"><ExternalLink href={f.github_url}>GitHub thread</ExternalLink></span>}
+          {canWrite && <div className="flex flex-wrap gap-2 sm:ml-auto">
+            <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" disabled={action.isPending || (!!f.desired_status && !f.sync_error)} onClick={() => f.sync_error ? retrySync() : change(f.desired_status ?? (f.status === "open" ? "resolved" : "open"))}>
+              {f.sync_error ? <RefreshCw aria-hidden="true" /> : f.status === "open" ? <CircleCheck aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}{findingActionLabel(f)}
+            </Button>
+            {f.desired_status === "resolved" && !!f.sync_intent?.verification_id && <Button variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending} onClick={() => change("open")}>Keep finding open</Button>}
+            {f.status === "open" && !f.desired_status && <Button variant="outline" className="min-h-11 sm:min-h-9" onClick={() => setDismiss(!dismiss)}>Dismiss</Button>}
+          </div>}
+        </div>}
+        {dismiss && f && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void change("dismissed"); }}>
+          <Field label="Why dismiss this finding?">{(id) => <Textarea id={id} autoFocus required maxLength={2000} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="For example, this is intentional and covered by…" />}</Field>
+          <Button disabled={!reason.trim() || action.isPending}>Confirm dismissal</Button>
+        </form>}
+      </SheetFooter>
     </div>
   );
+}
+
+function FindingEvidence({ evidence }: { evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"] }) {
+  return <>
+    <section className="space-y-3"><h3 className="text-sm font-semibold">Explanation</h3><Markdown>{String(evidence.content ?? "")}</Markdown></section>
+    <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} />
+    <p className="flex items-center gap-2 text-xs leading-relaxed text-muted-foreground"><History className="size-3.5 shrink-0" aria-hidden="true" />Each review keeps its original evidence.</p>
+  </>;
 }
 
 function findingActionLabel(finding: Schema["FindingOut"]) {
@@ -777,18 +773,9 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsContent>
     </Tabs>
     <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus(); }}>
-        <SheetHeader><SheetTitle>Finding details</SheetTitle><SheetDescription>Inspect the evidence saved in this run and its current resolution separately.</SheetDescription></SheetHeader>
-        {finding && <Tabs key={finding.finding_id} defaultValue="snapshot">
-          <TabsList className="mx-6 mb-4"><TabsTrigger value="snapshot">At this run</TabsTrigger><TabsTrigger value="current">Current status</TabsTrigger></TabsList>
-          <TabsContent value="snapshot" className="min-w-0 space-y-4 px-6 pb-8">
-            <div className="flex items-center gap-2"><Status value={String(finding.snapshot.severity ?? "unknown")} /><span className="text-xs text-muted-foreground">Saved at {run.head_sha.slice(0, 7)}</span></div>
-            <p className="break-all font-mono text-xs text-muted-foreground">{String(finding.snapshot.path ?? "")}:{String(finding.snapshot.start_line ?? "")}{finding.snapshot.end_line && finding.snapshot.end_line !== finding.snapshot.start_line ? `–${finding.snapshot.end_line}` : ""}</p>
-            <Markdown>{String(finding.snapshot.content ?? "")}</Markdown>
-            <CodeComparison original={String(finding.snapshot.existing_code ?? "")} suggested={String(finding.snapshot.suggestion ?? "")} path={String(finding.snapshot.path ?? "")} />
-          </TabsContent>
-          <TabsContent value="current" className="min-w-0"><FindingPanel id={finding.finding_id} canWrite={can_write} /></TabsContent>
-        </Tabs>}
+      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : searchInput.current)?.focus(); }}>
+        <SheetHeader className="shrink-0 px-6 pb-4 pt-5"><SheetTitle>Finding details</SheetTitle><SheetDescription className="sr-only">Inspect the evidence saved in this run and its current resolution separately.</SheetDescription></SheetHeader>
+        {finding && <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} />}
       </SheetContent>
     </Sheet>
   </>;

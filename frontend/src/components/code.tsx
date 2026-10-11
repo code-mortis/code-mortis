@@ -78,12 +78,27 @@ export function CodeComparison({ original, suggested, path }: {
       headerOptions: FILE_HEADERS_ONLY,
     });
   }, [original, suggested]);
-  if (patch) return (
-    <div className="space-y-2">
-      <h3 className="text-sm font-medium">Suggested change</h3>
-      <Code language="diff" label="Suggested change diff">{patch}</Code>
-    </div>
-  );
+  if (patch) {
+    const lines = patch.split("\n").slice(2).filter((line) => line !== "\\ No newline at end of file");
+    return (
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Suggested change</h3>
+          <span className="flex gap-2 font-mono text-xs tabular-nums" aria-label="Changed lines">
+            <span className="text-[var(--code-added)]">+{lines.filter((line) => line.startsWith("+")).length}</span>
+            <span className="text-[var(--code-removed)]">−{lines.filter((line) => line.startsWith("-")).length}</span>
+          </span>
+        </div>
+        <div className="overflow-hidden rounded-md border [&_.code-block]:rounded-none [&_.code-block]:border-0 [&_.code-block]:bg-background [&_.code-block]:p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted px-3 py-2 text-xs">
+            <span className="min-w-0 break-all font-mono">{path.slice(path.lastIndexOf("/") + 1)}</span>
+            <span className="text-muted-foreground">Original → Suggested</span>
+          </div>
+          <Code language="diff" label="Suggested change diff">{lines.join("\n")}</Code>
+        </div>
+      </section>
+    );
+  }
   return <>
     {original && original !== suggested && (
       <div className="space-y-2">
