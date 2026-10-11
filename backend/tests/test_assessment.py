@@ -112,7 +112,8 @@ def test_rephrasing_and_multiple_candidates_reuse_one_finding(pipeline, client):
     assert len(pipeline["reviews"]) == 1
     detail = client.get(f"/api/v1/runs/{second}").json()
     assert detail["assessment"]["repeated_observations"] == 1
-    assert detail["candidates"][0]["finding_id"]
+    assert "candidates" not in detail
+    assert client.get(f"/api/v1/runs/{second}/candidates").json()["items"][0]["finding_id"]
 
 
 @pytest.mark.parametrize("status", ["resolved", "dismissed"])

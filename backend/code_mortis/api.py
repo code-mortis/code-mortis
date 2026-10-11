@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from . import (
     assessment,
     background,
+    candidate_list,
     finding_list,
     github,
     inbox,
@@ -52,7 +53,9 @@ from .schemas import (
     ActivityOut,
     BackgroundInput,
     BackgroundJobOut,
+    CandidateFilters,
     CandidateOut,
+    CandidatePage,
     ConnectionInput,
     ConnectionOut,
     FindingAction,
@@ -526,17 +529,33 @@ def run_detail(run_id: str, db: DB, user: USER):
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),
-        candidates=[
-            CandidateOut.model_validate(item)
-            for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)
-                                   .order_by(ReviewCandidate.position))
-        ],
         occurrences=[
             OccurrenceOut.model_validate(item)
             for item in db.scalars(select(Occurrence).where(Occurrence.run_id == run.id))
         ],
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.get("/runs/{run_id}/candidates", response_model=CandidatePage)
+def run_candidates(run_id: str, db: DB, user: USER, filters: Annotated[CandidateFilters, Query()]):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    return candidate_list.list_candidates(db, run.id, filters)
+
+
+@router.get("/runs/{run_id}/candidates/{candidate_id}", response_model=CandidateOut)
+def candidate_detail(run_id: str, candidate_id: str, db: DB, user: USER):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    candidate = db.get(ReviewCandidate, candidate_id)
+    if not candidate or candidate.run_id != run.id:
+        raise HTTPException(404, "Assessment candidate not found.")
+    return CandidateOut.model_validate(candidate)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunOut)

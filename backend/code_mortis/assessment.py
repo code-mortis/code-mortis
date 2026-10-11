@@ -3,7 +3,7 @@
 import json
 
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import github, ocr, runner_client, verification
 from .db import now, transaction, uid
@@ -95,19 +95,25 @@ def summary(db, run):
     if not enabled(run):
         return None
     result = AssessmentSummary()
-    for row in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)):
-        result.candidates += 1
-        if row.status in {"queued", "running"}:
-            result.pending += 1
-        elif row.finding_id:
-            if row.is_new:
-                result.new_findings += 1
+    linked = ReviewCandidate.finding_id.is_not(None)
+    verdict = ReviewCandidate.result["verdict"].as_string()
+    for status, has_finding, is_new, decision, count in db.execute(select(
+        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict, func.count(),
+    ).where(ReviewCandidate.run_id == run.id).group_by(
+        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict,
+    )):
+        result.candidates += count
+        if status in {"queued", "running"}:
+            result.pending += count
+        elif has_finding:
+            if is_new:
+                result.new_findings += count
             else:
-                result.repeated_observations += 1
+                result.repeated_observations += count
         else:
-            result.withheld_candidates += 1
-        if row.status in {"failed", "skipped"} or (row.result or {}).get("verdict") == "uncertain":
-            result.incomplete += 1
+            result.withheld_candidates += count
+        if status in {"failed", "skipped"} or decision == "uncertain":
+            result.incomplete += count
     batches = set(db.scalars(select(Finding.publication_batch).where(
         Finding.publication_run_id == run.id, Finding.published_review_id.is_not(None),
     )))

@@ -617,6 +617,68 @@ function CandidateStatus({ candidate }: { candidate: Schema["CandidateOut"] }) {
   return <Status value={value} label={getCandidateLabel(candidate)} />;
 }
 
+const candidateOutcomes = [
+  { value: "new", name: "New validated finding" },
+  { value: "repeated", name: "Repeated observation" },
+  { value: "rejected", name: "Not supported" },
+  { value: "withheld", name: "Withheld" },
+  { value: "pending", name: "Awaiting assessment" },
+];
+
+function AssessmentList({ runId, running, onOpen }: {
+  runId: string; running: boolean; onOpen: (candidate: Schema["CandidateOut"], trigger: HTMLButtonElement) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [searchResetKey, setSearchResetKey] = useState(0);
+  const [listVersion, setListVersion] = useState(0);
+  const [filters, setFilters] = useState<{ outcome: string[]; severity: string[] }>({ outcome: [], severity: [] });
+  const searchInput = useRef<HTMLInputElement>(null);
+  const params = new URLSearchParams();
+  if (search.trim()) params.set("q", search.trim());
+  for (const key of ["outcome", "severity"] as const) for (const value of filters[key]) params.append(key, value);
+  const query = useInfiniteQuery<Schema["CandidatePage"], ApiError>({
+    queryKey: ["run-candidates", runId, params.toString(), listVersion],
+    queryFn: ({ pageParam, signal }) => api<Schema["CandidatePage"]>(`/runs/${runId}/candidates?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
+    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    retry: false,
+  });
+  if (query.error && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
+  const first = query.data?.pages[0];
+  const last = query.data?.pages.at(-1);
+  const seen = new Set<string>();
+  const candidates = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((candidate) => {
+    if (seen.has(candidate.id)) return false;
+    seen.add(candidate.id);
+    return true;
+  });
+  return <div className="mt-4 space-y-4">
+    <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={(value) => { setSearch(value); setListVersion((version) => version + 1); }}
+      filters={[
+        { key: "outcome", label: "Result", values: filters.outcome, choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
+        { key: "severity", label: "Severity", values: filters.severity, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
+      ]} onChange={(key, values) => { setFilters((current) => ({ ...current, [key]: values })); setListVersion((version) => version + 1); }}>
+      {last && <span role="status" className="text-xs tabular-nums text-muted-foreground sm:pt-2.5">{last.total} of {last.registered_total} assessments</span>}
+    </FilterBar>
+    <ErrorNotice error={query.error} />
+    {query.isPending ? <Loading /> : candidates.length ? <div className="space-y-3">{candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
+      state={<CandidateStatus candidate={item} />} actionLabel="View assessment"
+      note={item.error ? "Assessment needs attention" : item.finding_id ? "Linked to a saved finding" : undefined}
+      onClick={(event) => onOpen(item, event.currentTarget)} />)}</div> : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
+      <p>{first?.registered_total ? "Try another search, result, or severity." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
+      {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSearchResetKey((key) => key + 1); setFilters({ outcome: [], severity: [] }); setListVersion((version) => version + 1); searchInput.current?.focus(); }}>View all assessments</Button>}
+    </Empty>}
+    {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+      {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
+        {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
+      </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
+        : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
+      {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
+    </div>}
+  </div>;
+}
+
 function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
   candidate: Schema["CandidateOut"]; headSha: string; onOpenFinding: () => void;
 }) {
@@ -706,7 +768,7 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
 }
 
 function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
-  const { run, pull_request: pr, repository, occurrences, candidates = [], assessment, can_write } = detail;
+  const { run, pull_request: pr, repository, occurrences, assessment, can_write } = detail;
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
@@ -714,8 +776,14 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const [search, setSearch] = useState("");
   const [severities, setSeverities] = useState<string[]>([]);
   const [finding, setFinding] = useState<{ finding_id: string; snapshot?: Schema["OccurrenceOut"]["snapshot"] } | null>(null);
-  const [candidateId, setCandidateId] = useState<string | null>(null);
-  const candidate = candidates.find((item) => item.id === candidateId);
+  const [selectedCandidate, setSelectedCandidate] = useState<Schema["CandidateOut"] | null>(null);
+  const candidateQuery = useQuery<Schema["CandidateOut"], ApiError>({
+    queryKey: ["run-candidate", run.id, selectedCandidate?.id],
+    queryFn: ({ signal }) => api<Schema["CandidateOut"]>(`/runs/${run.id}/candidates/${selectedCandidate!.id}`, "GET", undefined, undefined, signal),
+    enabled: !!selectedCandidate, initialData: selectedCandidate ?? undefined, refetchInterval: selectedCandidate ? 5000 : false, retry: false,
+  });
+  const candidateDenied = candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
+  const candidate = candidateDenied ? undefined : candidateQuery.data;
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const assessmentTab = useRef<HTMLButtonElement>(null);
@@ -750,7 +818,9 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     <div className="mb-6 border-y">
       <section aria-label="GitHub publication" className="space-y-3 py-3 text-xs">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
-          <div className="flex items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} /></div>
+          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} />
+            {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <span role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial assessment" : "Assessment pending"} /></span>}
+          </div>
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>{checkValue && <Status value={checkValue} />}
             {run.check_url && <a className="inline-flex min-h-6 items-center gap-1 underline-offset-4 hover:underline" href={run.check_url} target="_blank" rel="noreferrer" aria-label="View check on GitHub">View check<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
@@ -782,10 +852,6 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
       {run.status === "blocked" && " Completed files are saved and reused when you resume."}
     </p>}
-    {assessment && (assessment.pending > 0 || assessment.incomplete > 0) && tab !== "assessment" && <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-      <p className="text-muted-foreground">{assessment.incomplete > 0 ? `Assessment is incomplete for ${assessment.incomplete} candidate${assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.` : `${assessment.pending} candidates awaiting assessment.`}</p>
-      <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setTab("assessment")}>Inspect assessment<ChevronRight aria-hidden="true" /></Button>
-    </div>}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
@@ -832,11 +898,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           {assessment ? <>
             <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
-            {!!assessment.incomplete && <p className="mt-2 text-sm text-muted-foreground">Assessment is incomplete for {assessment.incomplete} candidate{assessment.incomplete === 1 ? "" : "s"}. This is not a clean review.</p>}
-            {candidates.length ? <div className="mt-4 space-y-3">{candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
-              state={<CandidateStatus candidate={item} />} actionLabel="View assessment"
-              note={item.error ? "Assessment needs attention" : item.finding_id ? "Linked to a saved finding" : undefined}
-              onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(null); setCandidateId(item.id); }} />)}</div> : <Empty title="No candidates to assess">{active(run.status) ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</Empty>}
+            <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFinding(null); setSelectedCandidate(item); }} />
           </> : <Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty>}
         </section>
       </TabsContent>
@@ -850,14 +912,15 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         <details className="mt-5 text-sm"><summary className="cursor-pointer font-medium">Configuration used</summary><p className="mt-3 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div></details>
       </TabsContent>
     </Tabs>
-    <Sheet open={!!finding || !!candidate} onOpenChange={(open) => { if (!open) { setFinding(null); setCandidateId(null); } }}>
+    <Sheet open={!!finding || !!selectedCandidate} onOpenChange={(open) => { if (!open) { setFinding(null); setSelectedCandidate(null); } }}>
       <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : searchInput.current)?.focus(); }}>
         <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
           {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => setFinding(null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
           <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>
           <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
-        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
+        {selectedCandidate && <ErrorNotice error={candidateQuery.error} />}
+        {candidateDenied ? null : finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
           onOpenFinding={() => { if (candidate.finding_id) setFinding({ finding_id: candidate.finding_id, snapshot: occurrences.find((item) => item.finding_id === candidate.finding_id)?.snapshot }); }} />}
       </SheetContent>
     </Sheet>

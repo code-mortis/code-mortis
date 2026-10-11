@@ -201,6 +201,23 @@ function runPage(runs: Run[], params: URLSearchParams): Schema["RunPage"] {
   return { items: runs.slice((page - 1) * 10, page * 10), total: runs.length, page, has_more: page * 10 < runs.length, page_size: 10 };
 }
 
+function candidateOutcome(candidate: Schema["CandidateOut"]) {
+  return candidate.finding_id ? candidate.is_new ? "new" : "repeated" : candidate.result?.verdict === "rejected" ? "rejected" : ["queued", "running"].includes(candidate.status) ? "pending" : "withheld";
+}
+
+function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchParams): Schema["CandidatePage"] {
+  const query = (params.get("q") ?? "").toLowerCase();
+  const matches = candidates.filter((candidate) => (!params.has("outcome") || params.getAll("outcome").includes(candidateOutcome(candidate)))
+    && (!params.has("severity") || params.getAll("severity").includes(String(candidate.snapshot.severity)))
+    && (!query || [candidate.snapshot.path, candidate.snapshot.content, candidate.snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(query))));
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
+  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: candidates.length,
+    page, has_more: page * 10 < matches.length, page_size: 10,
+    outcome_counts: Object.fromEntries(["new", "repeated", "rejected", "withheld", "pending"].map((outcome) => [outcome, candidates.filter((candidate) => candidateOutcome(candidate) === outcome).length])),
+    severity_counts: Object.fromEntries(["critical", "high", "medium", "low"].map((severity) => [severity, candidates.filter((candidate) => candidate.snapshot.severity === severity).length])),
+  };
+}
+
 async function mockPullDetail(page: Page, detail: () => PullDetailFixture) {
   await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: pullMetadata(detail()) }));
   await page.route("**/api/v1/pulls/pr/findings?**", (route) => route.fulfill({ json: findingPage(detail().findings, new URL(route.request().url()).searchParams) }));
@@ -332,10 +349,11 @@ async function mock(
         occurrences: options.occurrences ?? (currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
         ]),
-        candidates: options.candidates ?? [],
         assessment: options.assessment ?? null,
         can_write: options.canWrite !== false,
       };
+    else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
+    else if (path.startsWith("/runs/run/candidates/")) data = options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1));
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
       data = {
         source: "provider", status: "ready", message: null,
@@ -2635,7 +2653,9 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
-  await expect(page.getByText(/Assessment is incomplete for 1 candidate/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial assessment", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Assessment is incomplete/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect assessment", exact: true })).toHaveCount(0);
   const withheld = page.getByRole("button", { name: /index.css.*315.*Withheld/ });
   await withheld.focus();
   await page.keyboard.press("Enter");
@@ -2694,7 +2714,7 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
   const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
-  await expect(assessment).toContainText("Assessment is incomplete for 1 candidate. This is not a clean review.");
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial assessment", { exact: true })).toBeVisible();
   await expect(assessment).not.toContainText("No new comments");
   await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
@@ -2770,6 +2790,101 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   await page.keyboard.press("Escape");
   await expect(card).toBeFocused();
   expect(requests).toEqual([]);
+});
+
+test("assessments paginate on the backend and reset pages when filters change", async ({ page }) => {
+  const candidates: Schema["CandidateOut"][] = Array.from({ length: 23 }, (_, index) => ({
+    id: `candidate-${index}`, snapshot: { path: `src/handler-${index}.ts`, content: `Saved proposal ${index}`, severity: index % 2 ? "low" : "high", category: "bug" },
+    status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null,
+  }));
+  const writes = await mock(page, { candidates,
+    assessment: { candidates: 23, new_findings: 1, repeated_observations: 0, withheld_candidates: 22, pending: 0, incomplete: 0, published_comments: 1 },
+  });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run");
+  expect(requests).toEqual([]);
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await expect(list.getByText("23 of 23 assessments", { exact: true })).toBeVisible();
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(20);
+  await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
+  expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+  await page.getByLabel("Search assessments", { exact: true }).fill("handler-22.ts");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("New validated finding");
+  await expect(list.getByText("1 of 23 assessments", { exact: true })).toBeVisible();
+  expect(requests.at(-1)?.get("q")).toBe("handler-22.ts");
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await cards.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Assessment details" })).toContainText("handler-22.ts");
+  await page.keyboard.press("Escape");
+  await expect(cards).toBeFocused();
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^New validated finding/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(1);
+  expect(requests.at(-1)?.getAll("outcome")).toEqual(["new"]);
+  await page.getByRole("button", { name: "Remove Result filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^High/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(list.getByText("12 of 23 assessments", { exact: true })).toBeVisible();
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(12);
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["high"]);
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByLabel("Search assessments", { exact: true }).fill("no-match");
+  await expect(list.getByRole("heading", { name: "No assessments match these filters" })).toBeVisible();
+  await page.getByRole("button", { name: "View all assessments", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(page.getByLabel("Search assessments", { exact: true })).toBeFocused();
+  await noOverflow(page);
+  expect(writes).toEqual([]);
+});
+
+test("assessment pages preserve loaded cards on failure and hide them on access denial", async ({ page }) => {
+  const candidates: Schema["CandidateOut"][] = Array.from({ length: 21 }, (_, index) => ({
+    id: `candidate-${index}`, snapshot: { path: `src/file-${index}.ts`, content: `Saved proposal ${index}` },
+    status: "completed", result: null, finding_id: null, is_new: false, error: null,
+  }));
+  await mock(page, { candidates, assessment: { candidates: 21, new_findings: 0, repeated_observations: 0, withheld_candidates: 21, pending: 0, incomplete: 0, published_comments: 0 } });
+  let failure = 502;
+  await page.route("**/api/v1/runs/run/candidates?**", (route) => failure
+    ? route.fulfill({ status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Assessments temporarily unavailable" } })
+    : route.fallback());
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(list.getByRole("alert")).toHaveText("Assessments temporarily unavailable");
+  await expect(list.getByText("No candidates to assess")).toHaveCount(0);
+  failure = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  failure = 502;
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(list.getByRole("button", { name: "Retry assessments", exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(10);
+  failure = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  failure = 403;
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(list.getByRole("alert")).toHaveText("Repository access revoked");
+  await expect(cards).toHaveCount(0);
 });
 
 for (const status of ["running", "completed"]) {

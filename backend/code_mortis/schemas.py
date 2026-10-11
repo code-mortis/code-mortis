@@ -446,7 +446,6 @@ class RunDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
-    candidates: list[CandidateOut] = Field(default_factory=list)
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -457,6 +456,27 @@ LIST_PAGE_SIZE = 10
 class RunPage(BaseModel):
     items: list[RunOut]
     total: int
+    page: int
+    has_more: bool
+    page_size: int = LIST_PAGE_SIZE
+
+
+CandidateOutcome = Literal["new", "repeated", "rejected", "withheld", "pending"]
+
+
+class CandidateFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    outcome: list[CandidateOutcome] = Field(default_factory=list, max_length=5)
+    severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class CandidatePage(BaseModel):
+    items: list[CandidateOut]
+    total: int
+    registered_total: int
+    outcome_counts: dict[str, int]
+    severity_counts: dict[str, int]
     page: int
     has_more: bool
     page_size: int = LIST_PAGE_SIZE
