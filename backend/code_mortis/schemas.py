@@ -425,6 +425,14 @@ class AssessmentResult(StrictModel):
     evidence: list[VerificationEvidence] = Field(max_length=30)
 
 
+class CandidateAttemptOut(BaseModel):
+    status: str
+    error: str | None
+    result: AssessmentResult | None
+    usage: dict[str, Any]
+    finished_at: datetime | None
+
+
 class CandidateOut(ORMModel):
     id: str
     snapshot: dict[str, Any]
@@ -433,6 +441,13 @@ class CandidateOut(ORMModel):
     finding_id: str | None
     is_new: bool
     error: str | None
+    attempts: list[CandidateAttemptOut] = Field(default_factory=list)
+    retryable: bool = False
+
+    @model_validator(mode="after")
+    def technical_failure(self):
+        self.retryable = self.status == "failed" and self.result is None and self.finding_id is None
+        return self
 
 
 class AssessmentSummary(StrictModel):

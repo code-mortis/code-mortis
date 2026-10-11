@@ -1,6 +1,7 @@
 """Assess proposed comments before they acquire a finding identity or publication claim."""
 
 import json
+from datetime import datetime
 
 from pydantic import Field, ValidationError
 from sqlalchemy import func, select
@@ -387,17 +388,34 @@ def accept(db, run, row, result):
                           inline_line=snapshot.get("inline_line")))
 
 
+def remaining_budget(db, run, kind):
+    rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
+    used = [item.usage for item in rows]
+    used += [attempt["usage"] for item in rows for attempt in item.attempts]
+    used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run.id)))
+    options = run.config["settings"]
+    if kind == "api":
+        budget = options["token_budget"]
+        values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
+        known = all(type(value) is int and value >= 0 for value in values)
+        return (None if budget is None else budget - sum(values) if known else 0), known
+    budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
+    return budget - sum(item.get("context_bytes", 0) for item in used), True
+
+
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
-    from .reviews import authorize_connection, review_stopped
+    from .reviews import authorize_connection, execution_identity, review_stopped
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         if not enabled(run):
             return
-        ids = list(db.scalars(select(ReviewCandidate.id).where(ReviewCandidate.run_id == run_id)
-                             .order_by(ReviewCandidate.position)))
+        retry = run.progress.get("assessment_retry")
+        ids = [retry["candidate_id"]] if retry else list(db.scalars(select(ReviewCandidate.id)
+            .where(ReviewCandidate.run_id == run_id).order_by(ReviewCandidate.position)))
         options = run.config["settings"]
-        deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
+        started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
+        deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
 
     def stopped():
         return review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline)
@@ -425,18 +443,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 return
             previous, history_key = history(db, run)
             snapshot = dict(row.snapshot)
-            used = [item.usage for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run_id))]
-            used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
-            usage_known = True
-            if connection["kind"] == "api":
-                budget = options["token_budget"]
-                values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
-                if budget is not None:
-                    usage_known = all(type(value) is int and value >= 0 for value in values)
-                    budget = budget - sum(values) if usage_known else 0
-            else:
-                budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
-                budget -= sum(item.get("context_bytes", 0) for item in used)
+            budget, usage_known = remaining_budget(db, run, connection["kind"])
+            attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
         usage = {"tokens": 0} if connection["kind"] == "api" else {"context_bytes": 0}
         try:
             if stopped():
@@ -470,12 +478,13 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         or not selected or any(connection[key] != getattr(selected, key)
                                                for key in ("kind", "owner_id", "provider", "protocol", "base_url"))):
                         raise ValueError("The selected connection or repository changed during assessment.")
-                    actor = db.get(User, current.actor_id) if current.actor_id else None
-                    if current.actor_id:
+                    actor_id, trigger = execution_identity(current)
+                    actor = db.get(User, actor_id) if actor_id else None
+                    if actor_id:
                         if not actor or not actor.enabled or not db.get(Membership, actor.id):
                             raise ValueError("The requesting user no longer has access.")
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    authorize_connection(db, selected, repo, current.trigger, actor)
+                    authorize_connection(db, selected, repo, trigger, actor)
                     if selected.kind != "api" and selected.auth_status != "connected":
                         raise runner_client.RunnerBlocked("authentication")
                     if result is None:
@@ -495,7 +504,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             )
                             consumed += spent[unit]
                         else:
-                            raw = runner_client.review(connection["id"], "assess-" + identity + (f"-{attempt}" if attempt else ""), {
+                            raw = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
                                 "kind": connection["kind"], "task": "assessment", "model": connection["model"],
                                 "effort": options["effort"], "prompt": prompt,
                                 "output_schema": output_schema(context), "timeout": remaining,
@@ -559,12 +568,13 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
             elif result:
                 try:
-                    actor = db.get(User, run.actor_id) if run.actor_id else None
-                    if run.actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
+                    actor_id, trigger = execution_identity(run)
+                    actor = db.get(User, actor_id) if actor_id else None
+                    if actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
                         raise ValueError("The requesting user no longer has access.")
                     if actor:
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    authorize_connection(db, current_connection, repo, run.trigger, actor)
+                    authorize_connection(db, current_connection, repo, trigger, actor)
                 except (ValueError, github.GitHubError):
                     result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
             row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None

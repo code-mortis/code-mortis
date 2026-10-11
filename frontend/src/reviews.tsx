@@ -730,10 +730,11 @@ function AssessmentError({ error, withheld }: { error: string; withheld: boolean
   </div>;
 }
 
-function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
-  candidate: Schema["CandidateOut"]; headSha: string; onOpenFinding: () => void;
+function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
+  candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; onOpenFinding: () => void;
 }) {
   const [tab, setTab] = useState("assessment");
+  const retry = useAction<Schema["CandidateOut"]>();
   const { snapshot, result } = candidate;
   const path = String(snapshot.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
@@ -766,11 +767,21 @@ function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="assessment-scroll">
         <TabsContent value="assessment" className="space-y-6">
           {candidate.error && <AssessmentError error={candidate.error} withheld={!candidate.finding_id} />}
+          <ErrorNotice error={retry.error} />
           {result ? <>
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Changed conditions</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.changed_conditions || "No changed conditions were recorded."}</p></section>
           </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
+          {!!candidate.attempts?.length && <details className="space-y-4 text-sm">
+            <summary className="cursor-pointer font-medium">Previous attempts ({candidate.attempts.length})</summary>
+            {candidate.attempts.map((attempt, index) => <section key={index} className="space-y-3 border-t pt-4">
+              <h3 className="text-sm font-semibold">Attempt {index + 1}{attempt.finished_at && <span className="ml-2 text-xs font-normal text-muted-foreground">{date(attempt.finished_at)}</span>}</h3>
+              {attempt.error && <AssessmentError error={attempt.error} withheld />}
+              {typeof attempt.usage.tokens === "number" && <p className="text-xs text-muted-foreground">{attempt.usage.tokens.toLocaleString()} tokens used or reserved.</p>}
+              {typeof attempt.usage.context_bytes === "number" && <p className="text-xs text-muted-foreground">{attempt.usage.context_bytes.toLocaleString()} context bytes used.</p>}
+            </section>)}
+          </details>}
         </TabsContent>
         <TabsContent value="evidence" className="space-y-6">
           <section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>.</p></section>
@@ -784,8 +795,13 @@ function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
     </Tabs>
     <SheetFooter className="shrink-0 border-t px-6 py-4">
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs leading-relaxed text-muted-foreground">{candidate.finding_id ? "Finding resolution is tracked separately." : "This candidate is not linked to a finding."}</p>
-        {candidate.finding_id ? <Button className="min-h-11 sm:min-h-9" onClick={onOpenFinding}><ArrowUpRight aria-hidden="true" />Open finding</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
+        <p className="text-xs leading-relaxed text-muted-foreground">{canRetry && candidate.retryable ? "Retry uses the same connection and AI quota." : candidate.finding_id ? "Finding resolution is tracked separately." : "Not linked to a finding."}</p>
+        <div className="flex flex-wrap gap-2">
+          {canRetry && candidate.retryable && <Button className="min-h-11 sm:min-h-9" disabled={retry.isPending} onClick={() => retry.mutate({ path: `/runs/${runId}/candidates/${candidate.id}/retry` })}>
+            <RefreshCw aria-hidden="true" className={retry.isPending ? "motion-safe:animate-spin" : ""} />{retry.isPending ? "Retrying assessment…" : "Retry assessment"}
+          </Button>}
+          {candidate.finding_id ? <Button className="min-h-11 sm:min-h-9" onClick={onOpenFinding}><ArrowUpRight aria-hidden="true" />Open finding</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
+        </div>
       </div>
     </SheetFooter>
   </div>;
@@ -878,10 +894,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </div>
         {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
-        {run.check_enabled && <>
-          {run.check_pending && <p role="status" className="text-muted-foreground">{run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}</p>}
-          <ErrorNotice error={run.check_error} />
-        </>}
+        {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
       {!!verification?.selected && <details className="group mt-3">
         <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">
@@ -977,7 +990,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
         {selectedCandidate && <ErrorNotice error={candidateQuery.error} />}
-        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
+        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
+          canRetry={can_write && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) setFinding({ finding_id: candidate.finding_id, snapshot: occurrences.find((item) => item.finding_id === candidate.finding_id)?.snapshot }); }} />}
       </SheetContent>
     </Sheet>

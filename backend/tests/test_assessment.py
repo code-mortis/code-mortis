@@ -15,11 +15,13 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import assessment, checks, github, ocr, reviews, runner_client, verification
+from code_mortis import assessment, checks, github, jobs, ocr, reviews, runner_client, verification
 from code_mortis.db import now, transaction
 from code_mortis.models import (
     Connection,
+    ConnectionGrant,
     Finding,
+    Job,
     Occurrence,
     PullRequest,
     Repository,
@@ -28,6 +30,7 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.schemas import RepoSettings
+from code_mortis.security import seal
 
 SOURCE = "\n" * 6 + "while True:\n    retry()\n    logger.error(api_key)"
 
@@ -50,7 +53,7 @@ def verdict(context, **changes):
 @pytest.fixture
 def pipeline(seed, github_stub, monkeypatch):
     state = {"comments": [copy.deepcopy(COMMENT)], "calls": 0, "reviews": [], "head": "a" * 40,
-             "allowances": [], "native_sizes": [], "native_ids": []}
+             "allowances": [], "native_sizes": [], "native_ids": [], "analysis_calls": 0}
 
     def request(method, path, token, **kwargs):
         if method == "GET":
@@ -97,6 +100,8 @@ def pipeline(seed, github_stub, monkeypatch):
         return response(context)
 
     def engine(*args, **kwargs):
+        if not kwargs.get("saved_review"):
+            state["analysis_calls"] += 1
         comments = [{**item, "source_sha": state["head"]} for item in state["comments"]]
         result = kwargs.get("saved_review") or ("completed", {"summary": {"total_tokens": state.get("tokens", 100)}}, comments)
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
@@ -116,6 +121,160 @@ def run_and_publish():
     reviews.perform_review(identity)
     reviews.publish_run(identity)
     return identity
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipeline, client, kind):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            connection.secret = seal("{}")
+    pipeline["comments"] += [{**COMMENT, "path": "src/failed.py"}, {**COMMENT, "path": "src/uncertain.py"}]
+
+    def initial(context):
+        path = context["finding"]["path"]
+        return verdict(context, **({"evidence": [{"revision": "current", "path": path,
+            "start_line": 7, "end_line": 7, "quote": "invented"}]} if path.endswith("failed.py") else {
+            "verdict": "uncertain", "relationship": "uncertain", "finding_id": None,
+        } if path.endswith("uncertain.py") else {}))
+
+    pipeline["respond"] = initial
+    identity = run_and_publish()
+    with transaction() as db:
+        candidates = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                                    .order_by(ReviewCandidate.position)))
+        target = candidates[1]
+        target_id, original_usage, original_error = target.id, target.usage, target.error
+        untouched = [(item.id, item.status, item.result, item.usage) for item in [candidates[0], candidates[2]]]
+        run = db.get(ReviewRun, identity)
+        original_plan = copy.deepcopy(run.publication_plan)
+        original_report, original_finished = run.report, run.finished_at
+        run.started_at -= timedelta(days=1)
+        db.get(Repository, 22).connection_id = None
+    assert len(pipeline["reviews"]) == 1
+    path = f"/api/v1/runs/{identity}/candidates/{target_id}"
+    response = client.post(path + "/retry")
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "queued"
+    assert response.json()["attempts"][0]["error"] == original_error
+    assert "context" not in response.json()["attempts"][0]
+    assert client.post(path + "/retry").status_code == 409
+    calls, native_ids = pipeline["calls"], list(pipeline["native_ids"])
+    pipeline["respond"] = lambda context: verdict(context, relationship="new", finding_id=None,
+                                                 cause="Different reachable defect")
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    reviews.publish_run(identity)
+    assert pipeline["analysis_calls"] == 1
+    assert pipeline["calls"] == calls + 1
+    if kind == "api":
+        assert pipeline["allowances"][-1] == 199800
+    assert len(pipeline["reviews"]) == 2
+    if kind != "api":
+        assert pipeline["native_ids"][-1] not in native_ids
+    with transaction() as db:
+        target = db.get(ReviewCandidate, target_id)
+        assert target.status == "completed" and target.finding_id
+        assert target.attempts[0]["usage"] == original_usage
+        assert target.attempts[0]["context"] and target.attempts[0]["finished_at"]
+        assert [(db.get(ReviewCandidate, key).id, db.get(ReviewCandidate, key).status,
+                 db.get(ReviewCandidate, key).result, db.get(ReviewCandidate, key).usage)
+                for key, *_ in untouched] == untouched
+        run = db.get(ReviewRun, identity)
+        assert run.connection_id == "connection" and run.config["connection"]["id"] == "connection"
+        assert run.report == original_report and run.finished_at == original_finished
+        assert run.publication_plan[:len(original_plan)] == original_plan
+        assert run.publication == "published"
+        assert db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity))
+
+
+@pytest.mark.parametrize("decision", ["uncertain", "rejected"])
+def test_completed_withheld_assessment_cannot_be_retried(pipeline, client, decision):
+    pipeline["decision"] = {"verdict": decision, "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidate_id = db.scalar(select(ReviewCandidate.id))
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert client.get(path).json()["retryable"] is False
+    assert client.post(path + "/retry").status_code == 409
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert candidate.attempts == [] and candidate.result["verdict"] == decision
+
+
+def test_assessment_attempt_migration_preserves_existing_candidates(pipeline):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    run_and_publish()
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        identity, snapshot, result = candidate.id, candidate.snapshot, candidate.result
+    config = Config("alembic.ini")
+    command.downgrade(config, "20261010_installation_accounts")
+    command.upgrade(config, "head")
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, identity)
+        assert candidate.snapshot == snapshot and candidate.result == result
+        assert candidate.attempts == []
+
+
+def test_manual_assessment_retry_can_resume_an_automatic_run_without_an_automatic_grant(pipeline, client):
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
+        connection.secret = seal("{}")
+        db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
+        db.flush()
+        run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
+        db.flush()
+        identity = run.id
+    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
+        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        candidate_id = db.scalar(select(ReviewCandidate.id))
+        db.delete(db.get(ConnectionGrant, ("connection", 22)))
+        db.get(Connection, "connection").auth_status = "disconnected"
+    assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
+    with transaction() as db:
+        job_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity)
+                           .order_by(Job.available_at.desc()).limit(1))
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).status == "blocked"
+        db.get(Connection, "connection").auth_status = "connected"
+    assert client.post(f"/api/v1/runs/{identity}/retry").status_code == 202
+    pipeline["decision"] = {}
+    reviews.perform_review(identity)
+    with transaction() as db:
+        assert db.get(ReviewCandidate, candidate_id).status == "completed"
+        assert db.get(ReviewRun, identity).trigger == "automatic"
+
+
+@pytest.mark.parametrize("change", ["commit", "connection", "budget", "unknown_usage", "permission"])
+def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client, monkeypatch, change):
+    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
+        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidate_id = db.scalar(select(ReviewCandidate.id))
+        run = db.get(ReviewRun, identity)
+        if change == "connection":
+            db.get(Connection, "connection").base_url = "https://changed.example.com"
+        elif change == "budget":
+            run.report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
+        elif change == "unknown_usage":
+            db.get(ReviewCandidate, candidate_id).usage = {"tokens": None}
+    if change == "commit":
+        pipeline["head"] = "c" * 40
+    if change == "permission":
+        monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(403, "Denied")))
+    response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
+    assert response.status_code in {403, 409}, response.text
+    with transaction() as db:
+        assert db.get(ReviewCandidate, candidate_id).status == "failed"
+        assert db.get(ReviewCandidate, candidate_id).attempts == []
 
 
 def test_rephrasing_and_multiple_candidates_reuse_one_finding(pipeline, client):

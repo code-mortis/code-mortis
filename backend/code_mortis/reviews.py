@@ -241,6 +241,11 @@ def authorize_connection(db, connection, repo, trigger, actor=None, *, check_rep
         github.authorize_repo(db, owner, repo.full_name, write=True)
 
 
+def execution_identity(run):
+    retry = run.progress.get("assessment_retry")
+    return (retry["actor_id"], "manual") if retry else (run.actor_id, run.trigger)
+
+
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     created_at = data.get("created_at")
     if created_at is not None:
@@ -320,8 +325,10 @@ def perform_review(run_id: str, claim: str | None = None):
         installation = db.get(Installation, repo.installation_id)
         if not repo.active or not repo.enabled or not installation.active:
             raise ValueError("The repository or GitHub installation has been disabled.")
-        if run.actor_id:
-            actor = db.get(User, run.actor_id)
+        actor_id, trigger = execution_identity(run)
+        retry = run.progress.get("assessment_retry")
+        if actor_id:
+            actor = db.get(User, actor_id)
             if not actor or not actor.enabled or not db.get(Membership, actor.id):
                 raise ValueError("The user who requested this run no longer has access.")
             github.authorize_repo(db, actor, repo.full_name, write=True)
@@ -341,13 +348,13 @@ def perform_review(run_id: str, claim: str | None = None):
             raise ValueError("The AI connection is no longer available.")
         if any(
             run.config["connection"][key] != getattr(connection, key)
-            for key in ("provider", "protocol", "base_url")
+            for key in ("kind", "owner_id", "provider", "protocol", "base_url")
         ):
             raise ValueError(
                 "The AI connection endpoint changed after this run was queued. Start a new review."
             )
         authorize_connection(
-            db, connection, repo, run.trigger, db.get(User, run.actor_id) if run.actor_id else None
+            db, connection, repo, trigger, db.get(User, actor_id) if actor_id else None
         )
         if connection.kind != "api":
             # Serialize ownership claims across workers without holding a transaction during inference.
@@ -366,7 +373,11 @@ def perform_review(run_id: str, claim: str | None = None):
             if connection.auth_status != "connected":
                 raise runner_client.RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
-        verification.prepare(db, run, repo, token)
+        if not retry:
+            verification.prepare(db, run, repo, token)
+        elif not retry.get("started_at"):
+            retry = {**retry, "started_at": now().isoformat()}
+            run.progress = {**run.progress, "assessment_retry": retry}
         run.progress = {**run.progress, "execution": claim}
         run.status, run.started_at, run.error, run.blocked_reason = "running", run.started_at or now(), None, None
         run.failure_reason = None
@@ -381,7 +392,8 @@ def perform_review(run_id: str, claim: str | None = None):
             verification.skip_pending(db, run, run.error)
             return
         allowance = run.config["settings"]["timeout_seconds"]
-        remaining = int(allowance - (now() - run.started_at).total_seconds()) if allowance is not None else None
+        started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
+        remaining = int(allowance - (now() - started_at).total_seconds()) if allowance is not None else None
         if remaining is not None and remaining <= 0:
             verification.skip_pending(db, run, "Fix verification was skipped because the review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review.")
             if not complete_saved_review(db, run):
@@ -416,7 +428,8 @@ def perform_review(run_id: str, claim: str | None = None):
                         verification.skip_pending(db, current, result[1].get("message") or "Review skipped.")
                 return
             assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
-            verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
+            if not retry:
+                verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
 
         status, report, comments = ocr.review(
             *args,
@@ -443,7 +456,9 @@ def perform_review(run_id: str, claim: str | None = None):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if run.progress.get("execution") != claim or run.cancel_requested or run.status in {"cancelled", "superseded"}:
             return
-        run.status, run.finished_at = status, now()
+        run.status = status
+        if not retry:
+            run.finished_at = now()
         complete_saved_review(db, run)
 
 
@@ -455,7 +470,14 @@ def complete_saved_review(db, run, interruption=None):
     if interruption:
         verification.skip_pending(db, run, interruption)
     assessment.withhold_pending(db, run, interruption or "Assessment did not finish; candidate withheld.")
-    run.status, run.finished_at = status, now()
+    run.status = status
+    if not run.progress.get("assessment_retry"):
+        run.finished_at = now()
+    if run.progress.get("assessment_retry") and run.publication in {"published", "no_new_comments"}:
+        previous = run.publication_plan or []
+        extended = assessed_publication_plan(db, run, append=True)
+        if len(extended) > len(previous):
+            run.publication_plan, run.publication = extended, "pending"
     if run.publication == "not_applicable":
         run.publication = "pending"
     enqueue(db, "publish", {"run_id": run.id})
@@ -654,11 +676,11 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
     ]
 
 
-def assessed_publication_plan(db, run):
+def assessed_publication_plan(db, run, *, append=False):
     assessment.withhold_pending(db, run, "Assessment did not finish; candidate withheld.")
     rows = db.execute(select(Occurrence, Finding).join(Finding, Occurrence.finding_id == Finding.id)
                       .where(Occurrence.run_id == run.id).order_by(Occurrence.id)).all()
-    batches, comments, unanchored, identities = [], [], [], []
+    batches, comments, unanchored, identities = list(run.publication_plan or []) if append else [], [], [], []
     counts = assessment.summary(db, run)
 
     def save_batch():
@@ -805,15 +827,16 @@ def publish_run(run_id: str):
             )
             if existing is None:
                 if assessment.enabled(run):
-                    actor = db.get(User, run.actor_id) if run.actor_id else None
-                    if run.actor_id:
+                    actor_id, trigger = execution_identity(run)
+                    actor = db.get(User, actor_id) if actor_id else None
+                    if actor_id:
                         if not actor or not actor.enabled or not db.get(Membership, actor.id):
                             raise ValueError("The requesting user no longer has access to publish this review.")
                         github.authorize_repo(db, actor, repo.full_name, write=True)
                     connection = db.get(Connection, run.connection_id) if run.connection_id else None
                     if not connection:
                         raise ValueError("The selected connection is no longer available.")
-                    authorize_connection(db, connection, repo, run.trigger, actor)
+                    authorize_connection(db, connection, repo, trigger, actor)
                     claimed = list(db.scalars(select(Finding).where(
                         Finding.publication_run_id == run.id, Finding.publication_batch == index,
                     ).with_for_update()))

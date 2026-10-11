@@ -1744,7 +1744,7 @@ test("partial review and publication retry remain distinct", async ({
   expect(requests[0].path).toBe("/runs/run/publish");
   await expect(page.getByRole("link", { name: /^View check on GitHub:/ })).toHaveAttribute("href", run.check_url);
   await expect(page.getByText(run.check_error)).toBeVisible();
-  await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
+  await expect(page.getByText("Check update pending. Review results are saved separately.")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
@@ -1772,7 +1772,7 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await mock(page, { run: checkState });
   await page.goto("/runs/run");
   const check = page.getByRole("region", { name: "GitHub publication", exact: true });
-  await expect(check.getByRole("status")).toHaveText("Updating the check on GitHub…");
+  await expect(check.getByRole("status")).toHaveCount(0);
   await expect(check.locator(":scope > :empty")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-pending-${info.project.name}.png`, fullPage: true });
@@ -2880,9 +2880,9 @@ test("candidate assessment separates withheld claims from repeated findings", as
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "repeat", snapshot: { ...finding, content: "Same defect with different wording." },
-        status: "completed", result: null, finding_id: "finding", is_new: false, error: null },
+        status: "completed", result: null, finding_id: "finding", is_new: false, error: null, retryable: false },
       { id: "uncertain", snapshot: { path: "frontend/src/index.css", start_line: 315,
-          content: "Tailwind might fail to process this rule." }, status: "completed", finding_id: null,
+          content: "Tailwind might fail to process this rule." }, status: "completed", finding_id: null, retryable: false,
         is_new: false, error: null, result: {
           verdict: "uncertain", relationship: "new", finding_id: null,
           explanation: "No evidence establishes a build failure at this revision.",
@@ -2936,6 +2936,89 @@ test("legacy review findings are not labeled as validated", async ({ page }) => 
   await expect(page.getByText("This run predates candidate assessment. Its findings have not been assessed by this policy.")).toBeVisible();
 });
 
+test("technical assessment retry preserves its previous attempt and polls only the candidate", async ({ page }, info) => {
+  await page.clock.install();
+  const candidate: Schema["CandidateOut"] = {
+    id: "failed", snapshot: { path: "src/retry.ts", content: "Proposed retry defect." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true,
+  };
+  const writes = await mock(page, { candidates: [candidate],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let retries = 0;
+  await page.route("**/api/v1/runs/run/candidates/failed/retry", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    retries++;
+    await pending;
+    candidate.attempts = [{ status: candidate.status, error: candidate.error, result: null,
+      usage: { tokens: 25 }, finished_at: at }];
+    candidate.status = "queued";
+    candidate.error = null;
+    candidate.retryable = false;
+    await route.fulfill({ status: 202, json: candidate });
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Proposed retry defect/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Retry uses the same connection and AI quota.");
+  await sheet.screenshot({ path: `../.impeccable/review/retry-assessment-${info.project.name}.png` });
+  await sheet.getByRole("button", { name: "Retry assessment", exact: true }).click();
+  await expect(sheet.getByRole("button", { name: "Retrying assessment…" })).toBeDisabled();
+  release();
+  await expect(sheet).toContainText("Awaiting assessment");
+  await sheet.locator("summary", { hasText: "Previous attempts (1)" }).click();
+  await expect(sheet).toContainText("25 tokens used or reserved.");
+  await expect(sheet.getByRole("alert")).toContainText("Assessment timed out");
+  candidate.status = "completed";
+  candidate.result = { verdict: "uncertain", relationship: "uncertain", finding_id: null,
+    explanation: "The supplied evidence is insufficient.", cause: "", trigger: "", consequence: "",
+    history_explanation: "", contradicts_prior: false, changed_conditions: "", suggestion_supported: false, evidence: [] };
+  await page.clock.fastForward(5000);
+  await expect(sheet).toContainText("The supplied evidence is insufficient.");
+  await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
+  expect(retries).toBe(1);
+  expect(writes).toEqual([]);
+  await noOverflow(page);
+});
+
+test("assessment retry shows server errors without discarding the failed attempt", async ({ page }) => {
+  await mock(page, { candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  await page.route("**/api/v1/runs/run/candidates/failed/retry", (route) => route.fulfill({
+    status: 409, json: { detail: "The saved run's remaining AI budget cannot support another assessment." },
+  }));
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Failed proposal/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.getByRole("button", { name: "Retry assessment", exact: true }).click();
+  await expect(sheet.getByRole("alert").filter({ hasText: "remaining AI budget" })).toBeVisible();
+  await expect(sheet.getByRole("alert").filter({ hasText: "Assessment timed out" })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toBeEnabled();
+});
+
+test("read-only users cannot retry technical assessment failures", async ({ page }) => {
+  await mock(page, { canWrite: false, candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Failed proposal/ }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
+});
+
 test("candidate assessment exposes errors and complete highlighted evidence", async ({ page }, info) => {
   const source = "while True:\n    retry()";
   await mock(page, {
@@ -2944,10 +3027,10 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "failed", snapshot: { path: "backend/client.py", start_line: 12, content: "Connection failure." },
-        status: "failed", result: null, finding_id: null, is_new: false,
+        status: "failed", result: null, finding_id: null, is_new: false, retryable: true,
         error: "Assessment timed out; this candidate was withheld." },
       { id: "confirmed", snapshot: { path: "backend/retry.py", start_line: 7, content: "Retry has no limit." },
-        status: "completed", finding_id: "finding", is_new: true, error: null, result: {
+        status: "completed", finding_id: "finding", is_new: true, error: null, retryable: false, result: {
           verdict: "confirmed", relationship: "new", finding_id: null, explanation: "Retries never terminate.",
           cause: "Unbounded loop", trigger: "Repeated delivery failure", consequence: "Worker remains occupied",
           history_explanation: "", contradicts_prior: false, changed_conditions: "", suggestion_supported: false,
@@ -3025,7 +3108,7 @@ for (const failure of assessmentErrors) {
       assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
         pending: 0, incomplete: 1, published_comments: 0 },
       candidates: [{ id: "failed", snapshot: { path: "frontend/src/settings.tsx", start_line: 525, content: "Proposed finding." },
-        status: "failed", result: null, finding_id: null, is_new: false, error: failure.error }],
+        status: "failed", result: null, finding_id: null, is_new: false, error: failure.error, retryable: true }],
     });
     await page.goto("/runs/run");
     await page.getByRole("tab", { name: /Assessment/ }).click();
@@ -3083,7 +3166,7 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   const source = `const value = "${"saved-evidence-".repeat(30)}";\nexport { value };`;
   const candidate: Schema["CandidateOut"] = {
     id: "pending", snapshot: { path, start_line: 10, end_line: 11, content: "Full original proposal remains available after assessment finishes." },
-    status: "running", result: null, finding_id: null, is_new: false, error: null,
+    status: "running", result: null, finding_id: null, is_new: false, error: null, retryable: false,
   };
   const currentRun: Partial<Run> = { status: "running", publication: "pending", publication_error: null };
   const requests = await mock(page, {
@@ -3148,7 +3231,7 @@ for (const status of [401, 403, 404]) {
   test(`candidate detail stops polling after ${status} and leaves linked findings accessible`, async ({ page }) => {
     await page.clock.install();
     const candidate: Schema["CandidateOut"] = {
-      id: "linked", snapshot: finding, status: "running", result: null,
+      id: "linked", snapshot: finding, status: "running", result: null, retryable: false,
       finding_id: "finding", is_new: true, error: null,
     };
     await mock(page, { candidates: [candidate], assessment: {
@@ -3185,7 +3268,7 @@ for (const status of [401, 403, 404]) {
 test("assessments paginate on the backend and reset pages when filters change", async ({ page }, info) => {
   const candidates: Schema["CandidateOut"][] = Array.from({ length: 23 }, (_, index) => ({
     id: `candidate-${index}`, snapshot: { path: `src/handler-${index}.ts`, content: `Saved proposal ${index}`, severity: index % 2 ? "low" : "high", category: index === 22 ? "custom_rule" : index === 21 ? "performance" : "bug" },
-    status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null,
+    status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null, retryable: false,
   }));
   const writes = await mock(page, { candidates,
     assessment: { candidates: 23, new_findings: 1, repeated_observations: 0, withheld_candidates: 22, pending: 0, incomplete: 0, published_comments: 1 },
@@ -3263,7 +3346,7 @@ test("assessments paginate on the backend and reset pages when filters change", 
 test("assessment pages preserve loaded cards on failure and hide them on access denial", async ({ page }) => {
   const candidates: Schema["CandidateOut"][] = Array.from({ length: 21 }, (_, index) => ({
     id: `candidate-${index}`, snapshot: { path: `src/file-${index}.ts`, content: `Saved proposal ${index}` },
-    status: "completed", result: null, finding_id: null, is_new: false, error: null,
+    status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false,
   }));
   await mock(page, { candidates, assessment: { candidates: 21, new_findings: 0, repeated_observations: 0, withheld_candidates: 21, pending: 0, incomplete: 0, published_comments: 0 } });
   let failure = 502;

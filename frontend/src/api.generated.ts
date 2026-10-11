@@ -345,6 +345,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/candidates/{candidate_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Assessment */
+        post: operations["retry_assessment_api_v1_runs__run_id__candidates__candidate_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/cancel": {
         parameters: {
             query?: never;
@@ -946,6 +963,20 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** CandidateAttemptOut */
+        CandidateAttemptOut: {
+            /** Status */
+            status: string;
+            /** Error */
+            error: string | null;
+            result: components["schemas"]["AssessmentResult"] | null;
+            /** Usage */
+            usage: {
+                [key: string]: unknown;
+            };
+            /** Finished At */
+            finished_at: string | null;
+        };
         /** CandidateOut */
         CandidateOut: {
             /** Id */
@@ -963,6 +994,13 @@ export interface components {
             is_new: boolean;
             /** Error */
             error: string | null;
+            /** Attempts */
+            attempts?: components["schemas"]["CandidateAttemptOut"][];
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
         };
         /** CandidatePage */
         CandidatePage: {
@@ -2445,6 +2483,38 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_assessment_api_v1_runs__run_id__candidates__candidate_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
