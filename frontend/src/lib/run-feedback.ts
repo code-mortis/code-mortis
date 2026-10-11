@@ -10,7 +10,16 @@ export function assessmentFeedback(error: string) {
   let detail: Record<string, unknown> = {};
   const start = message.indexOf('{"field":');
   if (start >= 0) {
-    try { detail = record(JSON.parse(message.slice(start))); } catch { /* Older diagnostics may be truncated. */ }
+    const payload = message.slice(start);
+    let depth = 0;
+    // Skip quoted strings so braces in paths or reasons do not end the object.
+    for (const token of payload.matchAll(/"(?:\\.|[^"\\])*"|[{}]/g)) {
+      if (token[0] === "{") depth++;
+      else if (token[0] === "}" && --depth === 0) {
+        try { detail = record(JSON.parse(payload.slice(0, token.index + 1))); } catch { /* Older diagnostics may be truncated. */ }
+        break;
+      }
+    }
   }
   const field = text(detail.field);
   const evidence = /^evidence\[(\d+)\]/.exec(field);

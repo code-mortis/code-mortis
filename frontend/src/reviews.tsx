@@ -1,4 +1,4 @@
-import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
+import { useCallback, useRef, useState, type MouseEventHandler, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
@@ -449,9 +449,9 @@ function FindingCategory({ value }: { value: string }) {
   return <Badge variant="outline" className="gap-1.5 text-muted-foreground"><Icon aria-hidden="true" />{label(value)}</Badge>;
 }
 
-function FindingCard({ evidence, state, note, onClick }: {
+function FindingCard({ evidence, state, onClick }: {
   evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
-  state: ReactNode; note?: string; onClick: MouseEventHandler<HTMLButtonElement>;
+  state: ReactNode; onClick: MouseEventHandler<HTMLButtonElement>;
 }) {
   const path = String(evidence.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
@@ -475,7 +475,6 @@ function FindingCard({ evidence, state, note, onClick }: {
     <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
       <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</span>
     </span>
-    {note && <span className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground"><History className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{note}</span>}
   </button>;
 }
 
@@ -656,6 +655,10 @@ function AssessmentList({ runId, running, onOpen }: {
   const [search, setSearch] = useState("");
   const [searchResetKey, setSearchResetKey] = useState(0);
   const [listVersion, setListVersion] = useState(0);
+  const handleAssessmentSearch = useCallback((value: string) => {
+    setSearch(value);
+    setListVersion((version) => version + 1);
+  }, []);
   const [filters, setFilters] = useState<{ outcome: string[]; severity: string[]; category: string[] }>({ outcome: [], severity: [], category: [] });
   const searchInput = useRef<HTMLInputElement>(null);
   const params = new URLSearchParams();
@@ -679,7 +682,7 @@ function AssessmentList({ runId, running, onOpen }: {
     return true;
   });
   return <div className="mt-4 space-y-4">
-    <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={(value) => { setSearch(value); setListVersion((version) => version + 1); }}
+    <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={handleAssessmentSearch}
       filters={[
         { key: "outcome", label: "Result", values: filters.outcome, choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
         { key: "severity", label: "Severity", values: filters.severity, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },

@@ -18,6 +18,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const navigate = useNavigate();
   const params = normalizeFilters(raw, "open");
   params.delete("repo");
+  params.delete("all_pages");
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
   const filters = withoutPages(params).toString();
   const canonical = params.toString();

@@ -966,6 +966,15 @@ test("repository filters survive configuration and the pull request run round tr
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("Author");
 });
 
+test("repository URLs strip inbox pagination and preserve grouped pages", async ({ page }) => {
+  await mock(page);
+  const items = Array.from({ length: 12 }, (_, index) => ({ ...pr, id: `pr-${index}`, title: `Change ${index}` }));
+  await mockRepositoryPulls(page, 22, () => items);
+  await page.goto("/repositories/22?state=all&all_pages=2&active_pages=2");
+  await expect(page).toHaveURL(/\?state=all&active_pages=2$/);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(12);
+});
+
 test("repository configuration keeps drafts across sections and restores filtered navigation", async ({ page }, info) => {
   const requests = await mock(page);
   await mockRepositoryPulls(page, 22, () => Array.from({ length: 11 }, (_, index) => ({ ...pr, id: `retry-${index}` })));
@@ -3019,6 +3028,64 @@ test("read-only users cannot retry technical assessment failures", async ({ page
   await expect(page.getByRole("dialog").getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
 });
 
+test("original proposal Markdown filters unsafe link protocols before rendering anchors", async ({ page }) => {
+  const unsafe = [
+    ["javascript", "javascript:alert%281%29"], ["mixed case", "JaVaScRiPt:alert%281%29"],
+    ["entity", "javascript&#58;alert%281%29"], ["data", "data:text/html,unsafe"], ["vbscript", "vbscript:msgbox%281%29"],
+  ];
+  const safe = [["https", "https://example.com"], ["http", "http://example.com"], ["email", "mailto:review@example.com"],
+    ["relative", "/repositories/22"], ["fragment", "#evidence"]];
+  await mock(page, { assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+    pending: 0, incomplete: 1, published_comments: 0 }, candidates: [{ id: "proposal", snapshot: { content: "Proposed links.\n\n"
+    + [...unsafe, ...safe].map(([name, href]) => `[${name}](${href})`).join("\n\n")
+    + '\n\n<img src=x onerror="alert(1)">\n\n<script>alert(1)</script>',
+  }, status: "failed", result: null, finding_id: null, is_new: false, error: null, retryable: false }] });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Proposed links/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  const markdown = sheet.locator(".markdown");
+  for (const [name] of unsafe) await expect(markdown.getByRole("link", { name, exact: true })).toHaveAttribute("href", "");
+  for (const [name, href] of safe) await expect(markdown.getByRole("link", { name, exact: true })).toHaveAttribute("href", href);
+  await expect(markdown.locator("img, script")).toHaveCount(0);
+});
+
+test("assessment search keeps its debounce deadline when polling updates the list", async ({ page }) => {
+  await page.clock.install();
+  const candidates: Schema["CandidateOut"][] = [{ id: "pending", snapshot: finding,
+    status: "running", result: null, finding_id: null, is_new: false, error: null, retryable: false }];
+  await mock(page, { candidates, run: { status: "running", finished_at: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0,
+      pending: 1, incomplete: 0, published_comments: 0 } });
+  let releasePoll!: () => void;
+  const poll = new Promise<void>((resolve) => { releasePoll = resolve; });
+  const searches: string[] = [];
+  let reads = 0;
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    searches.push(new URL(route.request().url()).searchParams.get("q") ?? "");
+    if (++reads === 2) await poll;
+    await route.fallback();
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.clock.runFor(5000);
+  await expect.poll(() => reads).toBe(2);
+  await page.getByLabel("Search assessments", { exact: true }).fill("Refreshed");
+  await page.clock.runFor(150);
+  candidates[0] = { ...candidates[0], snapshot: { ...finding, content: "Refreshed proposal." } };
+  const refreshed = page.waitForResponse((response) => response.url().includes("/runs/run/candidates?") && !response.url().includes("q="));
+  releasePoll();
+  await (await refreshed).finished();
+  await page.clock.runFor(50);
+  await expect(page.getByRole("button", { name: /Refreshed proposal/ })).toBeVisible();
+  expect(searches).toEqual(["", ""]);
+  await page.clock.runFor(100);
+  await expect.poll(() => searches.at(-1)).toBe("Refreshed");
+});
+
 test("candidate assessment exposes errors and complete highlighted evidence", async ({ page }, info) => {
   const source = "while True:\n    retry()";
   await mock(page, {
@@ -3078,6 +3145,9 @@ const citationError = "OCR returned an invalid verification verdict: Assessment 
 const assessmentErrors = [
   { name: "citation mismatch", error: citationError, title: "Evidence could not be verified",
     message: "The AI's evidence quote did not exactly match the cited source.",
+    citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },
+  { name: "citation with trailing diagnostics", error: citationError.replace("; response=", " Technical details: response="),
+    title: "Evidence could not be verified", message: "The AI's evidence quote did not exactly match the cited source.",
     citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },
   { name: "finding reference", error: 'OCR returned an invalid verification verdict: Assessment references an unavailable finding. {"field":"finding_id","reason":"ID is unavailable"}; response={"finding_id":"candidate-id"}',
     title: "Finding reference could not be verified", message: "Only findings supplied in the review history can be linked." },
@@ -6609,18 +6679,18 @@ test("pull detail paginates each finding status independently and resets pages w
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
 });
 
-for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {
+for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {
   test(`pull detail handles review availability for ${state}`, async ({ page }) => {
     await mock(page);
     await mockPullDetail(page, () => ({
-      pull_request: { ...pr, state: state === "merged" ? "merged" : "open", fork: state === "fork" },
+      pull_request: { ...pr, state: state === "merged" || state === "closed" ? state : "open", fork: state === "fork" },
       repository: { ...repo, enabled: state !== "paused" }, can_write: state !== "viewer", findings: [],
       runs: state === "running" ? [{ ...run, status: "running", publication: "pending" }] : [],
     }));
     await page.goto("/pulls/pr");
     const summary = page.getByRole("region", { name: "Latest review" });
     const messages = {
-      merged: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
+      merged: "Reviews can only run on open pull requests.", closed: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
