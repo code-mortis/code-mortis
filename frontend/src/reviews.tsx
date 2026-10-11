@@ -333,7 +333,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
-    : running || pr.state !== "open" ? null
+    : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -410,10 +410,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
               <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
                 {items.map((item) => <FindingCard key={item.id} evidence={item}
                   onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}
-                  state={<div className="flex flex-col items-start gap-1.5">
+                  state={<span className="flex flex-col items-start gap-1.5">
                     <Status value={item.status} icon={item.status === "resolved" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />
-                    {item.desired_status && <p className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</p>}
-                  </div>} />)}
+                    {item.desired_status && <span className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</span>}
+                  </span>} />)}
                 {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
                 {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
                 {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
@@ -498,8 +498,8 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
   const f = query.data?.finding;
   const activities = query.data?.activities ?? [];
   const verifications = query.data?.verifications ?? [];
-  const evidence = tab === "snapshot" && snapshot ? snapshot : f ?? snapshot!;
-  const path = String(evidence.path ?? "");
+  const evidence = tab === "snapshot" && snapshot ? snapshot : f;
+  const path = String(evidence?.path ?? "");
   const latestVerification = verifications[0];
   const StatusIcon = f?.status === "resolved" ? CircleCheck : f?.status === "dismissed" ? CircleSlash : CircleDot;
   async function change(status: string) {
@@ -517,7 +517,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 space-y-3 px-6 pb-5">
+      {evidence && <div className="shrink-0 space-y-3 px-6 pb-5">
         <div className="flex items-center gap-2.5">
           <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0 font-mono text-xs">
@@ -525,7 +525,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} />{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</div>
-      </div>
+      </div>}
       <div className="grid shrink-0 grid-cols-[18px_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border-y bg-muted/50 px-6 py-4 sm:grid-cols-[18px_minmax(0,1fr)_auto]">
         <StatusIcon className={`mt-0.5 size-[18px] ${f?.status === "resolved" ? "text-emerald-800 dark:text-emerald-300" : "text-muted-foreground"}`} aria-hidden="true" />
         <div className="space-y-1">
@@ -666,7 +666,7 @@ function AssessmentList({ runId, running, onOpen }: {
     queryFn: ({ pageParam, signal }) => api<Schema["CandidatePage"]>(`/runs/${runId}/candidates?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
-    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    refetchInterval: (query) => running && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
     retry: false,
   });
   if (query.error && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
@@ -823,9 +823,11 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const candidateQuery = useQuery<Schema["CandidateOut"], ApiError>({
     queryKey: ["run-candidate", run.id, selectedCandidate?.id],
     queryFn: ({ signal }) => api<Schema["CandidateOut"]>(`/runs/${run.id}/candidates/${selectedCandidate!.id}`, "GET", undefined, undefined, signal),
-    enabled: !!selectedCandidate, initialData: selectedCandidate ?? undefined, refetchInterval: selectedCandidate ? 5000 : false, retry: false,
+    enabled: !!selectedCandidate, initialData: selectedCandidate ?? undefined,
+    refetchInterval: (query) => selectedCandidate && !query.state.error && active(query.state.data?.status ?? "") ? 5000 : false,
+    retry: false,
   });
-  const candidateDenied = candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
+  const candidateDenied = selectedCandidate && candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
   const candidate = candidateDenied ? undefined : candidateQuery.data;
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
@@ -846,7 +848,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     <header className="mb-6 min-w-0">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run {run.status !== "running" && <Status value={run.status} />}</h1>
+          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
           {can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
@@ -975,7 +977,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
         {selectedCandidate && <ErrorNotice error={candidateQuery.error} />}
-        {candidateDenied ? null : finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
+        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha}
           onOpenFinding={() => { if (candidate.finding_id) setFinding({ finding_id: candidate.finding_id, snapshot: occurrences.find((item) => item.finding_id === candidate.finding_id)?.snapshot }); }} />}
       </SheetContent>
     </Sheet>

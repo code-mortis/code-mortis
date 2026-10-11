@@ -147,8 +147,8 @@ export function runFeedback(run: Run) {
     summary = "Waiting for a review worker.";
     nextStep = "This page updates automatically. If the wait persists, ask the administrator to check the review worker and scheduler.";
   } else if (run.status === "running") {
-    summary = "";
-    nextStep = "";
+    summary = "The review is in progress.";
+    nextStep = "This page updates automatically as results are saved.";
   } else if (run.status === "completed") {
     summary = "The selected review scope completed.";
     nextStep = "Inspect the saved findings and coverage in the run details.";

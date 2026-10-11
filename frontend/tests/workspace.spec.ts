@@ -1485,6 +1485,7 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   await expect(card).toContainText("42–46");
   await expect(card.getByText("open", { exact: true })).toBeVisible();
   await expect(card).toContainText("Sync needs attention");
+  await expect(card.locator("div, p")).toHaveCount(0);
   await expect(card).not.toContainText("Not observed in latest review");
   await expect(card).not.toContainText("View details");
   await expect(card.locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
@@ -1689,9 +1690,10 @@ test("review run retains live progress and recovery actions while evidence is pe
   await expect(publication).toContainText("Waiting to publish");
   await expect(publication.getByText("Comments are published after review results are saved.", { exact: true })).toHaveCount(0);
   await expect(publication.locator(":scope > p")).toHaveCount(0);
-  const heading = page.getByRole("heading", { name: "Review run", exact: true });
+  const heading = page.getByRole("heading", { name: "Review run running", exact: true });
   await expect(heading).toBeVisible();
-  await expect(heading.locator("[data-slot=badge]")).toHaveCount(0);
+  await expect(heading.locator("[data-slot=badge]")).toHaveText("running");
+  await expect(heading.locator("svg")).toHaveClass(/lucide-loader-circle/);
   await expect(page.getByText("3 of 8 assigned files completed.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -1714,6 +1716,18 @@ test("review run hides stale evidence after repository access is revoked", async
   await expect(page.getByRole("alert").filter({ hasText: "Repository access revoked" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Findings at this run", exact: true })).toHaveCount(0);
 });
+
+for (const publication of ["failed", "partially_published"]) {
+  test(`running review preserves context when publication is ${publication}`, async ({ page }) => {
+    await mock(page, { run: { status: "running", publication, progress: {}, finished_at: null } });
+    await page.goto("/runs/run");
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    const suffix = publication === "failed" ? "Publication failed." : "Some comments published.";
+    await expect(outcome.getByRole("status")).toHaveText(`The review is in progress. ${suffix}`);
+    await expect(outcome).toContainText("This page updates automatically as results are saved. Retry GitHub publication");
+    await expect(page.getByRole("heading", { name: "Review run running", exact: true })).toBeVisible();
+  });
+}
 
 test("partial review and publication retry remain distinct", async ({
   page,
@@ -2681,9 +2695,32 @@ test("saved finding evidence remains readable when current status cannot be load
   await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toHaveCount(0);
   await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
   await expect(sheet).toContainText("Current evidence could not be loaded.");
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
   await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
   await expect(sheet).toContainText(finding.content);
   await noOverflow(page);
+});
+
+test("current finding header waits for current evidence instead of showing the snapshot", async ({ page }) => {
+  await mock(page, { finding: { path: "src/current.ts", severity: "low", category: "performance" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/findings/finding", async (route) => { await pending; await route.fallback(); });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await expect(sheet.getByRole("status")).toContainText("Loading workspace");
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
+  release();
+  await expect(sheet.getByText("low", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("Performance", { exact: true })).toBeVisible();
+  await expect(sheet).toContainText("current.ts");
+  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
 });
 
 for (const field of [
@@ -3040,6 +3077,7 @@ for (const failure of assessmentErrors) {
 }
 
 test("assessment sheet preserves polling, full evidence, and focus on narrow screens", async ({ page }) => {
+  await page.clock.install();
   await page.setViewportSize({ width: 320, height: 844 });
   const path = `frontend/${"nested/".repeat(6)}${"long-filename-".repeat(7)}.tsx`;
   const source = `const value = "${"saved-evidence-".repeat(30)}";\nexport { value };`;
@@ -3047,10 +3085,15 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
     id: "pending", snapshot: { path, start_line: 10, end_line: 11, content: "Full original proposal remains available after assessment finishes." },
     status: "running", result: null, finding_id: null, is_new: false, error: null,
   };
+  const currentRun: Partial<Run> = { status: "running", publication: "pending", publication_error: null };
   const requests = await mock(page, {
-    canWrite: false, candidates: [candidate],
+    run: currentRun, canWrite: false, candidates: [candidate],
     assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 1, incomplete: 0, published_comments: 0 },
   });
+  let listReads = 0;
+  let detailReads = 0;
+  await page.route("**/api/v1/runs/run/candidates?**", (route) => { listReads++; return route.fallback(); });
+  await page.route("**/api/v1/runs/run/candidates/pending", (route) => { detailReads++; return route.fallback(); });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
   const card = page.getByRole("button", { name: /long-filename-/ });
@@ -3072,7 +3115,16 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
       { revision: "current", path, start_line: 10, end_line: 11, quote: "export const unchanged = true;" },
     ],
   };
+  await page.clock.fastForward(5000);
   await expect(sheet.getByRole("tab", { name: "Evidence 2" })).toHaveAttribute("data-state", "active", { timeout: 10000 });
+  expect(detailReads).toBeGreaterThan(0);
+  expect(listReads).toBeGreaterThan(1);
+  currentRun.status = "completed";
+  await page.clock.fastForward(5000);
+  await expect(page.locator("main h1")).toHaveText("Review run completed");
+  const settledReads = { list: listReads, detail: detailReads };
+  await page.clock.runFor(10_000);
+  expect({ list: listReads, detail: detailReads }).toEqual(settledReads);
   await expect(sheet).toContainText("Not supported");
   const code = sheet.getByRole("region", { name: "Code snippet" });
   await expect(code.nth(0)).toHaveText(source);
@@ -3091,6 +3143,44 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   await expect(card).toBeFocused();
   expect(requests).toEqual([]);
 });
+
+for (const status of [401, 403, 404]) {
+  test(`candidate detail stops polling after ${status} and leaves linked findings accessible`, async ({ page }) => {
+    await page.clock.install();
+    const candidate: Schema["CandidateOut"] = {
+      id: "linked", snapshot: finding, status: "running", result: null,
+      finding_id: "finding", is_new: true, error: null,
+    };
+    await mock(page, { candidates: [candidate], assessment: {
+      candidates: 1, new_findings: 1, repeated_observations: 0, withheld_candidates: 0,
+      pending: 1, incomplete: 0, published_comments: 0,
+    } });
+    let denied = false;
+    let reads = 0;
+    await page.route("**/api/v1/runs/run/candidates/linked", (route) => {
+      reads++;
+      return denied ? route.fulfill({ status, json: { detail: "Candidate unavailable" } }) : route.fallback();
+    });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: /Assessment/ }).click();
+    await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+    await page.getByRole("button", { name: "Open finding", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "Finding details" });
+    await expect(sheet).toContainText(finding.content);
+    denied = true;
+    await page.clock.fastForward(5000);
+    await expect(sheet.getByRole("alert")).toContainText("Candidate unavailable");
+    await expect(sheet).toContainText(finding.content);
+    const deniedReads = reads;
+    await page.clock.runFor(10_000);
+    expect(reads).toBe(deniedReads);
+    await page.keyboard.press("Escape");
+    await page.getByRole("tab", { name: /^Findings/ }).click();
+    await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+    await expect(sheet).toContainText(finding.content);
+    await expect(sheet.getByRole("alert")).toHaveCount(0);
+  });
+}
 
 test("assessments paginate on the backend and reset pages when filters change", async ({ page }, info) => {
   const candidates: Schema["CandidateOut"][] = Array.from({ length: 23 }, (_, index) => ({
@@ -6451,7 +6541,7 @@ for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) 
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    if (state === "merged" || state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
+    if (state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
     else await expect(summary).toContainText(messages[state]);
     if (state === "viewer") {
       await expect(summary.getByRole("button")).toHaveCount(0);
