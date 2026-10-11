@@ -5,6 +5,61 @@ const record = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
+export function assessmentFeedback(error: string) {
+  const message = error.split("; response=", 1)[0];
+  let detail: Record<string, unknown> = {};
+  const start = message.indexOf('{"field":');
+  if (start >= 0) {
+    try { detail = record(JSON.parse(message.slice(start))); } catch { /* Older diagnostics may be truncated. */ }
+  }
+  const field = text(detail.field);
+  const evidence = /^evidence\[(\d+)\]/.exec(field);
+  let citation: string | undefined;
+  if (evidence && Number.isSafeInteger(Number(evidence[1]))) {
+    citation = `Citation ${Number(evidence[1]) + 1}`;
+    if (detail.revision === "current" || detail.revision === "original") citation += ` · ${detail.revision === "current" ? "Current" : "Original"} source`;
+    if (typeof detail.path === "string") citation += `: ${detail.path}`;
+    if (Number.isSafeInteger(detail.start_line) && Number.isSafeInteger(detail.end_line)
+      && Number(detail.start_line) > 0 && Number(detail.end_line) >= Number(detail.start_line)) {
+      citation += `:${detail.start_line}${detail.end_line === detail.start_line ? "" : `–${detail.end_line}`}`;
+    }
+  }
+  if (message.includes("Assessment evidence does not match the supplied source") || evidence) {
+    const reasons: Record<string, string> = {
+      "unavailable source": "The AI cited source that was not supplied for this assessment.",
+      "invalid source line range": "The AI cited a line range outside the supplied source.",
+      "empty quote": "The AI did not include a source quote.",
+      "quote is not verbatim text within the cited source lines": "The AI's evidence quote did not exactly match the cited source.",
+    };
+    return { title: "Evidence could not be verified", message: reasons[text(detail.reason)] ?? "The AI returned a source citation that could not be validated.", citation };
+  }
+  if (field === "finding_id" || message.includes("Assessment references an unavailable finding") || message.includes("Only a duplicate may reference")) {
+    return { title: "Finding reference could not be verified", message: "The AI returned an invalid finding reference. Only findings supplied in the review history can be linked." };
+  }
+  if (/without returning a final assessment|did not return exactly one final assessment|unsupported response instead of a finding assessment|invalid verification verdict/.test(message)) {
+    return { title: "No usable assessment returned", message: "The AI did not return a complete assessment in the required format. Check the selected model and technical details before starting another review." };
+  }
+  if (/OCR evidence prompt exceeds|Context limit exhausted|Assessment needs .* bytes|Token budget exhausted|No token budget remains/.test(message)) {
+    const limit = message.split(" Technical details:", 1)[0];
+    return { title: "Assessment limit reached", message: limit.length <= 240 && !/[{}]/.test(limit)
+      ? limit : "The assessment could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review." };
+  }
+  if (/Token usage is unavailable or invalid|did not report valid token usage/.test(message)) {
+    return { title: "Token usage could not be verified", message: "The AI's token usage was unavailable, so this assessment could not continue. Check the technical details before starting another review." };
+  }
+  if (/Assessment timed out|Time limit reached/.test(message)) {
+    return { title: "Assessment timed out", message: "The time limit was reached before this assessment finished. Review the run's timeout before starting another review." };
+  }
+  if (/cancelled|replaced by a newer run|pull request or finding history changed|Access to the repository or AI connection changed/.test(message)) {
+    return { title: "Assessment stopped", message: "The review stopped or its context changed before this assessment could finish. Check the run outcome and current access." };
+  }
+  if (/authentication|HTTP 40[13]|quota|rate.limit|OCR verification process failed|AI did not finish checking|AI could not confirm or reject/i.test(message)) {
+    return { title: "AI request could not complete", message: "The selected AI service could not complete this assessment. Check the connection and technical details before trying again." };
+  }
+  return { title: "Assessment could not be completed", message: error.length <= 240 && !/[{}]/.test(error)
+    ? error : "No usable assessment was saved. Inspect the technical details before starting another review." };
+}
+
 export function runFeedback(run: Run) {
   const report = record(run.report);
   const manifest = record(report.manifest);

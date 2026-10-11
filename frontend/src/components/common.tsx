@@ -45,7 +45,7 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
     </Badge>
   );
 }
-export function ErrorNotice({ error }: { error: unknown }) {
+export function ErrorNotice({ error, title }: { error: unknown; title?: string }) {
   if (!error) return null;
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return (
@@ -54,7 +54,10 @@ export function ErrorNotice({ error }: { error: unknown }) {
       className="flex gap-3 rounded-md border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
     >
       <AlertCircle className="mt-0.5 size-4 shrink-0" />
-      <span className="min-w-0 break-words">{message.trim() || "This action could not be completed. Refresh the page and try again."}</span>
+      <span className="min-w-0 break-words">
+        {title && <span className="mb-1 block font-medium">{title}</span>}
+        {message.trim() || "This action could not be completed. Refresh the page and try again."}
+      </span>
     </div>
   );
 }

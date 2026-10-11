@@ -2921,7 +2921,9 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await expect(assessment).not.toContainText("No new comments");
   await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
-  await expect(sheet.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
+  await expect(sheet.getByRole("alert")).toContainText("Assessment timed out");
+  await expect(sheet.getByRole("alert")).toContainText("The time limit was reached before this assessment finished.");
+  await expect(sheet.getByRole("region", { name: "Assessment technical details" })).toBeHidden();
   await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   const confirmed = assessment.getByRole("button", { name: /retry.py.*7.*New validated finding/ });
@@ -2940,6 +2942,95 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await mkdir("../.impeccable/review", { recursive: true });
   await sheet.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
 });
+
+const citationError = "OCR returned an invalid verification verdict: Assessment evidence does not match the supplied source. "
+  + JSON.stringify({ field: "evidence[2]", reason: "quote is not verbatim text within the cited source lines",
+    revision: "current", path: "frontend/src/settings.tsx", start_line: 682, end_line: 687 })
+  + "; response=" + JSON.stringify({ verdict: "confirmed", explanation: "A long saved response. ".repeat(260) });
+
+const assessmentErrors = [
+  { name: "citation mismatch", error: citationError, title: "Evidence could not be verified",
+    message: "The AI's evidence quote did not exactly match the cited source.",
+    citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },
+  { name: "finding reference", error: 'OCR returned an invalid verification verdict: Assessment references an unavailable finding. {"field":"finding_id","reason":"ID is unavailable"}; response={"finding_id":"candidate-id"}',
+    title: "Finding reference could not be verified", message: "Only findings supplied in the review history can be linked." },
+  { name: "missing final assessment", error: 'The AI did not finish checking this finding. Technical details: {"exit_code":0,"status":"success","result_error":"The AI finished without returning a final assessment. Start a new review or check the selected model."}',
+    title: "No usable assessment returned", message: "The AI did not return a complete assessment in the required format." },
+  { name: "exhausted budget", error: "Token budget exhausted: 200,000 / 200,000 tokens used or reserved. Assessment stopped.",
+    title: "Assessment limit reached", message: "200,000 / 200,000 tokens used or reserved" },
+  { name: "prompt ceiling", error: "OCR evidence prompt exceeds its 47,110-token limit (80% of max_tokens=58,888): prompt tokens exceed the configured limit.",
+    title: "Assessment limit reached", message: "47,110-token limit" },
+  { name: "long limit diagnostics", error: "OCR evidence prompt exceeds its 47,110-token limit: " + JSON.stringify({ detail: "saved diagnostics ".repeat(400) }),
+    title: "Assessment limit reached", message: "The assessment could not continue within the configured limits." },
+  { name: "unknown usage", error: "The review engine did not report valid token usage. Further AI checks were stopped to avoid exceeding the run budget. Technical details: {}",
+    title: "Token usage could not be verified", message: "The AI's token usage was unavailable, so this assessment could not continue." },
+  { name: "provider failure", error: 'OCR verification process failed; token consumption is unknown. {"exit_code":1,"stderr":"Provider returned HTTP 401"}',
+    title: "AI request could not complete", message: "The selected AI service could not complete this assessment." },
+  { name: "cancelled review", error: "The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.",
+    title: "Assessment stopped", message: "Check the run outcome and current access." },
+  { name: "malformed historical diagnostics", error: 'OCR returned an invalid verification verdict: Assessment evidence does not match the supplied source. {"field":"evidence[2]"',
+    title: "Evidence could not be verified", message: "The AI returned a source citation that could not be validated." },
+  { name: "unknown long diagnostics", error: "Unknown assessment failure: " + JSON.stringify({ response: "saved response ".repeat(400) }),
+    title: "Assessment could not be completed", message: "No usable assessment was saved." },
+];
+
+for (const failure of assessmentErrors) {
+  test(`assessment sheet explains ${failure.name} and preserves copyable diagnostics`, async ({ page }, info) => {
+    await mock(page, {
+      run: { ...run, status: "completed", publication: "no_new_comments", publication_error: null },
+      assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+        pending: 0, incomplete: 1, published_comments: 0 },
+      candidates: [{ id: "failed", snapshot: { path: "frontend/src/settings.tsx", start_line: 525, content: "Proposed finding." },
+        status: "failed", result: null, finding_id: null, is_new: false, error: failure.error }],
+    });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: /Assessment/ }).click();
+    const card = page.getByRole("button", { name: /settings.tsx.*525.*Withheld/ });
+    await card.click();
+    const sheet = page.getByRole("dialog", { name: "Assessment details" });
+    const alert = sheet.getByRole("alert");
+    await expect(alert).toContainText(failure.title);
+    await expect(alert).toContainText(failure.message);
+    await expect(alert).toContainText("This candidate was withheld from publication.");
+    await expect(alert).not.toContainText("response=");
+    await expect(sheet.getByText("No assessment result was recorded.", { exact: true })).toHaveCount(0);
+    const raw = sheet.locator('pre[aria-label="Assessment technical details"]');
+    await expect(raw).toBeHidden();
+    if ("citation" in failure) await expect(sheet.getByText(failure.citation!, { exact: true })).toBeVisible();
+    await noOverflow(page);
+    if (failure.name === "citation mismatch") {
+      await mkdir("../.impeccable/review", { recursive: true });
+      await sheet.screenshot({ path: `../.impeccable/review/assessment-error-${info.project.name}.png` });
+    }
+    const summary = sheet.locator("summary", { hasText: "Technical details" });
+    await summary.focus();
+    await summary.press("Enter");
+    await expect(raw).toBeVisible();
+    expect(await raw.textContent()).toBe(failure.error);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async (value: string) => { document.body.dataset.copiedAssessment = value; },
+      } });
+    });
+    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", failure.error);
+    await expect(page.getByText("Assessment details copied", { exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async () => { throw new Error("Clipboard denied"); },
+      } });
+    });
+    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
+    expect(await raw.textContent()).toBe(failure.error);
+    await raw.focus();
+    await expect(raw).toBeFocused();
+    await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+    await noOverflow(page);
+    await page.keyboard.press("Escape");
+    await expect(card).toBeFocused();
+  });
+}
 
 test("assessment sheet preserves polling, full evidence, and focus on narrow screens", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });

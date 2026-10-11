@@ -19,6 +19,7 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ClipboardCheck,
+  Copy,
   LockKeyhole,
   Globe,
   SlidersHorizontal,
@@ -80,7 +81,7 @@ import {
   words,
 } from "./components/common";
 import { RepositorySettings } from "./settings";
-import { runFeedback } from "./lib/run-feedback";
+import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
 
 function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
@@ -706,6 +707,30 @@ function AssessmentList({ runId, running, onOpen }: {
   </div>;
 }
 
+function AssessmentError({ error, withheld }: { error: string; withheld: boolean }) {
+  const [copying, setCopying] = useState(false);
+  const feedback = assessmentFeedback(error);
+  return <div className="space-y-3">
+    <ErrorNotice title={feedback.title} error={`${feedback.message}${withheld ? " This candidate was withheld from publication." : ""}`} />
+    {feedback.citation && <p className="break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">{feedback.citation}</p>}
+    <details className="group text-sm">
+      <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
+      <div className="mt-3 space-y-3">
+        <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={copying} onClick={async () => {
+          setCopying(true);
+          try {
+            await navigator.clipboard.writeText(error);
+            toast.success("Assessment details copied");
+          } catch {
+            toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
+          } finally { setCopying(false); }
+        }}>{copying ? <LoaderCircle aria-hidden="true" className="motion-safe:animate-spin" /> : <Copy aria-hidden="true" />}{copying ? "Copying…" : "Copy details"}</Button>
+        <pre role="region" aria-label="Assessment technical details" tabIndex={0} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{error}</pre>
+      </div>
+    </details>
+  </div>;
+}
+
 function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
   candidate: Schema["CandidateOut"]; headSha: string; onOpenFinding: () => void;
 }) {
@@ -741,12 +766,12 @@ function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
       </TabsList></div>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="assessment-scroll">
         <TabsContent value="assessment" className="space-y-6">
-          <ErrorNotice error={candidate.error} />
+          {candidate.error && <AssessmentError error={candidate.error} withheld={!candidate.finding_id} />}
           {result ? <>
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Changed conditions</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.changed_conditions || "No changed conditions were recorded."}</p></section>
-          </> : <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
+          </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
         </TabsContent>
         <TabsContent value="evidence" className="space-y-6">
           <section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>.</p></section>
