@@ -170,6 +170,12 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   </>;
 }
 
+function runDuration(run: Run) {
+  const seconds = run.started_at && run.finished_at
+    ? Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000)) : null;
+  return seconds === null ? null : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 function RunList({ prId }: { prId: string }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
@@ -206,6 +212,7 @@ function RunList({ prId }: { prId: string }) {
       </div>
       {runs.map((run) => {
         const feedback = runFeedback(run);
+        const duration = runDuration(run);
         return (
           <Link
             className="review-row-grid grid items-center gap-y-3 px-5 py-4 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -217,6 +224,7 @@ function RunList({ prId }: { prId: string }) {
               <div className="text-sm font-medium">{date(run.created_at)}</div>
               <div className="mt-1 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
                 <span className="capitalize">{run.trigger}</span> ·{" "}
+                {duration && <><span className="tabular-nums whitespace-nowrap"><span className="sr-only">Duration: </span>{duration}</span> ·{" "}</>}
                 <code>{run.head_sha.slice(0, 7)}</code> ·{" "}
                 {String(
                   (run.config.connection as Record<string, unknown> | undefined)
@@ -621,9 +629,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const coverage = ((run.report?.manifest as { coverage?: Coverage } | undefined)?.coverage ?? {}) as Coverage;
-  const seconds = run.started_at && run.finished_at
-    ? Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000)) : null;
-  const duration = seconds === null ? null : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const duration = runDuration(run);
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const verification = verificationSummary(run.progress?.verification);

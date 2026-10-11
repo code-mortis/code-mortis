@@ -5349,6 +5349,37 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await page.screenshot({ path: `../.impeccable/review/pull-empty-${info.project.name}.png`, fullPage: true });
 });
 
+test("run history shows recorded durations and omits incomplete timing", async ({ page }, info) => {
+  await mock(page);
+  const runs = [
+    { ...run, id: "run", status: "completed" },
+    { ...run, id: "short", status: "completed", finished_at: "2026-10-05T13:20:42Z" },
+    { ...run, id: "zero", status: "completed", finished_at: at },
+    { ...run, id: "failed", status: "failed", finished_at: "2026-10-05T13:37:36Z" },
+    { ...run, id: "queued", status: "queued", started_at: null, finished_at: null },
+    { ...run, id: "running", status: "running", finished_at: null },
+    { ...run, id: "unknown", status: "cancelled", started_at: null },
+  ];
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
+  await page.goto("/pulls/pr");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  const history = page.getByRole("tabpanel");
+  for (const [id, duration] of [["run", "1m 30s"], ["short", "42s"], ["zero", "0s"], ["failed", "17m 36s"]]) {
+    await expect(history.locator(`a[href="/runs/${id}"]`)).toContainText(`Duration: ${duration}`);
+  }
+  for (const id of ["queued", "running", "unknown"]) {
+    await expect(history.locator(`a[href="/runs/${id}"]`)).not.toContainText("Duration:");
+  }
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/run-history-duration-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await history.locator('a[href="/runs/run"]').click();
+  await expect(page.locator("main header")).toContainText("1m 30s");
+});
+
 test("run history fetches ten runs per page and keeps summary independent of loaded pages", async ({ page }, info) => {
   await mock(page);
   await page.clock.install();
