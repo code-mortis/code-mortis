@@ -21,7 +21,6 @@ import {
   ClipboardCheck,
   LockKeyhole,
   Globe,
-  FolderGit2,
   SlidersHorizontal,
   CircleCheck,
   CircleDot,
@@ -150,26 +149,37 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const syncHere = action.variables?.path === syncPath;
   const syncPending = syncHere && action.isPending;
   const Visibility = selected?.private ? LockKeyhole : Globe;
+  const repositoryNameStart = (selected?.full_name.lastIndexOf("/") ?? -1) + 1;
   return <>
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-      <div className="min-w-0 flex-1 basis-80">
-        <h1 className="flex items-start gap-3 text-3xl font-semibold tracking-tight">
-          {selected && <FolderGit2 aria-hidden="true" className="mt-1 size-7 shrink-0 text-muted-foreground" />}
-          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{selected?.full_name ?? "Repositories"}</span>
-        </h1>
-        {selected ? <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-          <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
-        </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
+    <header className="mb-6 min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1 basis-80">
+          <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
+            {selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
+          </h1>
+          {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
+            <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+          </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
+        </div>
+        {selected && <div className="flex shrink-0 flex-wrap gap-2">
+          <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
+            onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
+          })}>
+            <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
+          </Button>
+          {admin && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
+        </div>}
       </div>
-      {selected && <div className="flex shrink-0 flex-wrap gap-2">
-        <Button variant="outline" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
-          onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
-        })}>
-          <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
-        </Button>
-        {admin && <Button variant="outline" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
-      </div>}
+      {selected && <section aria-label="Review configuration" className="mt-6 border-t pt-4 text-xs">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex items-center gap-2"><span className="text-muted-foreground">Reviews</span><Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Enabled" : "Paused"} /></div>
+          {selected.enabled ? <>
+            <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>
+            <span className="text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span>
+          </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
+        </div>
+      </section>}
     </header>
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
     {requested && !selected && <Empty title="Repository unavailable">
@@ -178,14 +188,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     {!requested && !available?.length && <Empty title="Connect your first repository">
       {admin ? <>Install your GitHub App, then connect the installation in <Link className="underline" to="/settings?tab=github">settings</Link>.</> : "Ask your administrator to connect a repository you can access on GitHub."}
     </Empty>}
-    {selected && <>
-      <section aria-label="Review configuration" className="mb-7 flex flex-wrap items-center gap-x-4 gap-y-2 border-y py-4 text-sm">
-        <Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Reviews enabled" : "Reviews paused"} />
-        <span>{selected.enabled ? (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only") : "Reviews are paused for this repository."}</span>
-        {selected.enabled ? <span className="text-xs text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span> : <span className="text-xs text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
-      </section>
-      <RepositoryPulls key={selected.id} repositoryId={selected.id} />
-    </>}
+    {selected && <RepositoryPulls key={selected.id} repositoryId={selected.id} />}
     {admin && <div className="mt-6 text-xs text-muted-foreground"><Link className="rounded-sm underline underline-offset-4 hover:text-foreground" to="/settings?tab=github">{available?.length ? "Manage repositories" : "Connect repository"}</Link></div>}
   </>;
 }
@@ -515,11 +518,10 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 space-y-3 px-6 pb-5">
-        <div className="flex items-start gap-2.5">
-          <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div className="flex items-center gap-2.5">
+          <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0 font-mono text-xs">
             <p className="break-words [overflow-wrap:anywhere]"><span className="text-muted-foreground">{path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : ""}</span><span className="font-medium">{path.slice(path.lastIndexOf("/") + 1)}</span></p>
-            <p className="mt-1 text-muted-foreground">Lines {String(evidence.start_line ?? "")}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2"><Status value={String(evidence.severity ?? "unknown")} />{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</div>
@@ -715,15 +717,13 @@ function AssessmentPanel({ candidate, headSha, onOpenFinding }: {
   const heading = candidate.finding_id ? candidate.is_new ? "Why it was validated" : "Why it is repeated" : result?.verdict === "rejected" ? "Why it was not supported" : "Why it was withheld";
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="shrink-0 space-y-3 px-6 pb-5">
-      <div className="flex min-w-0 items-start gap-2.5">
-        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <div className="flex min-w-0 items-center gap-2.5">
+        <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         <div className="min-w-0 font-mono text-xs">
-          <p className="break-words font-medium [overflow-wrap:anywhere]">{path.slice(slash + 1)}</p>
-          {slash >= 0 && <p className="mt-1 break-words text-muted-foreground [overflow-wrap:anywhere]">{path.slice(0, slash + 1)}</p>}
+          <p className="break-words [overflow-wrap:anywhere]">{slash >= 0 && <span className="text-muted-foreground">{path.slice(0, slash + 1)}</span>}<span className="font-medium">{path.slice(slash + 1)}</span></p>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {snapshot.start_line != null && <span className="text-xs text-muted-foreground">Lines {String(snapshot.start_line)}{snapshot.end_line && snapshot.end_line !== snapshot.start_line ? `–${snapshot.end_line}` : ""}</span>}
         {snapshot.severity != null && <Status value={String(snapshot.severity)} />}
         {!!snapshot.category && <FindingCategory value={String(snapshot.category)} />}
       </div>
@@ -938,7 +938,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <dt className="text-xs text-muted-foreground">{key}</dt><dd className={`min-w-0 break-words [overflow-wrap:anywhere] ${title === "Revisions" ? "font-mono text-xs" : ""}`}>{value}</dd>
           </div>)}</dl>
         </section>)}</div>
-        <details className="group mt-6 border-t pt-4 text-sm">
+        <details className="group mt-6 pt-4 text-sm">
           <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none items-center gap-2 font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Configuration used<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
           <p className="mt-2 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div>
         </details>

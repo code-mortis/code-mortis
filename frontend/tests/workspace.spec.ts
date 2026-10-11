@@ -1219,7 +1219,7 @@ test("repository state filters retain running reviews and reset when switching r
   await page.getByRole("link", { name: "acme/other", exact: true }).click();
   await expect(page).toHaveURL(/repositories\/23\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
-  await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Reviews paused");
+  await expect(page.getByRole("region", { name: "Review configuration" }).getByText("Paused", { exact: true })).toBeVisible();
 });
 
 test("repository navigation, filtering, and review workspace", async ({
@@ -2796,6 +2796,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await page.keyboard.press("Enter");
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
   await expect(sheet).toContainText("No evidence establishes a build failure at this revision.");
+  await expect(sheet.getByText("frontend/src/index.css", { exact: true })).toBeVisible();
   await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: /Resolve finding|Reopen finding|Dismiss/ })).toHaveCount(0);
   await sheet.locator("summary", { hasText: "Original proposal" }).click();
@@ -2892,8 +2893,7 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   await page.keyboard.press("Space");
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
   await expect(sheet).toContainText("Assessment is waiting for the review worker.");
-  await expect(sheet).toContainText(path.slice(path.lastIndexOf("/") + 1));
-  await expect(sheet).toContainText(path.slice(0, path.lastIndexOf("/") + 1));
+  await expect(sheet.getByText(path, { exact: true })).toBeVisible();
   await sheet.getByRole("tab", { name: "Evidence 0" }).click();
   await expect(sheet).toContainText("Evidence will appear when assessment completes.");
   candidate.status = "completed";
