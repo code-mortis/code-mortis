@@ -1369,6 +1369,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^High/ }).check();
   await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Edit Severity: High", exact: true })).toBeFocused();
   await expect(list.getByRole("button")).toHaveCount(3);
   const row = list.getByRole("button", { name: /retry loop has no upper bound/ });
   await row.press("Enter");
