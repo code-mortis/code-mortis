@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { mkdir, readFile } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
+import { contrast, themes } from "../src/lib/appearance";
 
 const at = "2026-10-05T13:20:00Z";
 const installation: Schema["InstallationOut"] = {
@@ -1078,6 +1079,62 @@ test("repository configuration sections retain navigation and fit both themes", 
   await (await breadcrumbAncestor(page, repo.full_name)).click();
   await expect(page).toHaveURL(/repositories\/22\?q=148&state=all$/);
   expect(requests).toEqual([]);
+});
+
+test("selected tabs retain the light style and have a clearer neutral dark surface", async ({ page }, info) => {
+  test.setTimeout(60_000);
+  await mock(page);
+  await page.addInitScript(() => localStorage.setItem("theme", "system"));
+  await page.goto("/pulls/pr");
+  const rgb = (hex: string) => `rgb(${[1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
+  for (const theme of themes) {
+    await page.evaluate((id) => localStorage.setItem("color-theme", id), theme.id);
+    await page.reload();
+    for (const mode of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: mode });
+      await expect(page.locator("body")).toHaveCSS("color", rgb(theme[mode]["--foreground"]));
+      const findings = page.getByRole("tab", { name: /^Findings/ });
+      const history = page.getByRole("tab", { name: /^Run history/ });
+      await expect(findings).toHaveCSS("color", rgb(theme[mode]["--foreground"]));
+      const rendered = await findings.evaluate((tab) => {
+        const context = new OffscreenCanvas(1, 1).getContext("2d")!;
+        function composite(base: string, color: string) {
+          context.clearRect(0, 0, 1, 1);
+          for (const value of [base, color]) {
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+          }
+          return "#" + Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map((value) => value.toString(16).padStart(2, "0")).join("");
+        }
+        const list = getComputedStyle(tab.closest('[role="tablist"]')!).backgroundColor;
+        const style = getComputedStyle(tab);
+        const background = composite(list, style.backgroundColor);
+        return { list: composite(list, list), background, count: composite(background, getComputedStyle(tab.querySelector("span")!).color) };
+      });
+      if (mode === "light") {
+        expect(rendered.background).toBe(theme.light["--background"]);
+        await expect(findings).toHaveCSS("border-color", "rgba(0, 0, 0, 0)");
+      } else expect(contrast(rendered.background, rendered.list), theme.label).toBeGreaterThanOrEqual(1.25);
+      expect(contrast(rendered.count, rendered.background), `${theme.label} ${mode} count`).toBeGreaterThanOrEqual(4.5);
+      await findings.press("ArrowRight");
+      await expect(history).toHaveAttribute("aria-selected", "true");
+      await history.press("ArrowLeft");
+      await expect(findings).toHaveAttribute("aria-selected", "true");
+      await page.getByRole("heading", { level: 1 }).click();
+      await page.mouse.move(0, 0);
+      await noOverflow(page);
+      if ((theme.id === "code-mortis" && mode === "light") || theme.id === "aura" || (theme.id === "cobalt2" && mode === "dark")) {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `../.impeccable/review/neutral-tabs-${info.project.name}-${theme.id}-${mode}.png`, fullPage: true });
+        if (info.project.name === "desktop" && theme.id === "aura" && mode === "dark") {
+          await page.setViewportSize({ width: 1647, height: 938 });
+          await noOverflow(page);
+          await page.screenshot({ path: "../.impeccable/review/neutral-tabs-user-1647.png", fullPage: true });
+          await page.setViewportSize({ width: 1440, height: 1000 });
+        }
+      }
+    }
+  }
 });
 
 for (const role of ["admin", "member"]) {
@@ -3506,14 +3563,209 @@ test("header theme toggle follows the OS until an explicit choice, then persists
   await expect(page.locator("html")).toHaveClass("dark");
 });
 
+test("appearance palettes keep text, actions, syntax and focus readable", () => {
+  expect(contrast("#000000", "#ffffff")).toBe(21);
+  for (const theme of themes) {
+    for (const mode of ["light", "dark"] as const) {
+      const colors = theme[mode];
+      const pairs = [
+        ["--foreground", "--background"], ["--card-foreground", "--card"],
+        ["--popover-foreground", "--popover"], ["--primary-foreground", "--primary"],
+        ["--secondary-foreground", "--secondary"], ["--accent-foreground", "--accent"],
+        ["--destructive-foreground", "--destructive"], ["--code-added", "--code-added-background"],
+        ["--code-removed", "--code-removed-background"],
+      ] as const;
+      for (const [foreground, background] of pairs) {
+        expect(contrast(colors[foreground], colors[background]), `${theme.id} ${mode} ${foreground}`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const surface of ["--background", "--card", "--muted"] as const) {
+        for (const foreground of ["--primary", "--muted-foreground", "--code-keyword", "--code-string", "--code-number", "--code-function"] as const) {
+          expect(contrast(colors[foreground], colors[surface]), `${theme.id} ${mode} ${foreground} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(contrast(colors["--ring"], colors[surface]), `${theme.id} ${mode} focus`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  }
+});
+
+for (const role of ["admin", "member"]) {
+  test(`appearance navigation works for ${role}s without depending on operational settings`, async ({ page }) => {
+    await mock(page, { role });
+    await page.route("**/api/v1/settings", (route) => route.fulfill({ status: 503, json: { detail: "Settings unavailable" } }));
+    await page.route("**/api/v1/connections", (route) => route.fulfill({ status: 503, json: { detail: "Connections unavailable" } }));
+    await page.route("**/api/v1/providers", (route) => route.fulfill({ status: 503, json: { detail: "Providers unavailable" } }));
+    await page.goto("/settings");
+    const navigation = page.getByRole("navigation", { name: "Settings sections" });
+    await expect(navigation.getByRole("link")).toHaveText(role === "admin"
+      ? ["AI connections", "GitHub", "Team", "Appearance"] : ["AI connections", "Appearance"]);
+    await navigation.getByRole("link", { name: "Appearance", exact: true }).click();
+    await expect(page).toHaveURL(/\/settings\?tab=appearance$/);
+    await expect(page.getByRole("region", { name: "Appearance", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Breadcrumb" }).getByText("Appearance", { exact: true })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await page.goBack();
+    await expect(navigation.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
+    await page.goForward();
+    await page.reload();
+    await expect(page.getByRole("radio")).toHaveCount(9);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await openNavigation(page);
+    await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
+    const shortcut = page.getByRole("menuitem", { name: "Appearance", exact: true });
+    await expect(shortcut).toHaveAttribute("href", "/settings?tab=appearance");
+    await shortcut.click();
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+  });
+}
+
+test("appearance applies and persists all nine palettes in both color modes", async ({ page }, info) => {
+  await mock(page);
+  const operationalReads: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/v1\/(settings|connections|providers)$/.test(new URL(request.url()).pathname)) operationalReads.push(request.url());
+  });
+  await page.goto("/settings?tab=appearance");
+  const appearance = page.getByRole("region", { name: "Appearance", exact: true });
+  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(appearance.getByLabel("Color mode", { exact: true })).toHaveValue("system");
+  for (const mode of ["light", "dark"] as const) {
+    await appearance.getByLabel("Color mode", { exact: true }).selectOption(mode);
+    for (const theme of themes) {
+      await appearance.getByText(theme.label, { exact: true }).click();
+      await expect(appearance.getByRole("radio", { name: theme.label, exact: true })).toBeChecked();
+      await expect(page.locator("html")).toHaveAttribute("data-color-theme", theme.id);
+      await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(mode);
+      const actual = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement);
+        return Object.fromEntries(["--background", "--primary", "--code-keyword", "--code-added-background"].map((key) => [key, root.getPropertyValue(key).trim()]));
+      });
+      expect(actual).toMatchObject(Object.fromEntries(Object.keys(actual).map((key) => [key, theme[mode][key as keyof typeof theme.light]])));
+      await page.reload();
+      await expect(appearance.getByRole("radio", { name: theme.label, exact: true })).toBeChecked();
+      await expect(appearance.getByLabel("Color mode", { exact: true })).toHaveValue(mode);
+      expect(await page.evaluate(() => [localStorage.getItem("color-theme"), localStorage.getItem("theme")])).toEqual([theme.id, mode]);
+      await noOverflow(page);
+      if (theme.id === "code-mortis" || theme.id === "noodle" || theme.id === "dracula") {
+        await page.screenshot({ path: `../.impeccable/review/appearance-${info.project.name}-${theme.id}-${mode}.png`, fullPage: true });
+      }
+    }
+  }
+  expect(operationalReads).toEqual([]);
+  await appearance.getByText("Code Mortis", { exact: true }).click();
+  await page.getByRole("radio", { name: "Code Mortis", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(appearance.getByRole("radio", { name: "Noodle", exact: true })).toBeChecked();
+  await page.getByRole("radio", { name: "Aura", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "aura");
+  await appearance.getByText("Dracula", { exact: true }).click();
+  for (const width of info.project.name === "desktop" ? [1636, 1024, 1023] : [320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await noOverflow(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `../.impeccable/review/appearance-${info.project.name}-${width}.png`, fullPage: true });
+  }
+});
+
+test("appearance system mode and the header toggle keep the selected palette", async ({ page }) => {
+  await mock(page);
+  await page.goto("/settings?tab=appearance");
+  const mode = page.getByLabel("Color mode", { exact: true });
+  await page.getByRole("region", { name: "Appearance", exact: true }).getByText("Dracula", { exact: true }).click();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveClass("dark");
+  await expect(mode).toHaveValue("system");
+  await page.getByRole("button", { name: "Switch to light mode", exact: true }).click();
+  await expect(mode).toHaveValue("light");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).not.toHaveClass("dark");
+  await page.reload();
+  await expect(mode).toHaveValue("light");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await mode.selectOption("system");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).not.toHaveClass("dark");
+  await page.goto("/repositories/22");
+  await page.getByRole("button", { name: "Switch to dark mode", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await page.route("**/api/v1/repositories/22/sync", (route) => route.fulfill({ json: { job_id: "sync-job" } }));
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await expect(page.locator("[data-sonner-toast]")).toContainText("Sync queued");
+  await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", "dark");
+});
+
+test("appearance themes reach finding dialogs and rendered code diffs", async ({ page }, info) => {
+  await mock(page, { finding: { content: "Keep retries bounded.\n\n```python\ndef deliver():\n    return True\n```" } });
+  await page.addInitScript(() => localStorage.setItem("color-theme", "dracula"));
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /Keep retries bounded/ }).click();
+  const dialog = page.getByRole("dialog");
+  const patch = dialog.getByRole("region", { name: "Suggested change diff" });
+  const theme = themes.find((item) => item.id === "dracula")!;
+  const rgb = (hex: string) => `rgb(${[1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
+  for (const mode of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: mode });
+    await expect(dialog).toHaveCSS("background-color", rgb(theme[mode]["--background"]));
+    await expect(patch.locator(".hljs-addition").first()).toHaveCSS("color", rgb(theme[mode]["--code-added"]));
+    await expect(patch.locator(".hljs-deletion").first()).toHaveCSS("background-color", rgb(theme[mode]["--code-removed-background"]));
+    await expect(dialog.locator(".markdown .hljs-keyword").first()).toHaveCSS("color", rgb(theme[mode]["--code-keyword"]));
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/appearance-code-${info.project.name}-${mode}.png`, animations: "disabled" });
+  }
+});
+
+test("appearance defaults recover invalid preferences", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("theme", "invalid");
+    localStorage.setItem("color-theme", "unknown-theme");
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/settings?tab=appearance");
+  await expect(page.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("system");
+  await expect(page.locator("html")).toHaveClass("dark");
+});
+
+test("appearance retains the legacy saved dark mode", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("theme", "dark");
+    localStorage.removeItem("color-theme");
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/settings?tab=appearance");
+  await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("dark");
+  await expect(page.locator("html")).toHaveClass("dark");
+});
+
+test("appearance remains usable when local storage is unavailable", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    for (const method of ["getItem", "setItem"]) {
+      Object.defineProperty(Storage.prototype, method, { value: () => { throw new DOMException("Storage disabled", "SecurityError"); } });
+    }
+  });
+  await page.goto("/settings?tab=appearance");
+  const appearance = page.getByRole("region", { name: "Appearance", exact: true });
+  await appearance.getByText("Noodle", { exact: true }).click();
+  await appearance.getByLabel("Color mode", { exact: true }).selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "noodle");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+});
+
 test("members manage personal subscriptions without administrative controls", async ({
   page,
 }, info) => {
   await mock(page, { role: "member", personal: true });
   await page.goto("/settings");
-  await expect(
-    page.getByRole("navigation", { name: "Settings sections" }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "Appearance"]);
   await expect(
     page.getByRole("link", { name: "GitHub", exact: true }),
   ).toHaveCount(0);
@@ -4096,7 +4348,7 @@ test("settings sections retain URLs and adapt to the workspace width in both the
   await expect(page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
-    for (const section of ["AI connections", "GitHub", "Team"]) {
+    for (const section of ["AI connections", "GitHub", "Team", "Appearance"]) {
       const link = navigation.getByRole("link", { name: section, exact: true });
       await link.click();
       await expect(link).toHaveAttribute("aria-current", "page");
@@ -4106,6 +4358,7 @@ test("settings sections retain URLs and adapt to the workspace width in both the
       await page.screenshot({ path: `../.impeccable/review/settings-${section.replaceAll(" ", "-")}-${info.project.name}-${theme}.png`, fullPage: true });
     }
   }
+  await navigation.getByRole("link", { name: "Team", exact: true }).click();
   for (const width of info.project.name === "desktop" ? [1024, 1023] : [320]) {
     await page.setViewportSize({ width, height: 900 });
     await noOverflow(page);

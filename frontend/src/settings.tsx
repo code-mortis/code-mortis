@@ -16,6 +16,8 @@ import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
+import { AppearanceSettings } from "./components/appearance-settings";
+import type { ColorMode, ThemeId } from "./lib/appearance";
 import { Avatar, AvatarFallback } from "./components/ui/avatar";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
@@ -720,14 +722,22 @@ function ConnectionForm({
   );
 }
 
-export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
+export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeChange }: {
+  user: Schema["UserOut"];
+  mode: ColorMode;
+  theme: ThemeId;
+  dark: boolean;
+  onModeChange: (mode: ColorMode) => void;
+  onThemeChange: (theme: ThemeId) => void;
+}) {
   const isAdmin = user.role === "admin";
   const [params] = useSearchParams();
-  const tab = isAdmin && ["connections", "github", "team"].includes(params.get("tab") ?? "")
+  const sections = [["connections", "AI connections"], ...(isAdmin ? [["github", "GitHub"], ["team", "Team"]] : []), ["appearance", "Appearance"]];
+  const tab = sections.some(([value]) => value === params.get("tab"))
     ? params.get("tab")! : "connections";
-  const query = useApi<Instance>("/settings", true, isAdmin);
-  const connections = useApi<Connection[]>("/connections", true);
-  const providers = useApi<Provider[]>("/providers");
+  const query = useApi<Instance>("/settings", true, isAdmin && tab !== "appearance");
+  const connections = useApi<Connection[]>("/connections", true, tab === "connections");
+  const providers = useApi<Provider[]>("/providers", false, tab === "connections");
   const action = useAction();
   const memberAction = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
@@ -771,20 +781,21 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
     <header className="mb-5">
       <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        {isAdmin ? "Manage AI connections, GitHub installations, and team access." : "Manage your AI connections and personal subscriptions."}
+        {isAdmin ? "Manage AI connections, GitHub installations, team access, and appearance." : "Manage your AI connections, personal subscriptions, and appearance."}
       </p>
     </header>
-    <div className={isAdmin ? "grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]" : "min-w-0"}>
-      {isAdmin && <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-        {[["connections", "AI connections"], ["github", "GitHub"], ["team", "Team"]].map(([value, label]) => (
+    <div className="grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
+      <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
+        {sections.map(([value, label]) => (
           <Link key={value} to={`/settings?tab=${value}`} aria-current={tab === value ? "page" : undefined}
             className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
             {label}
           </Link>
         ))}
-      </nav>}
+      </nav>
       <div className="settings-content min-w-0 space-y-6">
-        <ErrorNotice error={query.error} />
+        {tab !== "appearance" && <ErrorNotice error={query.error} />}
+        {tab === "appearance" && <AppearanceSettings mode={mode} theme={theme} dark={dark} onModeChange={onModeChange} onThemeChange={onThemeChange} />}
         {tab === "connections" && <section aria-labelledby="connections-heading" className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -905,7 +916,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             API connections are shared. Personal subscriptions belong to you; automatic reviews require your explicit authorization per repository.
           </p>
         </section>}
-        {tab !== "connections" && query.isPending && <Loading />}
+        {(tab === "github" || tab === "team") && query.isPending && <Loading />}
         {tab === "github" && instance && <section aria-label="GitHub" className="space-y-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -1003,7 +1014,7 @@ export function SettingsPage({ user }: { user: Schema["UserOut"] }) {
             Each person signs in with GitHub and only sees repositories they can access there.
           </p>
         </section>}
-        {!!instance?.failed_jobs.length && <details className="border-t pt-5">
+        {tab !== "appearance" && !!instance?.failed_jobs.length && <details className="border-t pt-5">
           <summary className="cursor-pointer text-sm text-muted-foreground">Recent background errors ({instance.failed_jobs.length})</summary>
           <ul className="mt-4 space-y-3">
             {instance.failed_jobs.map((job) => <li key={job.id} className="rounded-md border p-3 text-xs">

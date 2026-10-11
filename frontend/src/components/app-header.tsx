@@ -51,9 +51,9 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     }
     if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
   } else if (path === "/settings") {
-    const tab = admin ? params.get("tab") : null;
+    const tab = params.get("tab") === "appearance" || admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });
-    const tabLabels = new Map([["github", "GitHub"], ["team", "Team"]]);
+    const tabLabels = new Map([["github", "GitHub"], ["team", "Team"], ["appearance", "Appearance"]]);
     crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI connections", to: path + route.search });
   } else if (path !== "/") {
     crumbs.push({ label: "Page not found", to: path });

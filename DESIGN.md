@@ -17,6 +17,7 @@ colors:
   accent: "#e1ebe2"
   accent-foreground: "#173e2a"
   destructive: "#b32d37"
+  destructive-foreground: "#ffffff"
   border: "#dce1d9"
   input: "#c5cec3"
   ring: "#377c59"
@@ -35,6 +36,7 @@ colors:
   dark-accent: "#304a39"
   dark-accent-foreground: "#ddf0df"
   dark-destructive: "#ff9b9b"
+  dark-destructive-foreground: "#17201c"
   dark-border: "#35433a"
   dark-input: "#53685a"
   dark-ring: "#95c9a5"
@@ -133,7 +135,7 @@ components:
     height: "36px"
   button-destructive:
     backgroundColor: "{colors.destructive}"
-    textColor: "#ffffff"
+    textColor: "{colors.destructive-foreground}"
     rounded: "{rounded.md}"
     padding: "8px 16px"
     height: "36px"
@@ -223,9 +225,9 @@ components:
 
 **Creative North Star: "Workflow-focused workspace"**
 
-Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.
+Code Mortis uses compact controls, clear review states, and a neutral sidebar that follows the workspace theme. The default Code Mortis palette uses green accents and white light-mode surfaces. Restrained borders and Inter Variable keep repository lists, review evidence, and settings readable across palettes.
 
-This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.
+This is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Every palette shares the same structure in Light, Dark, and System color modes. Appearance settings apply immediately and are saved in the current browser. System follows operating-system changes while the app is open; the header toggle saves a light or dark choice while preserving the selected palette.
 
 **Key Characteristics:**
 
@@ -234,23 +236,25 @@ This is a description of the implemented interface, not an approved creative met
 - Evidence and resolution history presented as separate, readable sections.
 - Responsive navigation and restrained tonal surfaces.
 
-This document records the current implementation. Semantic colors and browser treatments come from `frontend/src/index.css`; reusable controls come from `frontend/src/components/ui/`. Finding and assessment cards and sheets live in `frontend/src/reviews.tsx`, with code presentation in `frontend/src/components/code.tsx`. `.impeccable/design.json` supplies matching standalone component previews and extensions for the design panel.
+This document records the current implementation. Semantic palette tokens come from the typed local registry in `frontend/src/lib/appearance.ts`; `frontend/src/index.css` maps those tokens to Tailwind and defines browser treatments. Reusable controls come from `frontend/src/components/ui/`. Appearance controls live in `frontend/src/components/appearance-settings.tsx`, with browser-local state in `frontend/src/main.tsx`. Finding and assessment cards and sheets live in `frontend/src/reviews.tsx`, with code presentation in `frontend/src/components/code.tsx`. `.impeccable/design.json` supplies matching standalone component previews and extensions for the design panel.
 
 ## Colors
 
-The palette combines forest-green actions and navigation accents with warm green-tinted neutrals. Frontmatter holds the actual light values and matching `dark-` values; the app switches the semantic CSS properties together.
+The default Code Mortis palette combines forest-green actions and navigation accents with warm green-tinted neutrals. Frontmatter holds its actual light values and matching `dark-` values. The runtime registry also supplies Noodle, Aura, Carbonfox, Catppuccin, Claude Code, Cobalt2, Dracula, and Synthwave84, each with light and dark variants; the app switches the semantic CSS properties together.
+
+Imported dark palettes are local snapshots of noodle-site's themes; their light variants are matching web adaptations. Imported foreground, action, and syntax colors are adjusted to a 4.5:1 contrast target against their used surfaces; focus-ring colors target 3:1. Preset metadata and the registry source pointer live in the sidecar rather than duplicating every variant here.
 
 ### Primary
 
-Primary green identifies consequential actions, links, the sidebar brand, and repository activity. The lighter dark-theme primary keeps those elements readable against dark surfaces.
+Primary identifies consequential actions, links, the sidebar brand, and repository activity. The default green and lighter dark-mode green keep those elements readable against their surfaces; other presets use their own primary color for the same roles.
 
 ### Neutral
 
-Background is the workspace canvas; card and popover distinguish bounded content. Foreground carries reading text, muted foreground carries supporting information, and border/input separate surfaces and controls. Secondary and accent are related green-tinted interaction surfaces rather than additional brand accents.
+Background is the workspace canvas; card and popover distinguish bounded content. Foreground carries reading text, muted foreground carries supporting information, and border/input separate surfaces and controls. Secondary and accent are related interaction surfaces, green-tinted in the default palette, rather than additional brand accents.
 
-Sidebar colors reuse the workspace palette in both themes: `--sidebar` aliases `--muted`, `--sidebar-foreground` aliases `--foreground`, and the sidebar primary, primary-foreground, accent, accent-foreground, border, and ring properties alias their matching semantic tokens. Selected and hovered links use the filled accent surface; repository owner labels and icons use muted foreground.
+Sidebar colors reuse the workspace palette in every preset and mode: `--sidebar` aliases `--muted`, `--sidebar-foreground` aliases `--foreground`, and the sidebar primary, primary-foreground, accent, accent-foreground, border, and ring properties alias their matching semantic tokens. Selected and hovered links use the filled accent surface; repository owner labels and icons use muted foreground.
 
-Status colors retain their Tailwind OKLCH source values. Good states use emerald, failures and high severity use red, and partial, blocked, outdated, and medium-severity states use amber. Running status chips use blue with their spinner; the sidebar's review activity spinner uses primary green. Not reviewed, cancelled, superseded, and other statuses remain neutral. Status fills use 8% opacity and borders 20%; dark mode changes the text tone. Destructive actions and errors use the semantic destructive token.
+Status colors retain their Tailwind OKLCH source values. Good states use emerald, failures and high severity use red, and partial, blocked, outdated, and medium-severity states use amber. Running status chips use blue with their spinner; the sidebar's review activity spinner uses the selected primary color. Not reviewed, cancelled, superseded, and other statuses remain neutral. Status fills use 8% opacity and borders 20%; dark mode changes the text tone. Destructive actions and errors use the semantic destructive token; destructive buttons pair the full token background with `destructive-foreground` in both modes.
 
 Code tokens separate keywords, strings, numbers, and functions in both themes; comments use muted foreground. Diff additions and removals pair their text token with a distinct tinted background and visible `+` or `−` markers. Syntax colors describe code, not finding severity or resolution.
 
@@ -276,6 +280,8 @@ Run-history rows use a grid: at 768px, a flexible reading column is followed by 
 
 Settings has a 176px section-navigation column from 1024px; repository configuration uses 180px navigation, a 40px gap, and a form column capped at 672px. Both navigation lists wrap horizontally below 1024px. Settings records adapt to their content container, not just the viewport: one column below 320px, two information columns from 320px, and aligned identity/model-or-access/status/actions columns with a muted heading row from 640px. Identity, notes, and actions span the narrow layouts. Team roles move beneath identity below a 400px container width; from 400px, identity, role, and actions align in one row. Long actions and badges wrap instead of forcing horizontal overflow.
 
+Appearance orders its section heading and description, Color mode field, then Theme previews with 24px between sections. The mode field is capped at 320px. Theme previews use 12px gaps and respond to the settings container: one column below 440px, two from 440px, and three from 720px.
+
 Review-run tabs use a full-width two-by-two grid below 640px and an inline row from 640px. Metadata in Details uses a 104px label column beside flexible, wrapping values at every width, with a 16px column gap.
 
 ## Elevation & Depth
@@ -294,7 +300,11 @@ Default controls are 36px high with medium-weight 14px text and 8px/16px padding
 
 Primary/destructive hover reduces fill opacity to 90%; outline and ghost use the accent surface. Secondary hover uses 80% opacity; links underline. Keyboard focus uses a 3px ring at 50% opacity. Disabled controls use 50% opacity and block interaction. The default state transition is 150ms; no hover lift is added.
 
-The header appearance toggle is a 36px circular ghost button with a muted fill, primary-colored 18px sun/moon icons, and accent hover treatment. Its accessible label and title name the next action: Switch to light mode or Switch to dark mode. Icons rotate and scale over 200ms with ease-out timing; reduced-motion preference disables these transitions.
+The header appearance toggle is a 36px circular ghost button with a muted fill, primary-colored 18px sun/moon icons, and accent hover treatment. Its accessible label and title name the next action: Switch to light mode or Switch to dark mode. It changes the color mode while retaining the selected palette. Icons rotate and scale over 200ms with ease-out timing; reduced-motion preference disables these transitions.
+
+### Tabs
+
+Default tabs use the muted list surface and a subtle selected shadow. Light selection uses the workspace background and foreground. Dark selection uses muted foreground at 20% opacity for its fill and 40% for its border; labels use foreground and selected muted child counts use foreground at 90% opacity. The line variant stays transparent with its foreground underline. Both variants retain Radix keyboard selection and visible focus.
 
 ### Inputs / Fields
 
@@ -357,6 +367,8 @@ Repository lists default to Open, including when a missing or invalid state is n
 ### Settings and repository configuration
 
 Settings groups AI connections into Shared API connections and Your subscriptions, with ChatGPT and Claude Code accounts together in the latter. Records separate identity/provider, default model, account or test status, and permission-appropriate actions. Sign-in-required accounts expose Complete sign in in the status cell; action wording reflects account readiness. Administrator navigation adds GitHub and Team. GitHub installation records separate account identity, repository access, review readiness, and recovery actions, with an empty Accounts to connect section explaining how to install on another account. Team records use 32px initials avatars, visible role badges, and a trailing action menu. Editing and removal dialogs restore focus to their triggering control.
+
+Appearance is available to administrators and members at `/settings?tab=appearance`, in Settings navigation and the account menu, with an Appearance breadcrumb. Color mode uses the existing labeled native select with Light, Dark, and System choices. Theme previews are native radio inputs with associated labels, a bordered miniature workspace, the preset name, and a visible Selected checkmark. Checked previews use a primary border and 1px ring; keyboard focus uses a 2px ring-colored outline with a 4px offset. Previews show each preset in the resolved light or dark mode and apply on selection without a Save action. Mode uses the legacy `theme` storage key; palette uses `color-theme`. Invalid or unavailable storage falls back to System and Code Mortis, and storage write failures leave the current selection usable for the session. Tokens apply before React renders and feed the shared sidebar, overlays, toaster, code, and diffs. Operational settings requests and their errors are disabled or hidden on this section.
 
 Configure opens the administrator-only repository settings page at `/repositories/<id>/settings`. Four URL-selected sections are Review behavior, AI connection, Project context, and Limits & rules, defaulting to Review behavior. The form retains edits while switching sections. Review switches pair visible labels and hints with right-aligned controls in divided rows. Other fields become two columns from 640px where appropriate. A Save action stays after the form content with visible request and validation errors; success returns to the repository list and preserves its search, filters, ordering, and loaded pages. Invalid fields in another section reveal that section and receive focus.
 
@@ -430,7 +442,7 @@ Popover, Checkbox, and DropdownMenu are added through the shadcn CLI using Bun. 
 
 ### Do:
 
-- Do use semantic CSS properties so light, dark, and system appearance stay consistent.
+- Do use the shared appearance registry and semantic CSS properties so every palette stays consistent in Light, Dark, and System modes.
 - Do keep status wording visible alongside color, including partial coverage and publication failures.
 - Do retain clear focus indicators, associated field labels, and reduced-motion behavior.
 - Do wrap long prose and filenames appropriately while allowing code blocks to scroll horizontally.

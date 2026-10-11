@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
@@ -27,7 +27,12 @@ import { AppHeader } from "./components/app-header";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
+import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
 import "./index.css";
+
+const initialAppearance = readAppearance();
+const initialDark = initialAppearance.mode === "dark" || (initialAppearance.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+applyAppearance(initialAppearance.theme, initialDark);
 
 const cache = new QueryClient({
   defaultOptions: { queries: { staleTime: 15000, refetchOnWindowFocus: true } },
@@ -169,23 +174,24 @@ function App() {
   const action = useAction();
   const navigate = useNavigate();
   const route = useLocation();
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem("theme");
-    return saved === "light" || saved === "dark" ? saved : "system";
-  });
-  const [dark, setDark] = useState(() => theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches));
-  useEffect(() => {
+  const [mode, setMode] = useState<ColorMode>(initialAppearance.mode);
+  const [colorTheme, setColorTheme] = useState<ThemeId>(initialAppearance.theme);
+  const [dark, setDark] = useState(initialDark);
+  useLayoutEffect(() => {
     const system = matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
-      const resolvedDark = theme === "dark" || (theme === "system" && system.matches);
-      document.documentElement.classList.toggle("dark", resolvedDark);
+      const resolvedDark = mode === "dark" || (mode === "system" && system.matches);
+      applyAppearance(colorTheme, resolvedDark);
       setDark(resolvedDark);
     };
     apply();
-    localStorage.setItem("theme", theme);
+    try {
+      localStorage.setItem("theme", mode);
+      localStorage.setItem("color-theme", colorTheme);
+    } catch { /* Keep the current selection usable without persistent storage. */ }
     system.addEventListener("change", apply);
     return () => system.removeEventListener("change", apply);
-  }, [theme]);
+  }, [mode, colorTheme]);
   useEffect(() => {
     setCsrf(session.data?.csrf ?? "");
   }, [session.data]);
@@ -244,7 +250,7 @@ function App() {
     <SidebarProvider>
       <AppSidebar user={session.data} onLogout={logout} signingOut={action.isPending} />
       <div className="min-w-0 flex-1">
-        <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setTheme(dark ? "light" : "dark")} />
+        <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
         <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-10">
           <div className="mx-auto max-w-6xl">
             <ErrorNotice error={action.error} />
@@ -262,7 +268,7 @@ function App() {
               <Route path="/runs/:id" element={<RunDetail user={session.data} />} />
               <Route
                 path="/settings"
-                element={<SettingsPage user={session.data} />}
+                element={<SettingsPage user={session.data} mode={mode} theme={colorTheme} dark={dark} onModeChange={setMode} onThemeChange={setColorTheme} />}
               />
               <Route
                 path="/setup"

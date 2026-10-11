@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-11T16:31:26.570Z",
+  "generatedAt": "2026-10-11T19:40:12.331Z",
   "title": "Design System: Code Mortis",
   "extensions": {
     "colorMeta": {
@@ -899,6 +899,34 @@
           "oklch(84% 0.1050 251.81)",
           "oklch(95% 0.1050 251.81)"
         ]
+      },
+      "destructive-foreground": {
+        "role": "neutral",
+        "displayName": "Destructive foreground",
+        "tonalRamp": [
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26% 0.0000 0.00)",
+          "oklch(38% 0.0000 0.00)",
+          "oklch(49% 0.0000 0.00)",
+          "oklch(61% 0.0000 0.00)",
+          "oklch(72% 0.0000 0.00)",
+          "oklch(84% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
+        ]
+      },
+      "dark-destructive-foreground": {
+        "role": "neutral",
+        "displayName": "Dark destructive foreground",
+        "tonalRamp": [
+          "oklch(15% 0.0151 166.18)",
+          "oklch(26% 0.0151 166.18)",
+          "oklch(38% 0.0151 166.18)",
+          "oklch(49% 0.0151 166.18)",
+          "oklch(61% 0.0151 166.18)",
+          "oklch(72% 0.0151 166.18)",
+          "oklch(84% 0.0151 166.18)",
+          "oklch(95% 0.0151 166.18)"
+        ]
       }
     },
     "typographyMeta": {
@@ -1028,8 +1056,102 @@
         "name": "settings-record-columns",
         "value": "640px",
         "purpose": "Aligned installation and connection records with column headings."
+      },
+      {
+        "name": "appearance-two-columns",
+        "value": "440px",
+        "purpose": "Two theme previews per row in the settings content container."
+      },
+      {
+        "name": "appearance-three-columns",
+        "value": "720px",
+        "purpose": "Three theme previews per row in the settings content container."
       }
-    ]
+    ],
+    "appearance": {
+      "source": "frontend/src/lib/appearance.ts",
+      "componentSource": "frontend/src/components/appearance-settings.tsx",
+      "stateSource": "frontend/src/main.tsx",
+      "cssMappingSource": "frontend/src/index.css",
+      "defaultPreset": "code-mortis",
+      "variants": [
+        "light",
+        "dark"
+      ],
+      "modes": [
+        "light",
+        "dark",
+        "system"
+      ],
+      "presets": [
+        {
+          "id": "code-mortis",
+          "label": "Code Mortis"
+        },
+        {
+          "id": "noodle",
+          "label": "Noodle"
+        },
+        {
+          "id": "aura",
+          "label": "Aura"
+        },
+        {
+          "id": "carbonfox",
+          "label": "Carbonfox"
+        },
+        {
+          "id": "catppuccin",
+          "label": "Catppuccin"
+        },
+        {
+          "id": "claude-code",
+          "label": "Claude Code"
+        },
+        {
+          "id": "cobalt2",
+          "label": "Cobalt2"
+        },
+        {
+          "id": "dracula",
+          "label": "Dracula"
+        },
+        {
+          "id": "synthwave84",
+          "label": "Synthwave84"
+        }
+      ],
+      "provenance": "Code Mortis retains the incumbent palette. Imported dark palettes are local noodle-site snapshots; light variants are matching web adaptations.",
+      "contrastTargets": {
+        "textActionsSyntax": "4.5:1",
+        "focusRing": "3:1"
+      },
+      "storage": {
+        "scope": "browser-local",
+        "modeKey": "theme",
+        "presetKey": "color-theme",
+        "fallbackMode": "system",
+        "fallbackPreset": "code-mortis",
+        "failureBehavior": "Current selections remain usable for the session."
+      },
+      "behavior": "Apply immediately before React renders; System follows operating-system changes. The header mode toggle retains the selected palette.",
+      "preview": "Native labeled radio inputs show the resolved mode, a primary border and 1px selected ring, and a Selected checkmark. Keyboard focus uses a 2px ring outline with a 4px offset."
+    },
+    "tabStates": {
+      "source": "frontend/src/components/ui/tabs.tsx",
+      "defaultSelectedLight": {
+        "background": "var(--background)",
+        "text": "var(--foreground)"
+      },
+      "defaultSelectedDark": {
+        "background": "color-mix(in oklab, var(--muted-foreground) 20%, transparent)",
+        "border": "color-mix(in oklab, var(--muted-foreground) 40%, transparent)",
+        "text": "var(--foreground)",
+        "mutedChildText": "color-mix(in oklab, var(--foreground) 90%, transparent)"
+      },
+      "lineSelected": "Transparent surface with a foreground underline.",
+      "interaction": "Radix keyboard selection and visible focus."
+    }
   },
   "components": [
     {
@@ -1046,7 +1168,7 @@
       "refersTo": "button-destructive",
       "description": "Destructive confirmation.",
       "html": "<button type=\"button\" class=\"ds-button-destructive\">Delete connection</button>",
-      "css": ".ds-button-destructive{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);background:var(--destructive, #b32d37);color:#fff;}.ds-button-destructive:hover{background:color-mix(in oklab,var(--destructive, #b32d37) 90%,transparent);}.ds-button-destructive:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in oklab,var(--destructive, #b32d37) 20%,transparent);}.ds-button-destructive:disabled{pointer-events:none;opacity:.5;}:host-context(.dark) .ds-button-destructive{background:color-mix(in oklab,var(--destructive, #b32d37) 60%,transparent);}@media(prefers-reduced-motion:reduce){.ds-button-destructive{transition-duration:0.01ms;animation-duration:0.01ms;}}"
+      "css": ".ds-button-destructive{font-family:'Inter Variable',sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;height:36px;padding:8px 16px;border:0 solid transparent;border-radius:var(--radius,8px);font-size:14px;line-height:20px;font-weight:500;white-space:nowrap;cursor:pointer;transition:all 150ms cubic-bezier(.4,0,.2,1);background:var(--destructive, #b32d37);color:var(--destructive-foreground, #ffffff);}.ds-button-destructive:hover{background:color-mix(in oklab,var(--destructive, #b32d37) 90%,transparent);}.ds-button-destructive:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in oklab,var(--destructive, #b32d37) 20%,transparent);}.ds-button-destructive:disabled{pointer-events:none;opacity:.5;}:host-context(.dark) .ds-button-destructive:focus-visible{box-shadow:0 0 0 3px color-mix(in oklab,var(--destructive, #b32d37) 40%,transparent);}@media(prefers-reduced-motion:reduce){.ds-button-destructive{transition-duration:0.01ms;animation-duration:0.01ms;}}"
     },
     {
       "name": "Outline button",
@@ -1163,7 +1285,7 @@
   ],
   "narrative": {
     "northStar": "Workflow-focused workspace",
-    "overview": "Code Mortis uses compact controls, clear review states, and a neutral sidebar with green accents that follows the workspace theme. White light-mode surfaces, restrained borders, and Inter Variable keep repository lists, review evidence, and settings readable.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Light and dark appearance share the same structure. Until a manual choice is saved, appearance follows operating-system changes while the app is open; the header toggle saves a persistent light or dark choice.",
+    "overview": "Code Mortis uses compact controls, clear review states, and a neutral sidebar that follows the workspace theme. The default Code Mortis palette uses green accents and white light-mode surfaces. Restrained borders and Inter Variable keep repository lists, review evidence, and settings readable across palettes.\n\nThis is a description of the implemented interface, not an approved creative metaphor or image-led brand direction. Mascot and distinctive branding work remain deferred. Every palette shares the same structure in Light, Dark, and System color modes. Appearance settings apply immediately and are saved in the current browser. System follows operating-system changes while the app is open; the header toggle saves a light or dark choice while preserving the selected palette.",
     "keyCharacteristics": [
       "Compact, native form controls and explicit action labels.",
       "Semantic status chips paired with text.",
@@ -1172,7 +1294,7 @@
     ],
     "rules": [],
     "dos": [
-      "Do use semantic CSS properties so light, dark, and system appearance stay consistent.",
+      "Do use the shared appearance registry and semantic CSS properties so every palette stays consistent in Light, Dark, and System modes.",
       "Do keep status wording visible alongside color, including partial coverage and publication failures.",
       "Do retain clear focus indicators, associated field labels, and reduced-motion behavior.",
       "Do wrap long prose and filenames appropriately while allowing code blocks to scroll horizontally.",
