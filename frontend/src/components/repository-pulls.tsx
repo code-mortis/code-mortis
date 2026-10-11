@@ -87,7 +87,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
                 state={{ repository: `${location.pathname}${location.search}` }}
                 feedback={feedback?.needsAttention ? feedback.summary : undefined}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
+                status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} /><Badge variant="secondary" className="capitalize">{pr.state}</Badge></div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
             })}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry {titles[group].toLowerCase()}</Button></div>}
             {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">

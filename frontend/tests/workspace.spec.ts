@@ -889,12 +889,16 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).getByText("open", { exact: true })).toBeVisible();
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/\?state=all$/);
   await expect(count).toHaveText("14 pull requests");
   await expect(merged.getByRole("link")).toHaveCount(10);
+  await expect(merged.getByRole("link").first().getByText("merged", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("closed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("Draft", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
   await expect(merged.getByRole("link")).toHaveCount(12);
@@ -2919,6 +2923,9 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   const assessment = page.getByRole("region", { name: "Candidate assessment", exact: true });
   await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
   await expect(assessment).not.toContainText("No new comments");
+  await expect(assessment).not.toContainText("Assessment needs attention");
+  await mkdir("../.impeccable/review", { recursive: true });
+  await assessment.screenshot({ path: `../.impeccable/review/assessment-list-${info.project.name}.png` });
   await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
   await expect(sheet.getByRole("alert")).toContainText("Assessment timed out");

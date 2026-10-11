@@ -540,6 +540,9 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   await mockInbox(page);
   await page.goto("/");
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
+  const list = page.getByRole("region", { name: "Pull requests", exact: true });
+  await expect(list.locator('[data-slot=badge]').filter({ hasText: /^open$/ })).toHaveCount(6);
+  await expect(list.getByRole("link", { name: /Add repository context/ }).getByText("completed", { exact: true })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   if (info.project.name === "mobile") {
     const search = await page.getByRole("textbox", { name: "Search pull requests", exact: true }).boundingBox();
@@ -572,6 +575,8 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     await includeState(page, "Merged");
     await includeState(page, "Closed");
     await expect(page.getByRole("region", { name: "Pull requests", exact: true }).getByRole("link", { name: /Abandoned change/ })).toBeVisible();
+    await expect(list.locator('[data-slot=badge]').filter({ hasText: /^merged$/ })).toHaveCount(2);
+    await expect(list.locator('[data-slot=badge]').filter({ hasText: /^closed$/ })).toHaveCount(1);
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.goto("/");

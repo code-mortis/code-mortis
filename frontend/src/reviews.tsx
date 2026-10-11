@@ -471,7 +471,7 @@ function FindingCard({ evidence, state, note, onClick }: {
       </span>
       <span className="flex shrink-0">{state}</span>
     </span>
-    <span className="mt-4 line-clamp-3 max-w-[75ch] break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
+    <span className="mt-4 line-clamp-3 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
     <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
       <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</span>
     </span>
@@ -691,7 +691,6 @@ function AssessmentList({ runId, running, onOpen }: {
     <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
         state={<CandidateStatus candidate={item} />}
-        note={item.error ? "Assessment needs attention" : undefined}
         onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSearchResetKey((key) => key + 1); setFilters({ outcome: [], severity: [], category: [] }); setListVersion((version) => version + 1); searchInput.current?.focus(); }}>View all assessments</Button>}
