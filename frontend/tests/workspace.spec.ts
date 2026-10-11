@@ -1457,8 +1457,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.getByRole("tab", { name: "Findings 6" }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByText("Reviewed files (2)", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "Coverage", exact: true })).toContainText("src/config.ts");
+  await expect(page.getByRole("region", { name: "Reviewed files", exact: true }).getByText("src/config.ts", { exact: true })).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/run-coverage-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
@@ -1496,6 +1495,89 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
   await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(list.getByRole("button")).toHaveCount(6);
+});
+
+test("run coverage shows compact file rows and reveals the remaining saved scope", async ({ page }, info) => {
+  const completed = Array.from({ length: 11 }, (_, index) => ({ path: `src/payments/handler-${index + 1}.ts`, item_id: `file-${index}` }));
+  const reused = { path: "src/payments/retry.ts", reason: "Validated result reused from an earlier run." };
+  const failed = { path: "src/payments/context.ts", reason: "Context budget exceeded." };
+  const waived = { path: "src/payments/config.ts", reason: "Token budget reached." };
+  const missing = { path: `src/${"long-directory/".repeat(8)}unrecorded.ts` };
+  await mock(page, { run: { publication: "not_applicable", publication_error: null, check_enabled: false,
+    report: { manifest: { coverage: { selected: [...completed, reused, failed, waived, missing], completed, reused: [reused], failed: [failed], waived: [waived] } },
+      excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] } } });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  const reviewed = coverage.getByRole("region", { name: "Reviewed files", exact: true });
+  const gaps = coverage.getByRole("region", { name: "Files not reviewed", exact: true });
+  await expect(coverage.getByText("Partial coverage", { exact: true })).toBeVisible();
+  await expect(coverage.getByRole("textbox")).toHaveCount(0);
+  await expect(coverage.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
+  await expect(reviewed.getByRole("listitem")).toHaveCount(10);
+  await expect(gaps.getByRole("listitem")).toHaveCount(4);
+  await expect(reviewed.getByText("Validated file result saved in this run.", { exact: true })).toHaveCount(0);
+  await expect(gaps.getByRole("listitem").filter({ hasText: failed.path })).toContainText(failed.reason);
+  await expect(gaps.getByRole("listitem").filter({ hasText: "README.md" })).toContainText("Outside scope");
+  await reviewed.getByRole("button", { name: "Load more reviewed files" }).click();
+  await expect(reviewed.getByRole("listitem")).toHaveCount(12);
+  await expect(reviewed.getByRole("status").last()).toHaveText("12 of 12 shown");
+  await expect(reviewed.getByText(completed[10].path, { exact: true })).toBeVisible();
+  await expect(reviewed.getByRole("listitem").filter({ hasText: reused.path })).toContainText("Reused");
+  await expect(gaps.getByRole("listitem")).toHaveCount(4);
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `../.impeccable/review/coverage-${info.project.name}-${theme}.png`, animations: "disabled" });
+    await page.evaluate((top) => window.scrollTo(0, top), (await gaps.boundingBox())!.y - 76);
+    await page.screenshot({ path: `../.impeccable/review/coverage-files-${info.project.name}-${theme}.png`, animations: "disabled" });
+  }
+  await expect(gaps.getByText(missing.path, { exact: true })).toBeVisible();
+  await expect(coverage.getByRole("button", { name: /View coverage/ })).toHaveCount(0);
+  await coverage.getByText("Inspect coverage report", { exact: true }).click();
+  await expect(coverage.locator("pre")).toContainText(failed.reason);
+  await noOverflow(page);
+});
+
+for (const example of [
+  { name: "legacy report", status: "partial", report: { errors: [{ path: "src/legacy.ts", message: "No saved result" }] }, label: "Coverage unavailable", summary: "Selected review scope was not recorded.", file: "legacy.ts", state: "Not reviewed" },
+  { name: "empty selected scope", status: "skipped", report: { manifest: { coverage: { selected: [] } }, excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] }, label: "No selected files", summary: "0 of 0 selected files reviewed", file: "README.md", state: "Outside scope" },
+  { name: "overlapping legacy outcomes", status: "partial", report: { manifest: { coverage: { selected: [{ path: "src/retry.ts" }], completed: [{ path: "src/retry.ts" }], failed: [{ path: "src/retry.ts" }] } } }, label: "Partial coverage", summary: "0 of 1 selected files reviewed", file: "retry.ts", state: "Failed" },
+  { name: "pending file evidence", status: "running", report: { manifest: { coverage: { selected: [{ path: "src/pending.ts" }] } } }, label: "Coverage in progress", summary: "0 of 1 selected files reviewed", file: "pending.ts", state: "Awaiting review" },
+]) {
+  test(`run coverage preserves ${example.name}`, async ({ page }) => {
+    await mock(page, { run: { status: example.status, report: example.report, publication: "not_applicable", publication_error: null, check_enabled: false } });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+    const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+    await expect(coverage.getByText(example.label, { exact: true })).toBeVisible();
+    if (example.name === "legacy report") await expect(coverage.getByText(example.summary, { exact: true })).toBeVisible();
+    else await expect(coverage.getByText(example.summary, { exact: true })).toHaveCount(0);
+    await expect(coverage.getByRole("listitem").filter({ hasText: example.file })).toContainText(example.state);
+    await noOverflow(page);
+  });
+}
+
+test("run coverage updates file rows through polling and hides them after access is revoked", async ({ page }) => {
+  await page.clock.install();
+  const state: Partial<Run> = { status: "running", publication: "pending", publication_error: null, check_enabled: false,
+    report: { manifest: { coverage: { selected: [{ path: "src/live.ts" }], completed: [] } } } };
+  await mock(page, { run: state });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  const row = page.getByRole("region", { name: "Coverage", exact: true }).getByRole("listitem").filter({ hasText: "src/live.ts" });
+  await expect(row).toContainText("Awaiting review");
+  state.report = { manifest: { coverage: { selected: [{ path: "src/live.ts" }], completed: [{ path: "src/live.ts" }] } } };
+  await page.clock.fastForward(5000);
+  await expect(row).toContainText("Reviewed");
+  await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Repository access revoked" } }));
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert").filter({ hasText: "Repository access revoked" })).toBeVisible();
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Coverage", exact: true })).toHaveCount(0);
 });
 
 test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {
@@ -1543,7 +1625,12 @@ test("partial review and publication retry remain distinct", async ({
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
-  await page.getByText("Configuration used", { exact: true }).click();
+  await expect(page.getByText(run.head_sha, { exact: true })).toBeVisible();
+  await expect(page.getByText(run.base_sha, { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/run-details-${info.project.name}.png`, fullPage: true });
+  await page.locator("summary", { hasText: "Configuration used" }).press("Enter");
   const config = page.locator("pre .language-json").last();
   await expect(config.locator(".hljs-attr").first()).toHaveText('"connection"');
   expect(await config.textContent()).toBe(JSON.stringify(run.config, null, 2));
@@ -2651,6 +2738,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   });
   await page.goto("/runs/run");
   await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
+  await expect(page.getByText("No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates.", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
   await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial assessment", { exact: true })).toBeVisible();
@@ -3006,8 +3094,7 @@ for (const example of feedbackCases) {
     await expect(outcome).toContainText(example.nextStep);
     if (example.fileReason) {
       await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-      const files = page.locator("details").filter({ has: page.getByText("Files not reviewed (1)", { exact: true }) });
-      if (await files.getAttribute("open") === null) await files.locator("summary").click();
+      const files = page.getByRole("region", { name: "Files not reviewed", exact: true });
       await expect(files.getByText(example.fileReason, { exact: true })).toBeVisible();
     }
     if (example.state.status === "blocked") {
@@ -3045,7 +3132,7 @@ test("completed reviews without comments need no attention in lists or previews"
 });
 
 for (const status of ["partial", "skipped"]) {
-  test(`file disclosure preserves the user's choice during ${status} run polling`, async ({ page }) => {
+  test(`coverage report disclosure preserves the user's choice during ${status} run polling`, async ({ page }) => {
     await page.clock.install();
     let reads = 0;
     const currentRun: Partial<Run> = { status };
@@ -3058,7 +3145,7 @@ for (const status of ["partial", "skipped"]) {
     });
     await page.goto("/runs/run");
     await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-    const files = page.locator("details").filter({ hasText: "Files not reviewed (1)" });
+    const files = page.locator("details").filter({ has: page.getByText("Inspect coverage report", { exact: true }) });
     await expect(files).toBeVisible();
     await files.locator("summary").click();
     const open = await files.getAttribute("open");

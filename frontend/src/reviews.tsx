@@ -74,7 +74,8 @@ import {
   words,
 } from "./components/common";
 import { RepositorySettings } from "./settings";
-import { fileFeedback, runFeedback } from "./lib/run-feedback";
+import { runFeedback } from "./lib/run-feedback";
+import { RunCoverage } from "./components/run-coverage";
 
 function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
@@ -753,13 +754,6 @@ function verificationSummary(value: unknown): Record<string, number> | undefined
   return counts;
 }
 
-type Coverage = {
-  selected?: unknown[];
-  completed?: unknown[];
-  reused?: unknown[];
-  failed?: unknown[];
-  waived?: unknown[];
-};
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
@@ -788,18 +782,14 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const assessmentTab = useRef<HTMLButtonElement>(null);
-  const coverage = ((run.report?.manifest as { coverage?: Coverage } | undefined)?.coverage ?? {}) as Coverage;
   const duration = runDuration(run);
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const verification = verificationSummary(run.progress?.verification);
   const feedback = runFeedback(run);
-  const files = fileFeedback(run);
   const term = search.trim().toLowerCase();
   const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
     && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
-  const reviewed = [...(coverage.completed ?? []), ...(coverage.reused ?? [])].flatMap((item) =>
-    item && typeof item === "object" && "path" in item && typeof item.path === "string" ? [item.path] : []);
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
     <header className="mb-6 min-w-0">
@@ -829,7 +819,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             {run.check_url && <a className="inline-flex min-h-6 items-center gap-1 underline-offset-4 hover:underline" href={run.check_url} target="_blank" rel="noreferrer" aria-label="View check on GitHub">View check<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
           </div>}
         </div>
-        {run.publication !== "published" && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
+        {!["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <>
           {run.check_pending && <p role="status" className="text-muted-foreground">{run.check_error ? "Check update pending. Review results are saved separately." : "Updating the check on GitHub…"}</p>}
@@ -883,19 +873,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </Empty>}
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
-        <section aria-label="Coverage">
-          <h2 className="text-sm font-semibold">Coverage</h2>
-          <p className="mt-2 text-xs text-muted-foreground mb-4">Validated file results determine coverage. Reused results are from earlier work; waived and failed items are not completed reviews.</p>
-          {run.report ? <>
-            <dl className="my-4 flex flex-wrap gap-x-8 gap-y-4 border-y py-4">{(["selected", "completed", "reused", "failed", "waived"] as const).map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className="text-sm font-medium tabular-nums">{coverage[key]?.length ?? 0}</dd></div>)}</dl>
-            {!!files.length && <details className="border-b py-4 text-sm" open={run.status === "skipped"}>
-              <summary className="cursor-pointer font-medium">Files not reviewed ({files.length})</summary>
-              <ul className="mt-3 divide-y">{files.map((file) => <li key={file.path} className="space-y-1 py-3"><code className="break-all text-xs">{file.path}</code><p className="break-words text-muted-foreground">{file.reason}</p></li>)}</ul>
-            </details>}
-            {!!reviewed.length && <details className="border-b py-4 text-sm"><summary className="cursor-pointer font-medium">Reviewed files ({reviewed.length})</summary><ul className="mt-3 space-y-2">{reviewed.map((path, index) => <li key={`${path}-${index}`}><code className="break-all text-xs">{path}</code></li>)}</ul></details>}
-            <details className="py-4 text-sm"><summary className="cursor-pointer font-medium">Inspect coverage report</summary><div className="mt-3"><Code language="json">{JSON.stringify(run.report, null, 2)}</Code></div></details>
-          </> : <Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty>}
-        </section>
+        <RunCoverage run={run} />
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">
@@ -909,13 +887,26 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </section>
       </TabsContent>
       <TabsContent value="details" className="min-w-0">
-        <h2 className="mb-4 text-sm font-semibold">Run details</h2>
-        <dl className="divide-y border-y text-sm">{[
-          ["Connection", String(connection?.name ?? "Not recorded")], ["Model", String(connection?.model ?? "Not recorded")], ["Engine", engine],
-          ["Account owner", run.owner_id == null ? "Shared connection" : `GitHub #${run.owner_id}`], ["Started by", run.actor_id == null ? words(run.trigger) : `GitHub #${run.actor_id}`],
-          ["Head commit", run.head_sha], ["Base commit", run.base_sha], ["Started", run.started_at ? date(run.started_at) : "Not started"], ["Finished", run.finished_at ? date(run.finished_at) : "Not finished"],
-        ].map(([key, value]) => <div key={key} className="grid gap-1 py-3 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-4"><dt className="text-xs text-muted-foreground">{key}</dt><dd className={`break-words [overflow-wrap:anywhere] ${key.includes("commit") ? "font-mono text-xs" : ""}`}>{value}</dd></div>)}</dl>
-        <details className="mt-5 text-sm"><summary className="cursor-pointer font-medium">Configuration used</summary><p className="mt-3 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div></details>
+        <div className="grid min-w-0 gap-x-8 gap-y-6 md:grid-cols-2">{[
+          { title: "Review setup", rows: [
+            ["Connection", String(connection?.name ?? "Not recorded")], ["Model", String(connection?.model ?? "Not recorded")], ["Engine", engine],
+            ["Account owner", run.owner_id == null ? "Shared connection" : `Member #${run.owner_id}`],
+          ] },
+          { title: "Execution", rows: [
+            ["Started by", run.actor_id == null ? words(run.trigger) : `Member #${run.actor_id}`],
+            ["Started", run.started_at ? date(run.started_at) : "Not started"], ["Finished", run.finished_at ? date(run.finished_at) : "Not finished"],
+          ] },
+          { title: "Revisions", rows: [["Head commit", run.head_sha], ["Base commit", run.base_sha]] },
+        ].map(({ title, rows }) => <section key={title} aria-label={title} className={`min-w-0 ${title === "Revisions" ? "md:col-span-2" : ""}`}>
+          <h2 className="mb-2 text-sm font-semibold">{title}</h2>
+          <dl className="divide-y border-y text-sm">{rows.map(([key, value]) => <div key={key} className="grid grid-cols-[104px_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1 py-2.5">
+            <dt className="text-xs text-muted-foreground">{key}</dt><dd className={`min-w-0 break-words [overflow-wrap:anywhere] ${title === "Revisions" ? "font-mono text-xs" : ""}`}>{value}</dd>
+          </div>)}</dl>
+        </section>)}</div>
+        <details className="group mt-6 border-t pt-4 text-sm">
+          <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none items-center gap-2 font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Configuration used<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
+          <p className="mt-2 text-xs text-muted-foreground">The saved configuration for this run, independent of today's repository settings.</p><div className="mt-3"><Code language="json">{JSON.stringify(run.config, null, 2)}</Code></div>
+        </details>
       </TabsContent>
     </Tabs>
     <Sheet open={!!finding || !!selectedCandidate} onOpenChange={(open) => { if (!open) { setFinding(null); setSelectedCandidate(null); } }}>

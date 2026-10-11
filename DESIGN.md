@@ -210,6 +210,11 @@ components:
     backgroundColor: "{colors.background}"
     textColor: "{colors.foreground}"
     width: "100%"
+  coverage-file-row:
+    backgroundColor: "transparent"
+    textColor: "{colors.foreground}"
+    padding: "12px 0"
+    width: "100%"
 ---
 
 # Design System: Code Mortis
@@ -373,11 +378,21 @@ Run history fetches its first server page when the tab opens. Each page contains
 
 The Review run header uses the same unframed, transparent surface. Its top row pairs the title with the execution Status chip and permission-appropriate recovery actions. The PR link follows, then a wrapping metadata row with date, trigger, duration in minutes and seconds, and a commit icon beside the saved revision and Current commit or Earlier commit. Healthy completed runs omit redundant completion and next-step paragraphs; active runs and outcomes needing attention retain their guidance. Connection and model remain in Details.
 
-GitHub comment publication and check status follow after 24px with a single top divider and 16px top padding. Partial assessment or Assessment pending sits beside the publication badge with an accessible live status description. Published results omit the redundant confirmation sentence; other publication states, errors, and pending check updates remain explicit. Fix verification is an unbordered native disclosure row 12px below publication. Its summary keeps confirmed resolutions, pending synchronization, failed verification counts, and an inline chevron visible, with a 44px minimum height on mobile and 32px from 640px. Detailed counts and the resolution explanation expand with 8px top padding and no inset side padding. Live file progress remains visible above the tabs. Disclosure state survives polling.
+GitHub comment publication and check status follow after 24px with a single top divider and 16px top padding. Partial assessment or Assessment pending sits beside the publication badge with an accessible live status description. Published and No new comments results omit the redundant confirmation sentence; other publication states, errors, and pending check updates remain explicit. Fix verification is an unbordered native disclosure row 12px below publication. Its summary keeps confirmed resolutions, pending synchronization, failed verification counts, and an inline chevron visible, with a 44px minimum height on mobile and 32px from 640px. Detailed counts and the resolution explanation expand with 8px top padding and no inset side padding. Live file progress remains visible above the tabs. Disclosure state survives polling.
 
 Findings, Coverage, Assessment, and Details use the shared tabs, with Findings selected initially. Run findings filter saved occurrences locally using the shared filter bar for search and multiple severity selections, a matching/total count, and the shared Focused cards. Cards show saved file/line context, a three-line explanation preview, severity/category, and inline or summary comment placement. Opening a card defaults the shared evidence sheet to At this run, which contains the immutable saved explanation and code comparison. Current status and Activity explain the live finding separately. Saved evidence remains readable if that live request fails. Closing the sheet restores focus to its card or the search field.
 
-Coverage shows validated selected, completed, reused, failed, and waived counts before expandable file lists and the raw report. Files not reviewed include reasons and expand initially for skipped runs. Assessment keeps pending, incomplete, and legacy states explicit and opens candidate decisions and revision evidence in the matching side sheet. Details presents readable metadata before expandable saved configuration JSON. Empty findings, missing coverage, and incomplete assessment never imply a clean review.
+Assessment keeps pending, incomplete, and legacy states explicit and opens candidate decisions and revision evidence in the matching side sheet. Details groups saved metadata into unboxed Review setup, Execution, and Revisions sections, with 24px between groups. Setup and execution sit side by side from 768px and stack below that width; revisions span the content width. Compact divided rows use 104px muted labels, a 16px gap, and 10px vertical padding. Values wrap within their column, and full commit hashes use 12px monospace text. Local account references read Member # followed by the saved ID. Configuration used stays collapsed by default beneath a top divider, with the same native disclosure chevron, touch target, and focus treatment as Fix verification. Its expanded content explains the saved snapshot before showing JSON. Empty findings, missing coverage, and incomplete assessment never imply a clean review.
+
+### Coverage
+
+Coverage begins with an unboxed 14px semibold heading, an explicit scope Status chip, and selected/completed/reused/failed/waived counts. Only validated reviewed or reused results within the selected scope count toward reviewed scope; failed, waived, and missing results remain separate. No selected files and an unrecorded legacy scope remain explicit. Selected scope reviewed does not imply a clean assessment or absence of bugs.
+
+File groups follow the summary directly after 24px. Group counts describe the full saved report before progressive display.
+
+Files not reviewed precedes Reviewed files, with 24px between nonempty groups. Each 14px semibold group heading has a smaller muted count and 10px before its list. Native informational list rows have 12px vertical padding, an 8px gap, a muted 16px file icon, a full wrapping 12px monospace path with 20px line height, and a Status chip at the row end. Thin semantic dividers separate rows and bound each list; rows have no card treatment or details sheet. Specific saved reasons appear inline below the path after 4px, in muted 12px relaxed text capped at 75ch; repetitive default explanations are omitted. Long paths and reasons wrap at every width.
+
+Each group initially shows up to 10 records from the already-loaded report; independent Load more actions reveal another 10. Below the list's bottom divider, the footer has 12px top padding and no horizontal inset, with a small ghost action at the left and a live muted tabular N of M shown count at the right. It remains after more records have been revealed. Inspect coverage report is a native disclosure after 24px, with a top border and 16px top padding; its open state survives polling. Active runs without a report show recording guidance, while terminal runs explain the absence of saved evidence. Neither state implies a clean review.
 
 ### Candidate assessment
 

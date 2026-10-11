@@ -1,0 +1,94 @@
+import { useState } from "react";
+import { CircleCheck, FileCode2, History } from "lucide-react";
+import type { Run } from "../api";
+import { fileFeedback } from "../lib/run-feedback";
+import { active, Code, Empty, Status } from "./common";
+import { Button } from "./ui/button";
+
+const outcomes = {
+  completed: { label: "Reviewed", value: "completed", reason: "Validated file result saved in this run." },
+  reused: { label: "Reused", value: "completed", reason: "Validated result reused from earlier work." },
+  failed: { label: "Failed", value: "failed", reason: "This file did not complete review." },
+  waived: { label: "Waived", value: "partial", reason: "Review of this file was waived." },
+  pending: { label: "Awaiting review", value: "queued", reason: "Waiting for a validated file result." },
+  not_reviewed: { label: "Not reviewed", value: "partial", reason: "No validated review result was recorded." },
+  excluded: { label: "Outside scope", value: "not_reviewed", reason: "Outside the selected review scope." },
+};
+type Outcome = keyof typeof outcomes;
+type FileResult = { path: string; outcome: Outcome; reason: string; selected: boolean };
+const countKeys = ["selected", "completed", "reused", "failed", "waived"] as const;
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function coverageFiles(run: Run) {
+  const coverage = record(record(run.report?.manifest).coverage);
+  const rows = (key: typeof countKeys[number]) => (Array.isArray(coverage[key]) ? coverage[key] : []).flatMap((value: unknown) => {
+    const row = record(value);
+    return typeof row.path === "string" && row.path.trim() ? [{ ...row, path: row.path }] : [];
+  });
+  const selected = rows("selected");
+  const paths = new Set(selected.map((item) => item.path));
+  const files = new Map<string, FileResult>();
+  const feedback = fileFeedback(run);
+  const reasons = new Map(feedback.map((item) => [item.path, item.reason]));
+  const add = (row: Record<string, unknown> & { path: string }, outcome: Outcome) => {
+    const reason = typeof row.reason === "string" && row.reason.trim() ? row.reason
+      : typeof row.message === "string" && row.message.trim() ? row.message : reasons.get(row.path) ?? outcomes[outcome].reason;
+    files.set(row.path, { path: row.path, outcome, reason, selected: paths.has(row.path) });
+  };
+  selected.forEach((row) => add(row, active(run.status) ? "pending" : "not_reviewed"));
+  for (const key of ["completed", "reused", "waived", "failed"] as const) rows(key).forEach((row) => add(row, key));
+  const hasScope = Array.isArray(coverage.selected);
+  for (const item of feedback) if (!files.has(item.path)) {
+    files.set(item.path, { ...item, selected: paths.has(item.path), outcome: hasScope && !paths.has(item.path) ? "excluded" : "not_reviewed" });
+  }
+  const items = [...files.values()];
+  const reviewed = items.filter((item) => item.selected && ["completed", "reused"].includes(item.outcome)).length;
+  return { items, reviewed, hasScope, counts: Object.fromEntries(countKeys.map((key) => [key, rows(key).length])) as Record<typeof countKeys[number], number> };
+}
+
+function FileStatus({ file }: { file: FileResult }) {
+  const status = outcomes[file.outcome];
+  return <Status value={status.value} label={status.label} icon={file.outcome === "completed" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : file.outcome === "reused" ? <History className="size-3.5" aria-hidden="true" /> : undefined} />;
+}
+
+export function RunCoverage({ run }: { run: Run }) {
+  const [pages, setPages] = useState<Record<string, number>>({});
+  const { items, reviewed, hasScope, counts } = coverageFiles(run);
+  const complete = counts.selected > 0 && reviewed === counts.selected && !counts.failed && !counts.waived;
+  const scopeLabel = !hasScope ? "Coverage unavailable" : complete ? "Selected scope reviewed" : !counts.selected ? "No selected files" : active(run.status) ? "Coverage in progress" : "Partial coverage";
+  return <section aria-label="Coverage" className="min-w-0">
+    <div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold">Coverage</h2>{run.report && <Status value={complete ? "completed" : counts.selected ? active(run.status) ? "running" : "partial" : "not_reviewed"} label={scopeLabel} />}</div>
+    {!run.report ? <div className="mt-4"><Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty></div> : <>
+      {!hasScope && <p role="status" className="mt-2 text-xs text-muted-foreground">Selected review scope was not recorded.</p>}
+      <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{countKeys.map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className={`text-sm tabular-nums ${key === "failed" && counts.failed ? "text-destructive" : ""}`}>{counts[key]}</dd></div>)}</dl>
+      <div className="mt-6 space-y-6">
+        {(["attention", "reviewed"] as const).map((group) => {
+          const files = items.filter((item) => ["completed", "reused"].includes(item.outcome) === (group === "reviewed"));
+          if (!files.length) return null;
+          const visible = files.slice(0, (pages[group] ?? 1) * 10);
+          const heading = group === "attention" ? "Files not reviewed" : "Reviewed files";
+          return <section key={group} aria-label={heading}>
+            <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{heading}<span className="text-xs font-normal tabular-nums text-muted-foreground">{files.length}</span></h3>
+            <ul className="divide-y border-y">{visible.map((file) => <li key={file.path} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 py-3">
+              <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <code className="block break-words text-xs leading-5 [overflow-wrap:anywhere]">{file.path}</code>
+                {file.reason !== outcomes[file.outcome].reason && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{file.reason}</p>}
+              </div>
+              <FileStatus file={file} />
+            </li>)}</ul>
+            {(visible.length < files.length || (pages[group] ?? 1) > 1) && <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
+              {visible.length < files.length && <Button variant="ghost" size="sm" onClick={() => setPages((current) => ({ ...current, [group]: (current[group] ?? 1) + 1 }))}>Load more<span className="sr-only"> {heading.toLowerCase()}</span></Button>}
+              <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{visible.length} of {files.length} shown</span>
+            </div>}
+          </section>;
+        })}
+        {!items.length && <Empty title="No file coverage recorded">Inspect the saved report for scope and review details. No selected files does not imply a clean review.</Empty>}
+      </div>
+      <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Inspect coverage report</summary><div className="mt-3"><Code language="json">{JSON.stringify(run.report, null, 2)}</Code></div></details>
+    </>}
+  </section>;
+}
