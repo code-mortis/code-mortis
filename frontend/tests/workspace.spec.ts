@@ -3875,7 +3875,9 @@ for (const [kind, label] of [["chatgpt", "Personal ChatGPT subscription"], ["cla
     let created: typeof connection | undefined;
     await page.route("**/api/v1/connections", (route) => {
       if (route.request().method() === "POST") {
-        expect(route.request().postDataJSON()).toEqual({ name: "Subscription setup", kind, model: "" });
+        expect(route.request().postDataJSON()).toEqual({
+          name: "Subscription setup", kind, model: "", options: { prompt_token_ceiling: 58888 },
+        });
         created = { ...connection, ...route.request().postDataJSON(), id: "personal", owner_id: 7, auth_status: "disconnected" };
         return route.fulfill({ json: created });
       }
