@@ -40,9 +40,13 @@ class ConnectionConfig(StrictModel):
     @field_validator("options")
     @classmethod
     def allowed_options(cls, value):
-        allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header"}
+        allowed = {"timeout_sec", "extra_body", "retry_codes", "aws_region", "aws_profile", "auth_header", "prompt_token_ceiling"}
         if set(value) - allowed:
-            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header.")
+            raise ValueError("Provider options contain an unsupported setting. Allowed keys: timeout_sec, extra_body, retry_codes, aws_region, aws_profile, auth_header, prompt_token_ceiling.")
+        if "prompt_token_ceiling" in value and (
+            type(value["prompt_token_ceiling"]) is not int or not 4096 <= value["prompt_token_ceiling"] <= 2_000_000
+        ):
+            raise ValueError("prompt_token_ceiling must be a whole number from 4096 to 2000000 tokens.")
         if "timeout_sec" in value and (
             type(value["timeout_sec"]) is not int or not 5 <= value["timeout_sec"] <= 900
         ):
@@ -421,6 +425,14 @@ class AssessmentResult(StrictModel):
     evidence: list[VerificationEvidence] = Field(max_length=30)
 
 
+class CandidateAttemptOut(BaseModel):
+    status: str
+    error: str | None
+    result: AssessmentResult | None
+    usage: dict[str, Any]
+    finished_at: datetime | None
+
+
 class CandidateOut(ORMModel):
     id: str
     snapshot: dict[str, Any]
@@ -429,6 +441,13 @@ class CandidateOut(ORMModel):
     finding_id: str | None
     is_new: bool
     error: str | None
+    attempts: list[CandidateAttemptOut] = Field(default_factory=list)
+    retryable: bool = False
+
+    @model_validator(mode="after")
+    def technical_failure(self):
+        self.retryable = self.status == "failed" and self.result is None and self.finding_id is None
+        return self
 
 
 class AssessmentSummary(StrictModel):
@@ -446,7 +465,6 @@ class RunDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
-    candidates: list[CandidateOut] = Field(default_factory=list)
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -462,7 +480,30 @@ class RunPage(BaseModel):
     page_size: int = LIST_PAGE_SIZE
 
 
-InboxGroup = Literal["active", "merged", "closed"]
+CandidateOutcome = Literal["new", "repeated", "rejected", "withheld", "pending"]
+
+
+class CandidateFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    outcome: list[CandidateOutcome] = Field(default_factory=list, max_length=5)
+    severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class CandidatePage(BaseModel):
+    items: list[CandidateOut]
+    total: int
+    registered_total: int
+    outcome_counts: dict[str, int]
+    severity_counts: dict[str, int]
+    category_counts: dict[str, int]
+    page: int
+    has_more: bool
+    page_size: int = LIST_PAGE_SIZE
+
+
+InboxGroup = Literal["active", "merged", "closed", "all"]
 InboxReview = Literal[
     "queued", "running", "blocked", "completed", "partial", "failed", "skipped",
     "cancelled", "superseded", "not_reviewed", "outdated",
@@ -545,6 +586,7 @@ class FindingFilters(StrictModel):
     q: str = Field(default="", max_length=256)
     status: list[FindingStatus] = Field(default_factory=list, max_length=3)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     group: FindingStatus | None = None
     page: int = Field(default=1, ge=1, le=1000000)
 
@@ -562,4 +604,5 @@ class FindingsOut(BaseModel):
     total: int
     registered_total: int
     status_counts: dict[str, int]
+    category_counts: dict[str, int]
     page_size: int = LIST_PAGE_SIZE

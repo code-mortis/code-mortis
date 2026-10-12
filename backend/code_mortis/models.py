@@ -235,6 +235,7 @@ class ReviewCandidate(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    attempts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     finding_id: Mapped[str | None] = mapped_column(ForeignKey("findings.id"), index=True)
     is_new: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str | None] = mapped_column(Text)

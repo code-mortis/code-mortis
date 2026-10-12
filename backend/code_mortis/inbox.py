@@ -87,6 +87,8 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     enabled = [name for name, state in [
         ("active", "open"), ("merged", "merged"), ("closed", "closed")
     ] if state in states or (name == "active" and totals.get(name, 0))]
+    if filters.group == "all":
+        enabled = ["all"]
     sort_column = {
         "created_at": filtered.c.created_at, "updated_at": filtered.c.updated_at,
         "title": func.lower(filtered.c.title), "repository": func.lower(filtered.c.repository_name),
@@ -97,9 +99,9 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     for name in enabled:
         if filters.group and name != filters.group:
             continue
-        total = totals.get(name, 0)
+        total = sum(totals.values()) if name == "all" else totals.get(name, 0)
         page = min(filters.page if filters.group else 1, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
-        items = db.execute(select(filtered).where(filtered.c.group == name).order_by(
+        items = db.execute(select(filtered).where(True if name == "all" else filtered.c.group == name).order_by(
             case((filtered.c.has_running_review, 0),
                  (and_(filtered.c.group == "active", filtered.c.review_status == "queued"), 1), else_=2),
             order.nulls_last(), filtered.c.id.desc(),

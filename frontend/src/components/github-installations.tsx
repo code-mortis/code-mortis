@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Check, Github, MoreHorizontal } from "lucide-react";
 import { api, useAction, type Schema } from "../api";
@@ -57,7 +58,6 @@ export function GitHubInstallations() {
   const mutationPending = action.isPending || uninstallAction.isPending || removeAction.isPending;
   const [uninstalling, setUninstalling] = useState<Installation | null>(null);
   const [removing, setRemoving] = useState<Installation | null>(null);
-  const [message, setMessage] = useState("");
   const heading = useRef<HTMLHeadingElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const connected = query.data?.filter((item) => item.connected)
@@ -66,19 +66,17 @@ export function GitHubInstallations() {
     .sort((a, b) => installationPriority(installationStatus(a)) - installationPriority(installationStatus(b))) ?? [];
 
   function connect(item: Installation) {
-    setMessage("");
     action.mutate({ path: `/installations/${item.id}` }, {
-      onSuccess: () => setMessage(`Repository sync queued for ${item.account}. Updated repositories will appear when synchronization finishes.`),
+      onSuccess: () => toast.success(`Repository sync queued for ${item.account}`, { description: "Updated repositories will appear when synchronization finishes." }),
     });
   }
 
   function remove(item: Installation) {
-    setMessage("");
     removeAction.mutate({ path: `/installations/${item.id}/local`, method: "DELETE" }, {
       onSuccess: () => {
         returnFocus.current = heading.current;
         setRemoving(null);
-        setMessage(`${item.account} removed from the list. Saved repositories and review history are retained.`);
+        toast.success(`${item.account} removed from the list.`, { description: "Saved repositories and review history are retained." });
       },
     });
   }
@@ -95,7 +93,6 @@ export function GitHubInstallations() {
           </Button>
         </div>
         {(query.error || action.error) && <div className="mb-4"><ErrorNotice error={query.error || action.error} /></div>}
-        {message && <p role="status" className="mb-4 text-sm text-muted-foreground">{message}</p>}
         {query.isPending ? <Loading /> : connected.length ? (
           <div className="overflow-hidden rounded-lg border bg-card">
             <div aria-hidden="true" className="settings-record settings-installation-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
@@ -200,7 +197,7 @@ export function GitHubInstallations() {
             <Button variant="outline" disabled={uninstallAction.isPending} onClick={() => setUninstalling(null)}>Cancel</Button>
             <Button variant="destructive" disabled={uninstallAction.isPending} onClick={() => {
               if (uninstalling) uninstallAction.mutate({ path: `/installations/${uninstalling.id}`, method: "DELETE" }, {
-                onSuccess: () => { returnFocus.current = heading.current; setUninstalling(null); setMessage(""); },
+                onSuccess: () => { returnFocus.current = heading.current; setUninstalling(null); },
               });
             }}>{uninstallAction.isPending ? "Requesting uninstall…" : "Uninstall GitHub App"}</Button>
           </div>

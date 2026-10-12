@@ -5,13 +5,12 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, type Schema } from "../api";
 import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Property } from "../lib/inbox-filters";
 import { runFeedback } from "../lib/run-feedback";
-import { Empty, ErrorNotice, Loading, Status } from "./common";
+import { Empty, ErrorNotice, Loading } from "./common";
 import { InboxFilters } from "./inbox-filters";
-import { PullRequestListHeading, PullRequestRow } from "./pull-request-row";
-import { Badge } from "./ui/badge";
+import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./pull-request-row";
 import { Button } from "./ui/button";
 
-const titles = { active: "Open", merged: "Merged", closed: "Closed" };
+const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
 
 export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const [raw, setParams] = useSearchParams();
@@ -19,6 +18,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const navigate = useNavigate();
   const params = normalizeFilters(raw, "open");
   params.delete("repo");
+  params.delete("all_pages");
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
   const filters = withoutPages(params).toString();
   const canonical = params.toString();
@@ -60,11 +60,14 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;
   const sections = rows?.groups.filter((group) => group.total > 0) ?? [];
+  const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings"].some((key) => params.has(key));
 
   return <section aria-labelledby="repository-pulls-heading">
-    <h2 id="repository-pulls-heading" className="mb-4 text-xl font-semibold tracking-tight">Pull requests</h2>
-    <InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} />
-    <p role="status" className="my-4 text-xs text-muted-foreground">{rows ? `${rows.total} pull ${rows.total === 1 ? "request" : "requests"}` : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</p>
+    <div className="mb-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <h2 id="repository-pulls-heading" className="text-xl font-semibold tracking-tight">Pull requests</h2>
+      <span role="status" className="text-xs tabular-nums text-muted-foreground">{rows ? <>{filtered ? `${rows.total} of ${rows.registered_total}` : rows.total}<span className="sr-only"> pull {rows.total === 1 ? "request" : "requests"}</span></> : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</span>
+    </div>
+    <div className="mb-4"><InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} /></div>
     {pulls.error && <div className="mb-4 space-y-2"><ErrorNotice error={pulls.error} />{!denied && <Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry pull requests</Button>}</div>}
     {pulls.isPending && <Loading />}
     {rows && !rows.total && !pulls.isPlaceholderData && <Empty title={rows.registered_total ? "No matching pull requests" : "No pull requests here yet"}>
@@ -84,7 +87,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
                 state={{ repository: `${location.pathname}${location.search}` }}
                 feedback={feedback?.needsAttention ? feedback.summary : undefined}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<><div className="flex flex-wrap gap-1"><Status value={pr.review_status} />{group === "active" && pr.state !== "open" && <Badge variant="secondary" className="capitalize">{pr.state}</Badge>}</div>{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
+                status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
             })}
             {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => pulls.refetch()}>Retry {titles[group].toLowerCase()}</Button></div>}
             {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">

@@ -84,6 +84,11 @@ class Provider(BaseHTTPRequestHandler):
                     "evidence": [value["evidence"][1]],
                     "required_paths": ["helper.py"] if verification_mode == "assessment_context" else [],
                 }
+                if verification_mode == "assessment_bad_identity":
+                    value.update(verdict="rejected", relationship="duplicate", finding_id="prior-candidate")
+                elif verification_mode == "assessment_bad_citation":
+                    value["verdict"] = "rejected"
+                    value["evidence"][0]["quote"] = "invented"
             content = [{"type": "tool_use", "id": "verify", "name": "task_done",
                         "input": {"state": "DONE", "result": value}}]
             if verification_mode == "no_verdict":
@@ -308,12 +313,26 @@ def main():
                 raw, usage = verification.api_verify(
                     root, env, connection, {"api_key": "fake-test-key"}, assessment_context,
                     options["token_budget"], 60, lambda: False, instructions=assessment.INSTRUCTIONS,
-                    schema=assessment.output_schema(), validator=assessment.validate_response,
+                    schema=assessment.output_schema(assessment_context), validator=assessment.validate_response,
                 )
                 assert raw["verdict"] == ("uncertain" if verdict == "context" else verdict), raw
                 assert raw["required_paths"] == (["helper.py"] if verdict == "context" else [])
                 assert usage["tokens"] > 0
                 assert len(calls) == before + 1, "A submitted assessment must finish without another model turn."
+            for failure, field in (("identity", "finding_id"), ("citation", "evidence[0]")):
+                verification_mode = "assessment_bad_" + failure
+                before = len(calls)
+                try:
+                    verification.api_verify(
+                        root, env, connection, {"api_key": "fake-test-key"}, assessment_context,
+                        options["token_budget"], 60, lambda: False, instructions=assessment.INSTRUCTIONS,
+                        schema=assessment.output_schema(assessment_context), validator=assessment.validate_response,
+                    )
+                except verification.VerificationOutputError as exc:
+                    assert exc.feedback["field"] == field and exc.usage["tokens"] > 0, str(exc)
+                else:
+                    raise AssertionError("Invalid assessment must retain validation feedback and fail closed")
+                assert len(calls) == before + 1
             for repetitions in (60000, 46000):
                 before = len(calls)
                 try:
@@ -330,6 +349,16 @@ def main():
                 else:
                     raise AssertionError("Oversized evidence was accepted")
                 assert len(calls) == before, "Size checks must not call the provider."
+            verification_mode = "assessment_uncertain"
+            before = len(calls)
+            raw, usage = verification.api_verify(
+                root, env, {**connection, "options": {"prompt_token_ceiling": 200000}},
+                {"api_key": "fake-test-key"}, {**assessment_context, "diff": "x " * 60000},
+                None, 60, lambda: False, instructions=assessment.INSTRUCTIONS,
+                schema=assessment.output_schema(), validator=assessment.validate_response,
+            )
+            assert raw["verdict"] == "uncertain" and usage["tokens"] > 0
+            assert len(calls) == before + 1, "A larger ceiling must preserve and submit the full evidence."
             for verification_mode in ("no_verdict", "multiple_results", "provider_error"):
                 try:
                     verification.api_verify(root, env, connection, {"api_key": "fake-test-key"}, context,

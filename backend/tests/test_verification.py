@@ -1109,12 +1109,13 @@ def test_lost_compensation_response_reconciles_without_duplicate_activity(scenar
 
 
 @pytest.mark.parametrize("failure", ["too_large", "invalid_preview", "cancelled"])
-def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("ceiling", [58888, 200000])
+def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatch, failure, ceiling):
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
     def preview(args, *a, **k):
         assert "--preview" in args
-        assert args[args.index("--max-tokens") + 1] == "58888"
+        assert args[args.index("--max-tokens") + 1] == str(ceiling)
         if failure == "cancelled":
             raise ocr.ReviewStopped()
         return 0, "not json" if failure == "invalid_preview" else json.dumps({"files": [
@@ -1122,31 +1123,82 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
         ]}), ""
     monkeypatch.setattr(ocr, "command", preview)
     with pytest.raises(verification.VerificationOutputError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+        verification.api_verify(tmp_path / "repo", {}, {"options": {"prompt_token_ceiling": ceiling}}, {}, CONTEXT, 10000, 30, lambda: False)
     assert caught.value.usage == {"tokens": 0}
     assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
     if failure == "too_large":
-        assert "47,110 tokens" in str(caught.value) and "max_tokens=58,888" in str(caught.value)
+        assert f"{ceiling * 4 // 5:,} tokens" in str(caught.value) and f"max_tokens={ceiling:,}" in str(caught.value)
         assert "too_large" in str(caught.value) and "Evidence size:" in str(caught.value)
 
 
-def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch):
+@pytest.mark.parametrize("options, ceiling", [({}, 58888), ({"prompt_token_ceiling": 200000}, 200000)])
+def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch, options, ceiling):
     from contextlib import nullcontext
 
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
     def command(args, *a, **k):
-        assert args[args.index("--max-tokens") + 1] == "58888"
+        assert args[args.index("--max-tokens") + 1] == str(ceiling)
         if "--preview" in args:
             return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
         return 0, json.dumps({"status": "completed_with_warnings", "summary": {"total_tokens": 0},
                              "warnings": [{"type": "token_threshold_exceeded",
-                                           "message": "prompt tokens (48475) exceed 80% of max_tokens(58888)"}]}), ""
+                                           "message": f"prompt tokens ({ceiling}) exceed 80% of max_tokens({ceiling})"}]}), ""
     monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(verification.VerificationOutputError, match="47,110-token limit.*48475") as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    with pytest.raises(verification.VerificationOutputError, match=f"{ceiling * 4 // 5:,}-token limit.*{ceiling}") as caught:
+        verification.api_verify(tmp_path / "repo", {}, {"options": options}, {}, CONTEXT, 10000, 30, lambda: False)
     assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
+
+
+def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(verification, "terminal_result", lambda *a: RESULT)
+    calls = []
+    def command(args, root, *a, **k):
+        calls.append(args)
+        assert args[args.index("--max-tokens") + 1] == "200000"
+        assert args[args.index("--max-tokens-budget") + 1] == "10000"
+        assert (root / "evidence.py").read_text() == verification.evidence_bundle(CONTEXT)
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        return 0, json.dumps({"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 10}, "comments": []}), ""
+    monkeypatch.setattr(ocr, "command", command)
+    result, usage = verification.api_verify(tmp_path / "repo", {}, {"options": {"prompt_token_ceiling": 200000}},
+                                            {}, CONTEXT, 10000, 30, lambda: False)
+    assert result == RESULT and usage == {"tokens": 10} and len(calls) == 2
+
+
+def test_api_adapter_retains_structured_citation_feedback_before_truncation(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from code_mortis import assessment
+
+    context = {**CONTEXT, "history": []}
+    raw = {"verdict": "rejected", "relationship": "new", "finding_id": None,
+           "explanation": "x" * 10000, "cause": "", "trigger": "", "consequence": "",
+           "history_explanation": "", "contradicts_prior": False, "changed_conditions": "",
+           "suggestion_supported": False, "evidence": copy.deepcopy(RESULT["evidence"]), "required_paths": []}
+    raw["evidence"].append({**raw["evidence"][-1], "quote": "invented"})
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(verification, "terminal_result", lambda *a: raw)
+    def command(args, *a, **k):
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        return 0, json.dumps({"status": "success", "summary": {"total_tokens": 17, "files_reviewed": 1}}), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(verification.VerificationOutputError) as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {}, context, 10000, 30, lambda: False,
+                                instructions=assessment.INSTRUCTIONS, schema=assessment.output_schema(context),
+                                validator=assessment.validate_response)
+    assert caught.value.usage == {"tokens": 17}
+    assert caught.value.feedback["field"] == "evidence[2]"
+    detail = str(caught.value).split("; response=", 1)[0]
+    assert "evidence[2]" in detail and "current" in detail and "src/retry.py" in detail
 
 
 def test_missing_resolution_permission_skips_analysis_but_preserves_review(scenario, monkeypatch):

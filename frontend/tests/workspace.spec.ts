@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { mkdir, readFile } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
+import { contrast, themes } from "../src/lib/appearance";
 
 const at = "2026-10-05T13:20:00Z";
 const installation: Schema["InstallationOut"] = {
@@ -142,6 +143,7 @@ function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
   const query = (params.get("q") ?? "").toLowerCase();
   const filtered = items.filter((item) => (!params.has("status") || params.getAll("status").includes(item.status))
     && (!params.has("severity") || params.getAll("severity").includes(item.severity))
+    && (!params.has("category") || params.getAll("category").includes(item.category))
     && (!query || `${item.content} ${item.path} ${item.category}`.toLowerCase().includes(query)));
   return {
     groups: statuses.filter((group) => (!params.has("status") || params.getAll("status").includes(group)) && (!params.has("group") || params.get("group") === group)).map((group) => {
@@ -151,6 +153,7 @@ function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
     }),
     total: filtered.length, registered_total: items.length, page_size: 10,
     status_counts: Object.fromEntries(statuses.map((status) => [status, items.filter((item) => item.status === status).length])),
+    category_counts: Object.fromEntries([...new Set(items.map((item) => item.category))].map((category) => [category, items.filter((item) => item.category === category).length])),
   };
 }
 
@@ -199,6 +202,25 @@ function pullMetadata({ runs, findings: _findings, pull_request, ...metadata }: 
 function runPage(runs: Run[], params: URLSearchParams): Schema["RunPage"] {
   const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(runs.length / 10)));
   return { items: runs.slice((page - 1) * 10, page * 10), total: runs.length, page, has_more: page * 10 < runs.length, page_size: 10 };
+}
+
+function candidateOutcome(candidate: Schema["CandidateOut"]) {
+  return candidate.finding_id ? candidate.is_new ? "new" : "repeated" : candidate.result?.verdict === "rejected" ? "rejected" : ["queued", "running"].includes(candidate.status) ? "pending" : "withheld";
+}
+
+function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchParams): Schema["CandidatePage"] {
+  const query = (params.get("q") ?? "").toLowerCase();
+  const matches = candidates.filter((candidate) => (!params.has("outcome") || params.getAll("outcome").includes(candidateOutcome(candidate)))
+    && (!params.has("severity") || params.getAll("severity").includes(String(candidate.snapshot.severity)))
+    && (!params.has("category") || params.getAll("category").includes(String(candidate.snapshot.category)))
+    && (!query || [candidate.snapshot.path, candidate.snapshot.content, candidate.snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(query))));
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
+  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: candidates.length,
+    page, has_more: page * 10 < matches.length, page_size: 10,
+    outcome_counts: Object.fromEntries(["new", "repeated", "rejected", "withheld", "pending"].map((outcome) => [outcome, candidates.filter((candidate) => candidateOutcome(candidate) === outcome).length])),
+    severity_counts: Object.fromEntries(["critical", "high", "medium", "low"].map((severity) => [severity, candidates.filter((candidate) => candidate.snapshot.severity === severity).length])),
+    category_counts: Object.fromEntries([...new Set(candidates.map((candidate) => String(candidate.snapshot.category ?? "")).filter(Boolean))].map((category) => [category, candidates.filter((candidate) => candidate.snapshot.category === category).length])),
+  };
 }
 
 async function mockPullDetail(page: Page, detail: () => PullDetailFixture) {
@@ -332,10 +354,11 @@ async function mock(
         occurrences: options.occurrences ?? (currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
         ]),
-        candidates: options.candidates ?? [],
         assessment: options.assessment ?? null,
         can_write: options.canWrite !== false,
       };
+    else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
+    else if (path.startsWith("/runs/run/candidates/")) data = options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1));
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
       data = {
         source: "provider", status: "ready", message: null,
@@ -447,9 +470,9 @@ async function noOverflow(page: Page) {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  for (const dialog of await page.getByRole("dialog").all()) {
-    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  }
+  expect(await page.getByRole("dialog").evaluateAll((dialogs) =>
+    dialogs.every((element) => element.scrollWidth <= element.clientWidth),
+  )).toBe(true);
 }
 
 async function repositorySection(page: Page, name: string) {
@@ -657,8 +680,8 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
   await mock(page, { role });
   await page.goto("/repositories/22");
   const sections = role === "admin"
-    ? [["connections", "AI connections"], ["github", "GitHub"], ["team", "Team"]]
-    : [["connections", "AI connections"]];
+    ? [["connections", "AI connections"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
+    : [["connections", "AI connections"], ["appearance", "Appearance"]];
   for (const [tab, label] of sections) {
     await openNavigation(page);
     await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
@@ -858,23 +881,31 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22");
+  const count = page.getByRole("heading", { name: "Pull requests", exact: true }).locator("..").getByRole("status");
+  await expect(count).toHaveText("1 of 14 pull request");
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
   const merged = page.getByRole("region", { name: "Merged", exact: true });
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).getByText("open", { exact: true })).toBeVisible();
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/\?state=all$/);
+  await expect(count).toHaveText("14 pull requests");
   await expect(merged.getByRole("link")).toHaveCount(10);
+  await expect(merged.getByRole("link").first().getByText("merged", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("closed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("Draft", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
   await expect(merged.getByRole("link")).toHaveCount(12);
   await expect(page).toHaveURL(/merged_pages=2/);
   await page.reload();
   await expect(merged.getByRole("link")).toHaveCount(12);
+  await expect(count).toHaveText("14 pull requests");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings"]);
@@ -882,6 +913,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await page.getByRole("checkbox", { name: "Completed", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/merged_pages/);
+  await expect(count).toHaveText("12 of 14 pull requests");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
   await expect(merged.getByRole("link")).toHaveCount(10);
   await page.getByRole("button", { name: "Remove Review status filter" }).click();
@@ -889,14 +921,19 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("menuitemradio")).toHaveText(["Updated", "Title", "Author"]);
   await page.getByRole("menuitemradio", { name: "Title", exact: true }).click();
   await expect(page).toHaveURL(/ordering=title/);
+  await expect(page.getByRole("button", { name: "Reset ordering", exact: true })).toHaveCount(0);
+  await expect(count).toHaveText("14 pull requests");
   await page.getByLabel("Search pull requests").fill("#148");
   await expect(page.getByRole("region", { name: "Merged", exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await expect(count).toHaveText("2 of 14 pull requests");
   await page.getByLabel("Search pull requests").fill("unmatched");
   await expect(page.getByRole("heading", { name: "No matching pull requests" })).toBeVisible();
+  await expect(count).toHaveText("0 of 14 pull requests");
   await page.getByRole("button", { name: "reset your filters" }).click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("");
   await expect(page).toHaveURL(/\?state=open$/);
+  await expect(count).toHaveText("1 of 14 pull request");
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
   await noOverflow(page);
@@ -929,6 +966,15 @@ test("repository filters survive configuration and the pull request run round tr
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("Author");
 });
 
+test("repository URLs strip inbox pagination and preserve grouped pages", async ({ page }) => {
+  await mock(page);
+  const items = Array.from({ length: 12 }, (_, index) => ({ ...pr, id: `pr-${index}`, title: `Change ${index}` }));
+  await mockRepositoryPulls(page, 22, () => items);
+  await page.goto("/repositories/22?state=all&all_pages=2&active_pages=2");
+  await expect(page).toHaveURL(/\?state=all&active_pages=2$/);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(12);
+});
+
 test("repository configuration keeps drafts across sections and restores filtered navigation", async ({ page }, info) => {
   const requests = await mock(page);
   await mockRepositoryPulls(page, 22, () => Array.from({ length: 11 }, (_, index) => ({ ...pr, id: `retry-${index}` })));
@@ -952,6 +998,9 @@ test("repository configuration keeps drafts across sections and restores filtere
   await page.screenshot({ path: `../.impeccable/review/repository-settings-context-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page).toHaveURL(/repositories\/22\?q=retry&state=all&active_pages=2$/);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository configuration saved." })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/repository-save-toast-${info.project.name}.png` });
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     settings: { automatic: false, effort: "high", background: "Keep this draft while changing sections.", max_files: 75 },
   });
@@ -981,6 +1030,7 @@ test("repository configuration validates hidden fields and retains drafts after 
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Repository settings could not be saved");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
   await repositorySection(page, "Limits & rules");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
@@ -1044,6 +1094,62 @@ test("repository configuration sections retain navigation and fit both themes", 
   expect(requests).toEqual([]);
 });
 
+test("selected tabs retain the light style and have a clearer neutral dark surface", async ({ page }, info) => {
+  test.setTimeout(60_000);
+  await mock(page);
+  await page.addInitScript(() => localStorage.setItem("theme", "system"));
+  await page.goto("/pulls/pr");
+  const rgb = (hex: string) => `rgb(${[1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
+  for (const theme of themes) {
+    await page.evaluate((id) => localStorage.setItem("color-theme", id), theme.id);
+    await page.reload();
+    for (const mode of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: mode });
+      await expect(page.locator("body")).toHaveCSS("color", rgb(theme[mode]["--foreground"]));
+      const findings = page.getByRole("tab", { name: /^Findings/ });
+      const history = page.getByRole("tab", { name: /^Run history/ });
+      await expect(findings).toHaveCSS("color", rgb(theme[mode]["--foreground"]));
+      const rendered = await findings.evaluate((tab) => {
+        const context = new OffscreenCanvas(1, 1).getContext("2d")!;
+        function composite(base: string, color: string) {
+          context.clearRect(0, 0, 1, 1);
+          for (const value of [base, color]) {
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+          }
+          return "#" + Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map((value) => value.toString(16).padStart(2, "0")).join("");
+        }
+        const list = getComputedStyle(tab.closest('[role="tablist"]')!).backgroundColor;
+        const style = getComputedStyle(tab);
+        const background = composite(list, style.backgroundColor);
+        return { list: composite(list, list), background, count: composite(background, getComputedStyle(tab.querySelector("span")!).color) };
+      });
+      if (mode === "light") {
+        expect(rendered.background).toBe(theme.light["--background"]);
+        await expect(findings).toHaveCSS("border-color", "rgba(0, 0, 0, 0)");
+      } else expect(contrast(rendered.background, rendered.list), theme.label).toBeGreaterThanOrEqual(1.25);
+      expect(contrast(rendered.count, rendered.background), `${theme.label} ${mode} count`).toBeGreaterThanOrEqual(4.5);
+      await findings.press("ArrowRight");
+      await expect(history).toHaveAttribute("aria-selected", "true");
+      await history.press("ArrowLeft");
+      await expect(findings).toHaveAttribute("aria-selected", "true");
+      await page.getByRole("heading", { level: 1 }).click();
+      await page.mouse.move(0, 0);
+      await noOverflow(page);
+      if ((theme.id === "code-mortis" && mode === "light") || theme.id === "aura" || (theme.id === "cobalt2" && mode === "dark")) {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `../.impeccable/review/neutral-tabs-${info.project.name}-${theme.id}-${mode}.png`, fullPage: true });
+        if (info.project.name === "desktop" && theme.id === "aura" && mode === "dark") {
+          await page.setViewportSize({ width: 1647, height: 938 });
+          await noOverflow(page);
+          await page.screenshot({ path: "../.impeccable/review/neutral-tabs-user-1647.png", fullPage: true });
+          await page.setViewportSize({ width: 1440, height: 1000 });
+        }
+      }
+    }
+  }
+});
+
 for (const role of ["admin", "member"]) {
   test(`repository configuration handles unavailable repositories for ${role}`, async ({ page }) => {
     const requests = await mock(page, { role });
@@ -1091,7 +1197,41 @@ test("repository sync pending state stays with its repository", async ({ page })
   await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
   release();
   await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(1);
+  await expect(page.locator("[data-sonner-toast]")).toContainText("Sync queued");
 });
+
+for (const theme of ["light", "dark"]) {
+  test(`repository sync uses a ${theme} toast and keeps failures inline`, async ({ page }, info) => {
+    await mock(page);
+    await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
+    let fail = false;
+    await page.route("**/api/v1/repositories/22/sync", (route) => route.fulfill(fail
+      ? { status: 502, json: { detail: "GitHub unavailable. Try again shortly." } }
+      : { json: { job_id: "sync-job" } }));
+    await page.goto("/repositories/22");
+    const sync = page.getByRole("button", { name: "Sync", exact: true });
+    const toast = page.locator("[data-sonner-toast]");
+    await expect(toast).toHaveCount(0);
+    await sync.click();
+    await expect(toast).toHaveCount(1);
+    await expect(toast).toContainText("Sync queued");
+    await expect(toast).toContainText("Pull requests will refresh when it finishes.");
+    await expect(page.getByRole("main").getByText(/Sync queued/)).toHaveCount(0);
+    await expect(toast).not.toBeFocused();
+    await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", theme);
+    await expect(page.getByRole("region", { name: /^Notifications/ })).toHaveAttribute("aria-live", "polite");
+    await noOverflow(page);
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: `../.impeccable/review/sync-toast-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await expect(toast.getByRole("button", { name: "Close toast" })).toHaveCount(0);
+    await expect(toast).toHaveCount(0);
+    fail = true;
+    await sync.click();
+    await expect(page.getByRole("main").getByRole("alert")).toHaveText("GitHub unavailable. Try again shortly.");
+    await expect(toast).toHaveCount(0);
+  });
+}
 
 test("repository list distinguishes failed requests, empty data, and revoked access", async ({ page }) => {
   await mock(page);
@@ -1149,7 +1289,7 @@ test("repository state filters retain running reviews and reset when switching r
   await page.getByRole("link", { name: "acme/other", exact: true }).click();
   await expect(page).toHaveURL(/repositories\/23\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
-  await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Reviews paused");
+  await expect(page.getByRole("region", { name: "Review configuration" }).getByText("Paused", { exact: true })).toBeVisible();
 });
 
 test("repository navigation, filtering, and review workspace", async ({
@@ -1166,9 +1306,26 @@ test("repository navigation, filtering, and review workspace", async ({
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
-  await expect(page.getByText("Not observed in latest review")).toBeVisible();
+  await expect(page.getByText("Not observed in latest review")).toHaveCount(0);
+  await expect(page.getByText("View details", { exact: true })).toHaveCount(0);
+  const findingCards = page.locator("[data-slot=finding-card]");
+  await expect(findingCards.locator('[data-slot=badge]').filter({ hasText: /^Bug$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-bug/);
+  await expect(findingCards.locator('[data-slot=badge]').filter({ hasText: /^Performance$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-gauge/);
   await noOverflow(page);
   await page.evaluate(() => document.fonts.ready);
+  for (const card of await page.locator("[data-slot=finding-card]").all()) {
+    const gaps = await card.evaluate((element) => {
+      const [header, description, footer] = Array.from(element.children);
+      const location = header.children[0].children[1];
+      const h = header.getBoundingClientRect(), d = description.getBoundingClientRect(), f = footer.getBoundingClientRect();
+      const l = location.getBoundingClientRect(), icon = header.children[0].children[0].getBoundingClientRect();
+      return { before: d.top - h.bottom, after: f.top - d.bottom, location: d.top - l.bottom, iconCenter: icon.top + icon.height / 2, locationCenter: l.top + l.height / 2 };
+    });
+    expect(gaps.before).toBe(16);
+    expect(gaps.after).toBe(16);
+    expect(gaps.iconCenter).toBeCloseTo(gaps.locationCenter);
+    if (info.project.name === "desktop") expect(gaps.location).toBe(gaps.after);
+  }
   await mkdir("../.impeccable/review", { recursive: true });
   await page.screenshot({
     path: `../.impeccable/review/review-detail-${info.project.name}.png`,
@@ -1186,7 +1343,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
   test(`inbox context survives run ${entry} navigation and return`, async ({ page }) => {
     await mock(page);
     await page.route("**/api/v1/pulls?**", (route) => route.fulfill({ json: {
-      groups: [{ group: "active", total: 1, page: 1, has_more: false, items: [{
+      groups: [{ group: "all", total: 1, page: 1, has_more: false, items: [{
         ...pr, repository_name: repo.full_name, created_at: at, review_status: run.status,
         has_running_review: false, run_id: run.id, publication: run.publication, publication_error: run.publication_error,
       }] }],
@@ -1217,7 +1374,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
     } else {
       await (await breadcrumbAncestor(page, "Pull request #148")).click();
     }
-    await expect(page).toHaveURL(/\/pulls\/pr$/);
+    await expect(page).toHaveURL((url) => url.pathname === "/pulls/pr");
     await openNavigation(page);
     await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
@@ -1270,7 +1427,10 @@ test("finding code shows a unified diff and safe Markdown highlighting in both t
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const panel = page.getByRole("dialog");
   const patch = panel.getByRole("region", { name: "Suggested change diff" });
-  await expect(patch).toContainText("--- original\n+++ suggested\n@@ -1,3 +1,3 @@");
+  await expect(patch).toContainText("@@ -1,3 +1,3 @@");
+  await expect(patch).not.toContainText("--- original");
+  await expect(patch).not.toContainText("No newline at end of file");
+  await expect(panel.getByLabel("Changed lines")).toHaveText("+2−2");
   await expect(patch.locator(".hljs-deletion").first()).toHaveText("-while (!delivered) {");
   await expect(patch.locator(".hljs-addition").first()).toContainText("+for (let attempt = 0;");
   expect(await patch.textContent()).toContain("-  delivered = await sendWebhook(payload);\n");
@@ -1316,10 +1476,187 @@ for (const example of [
   });
 }
 
+test("pull filters, history tabs, and finding tabs survive reload and browser history", async ({ page }) => {
+  await mock(page);
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [run],
+    findings: [
+      { ...finding, status: "resolved", severity: "high", category: "bug" },
+      { ...finding, id: "open", status: "open", severity: "high", category: "bug" },
+      { ...finding, id: "dismissed", status: "dismissed", severity: "high", category: "bug" },
+    ],
+  }));
+  await page.goto("/pulls/pr?q=retry&status=resolved&severity=high&category=bug");
+  const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("retry");
+  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("status") === "all");
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
+  await page.goForward();
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
+  await resolved.getByRole("button").click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("finding") === "finding" && url.searchParams.get("finding_tab") === "activity");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: "Activity 1", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.goBack();
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("finding") && !url.searchParams.has("finding_tab") && url.searchParams.get("q") === "retry");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "history");
+  await page.reload();
+  await expect(page.getByRole("tab", { name: /Run history/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+});
+
+test("run tabs and independent finding and assessment filters survive shared URLs", async ({ page }, info) => {
+  const candidates: Schema["CandidateOut"][] = [{ id: "failed", snapshot: { path: "src/client.ts", content: "Timeout proposal.", severity: "low", category: "security" },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: false }];
+  await mock(page, { candidates,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1, pending: 0, incomplete: 1, published_comments: 0 },
+    occurrences: [{ finding_id: "finding", inline_line: 46, snapshot: { ...finding, severity: "high", category: "bug" } }],
+  });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run?q=retry&severity=high&category=bug&tab=assessment&assessment_q=timeout&assessment_outcome=withheld&assessment_severity=low&assessment_category=security");
+  const cards = page.getByRole("region", { name: "Candidate assessment", exact: true }).locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(1);
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("timeout");
+  expect(requests.at(-1)?.get("q")).toBe("timeout");
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["low"]);
+  expect(requests.at(-1)?.getAll("outcome")).toEqual(["withheld"]);
+  await page.reload();
+  await expect(page.getByRole("tab", { name: /^Assessment/ })).toHaveAttribute("aria-selected", "true");
+  await expect(cards).toHaveCount(1);
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await expect(page.getByLabel("Search run findings", { exact: true })).toHaveValue("retry");
+  const findingCards = page.getByRole("region", { name: "Findings at this run", exact: true }).getByRole("button");
+  await expect(findingCards).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => !url.searchParams.has("category") && url.searchParams.get("assessment_category") === "security");
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Edit Type: Bug", exact: true })).toBeVisible();
+  await findingCards.click();
+  const findingSheet = page.getByRole("dialog", { name: "Finding details" });
+  await findingSheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await page.reload();
+  await expect(findingSheet.getByRole("tab", { name: "Current status", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  for (const name of ["Coverage", "Details", "Assessment"]) {
+    await page.getByRole("tab", { name: new RegExp(`^${name}`) }).click();
+    await expect(page).toHaveURL((url) => url.searchParams.get("tab") === name.toLowerCase());
+    if (name === "Coverage") {
+      await page.goBack();
+      await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+      await page.goForward();
+      await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
+    }
+    await page.reload();
+    await expect(page.getByRole("tab", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-selected", "true");
+  }
+  await expect(cards).toHaveCount(1);
+  await cards.click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.getByRole("tab", { name: "Evidence 0", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("candidate") === "failed" && url.searchParams.get("assessment_tab") === "evidence");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: "Evidence 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("candidate") && !url.searchParams.has("assessment_tab") && url.searchParams.get("tab") === "assessment");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("timeout");
+  await noOverflow(page);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.getByRole("region", { name: "Candidate assessment", exact: true }).screenshot({ path: `../.impeccable/review/url-filters-${info.project.name}.png`, animations: "disabled" });
+});
+
+test("browser navigation cancels pending review search without changing the restored URL", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  await page.goto("/pulls/pr?q=retry&status=all&severity=high");
+  await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => !url.searchParams.has("severity"));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  const search = page.getByLabel("Search findings", { exact: true });
+  await search.fill("unfinished draft");
+  await page.clock.runFor(100);
+  await page.goBack();
+  await expect(page).toHaveURL((url) => url.searchParams.get("severity") === "high");
+  await expect(search).toHaveValue("retry");
+  await page.clock.runFor(500);
+  await expect(page).toHaveURL((url) => url.searchParams.get("q") === "retry" && url.searchParams.get("severity") === "high");
+});
+
+test("invalid review tabs and URL filters recover to supported defaults", async ({ page }) => {
+  await mock(page);
+  await page.goto("/pulls/pr?tab=unknown&status=invalid&severity=invalid&category=&finding=finding&finding_tab=snapshot");
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("tab") && !url.searchParams.has("finding_tab")
+    && !url.searchParams.has("severity") && !url.searchParams.has("category") && url.searchParams.getAll("status").join(",") === "open,resolved");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+});
+
+test("focused finding cards preserve long file locations, state, and keyboard access on narrow screens", async ({ page }) => {
+  const file = `${"long-finding-filename-".repeat(4)}.tsx`;
+  const directory = `src/${"deeply-nested-directory/".repeat(4)}`;
+  const content = `${finding.content} ${"Additional saved evidence. ".repeat(30)}`;
+  await page.setViewportSize({ width: 320, height: 844 });
+  const requests = await mock(page, {
+    run: { status: "completed" },
+    finding: { path: directory + file, content, category: "custom_rule", desired_status: "resolved", sync_error: "GitHub unavailable", last_seen_run_id: "previous" },
+    occurrences: [{ finding_id: "finding", inline_line: null, snapshot: { ...finding, path: directory + file, content } }],
+  });
+  await page.goto("/pulls/pr");
+  const card = page.getByRole("button", { name: /retry loop has no upper bound/ });
+  await expect(card.getByText(file, { exact: true })).toBeVisible();
+  await expect(card.getByText(directory, { exact: true })).toBeVisible();
+  await expect(card.getByText(file, { exact: true }).locator("..")).toHaveText(directory + file);
+  await expect(card).toContainText("42–46");
+  await expect(card.getByText("open", { exact: true })).toBeVisible();
+  await expect(card).toContainText("Sync needs attention");
+  await expect(card.locator("div, p")).toHaveCount(0);
+  await expect(card).not.toContainText("Not observed in latest review");
+  await expect(card).not.toContainText("View details");
+  await expect(card.locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
+  await noOverflow(page);
+  await card.press("Space");
+  await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(content);
+  await expect(page.getByRole("dialog").locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  await page.goto("/runs/run");
+  const saved = page.getByRole("region", { name: "Findings at this run" }).getByRole("button");
+  await expect(saved).toContainText("Summary comment");
+  await expect(saved.getByText(file, { exact: true })).toBeVisible();
+  await expect(saved.getByText(file, { exact: true }).locator("..")).toHaveText(directory + file);
+  await expect(saved).not.toContainText("View details");
+  await expect(saved).not.toContainText("Sync needs attention");
+  await noOverflow(page);
+  await saved.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Finding details" }).getByRole("tab", { name: "At this run" })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(saved).toBeFocused();
+  expect(requests).toEqual([]);
+});
+
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
   const occurrences = Array.from({ length: 6 }, (_, index) => ({
     finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,
-    snapshot: { ...finding, severity: index % 2 ? "medium" : "high", path: `src/webhooks/handler-${index + 1}.ts`,
+    snapshot: { ...finding, severity: index % 2 ? "medium" : "high", category: index % 2 ? "performance" : "bug", path: `src/webhooks/handler-${index + 1}.ts`,
       content: index === 0 ? finding.content : `Validate webhook ${index + 1} before processing its payload. Invalid input can interrupt delivery.` },
   }));
   await mock(page, {
@@ -1341,6 +1678,7 @@ test("review run workspace filters saved findings and separates original evidenc
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
   await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("6 of 6 findings");
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveClass("sr-only");
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
@@ -1352,11 +1690,11 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.getByRole("tab", { name: "Findings 6" }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByText("Reviewed files (2)", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "Coverage", exact: true })).toContainText("src/config.ts");
+  await expect(page.getByRole("region", { name: "Reviewed files", exact: true }).getByText("src/config.ts", { exact: true })).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/run-coverage-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
+  await expect(page.getByRole("tabpanel")).toContainText("Review setup, execution details, revisions, and the configuration saved for this run.");
   await expect(page.getByRole("tabpanel")).toContainText("Shared connection");
   await expect(page.getByRole("tabpanel")).toContainText(run.head_sha);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -1366,8 +1704,18 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search" }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("3 of 6 findings");
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(6);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^High/ }).check();
+  await page.getByRole("checkbox", { name: /^High/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^High/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Edit Severity: High", exact: true })).toBeFocused();
   await expect(list.getByRole("button")).toHaveCount(3);
@@ -1393,12 +1741,107 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(list.getByRole("button")).toHaveCount(6);
 });
 
+test("run coverage shows compact file rows and reveals the remaining saved scope", async ({ page }, info) => {
+  const completed = Array.from({ length: 11 }, (_, index) => ({ path: `src/payments/handler-${index + 1}.ts`, item_id: `file-${index}` }));
+  const reused = { path: "src/payments/retry.ts", reason: "Validated result reused from an earlier run." };
+  const failed = { path: "src/payments/context.ts", reason: "Context budget exceeded." };
+  const waived = { path: "src/payments/config.ts", reason: "Token budget reached." };
+  const missing = { path: `src/${"long-directory/".repeat(8)}unrecorded.ts` };
+  await mock(page, { run: { publication: "not_applicable", publication_error: null, check_enabled: false,
+    report: { manifest: { coverage: { selected: [...completed, reused, failed, waived, missing], completed, reused: [reused], failed: [failed], waived: [waived] } },
+      excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] } } });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  const reviewed = coverage.getByRole("region", { name: "Reviewed files", exact: true });
+  const gaps = coverage.getByRole("region", { name: "Files not reviewed", exact: true });
+  await expect(coverage.getByText("See which files were reviewed or reused from earlier runs, and why others were left unreviewed.", { exact: true })).toBeVisible();
+  await expect(coverage.getByRole("heading", { name: "Coverage", exact: true })).toHaveCount(0);
+  await expect(coverage.getByRole("textbox")).toHaveCount(0);
+  await expect(coverage.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
+  await expect(reviewed.getByRole("listitem")).toHaveCount(10);
+  await expect(gaps.getByRole("listitem")).toHaveCount(4);
+  await expect(reviewed.getByText("Validated file result saved in this run.", { exact: true })).toHaveCount(0);
+  await expect(gaps.getByRole("listitem").filter({ hasText: failed.path })).toContainText(failed.reason);
+  await expect(gaps.getByRole("listitem").filter({ hasText: "README.md" })).toContainText("Outside scope");
+  await reviewed.getByRole("button", { name: "Load more reviewed files" }).click();
+  await expect(reviewed.getByRole("listitem")).toHaveCount(12);
+  await expect(reviewed.getByRole("status").last()).toHaveText("12 of 12 shown");
+  await expect(reviewed.getByText(completed[10].path, { exact: true })).toBeVisible();
+  await expect(reviewed.getByRole("listitem").filter({ hasText: reused.path })).toContainText("Reused");
+  await expect(gaps.getByRole("listitem")).toHaveCount(4);
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `../.impeccable/review/coverage-${info.project.name}-${theme}.png`, animations: "disabled" });
+    await page.evaluate((top) => window.scrollTo(0, top), (await gaps.boundingBox())!.y - 76);
+    await page.screenshot({ path: `../.impeccable/review/coverage-files-${info.project.name}-${theme}.png`, animations: "disabled" });
+  }
+  await expect(gaps.getByText(missing.path, { exact: true })).toBeVisible();
+  await expect(coverage.getByRole("button", { name: /View coverage/ })).toHaveCount(0);
+  await coverage.getByText("Inspect coverage report", { exact: true }).click();
+  await expect(coverage.locator("pre")).toContainText(failed.reason);
+  await noOverflow(page);
+});
+
+for (const example of [
+  { name: "legacy report", status: "partial", report: { errors: [{ path: "src/legacy.ts", message: "No saved result" }] }, label: "Coverage unavailable", summary: "Selected review scope was not recorded.", file: "legacy.ts", state: "Not reviewed" },
+  { name: "empty selected scope", status: "skipped", report: { manifest: { coverage: { selected: [] } }, excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] }, label: "No selected files", summary: "0 of 0 selected files reviewed", file: "README.md", state: "Outside scope" },
+  { name: "overlapping legacy outcomes", status: "partial", report: { manifest: { coverage: { selected: [{ path: "src/retry.ts" }], completed: [{ path: "src/retry.ts" }], failed: [{ path: "src/retry.ts" }] } } }, label: "Partial coverage", summary: "0 of 1 selected files reviewed", file: "retry.ts", state: "Failed" },
+  { name: "pending file evidence", status: "running", report: { manifest: { coverage: { selected: [{ path: "src/pending.ts" }] } } }, label: "Coverage in progress", summary: "0 of 1 selected files reviewed", file: "pending.ts", state: "Awaiting review" },
+]) {
+  test(`run coverage preserves ${example.name}`, async ({ page }) => {
+    await mock(page, { run: { status: example.status, report: example.report, publication: "not_applicable", publication_error: null, check_enabled: false } });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+    const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+    await expect(coverage.getByText(example.label, { exact: true })).toHaveCount(0);
+    if (example.name === "legacy report") await expect(coverage.getByText(example.summary, { exact: true })).toBeVisible();
+    else await expect(coverage.getByText(example.summary, { exact: true })).toHaveCount(0);
+    await expect(coverage.getByRole("listitem").filter({ hasText: example.file })).toContainText(example.state);
+    await noOverflow(page);
+  });
+}
+
+test("run coverage updates file rows through polling and hides them after access is revoked", async ({ page }) => {
+  await page.clock.install();
+  const state: Partial<Run> = { status: "running", publication: "pending", publication_error: null, check_enabled: false,
+    report: { manifest: { coverage: { selected: [{ path: "src/live.ts" }], completed: [] } } } };
+  await mock(page, { run: state });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  const row = page.getByRole("region", { name: "Coverage", exact: true }).getByRole("listitem").filter({ hasText: "src/live.ts" });
+  await expect(row).toContainText("Awaiting review");
+  state.report = { manifest: { coverage: { selected: [{ path: "src/live.ts" }], completed: [{ path: "src/live.ts" }] } } };
+  await page.clock.fastForward(5000);
+  await expect(row).toContainText("Reviewed");
+  await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Repository access revoked" } }));
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert").filter({ hasText: "Repository access revoked" })).toBeVisible();
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Coverage", exact: true })).toHaveCount(0);
+});
+
 test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {
   const requests = await mock(page, { run: { status: "running", publication: "pending", publication_error: null, report: null, finished_at: null, check_enabled: false, progress: { selected: 8, completed: 3 } }, occurrences: [], assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
   await page.goto("/runs/run");
-  await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("The review is in progress.");
+  await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
+  await expect(page.getByText("The review is in progress.", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("This page updates automatically as results are saved. You can cancel the review if needed.", { exact: true })).toHaveCount(0);
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await expect(publication).toContainText("Waiting to publish");
+  await expect(publication.getByText("Comments are published after review results are saved.", { exact: true })).toHaveCount(0);
+  await expect(publication.locator(":scope > p")).toHaveCount(0);
+  const heading = page.getByRole("heading", { name: "Review run running", exact: true });
+  await expect(heading).toBeVisible();
+  await expect(heading.locator("[data-slot=badge]")).toHaveText("running");
+  await expect(heading.locator("svg")).toHaveClass(/lucide-loader-circle/);
   await expect(page.getByText("3 of 8 assigned files completed.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
+  await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Inspect coverage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Coverage is being recorded" })).toBeVisible();
   await noOverflow(page);
@@ -1419,6 +1862,18 @@ test("review run hides stale evidence after repository access is revoked", async
   await expect(page.getByRole("region", { name: "Findings at this run", exact: true })).toHaveCount(0);
 });
 
+for (const publication of ["failed", "partially_published"]) {
+  test(`running review preserves context when publication is ${publication}`, async ({ page }) => {
+    await mock(page, { run: { status: "running", publication, progress: {}, finished_at: null } });
+    await page.goto("/runs/run");
+    const outcome = page.getByRole("region", { name: "Review outcome" });
+    const suffix = publication === "failed" ? "Publication failed." : "Some comments published.";
+    await expect(outcome.getByRole("status")).toHaveText(`The review is in progress. ${suffix}`);
+    await expect(outcome).toContainText("This page updates automatically as results are saved. Retry GitHub publication");
+    await expect(page.getByRole("heading", { name: "Review run running", exact: true })).toBeVisible();
+  });
+}
+
 test("partial review and publication retry remain distinct", async ({
   page,
 }, info) => {
@@ -1432,13 +1887,18 @@ test("partial review and publication retry remain distinct", async ({
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
-  await expect(page.getByRole("link", { name: "View check on GitHub" })).toHaveAttribute("href", run.check_url);
+  await expect(page.getByRole("link", { name: /^View check on GitHub:/ })).toHaveAttribute("href", run.check_url);
   await expect(page.getByText(run.check_error)).toBeVisible();
-  await expect(page.getByText("Check update pending. Review results are saved separately.")).toBeVisible();
+  await expect(page.getByText("Check update pending. Review results are saved separately.")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
-  await page.getByText("Configuration used", { exact: true }).click();
+  await expect(page.getByText(run.head_sha, { exact: true })).toBeVisible();
+  await expect(page.getByText(run.base_sha, { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/run-details-${info.project.name}.png`, fullPage: true });
+  await page.locator("summary", { hasText: "Configuration used" }).press("Enter");
   const config = page.locator("pre .language-json").last();
   await expect(config.locator(".hljs-attr").first()).toHaveText('"connection"');
   expect(await config.textContent()).toBe(JSON.stringify(run.config, null, 2));
@@ -1457,7 +1917,7 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await mock(page, { run: checkState });
   await page.goto("/runs/run");
   const check = page.getByRole("region", { name: "GitHub publication", exact: true });
-  await expect(check.getByRole("status")).toHaveText("Updating the check on GitHub…");
+  await expect(check.getByRole("status")).toHaveCount(0);
   await expect(check.locator(":scope > :empty")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-pending-${info.project.name}.png`, fullPage: true });
@@ -1477,6 +1937,15 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-empty-${info.project.name}.png`, fullPage: true });
+
+  checkState.check_url = run.check_url;
+  await page.reload();
+  const checkLink = page.getByRole("link", { name: "View check on GitHub: Check", exact: true });
+  await expect(checkLink).toHaveText("check");
+  await expect(checkLink).toHaveAttribute("href", run.check_url);
+  await checkLink.focus();
+  await expect(checkLink).toBeFocused();
+  await noOverflow(page);
 });
 
 test("read-only members cannot change findings or instance settings", async ({
@@ -1572,6 +2041,7 @@ test("searchable providers and protocols preserve presets and required model val
   await page.getByLabel("Custom model ID").fill("regional-model");
   await save.click();
   await expect.poll(() => requests.find((request) => request.path === "/connections")?.body).toMatchObject({ provider: "anthropic", protocol: "anthropic-bedrock", model: "regional-model" });
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Connection created." })).toBeVisible();
 });
 
 test("repository language searches suggestions and preserves custom language entry", async ({ page }, info) => {
@@ -1767,7 +2237,7 @@ test("saved model selection refreshes without replacing custom IDs", async ({ pa
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   expect(requests.find((request) => request.path === "/connections/models")?.body).toEqual({
     kind: "api", provider: "openai", protocol: "openai", base_url: "https://api.openai.com/v1",
-    options: {}, connection_id: "connection",
+    options: { prompt_token_ceiling: 58888 }, connection_id: "connection",
   });
   await expect(model).toHaveValue("Next model · next-model");
   await chooseOption(page, model, "Enter a custom model ID");
@@ -2327,6 +2797,77 @@ test("personal review limits retain their separate context budget", async ({ pag
   await noOverflow(page);
 });
 
+test("finding sheet keeps actions visible and preserves its active tab through polling", async ({ page }) => {
+  const requests = await mock(page, { finding: { content: `${finding.content}\n\n` + "Long saved evidence.\n\n".repeat(50) } });
+  await page.clock.install();
+  await page.goto("/pulls/pr");
+  const trigger = page.getByRole("button", { name: /retry loop has no upper bound/ });
+  await trigger.click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await sheet.locator('[data-slot="finding-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toBeInViewport();
+  await expect(sheet.getByRole("link", { name: "GitHub thread", exact: true })).toBeInViewport();
+  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  const activity = sheet.getByRole("tab", { name: "Activity 1", exact: true });
+  await expect(activity).toBeFocused();
+  await expect(activity).toHaveAttribute("aria-selected", "true");
+  await page.clock.fastForward(5000);
+  await expect(activity).toHaveAttribute("aria-selected", "true");
+  await activity.press("ArrowLeft");
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await sheet.getByRole("button", { name: "Dismiss", exact: true }).click();
+  const reason = sheet.getByRole("textbox", { name: "Why dismiss this finding?" });
+  await expect(reason).toBeFocused();
+  await expect(sheet.getByRole("button", { name: "Confirm dismissal", exact: true })).toBeDisabled();
+  await reason.fill("This behavior is intentional and covered by tests.");
+  await sheet.getByRole("button", { name: "Confirm dismissal", exact: true }).click();
+  expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "dismissed", reason: "This behavior is intentional and covered by tests." } });
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+});
+
+test("saved finding evidence remains readable when current status cannot be loaded", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/findings/finding", (route) => route.fulfill({ status: 503, json: { detail: "Current finding unavailable" } }));
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText(finding.content);
+  await expect(sheet.getByRole("region", { name: "Suggested change diff" })).toBeVisible();
+  await expect(sheet.getByRole("alert")).toContainText("Current finding unavailable");
+  await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toHaveCount(0);
+  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await expect(sheet).toContainText("Current evidence could not be loaded.");
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
+  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await expect(sheet).toContainText(finding.content);
+  await noOverflow(page);
+});
+
+test("current finding header waits for current evidence instead of showing the snapshot", async ({ page }) => {
+  await mock(page, { finding: { path: "src/current.ts", severity: "low", category: "performance" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/findings/finding", async (route) => { await pending; await route.fallback(); });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await expect(sheet.getByRole("status")).toContainText("Loading workspace");
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
+  release();
+  await expect(sheet.getByText("low", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("Performance", { exact: true })).toBeVisible();
+  await expect(sheet).toContainText("current.ts");
+  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+});
+
 for (const field of [
   { label: "Native context budget (bytes)", key: "delegated_context_bytes", personal: true, valid: "6000", excessive: "20000001" },
   { label: "Concurrency", key: "concurrency", personal: false, valid: "4", excessive: "9" },
@@ -2477,16 +3018,16 @@ test("oversized review explains its outcome and links to editable limits through
 });
 
 test("candidate assessment separates withheld claims from repeated findings", async ({ page }, info) => {
-  await mock(page, {
+  const requests = await mock(page, {
     run: { status: "completed", publication: "no_new_comments", publication_error: null,
       check_status: "completed", check_conclusion: "neutral", check_pending: false, check_error: null },
     assessment: { candidates: 2, new_findings: 0, repeated_observations: 1, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "repeat", snapshot: { ...finding, content: "Same defect with different wording." },
-        status: "completed", result: null, finding_id: "finding", is_new: false, error: null },
+        status: "completed", result: null, finding_id: "finding", is_new: false, error: null, retryable: false },
       { id: "uncertain", snapshot: { path: "frontend/src/index.css", start_line: 315,
-          content: "Tailwind might fail to process this rule." }, status: "completed", finding_id: null,
+          content: "Tailwind might fail to process this rule." }, status: "completed", finding_id: null, retryable: false,
         is_new: false, error: null, result: {
           verdict: "uncertain", relationship: "new", finding_id: null,
           explanation: "No evidence establishes a build failure at this revision.",
@@ -2497,22 +3038,189 @@ test("candidate assessment separates withheld claims from repeated findings", as
   });
   await page.goto("/runs/run");
   await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
+  await expect(page.getByText("No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates.", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
-  await expect(page.getByText(/Assessment is incomplete for 1 candidate/)).toBeVisible();
-  const withheld = page.locator("details").filter({ has: page.locator("summary", { hasText: "index.css:315 · Withheld" }) });
-  await withheld.locator("summary").focus();
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Assessment is incomplete/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect assessment", exact: true })).toHaveCount(0);
+  const withheld = page.getByRole("button", { name: /index.css.*315.*Withheld/ });
+  await withheld.focus();
   await page.keyboard.press("Enter");
-  await expect(withheld).toContainText("No evidence establishes a build failure at this revision.");
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("No evidence establishes a build failure at this revision.");
+  await expect(sheet.getByText("frontend/src/index.css", { exact: true })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: /Resolve finding|Reopen finding|Dismiss/ })).toHaveCount(0);
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  await expect(sheet).toContainText("Tailwind might fail to process this rule.");
+  await sheet.getByRole("tab", { name: "Evidence 0" }).click();
+  await expect(sheet).toContainText("No supporting evidence was recorded.");
+  await page.keyboard.press("Escape");
+  await expect(withheld).toBeFocused();
+  const repeated = page.getByRole("button", { name: /Same defect with different wording/ });
+  await repeated.click();
+  await sheet.getByRole("button", { name: "Open finding" }).click();
+  const linked = page.getByRole("dialog", { name: "Finding details" });
+  await expect(linked.getByRole("tab", { name: "At this run" })).toHaveAttribute("data-state", "active");
+  await expect(linked.getByRole("button", { name: "Back to assessment" })).toBeFocused();
+  await linked.getByRole("button", { name: "Back to assessment" }).click();
+  await expect(sheet.getByRole("tab", { name: "Assessment", exact: true })).toBeFocused();
+  await expect(sheet).toContainText("Repeated observation");
+  await page.keyboard.press("Escape");
+  await expect(repeated).toBeFocused();
   await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/candidate-assessment-${info.project.name}.png`, fullPage: true });
+  expect(requests).toEqual([]);
 });
 
 test("legacy review findings are not labeled as validated", async ({ page }) => {
   await mock(page);
   await page.goto("/runs/run");
   await expect(page.getByText("This run predates candidate assessment. Its findings have not been assessed by this policy.")).toBeVisible();
+});
+
+test("technical assessment retry preserves its previous attempt and polls only the candidate", async ({ page }, info) => {
+  await page.clock.install();
+  const candidate: Schema["CandidateOut"] = {
+    id: "failed", snapshot: { path: "src/retry.ts", content: "Proposed retry defect." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true,
+  };
+  const writes = await mock(page, { candidates: [candidate],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let retries = 0;
+  await page.route("**/api/v1/runs/run/candidates/failed/retry", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    retries++;
+    await pending;
+    candidate.attempts = [{ status: candidate.status, error: candidate.error, result: null,
+      usage: { tokens: 25 }, finished_at: at }];
+    candidate.status = "queued";
+    candidate.error = null;
+    candidate.retryable = false;
+    await route.fulfill({ status: 202, json: candidate });
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Proposed retry defect/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Retry uses the same connection and AI quota.");
+  await sheet.screenshot({ path: `../.impeccable/review/retry-assessment-${info.project.name}.png` });
+  await sheet.getByRole("button", { name: "Retry assessment", exact: true }).click();
+  await expect(sheet.getByRole("button", { name: "Retrying assessment…" })).toBeDisabled();
+  release();
+  await expect(sheet).toContainText("Awaiting assessment");
+  await sheet.locator("summary", { hasText: "Previous attempts (1)" }).click();
+  await expect(sheet).toContainText("25 tokens used or reserved.");
+  await expect(sheet.getByRole("alert")).toContainText("Assessment timed out");
+  candidate.status = "completed";
+  candidate.result = { verdict: "uncertain", relationship: "uncertain", finding_id: null,
+    explanation: "The supplied evidence is insufficient.", cause: "", trigger: "", consequence: "",
+    history_explanation: "", contradicts_prior: false, changed_conditions: "", suggestion_supported: false, evidence: [] };
+  await page.clock.fastForward(5000);
+  await expect(sheet).toContainText("The supplied evidence is insufficient.");
+  await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
+  expect(retries).toBe(1);
+  expect(writes).toEqual([]);
+  await noOverflow(page);
+});
+
+test("assessment retry shows server errors without discarding the failed attempt", async ({ page }) => {
+  await mock(page, { candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  await page.route("**/api/v1/runs/run/candidates/failed/retry", (route) => route.fulfill({
+    status: 409, json: { detail: "The saved run's remaining AI budget cannot support another assessment." },
+  }));
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Failed proposal/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.getByRole("button", { name: "Retry assessment", exact: true }).click();
+  await expect(sheet.getByRole("alert").filter({ hasText: "remaining AI budget" })).toBeVisible();
+  await expect(sheet.getByRole("alert").filter({ hasText: "Assessment timed out" })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toBeEnabled();
+});
+
+test("read-only users cannot retry technical assessment failures", async ({ page }) => {
+  await mock(page, { canWrite: false, candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
+    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, published_comments: 0 },
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Failed proposal/ }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
+});
+
+test("original proposal Markdown filters unsafe link protocols before rendering anchors", async ({ page }) => {
+  const unsafe = [
+    ["javascript", "javascript:alert%281%29"], ["mixed case", "JaVaScRiPt:alert%281%29"],
+    ["entity", "javascript&#58;alert%281%29"], ["data", "data:text/html,unsafe"], ["vbscript", "vbscript:msgbox%281%29"],
+  ];
+  const safe = [["https", "https://example.com"], ["http", "http://example.com"], ["email", "mailto:review@example.com"],
+    ["relative", "/repositories/22"], ["fragment", "#evidence"]];
+  await mock(page, { assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+    pending: 0, incomplete: 1, published_comments: 0 }, candidates: [{ id: "proposal", snapshot: { content: "Proposed links.\n\n"
+    + [...unsafe, ...safe].map(([name, href]) => `[${name}](${href})`).join("\n\n")
+    + '\n\n<img src=x onerror="alert(1)">\n\n<script>alert(1)</script>',
+  }, status: "failed", result: null, finding_id: null, is_new: false, error: null, retryable: false }] });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await page.getByRole("button", { name: /Proposed links/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  const markdown = sheet.locator(".markdown");
+  for (const [name] of unsafe) await expect(markdown.getByRole("link", { name, exact: true })).toHaveAttribute("href", "");
+  for (const [name, href] of safe) await expect(markdown.getByRole("link", { name, exact: true })).toHaveAttribute("href", href);
+  await expect(markdown.locator("img, script")).toHaveCount(0);
+});
+
+test("assessment search keeps its debounce deadline when polling updates the list", async ({ page }) => {
+  await page.clock.install();
+  const candidates: Schema["CandidateOut"][] = [{ id: "pending", snapshot: finding,
+    status: "running", result: null, finding_id: null, is_new: false, error: null, retryable: false }];
+  await mock(page, { candidates, run: { status: "running", finished_at: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0,
+      pending: 1, incomplete: 0, published_comments: 0 } });
+  let releasePoll!: () => void;
+  const poll = new Promise<void>((resolve) => { releasePoll = resolve; });
+  const searches: string[] = [];
+  let reads = 0;
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    searches.push(new URL(route.request().url()).searchParams.get("q") ?? "");
+    if (++reads === 2) await poll;
+    await route.fallback();
+  });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  await expect(page.getByRole("region", { name: "Candidate assessment", exact: true }).getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "assessment");
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.clock.runFor(6000);
+  await expect.poll(() => reads).toBe(2);
+  await page.getByLabel("Search assessments", { exact: true }).fill("Refreshed");
+  await page.clock.runFor(150);
+  candidates[0] = { ...candidates[0], snapshot: { ...finding, content: "Refreshed proposal." } };
+  const refreshed = page.waitForResponse((response) => response.url().includes("/runs/run/candidates?") && !response.url().includes("q="));
+  releasePoll();
+  await (await refreshed).finished();
+  await page.clock.runFor(50);
+  await expect(page.getByRole("button", { name: /Refreshed proposal/ })).toBeVisible();
+  expect(searches).toEqual(["", ""]);
+  await page.clock.runFor(100);
+  await expect.poll(() => searches.at(-1)).toBe("Refreshed");
 });
 
 test("candidate assessment exposes errors and complete highlighted evidence", async ({ page }, info) => {
@@ -2523,10 +3231,10 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "failed", snapshot: { path: "backend/client.py", start_line: 12, content: "Connection failure." },
-        status: "failed", result: null, finding_id: null, is_new: false,
+        status: "failed", result: null, finding_id: null, is_new: false, retryable: true,
         error: "Assessment timed out; this candidate was withheld." },
       { id: "confirmed", snapshot: { path: "backend/retry.py", start_line: 7, content: "Retry has no limit." },
-        status: "completed", finding_id: "finding", is_new: true, error: null, result: {
+        status: "completed", finding_id: "finding", is_new: true, error: null, retryable: false, result: {
           verdict: "confirmed", relationship: "new", finding_id: null, explanation: "Retries never terminate.",
           cause: "Unbounded loop", trigger: "Repeated delivery failure", consequence: "Worker remains occupied",
           history_explanation: "", contradicts_prior: false, changed_conditions: "", suggestion_supported: false,
@@ -2536,23 +3244,345 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
-  const assessment = page.locator("section").filter({ has: page.getByRole("heading", { name: "Candidate assessment", exact: true }) });
-  await expect(assessment).toContainText("Assessment is incomplete for 1 candidate. This is not a clean review.");
+  const assessment = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
   await expect(assessment).not.toContainText("No new comments");
-  await assessment.locator("summary").filter({ hasText: "client.py:12 · Withheld" }).click();
-  await expect(assessment.getByRole("alert")).toHaveText("Assessment timed out; this candidate was withheld.");
-  const confirmed = assessment.locator("details").filter({ has: page.locator("summary", { hasText: "retry.py:7 · New validated finding" }) });
-  await confirmed.locator("summary").focus();
+  await expect(assessment).not.toContainText("Assessment needs attention");
+  await mkdir("../.impeccable/review", { recursive: true });
+  await assessment.screenshot({ path: `../.impeccable/review/assessment-list-${info.project.name}.png` });
+  await assessment.getByRole("button", { name: /client.py.*12.*Withheld/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet.getByRole("alert")).toContainText("Assessment timed out");
+  await expect(sheet.getByRole("alert")).toContainText("The time limit was reached before this assessment finished.");
+  await expect(sheet.getByRole("region", { name: "Assessment technical details" })).toBeHidden();
+  await expect(sheet.getByRole("button", { name: "Open finding" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  const confirmed = assessment.getByRole("button", { name: /retry.py.*7.*New validated finding/ });
+  await confirmed.focus();
   await page.keyboard.press("Enter");
-  await expect(confirmed.getByText("current: backend/retry.py:7–8", { exact: true })).toBeVisible();
-  const code = confirmed.getByRole("region", { name: "Code snippet" });
+  await expect(sheet).toContainText("Retries never terminate.");
+  await sheet.getByRole("tab", { name: "Evidence 1" }).click();
+  await expect(sheet.getByText("Current evidence: backend/retry.py:7–8", { exact: true })).toBeVisible();
+  const code = sheet.getByRole("region", { name: "Code snippet" });
   await expect(code).toHaveText(source);
   await expect(code.locator("code")).toHaveClass(/language-python/);
   await expect(code.locator(".hljs-keyword").first()).toHaveText("while");
-  await expect(confirmed.getByRole("alert")).toHaveCount(0);
+  await expect(sheet.getByRole("alert")).toHaveCount(0);
+  await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Open finding" })).toBeInViewport();
   await noOverflow(page);
   await mkdir("../.impeccable/review", { recursive: true });
-  await assessment.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
+  await sheet.screenshot({ path: `../.impeccable/review/candidate-evidence-${info.project.name}.png` });
+});
+
+const citationError = "OCR returned an invalid verification verdict: Assessment evidence does not match the supplied source. "
+  + JSON.stringify({ field: "evidence[2]", reason: "quote is not verbatim text within the cited source lines",
+    revision: "current", path: "frontend/src/settings.tsx", start_line: 682, end_line: 687 })
+  + "; response=" + JSON.stringify({ verdict: "confirmed", explanation: "A long saved response. ".repeat(260) });
+
+const assessmentErrors = [
+  { name: "citation mismatch", error: citationError, title: "Evidence could not be verified",
+    message: "The AI's evidence quote did not exactly match the cited source.",
+    citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },
+  { name: "citation with trailing diagnostics", error: citationError.replace("; response=", " Technical details: response="),
+    title: "Evidence could not be verified", message: "The AI's evidence quote did not exactly match the cited source.",
+    citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },
+  { name: "finding reference", error: 'OCR returned an invalid verification verdict: Assessment references an unavailable finding. {"field":"finding_id","reason":"ID is unavailable"}; response={"finding_id":"candidate-id"}',
+    title: "Finding reference could not be verified", message: "Only findings supplied in the review history can be linked." },
+  { name: "missing final assessment", error: 'The AI did not finish checking this finding. Technical details: {"exit_code":0,"status":"success","result_error":"The AI finished without returning a final assessment. Start a new review or check the selected model."}',
+    title: "No usable assessment returned", message: "The AI did not return a complete assessment in the required format." },
+  { name: "exhausted budget", error: "Token budget exhausted: 200,000 / 200,000 tokens used or reserved. Assessment stopped.",
+    title: "Assessment limit reached", message: "200,000 / 200,000 tokens used or reserved" },
+  { name: "prompt ceiling", error: "OCR evidence prompt exceeds its 47,110-token limit (80% of max_tokens=58,888): prompt tokens exceed the configured limit.",
+    title: "Assessment limit reached", message: "47,110-token limit" },
+  { name: "long limit diagnostics", error: "OCR evidence prompt exceeds its 47,110-token limit: " + JSON.stringify({ detail: "saved diagnostics ".repeat(400) }),
+    title: "Assessment limit reached", message: "The assessment could not continue within the configured limits." },
+  { name: "unknown usage", error: "The review engine did not report valid token usage. Further AI checks were stopped to avoid exceeding the run budget. Technical details: {}",
+    title: "Token usage could not be verified", message: "The AI's token usage was unavailable, so this assessment could not continue." },
+  { name: "provider failure", error: 'OCR verification process failed; token consumption is unknown. {"exit_code":1,"stderr":"Provider returned HTTP 401"}',
+    title: "AI request could not complete", message: "The selected AI service could not complete this assessment." },
+  { name: "cancelled review", error: "The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.",
+    title: "Assessment stopped", message: "Check the run outcome and current access." },
+  { name: "malformed historical diagnostics", error: 'OCR returned an invalid verification verdict: Assessment evidence does not match the supplied source. {"field":"evidence[2]"',
+    title: "Evidence could not be verified", message: "The AI returned a source citation that could not be validated." },
+  { name: "unknown long diagnostics", error: "Unknown assessment failure: " + JSON.stringify({ response: "saved response ".repeat(400) }),
+    title: "Assessment could not be completed", message: "No usable assessment was saved." },
+];
+
+for (const failure of assessmentErrors) {
+  test(`assessment sheet explains ${failure.name} and preserves copyable diagnostics`, async ({ page }, info) => {
+    await mock(page, {
+      run: { ...run, status: "completed", publication: "no_new_comments", publication_error: null },
+      assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+        pending: 0, incomplete: 1, published_comments: 0 },
+      candidates: [{ id: "failed", snapshot: { path: "frontend/src/settings.tsx", start_line: 525, content: "Proposed finding." },
+        status: "failed", result: null, finding_id: null, is_new: false, error: failure.error, retryable: true }],
+    });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: /Assessment/ }).click();
+    const card = page.getByRole("button", { name: /settings.tsx.*525.*Withheld/ });
+    await card.click();
+    const sheet = page.getByRole("dialog", { name: "Assessment details" });
+    const alert = sheet.getByRole("alert");
+    await expect(alert).toContainText(failure.title);
+    await expect(alert).toContainText(failure.message);
+    await expect(alert).toContainText("This candidate was withheld from publication.");
+    await expect(alert).not.toContainText("response=");
+    await expect(sheet.getByText("No assessment result was recorded.", { exact: true })).toHaveCount(0);
+    const raw = sheet.locator('pre[aria-label="Assessment technical details"]');
+    await expect(raw).toBeHidden();
+    if ("citation" in failure) await expect(sheet.getByText(failure.citation!, { exact: true })).toBeVisible();
+    await noOverflow(page);
+    if (failure.name === "citation mismatch") {
+      await mkdir("../.impeccable/review", { recursive: true });
+      await sheet.screenshot({ path: `../.impeccable/review/assessment-error-${info.project.name}.png` });
+    }
+    const summary = sheet.locator("summary", { hasText: "Technical details" });
+    await summary.focus();
+    await summary.press("Enter");
+    await expect(raw).toBeVisible();
+    expect(await raw.textContent()).toBe(failure.error);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async (value: string) => { document.body.dataset.copiedAssessment = value; },
+      } });
+    });
+    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", failure.error);
+    await expect(page.getByText("Assessment details copied", { exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async () => { throw new Error("Clipboard denied"); },
+      } });
+    });
+    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
+    expect(await raw.textContent()).toBe(failure.error);
+    await raw.focus();
+    await expect(raw).toBeFocused();
+    await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+    await noOverflow(page);
+    await page.keyboard.press("Escape");
+    await expect(card).toBeFocused();
+  });
+}
+
+test("assessment sheet preserves polling, full evidence, and focus on narrow screens", async ({ page }) => {
+  await page.clock.install();
+  await page.setViewportSize({ width: 320, height: 844 });
+  const path = `frontend/${"nested/".repeat(6)}${"long-filename-".repeat(7)}.tsx`;
+  const source = `const value = "${"saved-evidence-".repeat(30)}";\nexport { value };`;
+  const candidate: Schema["CandidateOut"] = {
+    id: "pending", snapshot: { path, start_line: 10, end_line: 11, content: "Full original proposal remains available after assessment finishes." },
+    status: "running", result: null, finding_id: null, is_new: false, error: null, retryable: false,
+  };
+  const currentRun: Partial<Run> = { status: "running", publication: "pending", publication_error: null };
+  const requests = await mock(page, {
+    run: currentRun, canWrite: false, candidates: [candidate],
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 1, incomplete: 0, published_comments: 0 },
+  });
+  let listReads = 0;
+  let detailReads = 0;
+  await page.route("**/api/v1/runs/run/candidates?**", (route) => { listReads++; return route.fallback(); });
+  await page.route("**/api/v1/runs/run/candidates/pending", (route) => { detailReads++; return route.fallback(); });
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const card = page.getByRole("button", { name: /long-filename-/ });
+  await card.focus();
+  await page.keyboard.press("Space");
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Assessment is waiting for the review worker.");
+  await expect(sheet.getByText(path, { exact: true })).toBeVisible();
+  await sheet.getByRole("tab", { name: "Evidence 0" }).click();
+  await expect(sheet).toContainText("Evidence will appear when assessment completes.");
+  candidate.status = "completed";
+  candidate.result = {
+    verdict: "rejected", relationship: "new", finding_id: null,
+    explanation: "The supplied evidence does not establish the alleged defect.",
+    cause: "", trigger: "", consequence: "", history_explanation: "Earlier evidence is preserved.",
+    contradicts_prior: false, changed_conditions: "The reviewed conditions did not change.", suggestion_supported: false,
+    evidence: [
+      { revision: "original", path, start_line: 10, end_line: 11, quote: source },
+      { revision: "current", path, start_line: 10, end_line: 11, quote: "export const unchanged = true;" },
+    ],
+  };
+  await page.clock.fastForward(5000);
+  await expect(sheet.getByRole("tab", { name: "Evidence 2" })).toHaveAttribute("data-state", "active", { timeout: 10000 });
+  expect(detailReads).toBeGreaterThan(0);
+  expect(listReads).toBeGreaterThan(1);
+  currentRun.status = "completed";
+  await page.clock.fastForward(5000);
+  await expect(page.locator("main h1")).toHaveText("Review run completed");
+  const settledReads = { list: listReads, detail: detailReads };
+  await page.clock.runFor(10_000);
+  expect({ list: listReads, detail: detailReads }).toEqual(settledReads);
+  await expect(sheet).toContainText("Not supported");
+  const code = sheet.getByRole("region", { name: "Code snippet" });
+  await expect(code.nth(0)).toHaveText(source);
+  await expect(code.nth(1)).toHaveText("export const unchanged = true;");
+  await code.nth(0).focus();
+  await expect(code.nth(0)).toBeFocused();
+  await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+  await sheet.getByRole("tab", { name: "Assessment", exact: true }).click();
+  await expect(sheet).toContainText("Earlier evidence is preserved.");
+  await expect(sheet).toContainText("The reviewed conditions did not change.");
+  await sheet.locator("summary", { hasText: "Original proposal" }).click();
+  await expect(sheet).toContainText("Full original proposal remains available after assessment finishes.");
+  await expect(sheet.getByRole("button", { name: /Open finding|Resolve finding|Reopen finding|Dismiss/ })).toHaveCount(0);
+  await noOverflow(page);
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  expect(requests).toEqual([]);
+});
+
+for (const status of [401, 403, 404]) {
+  test(`candidate detail stops polling after ${status} and leaves linked findings accessible`, async ({ page }) => {
+    await page.clock.install();
+    const candidate: Schema["CandidateOut"] = {
+      id: "linked", snapshot: finding, status: "running", result: null, retryable: false,
+      finding_id: "finding", is_new: true, error: null,
+    };
+    await mock(page, { candidates: [candidate], assessment: {
+      candidates: 1, new_findings: 1, repeated_observations: 0, withheld_candidates: 0,
+      pending: 1, incomplete: 0, published_comments: 0,
+    } });
+    let denied = false;
+    let reads = 0;
+    await page.route("**/api/v1/runs/run/candidates/linked", (route) => {
+      reads++;
+      return denied ? route.fulfill({ status, json: { detail: "Candidate unavailable" } }) : route.fallback();
+    });
+    await page.goto("/runs/run");
+    await page.getByRole("tab", { name: /Assessment/ }).click();
+    await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+    await page.getByRole("button", { name: "Open finding", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "Finding details" });
+    await expect(sheet).toContainText(finding.content);
+    denied = true;
+    await page.clock.fastForward(5000);
+    await expect(sheet.getByRole("alert")).toContainText("Candidate unavailable");
+    await expect(sheet).toContainText(finding.content);
+    const deniedReads = reads;
+    await page.clock.runFor(10_000);
+    expect(reads).toBe(deniedReads);
+    await page.keyboard.press("Escape");
+    await page.getByRole("tab", { name: /^Findings/ }).click();
+    await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+    await expect(sheet).toContainText(finding.content);
+    await expect(sheet.getByRole("alert")).toHaveCount(0);
+  });
+}
+
+test("assessments paginate on the backend and reset pages when filters change", async ({ page }, info) => {
+  const candidates: Schema["CandidateOut"][] = Array.from({ length: 23 }, (_, index) => ({
+    id: `candidate-${index}`, snapshot: { path: `src/handler-${index}.ts`, content: `Saved proposal ${index}`, severity: index % 2 ? "low" : "high", category: index === 22 ? "custom_rule" : index === 21 ? "performance" : "bug" },
+    status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null, retryable: false,
+  }));
+  const writes = await mock(page, { candidates,
+    assessment: { candidates: 23, new_findings: 1, repeated_observations: 0, withheld_candidates: 22, pending: 0, incomplete: 0, published_comments: 1 },
+  });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run");
+  expect(requests).toEqual([]);
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await expect(list.getByRole("heading", { name: "Candidate assessment", exact: true })).toHaveCount(0);
+  await expect(list).toContainText("Proposed findings are checked against evidence and earlier reviews before becoming new comments.");
+  await expect(list.getByText("23 of 23 assessments", { exact: true })).toHaveClass("sr-only");
+  await list.getByRole("button", { name: "Load more assessments" }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/assessment-pagination-${info.project.name}.png`, animations: "disabled" });
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(20);
+  await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
+  expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByLabel("Search type options", { exact: true }).fill("custom");
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Custom rule/ })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("handler-22.ts");
+  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule"]);
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByLabel("Search assessments", { exact: true }).fill("handler-22.ts");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("New validated finding");
+  await expect(list.getByText("1 of 23 assessments", { exact: true })).toHaveClass("sr-only");
+  expect(requests.at(-1)?.get("q")).toBe("handler-22.ts");
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await cards.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Assessment details" })).toContainText("handler-22.ts");
+  await page.keyboard.press("Escape");
+  await expect(cards).toBeFocused();
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^New validated finding/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^New validated finding/ })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(1);
+  expect(requests.at(-1)?.getAll("outcome")).toEqual(["new"]);
+  await page.getByRole("button", { name: "Remove Result filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^High/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^High/ })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(list.getByText("12 of 23 assessments", { exact: true })).toHaveClass("sr-only");
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(12);
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["high"]);
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await page.getByLabel("Search assessments", { exact: true }).fill("no-match");
+  await expect(list.getByRole("heading", { name: "No assessments match these filters" })).toBeVisible();
+  await page.getByRole("button", { name: "View all assessments", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(page.getByLabel("Search assessments", { exact: true })).toBeFocused();
+  await noOverflow(page);
+  expect(writes).toEqual([]);
+});
+
+test("assessment pages preserve loaded cards on failure and hide them on access denial", async ({ page }) => {
+  const candidates: Schema["CandidateOut"][] = Array.from({ length: 21 }, (_, index) => ({
+    id: `candidate-${index}`, snapshot: { path: `src/file-${index}.ts`, content: `Saved proposal ${index}` },
+    status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false,
+  }));
+  await mock(page, { candidates, assessment: { candidates: 21, new_findings: 0, repeated_observations: 0, withheld_candidates: 21, pending: 0, incomplete: 0, published_comments: 0 } });
+  let failure = 502;
+  await page.route("**/api/v1/runs/run/candidates?**", (route) => failure
+    ? route.fulfill({ status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Assessments temporarily unavailable" } })
+    : route.fallback());
+  await page.goto("/runs/run");
+  await page.getByRole("tab", { name: /Assessment/ }).click();
+  const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(list.getByRole("alert")).toHaveText("Assessments temporarily unavailable");
+  await expect(list.getByText("No candidates to assess")).toHaveCount(0);
+  failure = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  failure = 502;
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(list.getByRole("button", { name: "Retry assessments", exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(10);
+  failure = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  failure = 403;
+  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(list.getByRole("alert")).toHaveText("Repository access revoked");
+  await expect(cards).toHaveCount(0);
 });
 
 for (const status of ["running", "completed"]) {
@@ -2674,8 +3704,7 @@ for (const example of feedbackCases) {
     await expect(outcome).toContainText(example.nextStep);
     if (example.fileReason) {
       await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-      const files = page.locator("details").filter({ has: page.getByText("Files not reviewed (1)", { exact: true }) });
-      if (await files.getAttribute("open") === null) await files.locator("summary").click();
+      const files = page.getByRole("region", { name: "Files not reviewed", exact: true });
       await expect(files.getByText(example.fileReason, { exact: true })).toBeVisible();
     }
     if (example.state.status === "blocked") {
@@ -2713,7 +3742,7 @@ test("completed reviews without comments need no attention in lists or previews"
 });
 
 for (const status of ["partial", "skipped"]) {
-  test(`file disclosure preserves the user's choice during ${status} run polling`, async ({ page }) => {
+  test(`coverage report disclosure preserves the user's choice during ${status} run polling`, async ({ page }) => {
     await page.clock.install();
     let reads = 0;
     const currentRun: Partial<Run> = { status };
@@ -2726,7 +3755,7 @@ for (const status of ["partial", "skipped"]) {
     });
     await page.goto("/runs/run");
     await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-    const files = page.locator("details").filter({ hasText: "Files not reviewed (1)" });
+    const files = page.locator("details").filter({ has: page.getByText("Inspect coverage report", { exact: true }) });
     await expect(files).toBeVisible();
     await files.locator("summary").click();
     const open = await files.getAttribute("open");
@@ -2967,7 +3996,7 @@ test("breadcrumbs keep long names accessible without pushing the theme button of
     repository: { ...repo, full_name: fullName }, pull_request: pr, runs: [run], findings: [], can_write: true,
   }));
   await page.goto("/pulls/pr");
-  await expect(page.getByRole("heading", { name: pr.title, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: `#${pr.number} ${pr.title}`, exact: true })).toBeVisible();
   for (const width of info.project.name === "desktop" ? [1283, 1024, 768, 640] : [390, 320]) {
     await page.setViewportSize({ width, height: 938 });
     await expect(page.getByRole("button", { name: "Switch to dark mode" })).toBeInViewport();
@@ -3025,14 +4054,209 @@ test("header theme toggle follows the OS until an explicit choice, then persists
   await expect(page.locator("html")).toHaveClass("dark");
 });
 
+test("appearance palettes keep text, actions, syntax and focus readable", () => {
+  expect(contrast("#000000", "#ffffff")).toBe(21);
+  for (const theme of themes) {
+    for (const mode of ["light", "dark"] as const) {
+      const colors = theme[mode];
+      const pairs = [
+        ["--foreground", "--background"], ["--card-foreground", "--card"],
+        ["--popover-foreground", "--popover"], ["--primary-foreground", "--primary"],
+        ["--secondary-foreground", "--secondary"], ["--accent-foreground", "--accent"],
+        ["--destructive-foreground", "--destructive"], ["--code-added", "--code-added-background"],
+        ["--code-removed", "--code-removed-background"],
+      ] as const;
+      for (const [foreground, background] of pairs) {
+        expect(contrast(colors[foreground], colors[background]), `${theme.id} ${mode} ${foreground}`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const surface of ["--background", "--card", "--muted"] as const) {
+        for (const foreground of ["--primary", "--muted-foreground", "--code-keyword", "--code-string", "--code-number", "--code-function"] as const) {
+          expect(contrast(colors[foreground], colors[surface]), `${theme.id} ${mode} ${foreground} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(contrast(colors["--ring"], colors[surface]), `${theme.id} ${mode} focus`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  }
+});
+
+for (const role of ["admin", "member"]) {
+  test(`appearance navigation works for ${role}s without depending on operational settings`, async ({ page }) => {
+    await mock(page, { role });
+    await page.route("**/api/v1/settings", (route) => route.fulfill({ status: 503, json: { detail: "Settings unavailable" } }));
+    await page.route("**/api/v1/connections", (route) => route.fulfill({ status: 503, json: { detail: "Connections unavailable" } }));
+    await page.route("**/api/v1/providers", (route) => route.fulfill({ status: 503, json: { detail: "Providers unavailable" } }));
+    await page.goto("/settings");
+    const navigation = page.getByRole("navigation", { name: "Settings sections" });
+    await expect(navigation.getByRole("link")).toHaveText(role === "admin"
+      ? ["AI connections", "GitHub", "Team", "Appearance"] : ["AI connections", "Appearance"]);
+    await navigation.getByRole("link", { name: "Appearance", exact: true }).click();
+    await expect(page).toHaveURL(/\/settings\?tab=appearance$/);
+    await expect(page.getByRole("region", { name: "Appearance", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Breadcrumb" }).getByText("Appearance", { exact: true })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await page.goBack();
+    await expect(navigation.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
+    await page.goForward();
+    await page.reload();
+    await expect(page.getByRole("radio")).toHaveCount(9);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await openNavigation(page);
+    await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
+    const shortcut = page.getByRole("menuitem", { name: "Appearance", exact: true });
+    await expect(shortcut).toHaveAttribute("href", "/settings?tab=appearance");
+    await shortcut.click();
+    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
+  });
+}
+
+test("appearance applies and persists all nine palettes in both color modes", async ({ page }, info) => {
+  await mock(page);
+  const operationalReads: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/v1\/(settings|connections|providers)$/.test(new URL(request.url()).pathname)) operationalReads.push(request.url());
+  });
+  await page.goto("/settings?tab=appearance");
+  const appearance = page.getByRole("region", { name: "Appearance", exact: true });
+  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(appearance.getByLabel("Color mode", { exact: true })).toHaveValue("system");
+  for (const mode of ["light", "dark"] as const) {
+    await appearance.getByLabel("Color mode", { exact: true }).selectOption(mode);
+    for (const theme of themes) {
+      await appearance.getByText(theme.label, { exact: true }).click();
+      await expect(appearance.getByRole("radio", { name: theme.label, exact: true })).toBeChecked();
+      await expect(page.locator("html")).toHaveAttribute("data-color-theme", theme.id);
+      await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(mode);
+      const actual = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement);
+        return Object.fromEntries(["--background", "--primary", "--code-keyword", "--code-added-background"].map((key) => [key, root.getPropertyValue(key).trim()]));
+      });
+      expect(actual).toMatchObject(Object.fromEntries(Object.keys(actual).map((key) => [key, theme[mode][key as keyof typeof theme.light]])));
+      await page.reload();
+      await expect(appearance.getByRole("radio", { name: theme.label, exact: true })).toBeChecked();
+      await expect(appearance.getByLabel("Color mode", { exact: true })).toHaveValue(mode);
+      expect(await page.evaluate(() => [localStorage.getItem("color-theme"), localStorage.getItem("theme")])).toEqual([theme.id, mode]);
+      await noOverflow(page);
+      if (theme.id === "code-mortis" || theme.id === "noodle" || theme.id === "dracula") {
+        await page.screenshot({ path: `../.impeccable/review/appearance-${info.project.name}-${theme.id}-${mode}.png`, fullPage: true });
+      }
+    }
+  }
+  expect(operationalReads).toEqual([]);
+  await appearance.getByText("Code Mortis", { exact: true }).click();
+  await page.getByRole("radio", { name: "Code Mortis", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(appearance.getByRole("radio", { name: "Noodle", exact: true })).toBeChecked();
+  await page.getByRole("radio", { name: "Aura", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "aura");
+  await appearance.getByText("Dracula", { exact: true }).click();
+  for (const width of info.project.name === "desktop" ? [1636, 1024, 1023] : [320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await noOverflow(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `../.impeccable/review/appearance-${info.project.name}-${width}.png`, fullPage: true });
+  }
+});
+
+test("appearance system mode and the header toggle keep the selected palette", async ({ page }) => {
+  await mock(page);
+  await page.goto("/settings?tab=appearance");
+  const mode = page.getByLabel("Color mode", { exact: true });
+  await page.getByRole("region", { name: "Appearance", exact: true }).getByText("Dracula", { exact: true }).click();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveClass("dark");
+  await expect(mode).toHaveValue("system");
+  await page.getByRole("button", { name: "Switch to light mode", exact: true }).click();
+  await expect(mode).toHaveValue("light");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).not.toHaveClass("dark");
+  await page.reload();
+  await expect(mode).toHaveValue("light");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await mode.selectOption("system");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).not.toHaveClass("dark");
+  await page.goto("/repositories/22");
+  await page.getByRole("button", { name: "Switch to dark mode", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "dracula");
+  await page.route("**/api/v1/repositories/22/sync", (route) => route.fulfill({ json: { job_id: "sync-job" } }));
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await expect(page.locator("[data-sonner-toast]")).toContainText("Sync queued");
+  await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", "dark");
+});
+
+test("appearance themes reach finding dialogs and rendered code diffs", async ({ page }, info) => {
+  await mock(page, { finding: { content: "Keep retries bounded.\n\n```python\ndef deliver():\n    return True\n```" } });
+  await page.addInitScript(() => localStorage.setItem("color-theme", "dracula"));
+  await page.goto("/pulls/pr");
+  await page.getByRole("button", { name: /Keep retries bounded/ }).click();
+  const dialog = page.getByRole("dialog");
+  const patch = dialog.getByRole("region", { name: "Suggested change diff" });
+  const theme = themes.find((item) => item.id === "dracula")!;
+  const rgb = (hex: string) => `rgb(${[1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
+  for (const mode of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: mode });
+    await expect(dialog).toHaveCSS("background-color", rgb(theme[mode]["--background"]));
+    await expect(patch.locator(".hljs-addition").first()).toHaveCSS("color", rgb(theme[mode]["--code-added"]));
+    await expect(patch.locator(".hljs-deletion").first()).toHaveCSS("background-color", rgb(theme[mode]["--code-removed-background"]));
+    await expect(dialog.locator(".markdown .hljs-keyword").first()).toHaveCSS("color", rgb(theme[mode]["--code-keyword"]));
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/appearance-code-${info.project.name}-${mode}.png`, animations: "disabled" });
+  }
+});
+
+test("appearance defaults recover invalid preferences", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("theme", "invalid");
+    localStorage.setItem("color-theme", "unknown-theme");
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/settings?tab=appearance");
+  await expect(page.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("system");
+  await expect(page.locator("html")).toHaveClass("dark");
+});
+
+test("appearance retains the legacy saved dark mode", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("theme", "dark");
+    localStorage.removeItem("color-theme");
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/settings?tab=appearance");
+  await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("dark");
+  await expect(page.locator("html")).toHaveClass("dark");
+});
+
+test("appearance remains usable when local storage is unavailable", async ({ page }) => {
+  await mock(page);
+  await page.addInitScript(() => {
+    for (const method of ["getItem", "setItem"]) {
+      Object.defineProperty(Storage.prototype, method, { value: () => { throw new DOMException("Storage disabled", "SecurityError"); } });
+    }
+  });
+  await page.goto("/settings?tab=appearance");
+  const appearance = page.getByRole("region", { name: "Appearance", exact: true });
+  await appearance.getByText("Noodle", { exact: true }).click();
+  await appearance.getByLabel("Color mode", { exact: true }).selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "noodle");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+});
+
 test("members manage personal subscriptions without administrative controls", async ({
   page,
 }, info) => {
   await mock(page, { role: "member", personal: true });
   await page.goto("/settings");
-  await expect(
-    page.getByRole("navigation", { name: "Settings sections" }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "Appearance"]);
   await expect(
     page.getByRole("link", { name: "GitHub", exact: true }),
   ).toHaveCount(0);
@@ -3200,6 +4424,7 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   });
   await page.goto("/pulls/pr");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await page.getByRole("button", { name: "View verification", exact: true }).click();
   await expect(page.getByText("The retry loop now stops after three attempts.")).toBeVisible();
   await expect(page.getByText("Automatic resolution: failed")).toBeVisible();
   await page.getByText("Current evidence: src/retry.ts:1–1").click();
@@ -3262,6 +4487,7 @@ test("pending verification has one status and failed verification has an alert",
   ] });
   await page.goto("/pulls/pr");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await page.getByRole("button", { name: "View verification", exact: true }).click();
   const panel = page.getByRole("dialog");
   await expect(panel.getByText("queued", { exact: true })).toHaveCount(1);
   await expect(panel.getByRole("alert")).toContainText("Verification context is unavailable");
@@ -3359,7 +4585,8 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
   await account.getByRole("button", { name: "Actions for acme" }).click();
   await expect(page.getByRole("menuitem", { name: "Manage repositories" })).toHaveAttribute("href", installation.settings_url!);
   await page.getByRole("menuitem", { name: "Resync repositories" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Repository sync queued" })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository sync queued for acme" })).toBeVisible();
+  await expect(page.getByRole("main").getByText(/Repository sync queued/)).toHaveCount(0);
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/github-installations-${info.project.name}.png`, fullPage: true });
@@ -3442,6 +4669,7 @@ test("GitHub removed accounts require confirmation and retain review history", a
   await page.getByRole("menuitem", { name: "Remove from list" }).press("Enter");
   await dialog.getByRole("button", { name: "Remove from list" }).click();
   await expect(dialog.getByRole("alert")).toContainText("still has an installed GitHub App");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(account).toBeVisible();
   reject = false;
   await dialog.getByRole("button", { name: "Remove from list" }).focus();
@@ -3454,7 +4682,7 @@ test("GitHub removed accounts require confirmation and retain review history", a
   finishRemoval();
   await expect(dialog).toHaveCount(0);
   await expect(account).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Saved repositories and review history are retained.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "acme removed from the list." })).toContainText("Saved repositories and review history are retained.");
   await expect(page.getByRole("heading", { name: /^Connected installations/, level: 3 })).toBeFocused();
   await expect(page.getByRole("heading", { name: "No connected installations" })).toBeVisible();
   await noOverflow(page);
@@ -3578,6 +4806,7 @@ test("GitHub installations refresh on return and connect available accounts", as
   await page.getByRole("button", { name: "Actions for acme" }).click();
   await page.getByRole("menuitem", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository sync queued for acme" })).toBeVisible();
   await expect(available).toContainText("No additional installations available. Install the app on another account, then refresh.");
   await expect(available.getByRole("button")).toHaveCount(0);
   await noOverflow(page);
@@ -3610,7 +4839,7 @@ test("settings sections retain URLs and adapt to the workspace width in both the
   await expect(page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
-    for (const section of ["AI connections", "GitHub", "Team"]) {
+    for (const section of ["AI connections", "GitHub", "Team", "Appearance"]) {
       const link = navigation.getByRole("link", { name: section, exact: true });
       await link.click();
       await expect(link).toHaveAttribute("aria-current", "page");
@@ -3620,6 +4849,7 @@ test("settings sections retain URLs and adapt to the workspace width in both the
       await page.screenshot({ path: `../.impeccable/review/settings-${section.replaceAll(" ", "-")}-${info.project.name}-${theme}.png`, fullPage: true });
     }
   }
+  await navigation.getByRole("link", { name: "Team", exact: true }).click();
   for (const width of info.project.name === "desktop" ? [1024, 1023] : [320]) {
     await page.setViewportSize({ width, height: 900 });
     await noOverflow(page);
@@ -4489,6 +5719,7 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
   release();
   await expect(dialog.getByRole("alert")).toContainText("could not be saved");
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Save connection", exact: true })).toBeEnabled();
   await expect(dialog.getByLabel("Connection name")).toHaveValue("Updated connection");
   await noOverflow(page);
@@ -4502,10 +5733,61 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   fail = false;
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Connection saved." })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/connection-save-toast-${info.project.name}-dark.png` });
   const body = requests.find((request) => request.path === "/connections/connection")!.body;
   expect(body).toMatchObject({ name: "Updated connection", model: "review-model" });
   expect(body).not.toHaveProperty("api_key");
   expect(body).not.toHaveProperty("extra_headers");
+});
+
+test("API connection prompt ceiling defaults, saves, and reloads independently of provider options", async ({ page }, info) => {
+  const requests = await mock(page);
+  let current = { ...connection, options: { timeout_sec: 30 } as Record<string, unknown> };
+  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [current] }));
+  await page.route("**/api/v1/connections/connection", (route) => {
+    current = { ...current, ...route.request().postDataJSON() };
+    return route.fulfill({ json: current });
+  });
+  await page.goto("/settings?tab=connections");
+  async function edit() {
+    await page.getByRole("button", { name: "Actions for Team reviews" }).click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    await page.getByText("Advanced provider settings", { exact: true }).click();
+  }
+  await edit();
+  const dialog = page.getByRole("dialog");
+  const ceiling = dialog.getByLabel("Evidence prompt ceiling (tokens)", { exact: true });
+  await expect(ceiling).toHaveValue("58888");
+  await expect(dialog.getByLabel("Provider options JSON")).toHaveValue('{\n  "timeout_sec": 30\n}');
+  await ceiling.fill("200000");
+  await noOverflow(page);
+  await ceiling.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await page.screenshot({ path: `../.impeccable/review/api-prompt-ceiling-${info.project.name}.png` });
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 200000 });
+  await edit();
+  await expect(ceiling).toHaveValue("200000");
+  await expect(dialog.getByLabel("Provider options JSON")).toHaveValue('{\n  "timeout_sec": 30\n}');
+  for (const value of ["", "4095", "2000001", "4096.5"]) {
+    await ceiling.fill(value);
+    await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+    await dialog.getByRole("button", { name: "Refresh models", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText("Evidence prompt ceiling must be an integer between 4096 and 2000000.");
+    expect(requests.filter((request) => request.path === "/connections/models")).toHaveLength(0);
+  }
+  await ceiling.fill("58888");
+  await dialog.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(requests.find((request) => request.path === "/connections/models")?.body).toMatchObject({
+    options: { timeout_sec: 30, prompt_token_ceiling: 58888 },
+  });
+  await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 58888 });
 });
 
 test("connection editing recovers when providers fail to load", async ({ page }) => {
@@ -4570,7 +5852,7 @@ test("personal model saves compare and send trimmed model IDs", async ({ page })
   await expect(form.getByRole("button", { name: "Save model" })).toBeDisabled();
   await model.fill(" custom-model ");
   await form.getByRole("button", { name: "Save model" }).click();
-  await expect(form.getByRole("status").filter({ hasText: /^Model saved\.$/ })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   expect(body?.model).toBe("custom-model");
   await expect(model).toHaveValue("custom-model");
 });
@@ -4589,6 +5871,7 @@ for (const kind of ["chatgpt", "claude_code"] as const) {
       await page.getByRole("button", { name: "Actions for My subscription", exact: true }).click();
       await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
       const dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("Evidence prompt ceiling (tokens)")).toHaveCount(0);
       await dialog.getByLabel("Connection name").fill("Updated subscription");
       await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
       await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model });
@@ -4643,7 +5926,9 @@ test("personal model and repository errors stay with their operation", async ({ 
   await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings?tab=team");
-  await expect(page.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
+  const sections = page.getByRole("navigation", { name: "Settings sections" });
+  await expect(sections.getByRole("link")).toHaveText(["AI connections", "Appearance"]);
+  await expect(sections.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
   await page.getByText("Connection settings", { exact: true }).click();
   const model = page.getByRole("form", { name: "Default model" });
@@ -4676,14 +5961,14 @@ test("personal model and repository errors stay with their operation", async ({ 
   fail = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   expect(requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: false });
-  await expect(grants.getByRole("status")).toContainText("Repository authorization updated");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
   await grants.getByRole("switch").check();
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect.poll(() => requests.filter((request) => request.path === "/connections/personal/grants/22").at(-1)?.body).toEqual({ automatic: true });
 });
 
-test("personal model confirmation stays cleared after editing and reverting", async ({ page }) => {
+test("personal model saves use toasts while edits retain saved state", async ({ page }) => {
   await mock(page, { role: "member", personal: true });
   let saves = 0;
   await page.route("**/api/v1/connections/personal", (route) => {
@@ -4698,16 +5983,15 @@ test("personal model confirmation stays cleared after editing and reverting", as
   const input = model.getByLabel("Custom model ID");
   await input.fill("saved-custom");
   await model.getByRole("button", { name: "Save model", exact: true }).click();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
+  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await input.fill("edited-custom");
-  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await input.fill("saved-custom");
-  await expect(model.getByText("Model saved.", { exact: true })).toHaveCount(0);
   await expect(model.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
   expect(saves).toBe(1);
   await input.fill("next-custom");
   await model.getByRole("button", { name: "Save model", exact: true }).click();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." }).last()).toBeVisible();
   expect(saves).toBe(2);
 });
 
@@ -4731,12 +6015,12 @@ test("personal model saves report invalid success responses and retain an editab
     await form.getByRole("button", { name: "Save model", exact: true }).click();
     await expect(form.getByRole("alert")).toHaveText("The server did not return a valid model. Please retry.");
     await expect(input).toHaveValue(`custom-${attempt}`);
-    await expect(form.getByText("Model saved.", { exact: true })).toHaveCount(0);
+    await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toHaveCount(0);
     await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeEnabled();
   }
   await form.getByRole("button", { name: "Save model", exact: true }).click();
   await expect(form.getByRole("alert")).toHaveCount(0);
-  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   await expect(input).toHaveValue(`custom-${invalid.length - 1}`);
   await expect(form.getByRole("button", { name: "Save model", exact: true })).toBeDisabled();
   expect(saves).toBe(invalid.length + 1);
@@ -4930,7 +6214,7 @@ test("personal model saves disable controls while retaining the loaded catalog",
   await expect.poll(() => reads).toBe(2);
   await expect(select).toHaveValue("Next model · next-model");
   releaseRefresh();
-  await expect(form.getByText("Model saved.", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
   await expect(form.getByText("Official client catalog.")).toBeVisible();
   await expect(select).toBeEnabled();
   expect(reads).toBe(2);
@@ -5012,8 +6296,8 @@ test("personal authorization confirmations match saved changes and revocations",
   await repository.press("Enter");
   await automatic.check();
   await save.click();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
-  await expect(grants.locator("form").getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
+  await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(repository).toHaveValue("");
   await expect(automatic).not.toBeChecked();
@@ -5021,7 +6305,7 @@ test("personal authorization confirmations match saved changes and revocations",
   await chooseOption(page, repository, "acme/payments");
   await expect(grants.getByRole("status")).toHaveCount(0);
   await save.click();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." }).last()).toBeVisible();
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await grants.getByRole("button", { name: "Revoke" }).click();
   await expect(grants.getByRole("button", { name: "Revoking…", exact: true })).toBeDisabled();
@@ -5030,6 +6314,7 @@ test("personal authorization confirmations match saved changes and revocations",
   releaseRevoke();
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await chooseOption(page, repository, "acme/payments");
@@ -5037,12 +6322,12 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   failRevoke = false;
   await grants.getByRole("button", { name: "Revoke" }).click();
-  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toBeVisible();
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await automatic.uncheck();
   await chooseOption(page, repository, "acme/orders");
-  await expect(grants.getByRole("status")).toHaveText("Authorization revoked.");
+  await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(save).toBeEnabled();
 });
 
@@ -5140,8 +6425,8 @@ test("personal model and authorization saves run independently while auth stays 
   await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeDisabled();
   await expect(account.getByRole("button", { name: "Disconnect and revoke access" })).toBeDisabled();
   release();
-  await expect(model.getByText("Model saved.", { exact: true })).toBeVisible();
-  await expect(grants.getByRole("status")).toHaveText("Repository authorization updated.");
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Model saved." })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." })).toBeVisible();
   await expect(model.getByLabel("Custom model ID")).toHaveValue("saved-custom");
   await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "Reconnect", exact: true })).toBeEnabled();
@@ -5165,12 +6450,17 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(summary).toContainText("ccccccc");
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
-  await expect(list.getByRole("region")).toHaveCount(1);
-  await expect(list.getByRole("button")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Edit Status: Open", exact: true })).toBeVisible();
+  await expect(list.getByRole("region")).toHaveCount(2);
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("heading", { name: `#${pr.number} ${pr.title}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
+  await expect(list.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   await expect(list.getByRole("region")).toHaveCount(3);
   await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
@@ -5180,11 +6470,14 @@ test("pull detail searches evidence and separates severity, status, and run hist
   }
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
   await expect(list.getByRole("button")).toHaveCount(2);
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).check();
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Dismissed/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved, Dismissed", exact: true })).toBeFocused();
   await expect(list.getByRole("button")).toHaveCount(3);
@@ -5195,27 +6488,39 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
   await page.getByLabel("Search findings", { exact: true }).fill("VALIDATE.TS");
   await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "View all findings", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
-  await expect(page.getByRole("button", { name: /Remove (Status|Severity) filter/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Remove (Status|Severity|Type) filter/ })).toHaveCount(0);
   await page.getByLabel("Search findings", { exact: true }).fill("performance");
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
-  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
-  await page.getByRole("checkbox", { name: "Medium", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(list.getByRole("button")).toHaveCount(2);
   for (const theme of ["light", "dark"]) {
@@ -5249,6 +6554,11 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   let runs: typeof run[] = [run];
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings }));
   await page.goto("/pulls/pr");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
+  await page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).not.toBeChecked();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "View all findings", exact: true }).click();
@@ -5256,7 +6566,8 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("Coverage is incomplete");
@@ -5282,6 +6593,37 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await page.screenshot({ path: `../.impeccable/review/pull-empty-${info.project.name}.png`, fullPage: true });
 });
 
+test("run history shows recorded durations and omits incomplete timing", async ({ page }, info) => {
+  await mock(page);
+  const runs = [
+    { ...run, id: "run", status: "completed" },
+    { ...run, id: "short", status: "completed", finished_at: "2026-10-05T13:20:42Z" },
+    { ...run, id: "zero", status: "completed", finished_at: at },
+    { ...run, id: "failed", status: "failed", finished_at: "2026-10-05T13:37:36Z" },
+    { ...run, id: "queued", status: "queued", started_at: null, finished_at: null },
+    { ...run, id: "running", status: "running", finished_at: null },
+    { ...run, id: "unknown", status: "cancelled", started_at: null },
+  ];
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
+  await page.goto("/pulls/pr");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  const history = page.getByRole("tabpanel");
+  for (const [id, duration] of [["run", "1m 30s"], ["short", "42s"], ["zero", "0s"], ["failed", "17m 36s"]]) {
+    await expect(history.locator(`a[href="/runs/${id}"]`)).toContainText(`Duration: ${duration}`);
+  }
+  for (const id of ["queued", "running", "unknown"]) {
+    await expect(history.locator(`a[href="/runs/${id}"]`)).not.toContainText("Duration:");
+  }
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/run-history-duration-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await history.locator('a[href="/runs/run"]').click();
+  await expect(page.locator("main header")).toContainText("1m 30s");
+});
+
 test("run history fetches ten runs per page and keeps summary independent of loaded pages", async ({ page }, info) => {
   await mock(page);
   await page.clock.install();
@@ -5298,7 +6640,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await page.goto("/pulls/pr");
   await expect(page.getByRole("tab", { name: "Run history 23" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review in progress" })).toBeDisabled();
-  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
   expect(requests).toEqual([]);
   await page.getByRole("tab", { name: "Run history 23" }).click();
   const history = page.getByRole("tabpanel");
@@ -5321,8 +6663,8 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await expect(history.getByRole("status")).toHaveText("23 of 23");
   await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
   expect(requests).toEqual([1, 1, 2, 3]);
-  await page.getByRole("tab", { name: "Findings 1" }).click();
-  await expect(page.getByText("Not observed in latest review", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
+  await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
 });
 
 test("run history load more stays available during polling and waits for the next page", async ({ page }) => {
@@ -5417,6 +6759,7 @@ test("pull detail paginates each finding status independently and resets pages w
     ...finding, id: `${status}-${index}`, status, sync_intent: null,
     content: `Test finding ${index + 1}: validate incoming webhook data before processing.`,
     path: `src/${status}/handler-${index + 1}.ts`, severity: index % 2 ? "medium" : "high",
+    category: index === 20 ? "custom_rule" : index === 19 ? "performance" : "bug",
   })));
   await mockPullDetail(page, () => ({
     pull_request: pr, repository: repo, can_write: true, runs: [], findings,
@@ -5427,9 +6770,9 @@ test("pull detail paginates each finding status independently and resets pages w
   const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
   const rows = (section: typeof open) => section.getByRole("button", { name: /Test finding/ });
   await expect(rows(open)).toHaveCount(10);
-  await expect(resolved).toHaveCount(0);
+  await expect(rows(resolved)).toHaveCount(10);
   await expect(dismissed).toHaveCount(0);
-  expect(requests[0].getAll("status")).toEqual(["open"]);
+  expect(requests[0].getAll("status")).toEqual(["open", "resolved"]);
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await expect(rows(open)).toHaveCount(20);
   expect(requests.some((params) => params.get("status") === "open" && params.get("group") === "open" && params.get("page") === "2")).toBe(true);
@@ -5455,6 +6798,21 @@ test("pull detail paginates each finding status independently and resets pages w
   for (const status of ["open", "resolved", "dismissed"]) expect(requests.some((params) => params.get("group") === status && params.get("page") === "2")).toBe(true);
   expect(requests.some((params) => params.get("group") === "open" && params.get("page") === "3")).toBe(true);
   await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Custom rule/ })).toBeChecked();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule", "performance"]);
+  expect(requests.at(-1)?.has("group")).toBe(false);
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/finding-type-filter-${info.project.name}.png`, animations: "disabled" });
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
 
   await page.getByLabel("Search findings", { exact: true }).fill("handler-21.ts");
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
@@ -5463,7 +6821,8 @@ test("pull detail paginates each finding status independently and resets pages w
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   for (const section of [open, resolved, dismissed]) {
     await expect(rows(section)).toHaveCount(10);
@@ -5476,7 +6835,8 @@ test("pull detail paginates each finding status independently and resets pages w
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(rows(open)).toHaveCount(10);
   await expect(resolved).toHaveCount(0);
@@ -5485,22 +6845,23 @@ test("pull detail paginates each finding status independently and resets pages w
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
 });
 
-for (const state of ["merged", "paused", "running", "viewer", "fork"] as const) {
-  test(`pull detail explains review availability for ${state}`, async ({ page }) => {
+for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {
+  test(`pull detail handles review availability for ${state}`, async ({ page }) => {
     await mock(page);
     await mockPullDetail(page, () => ({
-      pull_request: { ...pr, state: state === "merged" ? "merged" : "open", fork: state === "fork" },
+      pull_request: { ...pr, state: state === "merged" || state === "closed" ? state : "open", fork: state === "fork" },
       repository: { ...repo, enabled: state !== "paused" }, can_write: state !== "viewer", findings: [],
       runs: state === "running" ? [{ ...run, status: "running", publication: "pending" }] : [],
     }));
     await page.goto("/pulls/pr");
     const summary = page.getByRole("region", { name: "Latest review" });
     const messages = {
-      merged: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
+      merged: "Reviews can only run on open pull requests.", closed: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    await expect(summary).toContainText(messages[state]);
+    if (state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
+    else await expect(summary).toContainText(messages[state]);
     if (state === "viewer") {
       await expect(summary.getByRole("button")).toHaveCount(0);
       await expect(page.getByLabel("Review connection")).toHaveCount(0);

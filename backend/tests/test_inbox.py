@@ -279,6 +279,34 @@ def test_text_ordering_keeps_review_priority_and_stable_ties(visible, client, mo
     assert result["total"] == 5
 
 
+def test_unified_inbox_orders_and_paginates_across_states(visible, client):
+    with transaction() as db:
+        at = now()
+        for index in range(21):
+            pr = pull(db, f"unified-{index:02}", ["open", "merged", "closed"][index % 3], author="unified", at=at - timedelta(minutes=index))
+            if index == 20:
+                run(db, pr, "running")
+            elif index == 18:
+                run(db, pr, "queued")
+        pull(db, "not-visible", repo=22, author="someone-else")
+    query = "?group=all&state=all&author=unified"
+    first = get(client, query)
+    assert first["total"] == first["groups"][0]["total"] == 21
+    assert len(first["groups"]) == 1
+    assert first["groups"][0]["group"] == "all"
+    second = get(client, query + "&page=2")["groups"][0]
+    last = get(client, query + "&page=999")["groups"][0]
+    items = first["groups"][0]["items"] + second["items"] + last["items"]
+    assert [len(first["groups"][0]["items"]), len(second["items"]), len(last["items"])] == [10, 10, 1]
+    assert [pr["id"] for pr in items] == ["unified-20", "unified-18", *[f"unified-{index:02}" for index in range(20) if index != 18]]
+    assert last["page"] == 3 and not last["has_more"]
+    ascending = get(client, query + "&ordering=title")["groups"][0]["items"]
+    assert [pr["id"] for pr in ascending[:4]] == ["unified-20", "unified-18", "unified-00", "unified-01"]
+    open_only = get(client, "?group=all&state=open&author=unified")["groups"][0]
+    assert open_only["total"] == 8
+    assert all(pr["state"] == "open" or pr["has_running_review"] for pr in open_only["items"])
+
+
 @pytest.mark.parametrize("query", ["?state=bad", "?repo=-1", "?review=clean", "?page=0", "?group=bad", "?findings=bad", "?ordering=unknown", "?ordering=--title"])
 def test_query_validation(visible, client, query):
     assert client.get("/api/v1/pulls" + query).status_code == 422

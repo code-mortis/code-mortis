@@ -265,11 +265,18 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     return context
 
 
+class ResultValidationError(ValueError):
+    def __init__(self, message, feedback):
+        super().__init__(message)
+        self.feedback = feedback
+
+
 class VerificationOutputError(ValueError):
-    def __init__(self, message, usage, status="failed"):
+    def __init__(self, message, usage, status="failed", *, feedback=None):
         super().__init__(message)
         self.usage = usage
         self.status = status
+        self.feedback = feedback
 
 
 def evidence_bundle(context):
@@ -375,8 +382,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
         tools.write_text(json.dumps(verification_tools(instructions, schema)))
-        # Pin OCR 1.12.11's scan default so preview and execution enforce the same reported limit.
-        max_tokens = 58888
+        # Legacy connections retain OCR 1.12.11's scan default.
+        max_tokens = connection.get("options", {}).get("prompt_token_ceiling", 58888)
         token_limit = max_tokens * 4 // 5
         args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
                 "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
@@ -444,7 +451,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         except (ValueError, KeyError, TypeError) as exc:
             raise VerificationOutputError(
                 "OCR returned an invalid verification verdict: " + str(exc) +
-                "; response=" + json.dumps(raw)[:2000], {"tokens": usage}
+                "; response=" + json.dumps(raw)[:2000], {"tokens": usage},
+                feedback=exc.feedback if isinstance(exc, ResultValidationError) else None,
             ) from exc
 
 

@@ -311,6 +311,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Candidates */
+        get: operations["run_candidates_api_v1_runs__run_id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/candidates/{candidate_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Candidate Detail */
+        get: operations["candidate_detail_api_v1_runs__run_id__candidates__candidate_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/candidates/{candidate_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Assessment */
+        post: operations["retry_assessment_api_v1_runs__run_id__candidates__candidate_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/cancel": {
         parameters: {
             query?: never;
@@ -912,6 +963,20 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** CandidateAttemptOut */
+        CandidateAttemptOut: {
+            /** Status */
+            status: string;
+            /** Error */
+            error: string | null;
+            result: components["schemas"]["AssessmentResult"] | null;
+            /** Usage */
+            usage: {
+                [key: string]: unknown;
+            };
+            /** Finished At */
+            finished_at: string | null;
+        };
         /** CandidateOut */
         CandidateOut: {
             /** Id */
@@ -929,6 +994,43 @@ export interface components {
             is_new: boolean;
             /** Error */
             error: string | null;
+            /** Attempts */
+            attempts?: components["schemas"]["CandidateAttemptOut"][];
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+        };
+        /** CandidatePage */
+        CandidatePage: {
+            /** Items */
+            items: components["schemas"]["CandidateOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
         };
         /** ConnectionInput */
         ConnectionInput: {
@@ -1108,6 +1210,10 @@ export interface components {
             status_counts: {
                 [key: string]: number;
             };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
             /**
              * Page Size
              * @default 10
@@ -1157,7 +1263,7 @@ export interface components {
              * Group
              * @enum {string}
              */
-            group: "active" | "merged" | "closed";
+            group: "active" | "merged" | "closed" | "all";
             /** Items */
             items: components["schemas"]["InboxPullOut"][];
             /** Total */
@@ -1525,8 +1631,6 @@ export interface components {
             repository: components["schemas"]["RepositoryOut"];
             /** Occurrences */
             occurrences: components["schemas"]["OccurrenceOut"][];
-            /** Candidates */
-            candidates?: components["schemas"]["CandidateOut"][];
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
@@ -2057,7 +2161,7 @@ export interface operations {
                 author?: string[];
                 findings?: ("open" | "none") | null;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
-                group?: ("active" | "merged" | "closed") | null;
+                group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
             };
             header?: never;
@@ -2131,7 +2235,7 @@ export interface operations {
                 author?: string[];
                 findings?: ("open" | "none") | null;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
-                group?: ("active" | "merged" | "closed") | null;
+                group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
             };
             header?: never;
@@ -2265,6 +2369,7 @@ export interface operations {
                 q?: string;
                 status?: ("open" | "resolved" | "dismissed")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
                 group?: ("open" | "resolved" | "dismissed") | null;
                 page?: number;
             };
@@ -2314,6 +2419,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_candidates_api_v1_runs__run_id__candidates_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                outcome?: ("new" | "repeated" | "rejected" | "withheld" | "pending")[];
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                page?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidatePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    candidate_detail_api_v1_runs__run_id__candidates__candidate_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_assessment_api_v1_runs__run_id__candidates__candidate_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateOut"];
                 };
             };
             /** @description Validation Error */

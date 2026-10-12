@@ -32,7 +32,8 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
         good &&
           "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
         bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
-        value === "running" && "border-blue-700/20 bg-blue-700/8 text-blue-800 dark:text-blue-300",
+        // Foreground blend keeps primary text readable over its tint across themes.
+        value === "running" && "border-primary/20 bg-primary/8 text-[color:color-mix(in_srgb,var(--primary)_75%,var(--foreground))]",
         caution &&
           "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
@@ -45,7 +46,7 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
     </Badge>
   );
 }
-export function ErrorNotice({ error }: { error: unknown }) {
+export function ErrorNotice({ error, title }: { error: unknown; title?: string }) {
   if (!error) return null;
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return (
@@ -54,7 +55,10 @@ export function ErrorNotice({ error }: { error: unknown }) {
       className="flex gap-3 rounded-md border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
     >
       <AlertCircle className="mt-0.5 size-4 shrink-0" />
-      <span className="min-w-0 break-words">{message.trim() || "This action could not be completed. Refresh the page and try again."}</span>
+      <span className="min-w-0 break-words">
+        {title && <span className="mb-1 block font-medium">{title}</span>}
+        {message.trim() || "This action could not be completed. Refresh the page and try again."}
+      </span>
     </div>
   );
 }

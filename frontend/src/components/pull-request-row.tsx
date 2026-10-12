@@ -1,15 +1,22 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, GitPullRequest } from "lucide-react";
-import { date } from "./common";
+import { date, Status } from "./common";
 import { Badge } from "./ui/badge";
 
 const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 export function PullRequestListHeading({ dateLabel = "Created" }: { dateLabel?: string }) {
   return <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
-    <span>Pull request</span><span>Review status</span><span>Open findings</span><span>{dateLabel}</span><span />
+    <span>Pull request</span><span>Review / PR state</span><span>Open findings</span><span>{dateLabel}</span><span />
   </div>;
+}
+
+export function PullRequestStatus({ reviewStatus, state }: { reviewStatus: string; state: string }) {
+  return <span className="inline-flex w-fit overflow-hidden rounded-full border border-border align-middle [&>[data-slot=badge]]:rounded-none [&>[data-slot=badge]]:border-0">
+    <span className="sr-only">Review status: </span><Status value={reviewStatus} />
+    <span className="sr-only">; Pull request state: </span><Badge variant="secondary" className="capitalize"><GitPullRequest aria-hidden="true" />{state}</Badge>
+  </span>;
 }
 
 export function PullRequestRow({ id, title, metadata, status, findings, timestamp, state, feedback }: {

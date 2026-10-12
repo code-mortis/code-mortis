@@ -75,13 +75,15 @@ def test_selected_provider_is_isolated_and_configuration_removed(protocol, tmp_p
         "protocol": protocol,
         "model": "model",
         "base_url": "https://example.com/v1",
-        "options": {"timeout_sec": 30},
+        "options": {"timeout_sec": 30, "prompt_token_ceiling": 200000},
     }
     with ocr.configuration(connection, {"api_key": "secret"}, {"language": "Spanish"}):
         path = tmp_path / ".opencodereview/config.json"
         data = json.loads(path.read_text())
         assert data["mcp_servers"] == {} and data["provider"] == "mortis"
         assert data["custom_providers"]["mortis"]["protocol"] == protocol
+        assert data["custom_providers"]["mortis"]["timeout_sec"] == 30
+        assert "prompt_token_ceiling" not in data["custom_providers"]["mortis"]
         assert path.stat().st_mode & 0o777 == 0o600
     assert not path.exists()
     path.write_text('{"provider":"operator"}')

@@ -75,3 +75,12 @@ Local dev uses a separate Compose project (`.env.dev`, `compose.dev.yaml`) with 
 - Non-trivial logic needs at least one runnable check (a pytest case, or a self-check). No new frameworks or fixture scaffolding unless asked.
 - Backend tests need the isolated `mortis_test` DB and Redis up. Browser tests run against the production build with mocked application APIs.
 - Mocked tests and unauthenticated client startup do **not** establish real integration — record such evidence separately rather than claiming it works end-to-end.
+
+## Graphify for local development
+
+Use the repo-local skill at `.agents/skills/graphify/SKILL.md` for graph builds and semantic refreshes. In Codex, invoke it with `$graphify`.
+
+- When `graphify-out/graph.json` exists, start architecture, dependency, and impact questions with `graphify query "<question>" --budget 1500`. Use `graphify path "<A>" "<B>"` or `graphify explain "<concept>"` for focused relationships.
+- Treat the graph as navigation. Verify relevant source files and callers before editing or making correctness or security claims. Narrow truncated queries; if the graph is missing, stale, or unhelpful, inspect the source directly.
+- Run `graphify update .` after code changes. For changed documents, use `$graphify . --update` to refresh their semantic content; the CLI update only refreshes AST results.
+- Keep generated files in the ignored `graphify-out/` directory. Graphify is a local developer tool; preserve the native review runner's restrictions on repository instructions, hooks, and MCP servers.

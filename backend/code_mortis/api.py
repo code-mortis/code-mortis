@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from . import (
     assessment,
     background,
+    candidate_list,
     finding_list,
     github,
     inbox,
@@ -52,7 +53,9 @@ from .schemas import (
     ActivityOut,
     BackgroundInput,
     BackgroundJobOut,
+    CandidateFilters,
     CandidateOut,
+    CandidatePage,
     ConnectionInput,
     ConnectionOut,
     FindingAction,
@@ -526,17 +529,88 @@ def run_detail(run_id: str, db: DB, user: USER):
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),
-        candidates=[
-            CandidateOut.model_validate(item)
-            for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)
-                                   .order_by(ReviewCandidate.position))
-        ],
         occurrences=[
             OccurrenceOut.model_validate(item)
             for item in db.scalars(select(Occurrence).where(Occurrence.run_id == run.id))
         ],
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.get("/runs/{run_id}/candidates", response_model=CandidatePage)
+def run_candidates(run_id: str, db: DB, user: USER, filters: Annotated[CandidateFilters, Query()]):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    return candidate_list.list_candidates(db, run.id, filters)
+
+
+@router.get("/runs/{run_id}/candidates/{candidate_id}", response_model=CandidateOut)
+def candidate_detail(run_id: str, candidate_id: str, db: DB, user: USER):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    candidate = db.get(ReviewCandidate, candidate_id)
+    if not candidate or candidate.run_id != run.id:
+        raise HTTPException(404, "Assessment candidate not found.")
+    return CandidateOut.model_validate(candidate)
+
+
+@router.post("/runs/{run_id}/candidates/{candidate_id}/retry", response_model=CandidateOut, status_code=202)
+def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
+    from .reviews import ACTIVE, authorize_connection, execution_identity
+
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                    .execution_options(populate_existing=True))
+    candidate = db.get(ReviewCandidate, candidate_id)
+    if not candidate or candidate.run_id != run.id:
+        raise HTTPException(404, "Assessment candidate not found.")
+    if not CandidateOut.model_validate(candidate).retryable:
+        raise HTTPException(409, "Only failed assessments without a completed result can be retried.")
+    if (run.status not in {"completed", "partial"} or run.cancel_requested
+        or not assessment.enabled(run) or not run.progress.get("analysis_saved")):
+        raise HTTPException(409, "Finish the review before retrying an assessment.")
+    if run.publication not in {"published", "no_new_comments"}:
+        raise HTTPException(409, "Finish GitHub publication before retrying an assessment.")
+    if db.scalar(select(ReviewRun.id).where(ReviewRun.pr_id == pr.id, ReviewRun.id != run.id,
+                                         ReviewRun.status.in_(ACTIVE)).limit(1)):
+        raise HTTPException(409, "Another review is active for this pull request. Wait for it to finish.")
+    connection = db.get(Connection, run.connection_id) if run.connection_id else None
+    if not connection or any(run.config["connection"][key] != getattr(connection, key)
+        for key in ("id", "kind", "owner_id", "provider", "protocol", "base_url")):
+        raise HTTPException(409, "The original AI connection changed or is no longer available. Start a new review.")
+    if not repo.enabled:
+        raise HTTPException(409, "Enable reviews for this repository before retrying an assessment.")
+    try:
+        authorize_connection(db, connection, repo, "manual", user)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    current = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}",
+                             github.installation_token(db, repo.installation_id))
+    if current["state"] != "open" or current["head"]["sha"] != run.head_sha or current["base"]["sha"] != run.base_sha:
+        raise HTTPException(409, "The pull request changed or closed. Start a review of the current commit.")
+    budget, known = assessment.remaining_budget(db, run, connection.kind)
+    if budget is not None and (not known or budget <= 0):
+        raise HTTPException(409, "The saved run's remaining AI budget cannot support another assessment. Start a new review.")
+    candidate.attempts = [*candidate.attempts, {
+        "status": candidate.status, "result": candidate.result, "error": candidate.error,
+        "context": candidate.context, "usage": candidate.usage, "actor_id": execution_identity(run)[0],
+        "finished_at": candidate.finished_at.isoformat() if candidate.finished_at else None,
+    }]
+    candidate.status, candidate.result, candidate.error, candidate.finished_at = "queued", None, None, None
+    candidate.context, candidate.usage = {}, {}
+    run.progress = {**run.progress, "assessment_retry": {"candidate_id": candidate.id, "actor_id": user.id}}
+    run.status, run.error, run.blocked_reason = "queued", None, None
+    enqueue(db, "review", {"run_id": run.id})
+    assessment.record_summary(db, run)
+    return CandidateOut.model_validate(candidate)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunOut)
@@ -569,12 +643,13 @@ def retry_review(run_id: str, db: DB, user: USER):
         raise HTTPException(
             409, "Start a new review to retry a terminal run; only blocked reviews can resume."
         )
-    from .reviews import authorize_connection
+    from .reviews import authorize_connection, execution_identity
 
     connection = db.get(Connection, run.connection_id)
     if not connection or (connection.owner_id and connection.owner_id != user.id):
         raise HTTPException(403, "Only the connection owner can resume this review.")
-    authorize_connection(db, connection, repo, run.trigger, user)
+    _, trigger = execution_identity(run)
+    authorize_connection(db, connection, repo, trigger, user)
     run.status, run.error, run.blocked_reason = "queued", None, None
     run.failure_reason = None
     enqueue(db, "review", {"run_id": run.id})

@@ -1,0 +1,37 @@
+import { expect, test } from "@playwright/test";
+import { normalizeReviewFilters, withReviewFilters } from "../src/lib/review-filters";
+
+test("review filters preserve default and explicitly unrestricted finding statuses", () => {
+  for (const query of ["", "status=unknown"]) {
+    expect(normalizeReviewFilters(new URLSearchParams(query), "pull").getAll("status")).toEqual(["open", "resolved"]);
+  }
+  expect(normalizeReviewFilters(new URLSearchParams("status=all"), "pull").getAll("status")).toEqual(["all"]);
+  expect(normalizeReviewFilters(new URLSearchParams("status=resolved&status=resolved&status=unknown"), "pull").getAll("status")).toEqual(["resolved"]);
+});
+
+test("review filters bound URL input to the existing API constraints", () => {
+  const raw = new URLSearchParams("severity=high&severity=invalid&severity=high&category=%20bug%20&category=bug&category=&outcome=invalid&outcome=withheld");
+  raw.set("q", " " + "a".repeat(300));
+  raw.append("category", "b".repeat(51));
+  const params = normalizeReviewFilters(raw, "pull");
+  expect(params.get("q")).toHaveLength(256);
+  expect(params.getAll("severity")).toEqual(["high"]);
+  expect(params.getAll("category")).toEqual(["bug"]);
+  expect(params.has("outcome")).toBe(false);
+  const many = new URLSearchParams();
+  for (let index = 0; index < 150; index++) many.append("category", `type_${index}`);
+  expect(normalizeReviewFilters(many, "run").getAll("category")).toHaveLength(100);
+});
+
+test("run and assessment filters normalize independently and preserve tabs and open sheets", () => {
+  const raw = new URLSearchParams("tab=assessment&finding=finding&finding_tab=activity&candidate=failed&assessment_tab=evidence&q=retry&severity=high&assessment_q=%20timeout%20&assessment_severity=low&assessment_outcome=withheld&assessment_outcome=invalid");
+  const assessment = normalizeReviewFilters(raw, "assessment");
+  expect(assessment.get("q")).toBe("timeout");
+  expect(assessment.getAll("severity")).toEqual(["low"]);
+  expect(assessment.getAll("outcome")).toEqual(["withheld"]);
+  const next = withReviewFilters(raw, assessment, "assessment");
+  expect(normalizeReviewFilters(next, "run").toString()).toBe("q=retry&severity=high");
+  for (const key of ["tab", "finding", "finding_tab", "candidate", "assessment_tab"]) expect(next.get(key)).toBe(raw.get(key));
+  expect(withReviewFilters(next, new URLSearchParams(), "run").get("assessment_q")).toBe("timeout");
+  expect(withReviewFilters(next, new URLSearchParams(), "assessment").get("q")).toBe("retry");
+});

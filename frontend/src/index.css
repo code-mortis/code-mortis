@@ -7,33 +7,7 @@
 :root {
   font-family: "Inter Variable", sans-serif;
   color-scheme: light;
-  --background: #ffffff;
-  --foreground: #202c26;
-  --card: #ffffff;
-  --card-foreground: #202c26;
-  --popover: #ffffff;
-  --popover-foreground: #202c26;
-  --primary: #245944;
-  --primary-foreground: #ffffff;
-  --secondary: #e9eee8;
-  --secondary-foreground: #254533;
-  --muted: #eef0ec;
-  --muted-foreground: #606a62;
-  --accent: #e1ebe2;
-  --accent-foreground: #173e2a;
-  --destructive: #b32d37;
-  --border: #dce1d9;
-  --input: #c5cec3;
-  --ring: #377c59;
   --radius: 0.5rem;
-  --code-keyword: #6639a6;
-  --code-string: #245944;
-  --code-number: #924808;
-  --code-function: #125d8a;
-  --code-added: #18472c;
-  --code-added-background: #e5f1e7;
-  --code-removed: #8c2530;
-  --code-removed-background: #fbeaec;
   --sidebar: var(--muted);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
@@ -45,33 +19,6 @@
 }
 .dark {
   color-scheme: dark;
-  --background: #17201c;
-  --foreground: #e8eee9;
-  --card: #1e2923;
-  --card-foreground: #e8eee9;
-  --popover: #25322b;
-  --popover-foreground: #e8eee9;
-  --primary: #a2d1aa;
-  --primary-foreground: #163021;
-  --secondary: #293a2f;
-  --secondary-foreground: #d0e6d3;
-  --muted: #25312a;
-  --muted-foreground: #a7b6ab;
-  --accent: #304a39;
-  --accent-foreground: #ddf0df;
-  --destructive: #ff9b9b;
-  --border: #35433a;
-  --input: #53685a;
-  --ring: #95c9a5;
-  --code-keyword: #d9b8ff;
-  --code-string: #a2d1aa;
-  --code-number: #efc28d;
-  --code-function: #9ad9f5;
-  --code-added: #b9e4c4;
-  --code-added-background: #243e2e;
-  --code-removed: #ffc1c7;
-  --code-removed-background: #4a292d;
-
 }
 @theme inline {
   --font-sans: "Inter Variable", sans-serif;
@@ -90,6 +37,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -319,7 +267,7 @@
   .settings-member-row { grid-template-columns: minmax(0, 1fr) minmax(0, 10rem) minmax(0, 2rem); }
 }
 @media (min-width: 768px) {
-  .inbox-row-grid { grid-template-columns: minmax(0, 1fr) 10rem 6.5rem 6rem 1rem; }
+  .inbox-row-grid { grid-template-columns: minmax(0, 1fr) 11rem 6.5rem 6rem 1rem; }
   .inbox-row-grid > :first-child { grid-column: auto; }
 }
 

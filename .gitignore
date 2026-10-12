@@ -19,3 +19,5 @@ graphify-out
 .impeccable/*
 !.impeccable/design.json
 !.impeccable/config.json
+.agents/skills/graphify
+.graphifyignore

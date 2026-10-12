@@ -1,9 +1,10 @@
 """Assess proposed comments before they acquire a finding identity or publication claim."""
 
 import json
+from datetime import datetime
 
-from pydantic import Field
-from sqlalchemy import select
+from pydantic import Field, ValidationError
+from sqlalchemy import func, select
 
 from . import github, ocr, runner_client, verification
 from .db import now, transaction, uid
@@ -54,13 +55,22 @@ INSTRUCTIONS = (
     "Rewording, moved lines, renamed files, severity/category changes or resolution are not new defects. "
     "Another branch or entry point creating the same state under the same ownership and recovery contract "
     "does not by itself establish a distinct cause. "
-    "Use duplicate and the existing finding_id for the same defect, including resolved or dismissed findings. "
+    "Relationship describes only the relationship to established findings in history. "
+    "Use duplicate and a finding_id copied exactly from history for the same defect, including resolved or dismissed findings. "
+    "IDs in prior_candidates identify proposals, not findings, and must never be used as finding_id. "
+    "Without a matching established finding, use relationship new and finding_id null, even when rejecting "
+    "a repeated proposal; describe the prior candidate in history_explanation. "
     "Two distinct defects may share a snippet. For a new finding, explain why related findings are distinct. "
     "If identity is ambiguous, use relationship uncertain and withhold it. "
     "Compare prior suggestions explicitly. If this advice contradicts them, set contradicts_prior=true "
     "and explain the evidenced changed conditions justifying a distinct current defect; otherwise uncertain. "
     "A prior rejection is evidence to consider, not permanent immunity. Validate a suggested patch separately; "
     "set suggestion_supported=false if it is unrelated, incomplete, or unsafe. "
+    "Evidence must cite the revision, path and source line numbers before | in the supplied source blocks, "
+    "never line numbers in evidence.py, the diff, or a proposal. Copy quotes verbatim after |, preserving "
+    "indentation, case, literals and real newlines; do not include the line-number prefix or double-escape text. "
+    "If validation_feedback is supplied, correct those fields and return a complete assessment using the same "
+    "evidence. A correction must satisfy every validation rule; do not invent citations or finding IDs. "
     "Return exactly the requested assessment schema. Do not resolve, reopen, or invent finding IDs."
 )
 
@@ -69,14 +79,37 @@ class AssessmentResponse(AssessmentResult):
     required_paths: list[str] = Field(default_factory=list, max_length=10)
 
 
-def output_schema():
+def output_schema(context=None):
     schema = AssessmentResponse.model_json_schema()
     schema["required"] = list(schema["properties"])
+    if context is not None:
+        ids = sorted({item["id"] for item in context["history"]})
+        schema["properties"]["finding_id"] = {
+            "anyOf": [{"type": "string", "enum": ids}, {"type": "null"}] if ids else [{"type": "null"}],
+            "description": "Only an established finding ID from history for duplicate; otherwise null. Never a prior candidate ID.",
+        }
+        if not ids:
+            schema["properties"]["relationship"]["enum"] = ["new", "uncertain"]
     return schema
 
 
 def validate_response(value, context):
-    response = AssessmentResponse.model_validate(value, strict=True).model_dump()
+    try:
+        response = AssessmentResponse.model_validate(value, strict=True).model_dump()
+    except ValidationError as exc:
+        problems = exc.errors(include_input=False, include_url=False)
+        if any(not problem["loc"] or problem["loc"][0] not in {"finding_id", "evidence"} for problem in problems):
+            raise
+        problem = problems[0]
+        location = problem["loc"]
+        feedback = {"field": ".".join(map(str, location)), "reason": problem["type"]}
+        if location[0] == "evidence" and len(location) > 1 and isinstance(location[1], int):
+            feedback["field"] = f"evidence[{location[1]}]" + ("." + ".".join(map(str, location[2:])) if len(location) > 2 else "")
+            evidence = value.get("evidence") if isinstance(value, dict) else None
+            if isinstance(evidence, list) and location[1] < len(evidence) and isinstance(evidence[location[1]], dict):
+                feedback.update({key: str(evidence[location[1]][key])[:2000]
+                                 for key in ("revision", "path", "start_line", "end_line") if key in evidence[location[1]]})
+        raise verification.ResultValidationError("Assessment citation or finding ID has an invalid format. " + json.dumps(feedback), feedback) from exc
     paths = response.pop("required_paths")
     for path in paths:
         if not path or len(path) > 2000:
@@ -95,19 +128,25 @@ def summary(db, run):
     if not enabled(run):
         return None
     result = AssessmentSummary()
-    for row in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)):
-        result.candidates += 1
-        if row.status in {"queued", "running"}:
-            result.pending += 1
-        elif row.finding_id:
-            if row.is_new:
-                result.new_findings += 1
+    linked = ReviewCandidate.finding_id.is_not(None)
+    verdict = ReviewCandidate.result["verdict"].as_string()
+    for status, has_finding, is_new, decision, count in db.execute(select(
+        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict, func.count(),
+    ).where(ReviewCandidate.run_id == run.id).group_by(
+        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict,
+    )):
+        result.candidates += count
+        if status in {"queued", "running"}:
+            result.pending += count
+        elif has_finding:
+            if is_new:
+                result.new_findings += count
             else:
-                result.repeated_observations += 1
+                result.repeated_observations += count
         else:
-            result.withheld_candidates += 1
-        if row.status in {"failed", "skipped"} or (row.result or {}).get("verdict") == "uncertain":
-            result.incomplete += 1
+            result.withheld_candidates += count
+        if status in {"failed", "skipped"} or decision == "uncertain":
+            result.incomplete += count
     batches = set(db.scalars(select(Finding.publication_batch).where(
         Finding.publication_run_id == run.id, Finding.published_review_id.is_not(None),
     )))
@@ -270,20 +309,32 @@ def expand_context(repo, env, run, context, paths, stopped):
 def validate_result(value, context):
     result = AssessmentResult.model_validate(value, strict=True).model_dump()
     current = False
-    for evidence in result["evidence"]:
+    for index, evidence in enumerate(result["evidence"]):
         source = context["sources"].get(evidence["revision"], {}).get(evidence["path"])
-        if (source is None or evidence["end_line"] < evidence["start_line"]
-            or evidence["end_line"] > len(source.splitlines())
-            or not evidence["quote"].strip()
-            or evidence["quote"] not in "\n".join(source.splitlines()[evidence["start_line"] - 1:evidence["end_line"]])):
-            raise ValueError("Assessment evidence does not match the supplied source.")
+        reason = None
+        if source is None:
+            reason = "unavailable source"
+        elif evidence["end_line"] < evidence["start_line"] or evidence["end_line"] > len(source.splitlines()):
+            reason = "invalid source line range"
+        elif not evidence["quote"].strip():
+            reason = "empty quote"
+        elif evidence["quote"] not in "\n".join(source.splitlines()[evidence["start_line"] - 1:evidence["end_line"]]):
+            reason = "quote is not verbatim text within the cited source lines"
+        if reason:
+            feedback = {"field": f"evidence[{index}]", "reason": reason,
+                        **{key: evidence[key] for key in ("revision", "path", "start_line", "end_line")}}
+            raise verification.ResultValidationError(
+                "Assessment evidence does not match the supplied source. " + json.dumps(feedback), feedback,
+            )
         current |= evidence["revision"] == "current"
     ids = {item["id"] for item in context["history"]}
     if result["relationship"] == "duplicate":
         if result["finding_id"] not in ids:
-            raise ValueError("Assessment references an unavailable finding.")
+            feedback = {"field": "finding_id", "reason": "ID is not an established finding in history; prior candidate IDs are not finding IDs"}
+            raise verification.ResultValidationError("Assessment references an unavailable finding. " + json.dumps(feedback), feedback)
     elif result["finding_id"] is not None:
-        raise ValueError("Only a duplicate may reference an existing finding.")
+        feedback = {"field": "finding_id", "reason": "Only duplicate may reference an established finding; otherwise use null"}
+        raise verification.ResultValidationError("Only a duplicate may reference an existing finding. " + json.dumps(feedback), feedback)
     if result["verdict"] == "confirmed" and (
         not current or result["relationship"] == "uncertain"
         or any(not result[key].strip() for key in ("cause", "trigger", "consequence"))
@@ -337,17 +388,34 @@ def accept(db, run, row, result):
                           inline_line=snapshot.get("inline_line")))
 
 
+def remaining_budget(db, run, kind):
+    rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
+    used = [item.usage for item in rows]
+    used += [attempt["usage"] for item in rows for attempt in item.attempts]
+    used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run.id)))
+    options = run.config["settings"]
+    if kind == "api":
+        budget = options["token_budget"]
+        values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
+        known = all(type(value) is int and value >= 0 for value in values)
+        return (None if budget is None else budget - sum(values) if known else 0), known
+    budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
+    return budget - sum(item.get("context_bytes", 0) for item in used), True
+
+
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
-    from .reviews import authorize_connection, review_stopped
+    from .reviews import authorize_connection, execution_identity, review_stopped
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         if not enabled(run):
             return
-        ids = list(db.scalars(select(ReviewCandidate.id).where(ReviewCandidate.run_id == run_id)
-                             .order_by(ReviewCandidate.position)))
+        retry = run.progress.get("assessment_retry")
+        ids = [retry["candidate_id"]] if retry else list(db.scalars(select(ReviewCandidate.id)
+            .where(ReviewCandidate.run_id == run_id).order_by(ReviewCandidate.position)))
         options = run.config["settings"]
-        deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
+        started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
+        deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
 
     def stopped():
         return review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline)
@@ -375,18 +443,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 return
             previous, history_key = history(db, run)
             snapshot = dict(row.snapshot)
-            used = [item.usage for item in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run_id))]
-            used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
-            usage_known = True
-            if connection["kind"] == "api":
-                budget = options["token_budget"]
-                values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
-                if budget is not None:
-                    usage_known = all(type(value) is int and value >= 0 for value in values)
-                    budget = budget - sum(values) if usage_known else 0
-            else:
-                budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
-                budget -= sum(item.get("context_bytes", 0) for item in used)
+            budget, usage_known = remaining_budget(db, run, connection["kind"])
+            attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
         usage = {"tokens": 0} if connection["kind"] == "api" else {"context_bytes": 0}
         try:
             if stopped():
@@ -395,29 +453,38 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             result = exact_repeat(context)
             unit = "tokens" if connection["kind"] == "api" else "context_bytes"
             consumed = 0
+            feedback, corrected = None, False
             for attempt in range(3):
                 if stopped():
                     raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
                 allowance = None if budget is None else budget - consumed
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
-                input_bytes = len(json.dumps(context).encode()) + len(INSTRUCTIONS.encode()) + 4096
+                request_context = {**context, "validation_feedback": feedback} if feedback else context
+                check_context_size(request_context, options)
+                prompt = INSTRUCTIONS + "\n\n" + verification.evidence_bundle(request_context)
+                input_bytes = len(prompt.encode()) + 4096
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
-                    if current.progress.get("execution") != claim or current.cancel_requested:
+                    if current.progress.get("execution") != claim:
                         return
+                    if current.cancel_requested:
+                        raise ocr.ReviewStopped("The run was cancelled during assessment.")
+                    if feedback and history(db, current, lock=True)[1] != history_key:
+                        raise ocr.ReviewStopped("Finding history changed before the assessment could be corrected.")
                     repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
                     selected = db.get(Connection, current.connection_id)
                     if (not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active
                         or not selected or any(connection[key] != getattr(selected, key)
                                                for key in ("kind", "owner_id", "provider", "protocol", "base_url"))):
                         raise ValueError("The selected connection or repository changed during assessment.")
-                    actor = db.get(User, current.actor_id) if current.actor_id else None
-                    if current.actor_id:
+                    actor_id, trigger = execution_identity(current)
+                    actor = db.get(User, actor_id) if actor_id else None
+                    if actor_id:
                         if not actor or not actor.enabled or not db.get(Membership, actor.id):
                             raise ValueError("The requesting user no longer has access.")
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    authorize_connection(db, selected, repo, current.trigger, actor)
+                    authorize_connection(db, selected, repo, trigger, actor)
                     if selected.kind != "api" and selected.auth_status != "connected":
                         raise runner_client.RunnerBlocked("authentication")
                     if result is None:
@@ -427,27 +494,40 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         if connection["kind"] != "api" and input_bytes > allowance:
                             raise ValueError(f"Assessment needs {input_bytes:,} bytes of source context, but only {allowance:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
                         usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": consumed + input_bytes}
-                    row.status, row.context, row.usage = "running", context, usage
+                    row.status, row.context, row.usage = "running", request_context, usage
                 if result is None:
-                    if connection["kind"] == "api":
-                        try:
+                    try:
+                        if connection["kind"] == "api":
                             result, spent = verification.api_verify(
-                                repo_path, env, connection, credentials, context, allowance, remaining, stopped,
-                                instructions=INSTRUCTIONS, schema=output_schema(), validator=validate_response,
+                                repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
+                                instructions=INSTRUCTIONS, schema=output_schema(context), validator=validate_response,
                             )
-                        except verification.VerificationOutputError as exc:
-                            exc.usage = {"tokens": consumed + exc.usage["tokens"]}
-                            raise
-                    else:
-                        raw = runner_client.review(connection["id"], "assess-" + identity + (f"-{attempt}" if attempt else ""), {
-                            "kind": connection["kind"], "task": "assessment", "model": connection["model"],
-                            "effort": options["effort"], "prompt": json.dumps({"instructions": INSTRUCTIONS, "context": context}),
-                            "output_schema": output_schema(), "timeout": remaining,
-                        }, stopped)
-                        result = validate_response(raw, context)
-                        spent = {"context_bytes": input_bytes}
-                    consumed += spent[unit]
-                    usage = {unit: consumed}
+                            consumed += spent[unit]
+                        else:
+                            raw = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
+                                "kind": connection["kind"], "task": "assessment", "model": connection["model"],
+                                "effort": options["effort"], "prompt": prompt,
+                                "output_schema": output_schema(context), "timeout": remaining,
+                            }, stopped)
+                            consumed += input_bytes
+                            usage = {unit: consumed}
+                            result = validate_response(raw, context)
+                    except (verification.VerificationOutputError, verification.ResultValidationError) as exc:
+                        known = True
+                        if isinstance(exc, verification.VerificationOutputError):
+                            spent = exc.usage["tokens"]
+                            known = type(spent) is int and spent >= 0
+                            if known:
+                                consumed += spent
+                            exc.usage = {"tokens": consumed if known else budget}
+                        usage = {unit: consumed} if known else {"tokens": budget}
+                        if exc.feedback and known and not corrected and attempt < 2:
+                            if stopped():
+                                raise ocr.ReviewStopped("The assessment stopped before its invalid response could be corrected.") from exc
+                            feedback, corrected = exc.feedback, True
+                            continue
+                        raise
+                    usage, feedback = {unit: consumed}, None
                 requested = result.pop("required_paths", [])
                 if not requested:
                     break
@@ -488,12 +568,13 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
             elif result:
                 try:
-                    actor = db.get(User, run.actor_id) if run.actor_id else None
-                    if run.actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
+                    actor_id, trigger = execution_identity(run)
+                    actor = db.get(User, actor_id) if actor_id else None
+                    if actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
                         raise ValueError("The requesting user no longer has access.")
                     if actor:
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    authorize_connection(db, current_connection, repo, run.trigger, actor)
+                    authorize_connection(db, current_connection, repo, trigger, actor)
                 except (ValueError, github.GitHubError):
                     result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
             row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None

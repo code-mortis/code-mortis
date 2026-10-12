@@ -1,5 +1,5 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Plug, Plus, Settings, Users, X } from "lucide-react";
+import { FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
@@ -149,6 +149,9 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               <DropdownMenuGroup>
                 <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
                   <Link to="/settings?tab=connections" onClick={closeMobile}><Plug aria-hidden="true" />AI connections</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
+                  <Link to="/settings?tab=appearance" onClick={closeMobile}><Palette aria-hidden="true" />Appearance</Link>
                 </DropdownMenuItem>
                 {user.role === "admin" && <>
                   <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
