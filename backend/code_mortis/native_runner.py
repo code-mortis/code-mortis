@@ -39,13 +39,16 @@ INSTRUCTIONS = (
     "array only after examining the complete assigned context."
 )
 # No repo/config discovery: every client starts in an app-owned empty directory.
-# File access is limited separately per turn. No shell, code, web, MCP or subagent tools.
+# Each thread can read only its context directory. No shell, code, web, MCP or subagent tools.
 CODEX_CONFIG = {
     "cli_auth_credentials_store": "file",
     "forced_login_method": "chatgpt",
     "web_search": "disabled",
     "project_doc_max_bytes": 0,
     "mcp_servers": {},
+    "default_permissions": "mortis-review",
+    "permissions.mortis-review.filesystem.:workspace_roots": "read",
+    "permissions.mortis-review.network.enabled": False,
     "features.shell_tool": False,
     "features.unified_exec": False,
     "features.code_mode": False,
@@ -191,7 +194,10 @@ class Codex:
                 limit=LIMIT,
             )
             self.reader = asyncio.create_task(self.read())
-            await self.call("initialize", {"clientInfo": {"name": "code_mortis", "version": "0.2.0"}})
+            await self.call("initialize", {
+                "clientInfo": {"name": "code_mortis", "version": "0.2.0"},
+                "capabilities": {"experimentalApi": True},
+            })
             await self.send({"method": "initialized"})
 
     async def send(self, value):
@@ -614,7 +620,7 @@ async def run_codex(connection_id, body, directory):
             "model": body.model,
             "cwd": str(directory),
             "approvalPolicy": "never",
-            "sandbox": "read-only",
+            "permissions": "mortis-review",
             "ephemeral": True,
             "developerInstructions": task_instructions(body),
         },
@@ -627,14 +633,6 @@ async def run_codex(connection_id, body, directory):
             "input": [{"type": "text", "text": body.prompt}],
             "effort": body.effort,
             "outputSchema": body.output_schema,
-            "sandboxPolicy": {
-                "type": "readOnly",
-                "access": {
-                    "type": "restricted",
-                    "includePlatformDefaults": False,
-                    "readableRoots": [str(directory)],
-                },
-            },
         },
     )
     turn_id = turn["turn"]["id"]
