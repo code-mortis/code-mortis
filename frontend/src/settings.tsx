@@ -518,11 +518,15 @@ function ConnectionForm({
   const customEndpoint = provider === "custom";
   const preset = providers.find((item) => item.name === connection?.provider);
   function apiBody() {
+    const ceiling = Number(promptCeiling);
+    if (!Number.isInteger(ceiling) || ceiling < 4096 || ceiling > 2000000) {
+      throw new Error("Evidence prompt ceiling must be an integer between 4096 and 2000000.");
+    }
     return {
       kind, provider, protocol, base_url: url,
       ...(key ? { api_key: key } : {}),
       ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-      options: { ...parseObject(options, "Options"), prompt_token_ceiling: Number(promptCeiling) },
+      options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
     };
   }
   function choose(value: string) {

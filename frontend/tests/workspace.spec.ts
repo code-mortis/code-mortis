@@ -3205,7 +3205,7 @@ test("assessment search keeps its debounce deadline when polling updates the lis
   });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
-  await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Candidate assessment", exact: true }).getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
   await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "assessment");
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await page.clock.runFor(6000);
@@ -5743,7 +5743,7 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
 });
 
 test("API connection prompt ceiling defaults, saves, and reloads independently of provider options", async ({ page }, info) => {
-  await mock(page);
+  const requests = await mock(page);
   let current = { ...connection, options: { timeout_sec: 30 } as Record<string, unknown> };
   await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [current] }));
   await page.route("**/api/v1/connections/connection", (route) => {
@@ -5771,9 +5771,20 @@ test("API connection prompt ceiling defaults, saves, and reloads independently o
   await edit();
   await expect(ceiling).toHaveValue("200000");
   await expect(dialog.getByLabel("Provider options JSON")).toHaveValue('{\n  "timeout_sec": 30\n}');
-  await ceiling.fill("4095");
-  await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+  for (const value of ["", "4095", "2000001", "4096.5"]) {
+    await ceiling.fill(value);
+    await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+    await dialog.getByRole("button", { name: "Refresh models", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText("Evidence prompt ceiling must be an integer between 4096 and 2000000.");
+    expect(requests.filter((request) => request.path === "/connections/models")).toHaveLength(0);
+  }
   await ceiling.fill("58888");
+  await dialog.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(requests.find((request) => request.path === "/connections/models")?.body).toMatchObject({
+    options: { timeout_sec: 30, prompt_token_ceiling: 58888 },
+  });
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 58888 });
