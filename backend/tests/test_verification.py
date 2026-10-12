@@ -465,20 +465,27 @@ def test_native_verification_uses_same_connection_and_schema(scenario, monkeypat
         db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
         run = db.get(ReviewRun, scenario["run"])
         run.owner_id = 7
-        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7,
+                                                  "options": {"prompt_token_ceiling": 200000}}}
         if unlimited:
-            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None}}
+            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None,
+                                                   "token_budget": None}}
             run.started_at = now() - timedelta(seconds=7300)
+            run.report = {"summary": {"total_tokens": 200000}, "limits": {"context_bytes": 800000}}
+            run.progress = {"analysis_saved": True, "analysis_status": "completed"}
     calls = []
     def native(connection, identity, payload, stopped):
         calls.append(payload)
         assert connection == "connection" and identity.startswith("verify-") and not stopped()
         assert payload["timeout"] is None if unlimited else payload["timeout"] > 0
-        return RESULT
+        assert payload["token_budget"] == (None if unlimited else 199900)
+        return RESULT, {"tokens": 50}
     monkeypatch.setattr(runner_client, "review", native)
     row, _, _ = perform(scenario)
     assert row.verdict == "fixed" and len(calls) == 1
     assert calls[0]["task"] == "verification" and calls[0]["output_schema"]["additionalProperties"] is False
+    assert calls[0]["prompt_token_ceiling"] == 200000
+    assert row.usage == {"tokens": 50}
 
 
 def test_migration_preserves_findings_occurrences_and_defaults(scenario):
@@ -496,7 +503,8 @@ def test_migration_preserves_findings_occurrences_and_defaults(scenario):
 
 
 @pytest.mark.parametrize("change", ["rename", "delete", "missing", "symlink", "deleted_excluded", "literal_paths"])
-def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize("byte_budget", [800000, None])
+def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypatch, change, byte_budget):
     import subprocess
 
     root = tmp_path / "repo"
@@ -537,7 +545,8 @@ def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypa
         return set(sources) - {"private.py", "file-secret.py"}
     monkeypatch.setattr(verification, "filter_context", select_paths)
     finding = {**COMMENT, "path": "missing.py" if change == "missing" else "original.py"}
-    args = (root, ocr.child_environment(), {}, finding, original, head, RepoSettings().model_dump(), lambda: False)
+    args = (root, ocr.child_environment(), {}, finding, original, head,
+            RepoSettings(delegated_context_bytes=byte_budget).model_dump(), lambda: False)
     if change in {"missing", "symlink"}:
         with pytest.raises(ValueError, match="not a regular file"):
             verification.build_context(*args)
@@ -615,7 +624,7 @@ def test_native_consent_revocation_during_verification_stops_resolution(scenario
         run = db.get(ReviewRun, scenario["run"])
         run.owner_id = 7
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
-    monkeypatch.setattr(runner_client, "review", lambda *args: RESULT)
+    monkeypatch.setattr(runner_client, "review", lambda *args: (RESULT, {"tokens": 50}))
     _, finding, _ = perform(scenario)
     with transaction() as db:
         db.delete(db.get(ConnectionGrant, ("connection", 22)))
@@ -866,7 +875,7 @@ def test_reconciliation_fetches_before_locking_and_refreshes_manual_intent(scena
         assert finding.status == "open" and finding.desired_status == "open"
 
 
-def test_subscription_verification_does_not_reset_context_allowance(scenario, monkeypatch):
+def test_subscription_verification_does_not_reset_token_allowance(scenario, monkeypatch):
     with transaction() as db:
         c = db.get(Connection, "connection")
         c.kind, c.owner_id, c.auth_status = "chatgpt", 7, "connected"
@@ -875,12 +884,12 @@ def test_subscription_verification_does_not_reset_context_allowance(scenario, mo
         run.owner_id = 7
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
-        run.report = {"limits": {"context_bytes": run.config["settings"]["delegated_context_bytes"]}}
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Context allowance was reset"))
+        run.report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
+    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Token allowance was reset"))
     row, _, run = perform(scenario)
-    limit = run.config["settings"]["delegated_context_bytes"]
+    limit = run.config["settings"]["token_budget"]
     assert row.status == "skipped"
-    assert row.error == f"Context limit exhausted: {limit:,} / {limit:,} bytes used or reserved. Fix verification skipped."
+    assert row.error == f"Token budget exhausted: {limit:,} / {limit:,} tokens used or reserved. Fix verification skipped."
 
 
 def test_interrupted_primary_api_review_gets_no_new_allowance(scenario, monkeypatch):
@@ -999,25 +1008,37 @@ def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, mo
             raise ValueError("Necessary context is unavailable")
         return copy.deepcopy(CONTEXT)
     monkeypatch.setattr(verification, "build_context", context)
-    monkeypatch.setattr(runner_client, "review", lambda *a: copy.deepcopy(RESULT))
+    monkeypatch.setattr(runner_client, "review", lambda *a: (copy.deepcopy(RESULT), {"tokens": 50}))
     reviews.perform_review(scenario["run"])
     with transaction() as db:
         rows = list(db.scalars(select(FindingVerification)))
         failed = next(row for row in rows if row.status == "failed")
         completed = next(row for row in rows if row.status == "completed")
-        assert failed.usage == {"tokens" if kind == "api" else "context_bytes": 0}
+        assert failed.usage == {"tokens": 0}
         assert completed.verdict == "fixed" and sum(completed.usage.values()) > 0
 
 
 @pytest.mark.parametrize("known_usage", [True, False])
-def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenario, monkeypatch, known_usage):
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenario, monkeypatch, known_usage, kind):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
+            run = db.get(ReviewRun, scenario["run"])
+            run.owner_id = 7
+            run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
     def fail(*args):
+        if kind != "api":
+            raise runner_client.RunnerBlocked("failed", {"tokens": 25 if known_usage else None})
         if known_usage:
             raise verification.VerificationOutputError("Missing verdict", {"tokens": 25})
         raise ValueError("Unknown provider consumption")
     monkeypatch.setattr(verification, "api_verify", fail)
+    monkeypatch.setattr(runner_client, "review", fail)
     row, finding, run = perform(scenario)
-    assert row.usage["tokens"] == (25 if known_usage else run.config["settings"]["token_budget"] - 100)
+    assert row.usage["tokens"] == (25 if known_usage else run.config["settings"]["token_budget"] - 100 if kind == "api" else None)
     assert row.verdict == "uncertain" and finding.status == "open"
 
 

@@ -28,6 +28,7 @@ const repo = {
     timeout_seconds: 900,
     token_budget: 200000,
     max_files: 40,
+    delegated_context_bytes: 800000,
     concurrency: 2,
     rules: null,
   },
@@ -2782,19 +2783,47 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await expect.poll(() => current.settings).toMatchObject({ timeout_seconds: null, token_budget: null, max_files: 40 });
 });
 
-test("personal review limits retain their separate context budget", async ({ page }) => {
+test("personal review limits save and reopen the shared unlimited token budget", async ({ page }, info) => {
   await mock(page, { personal: true });
+  let current = structuredClone(repo) as Schema["RepositoryOut"];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [current] }));
+  await page.route("**/api/v1/repositories/22", async (route) => {
+    current = { ...current, ...route.request().postDataJSON() };
+    await route.fulfill({ json: current });
+  });
   await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "AI connection");
   await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "My ChatGPT");
   await repositorySection(page, "Limits & rules");
-  await expect(page.getByLabel("Token budget", { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel("Native context budget (bytes)")).toHaveValue("800000");
+  await expect(page.getByLabel("Native context budget (bytes)", { exact: true })).toHaveCount(0);
+  const budget = page.getByLabel("Token budget", { exact: true });
+  const unlimited = page.getByRole("checkbox", { name: "Unlimited token budget", exact: true });
+  await expect(budget).toHaveValue("200000");
   await page.getByRole("checkbox", { name: "Unlimited timeout (seconds)" }).check();
   await page.getByRole("checkbox", { name: "Unlimited maximum files" }).check();
-  await expect(page.getByLabel("Native context budget (bytes)")).toBeEnabled();
+  await expect(budget).toBeEnabled();
+  await budget.fill("300000");
+  await unlimited.check();
+  await expect(budget).toBeDisabled();
+  await expect(budget).toHaveValue("");
+  await unlimited.uncheck();
+  await expect(budget).toHaveValue("300000");
+  await unlimited.check();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => current.settings.token_budget).toBeNull();
+  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await repositorySection(page, "Limits & rules");
+  await expect(unlimited).toBeChecked();
+  await expect(budget).toBeDisabled();
+  await expect(budget).toHaveValue("");
   await noOverflow(page);
+  await budget.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/subscription-token-budget-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  await unlimited.uncheck();
+  await expect(budget).toHaveValue("200000");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => current.settings.token_budget).toBe(200000);
 });
 
 test("finding sheet keeps actions visible and preserves its active tab through polling", async ({ page }) => {
@@ -2869,7 +2898,7 @@ test("current finding header waits for current evidence instead of showing the s
 });
 
 for (const field of [
-  { label: "Native context budget (bytes)", key: "delegated_context_bytes", personal: true, valid: "6000", excessive: "20000001" },
+  { label: "Token budget", key: "token_budget", personal: true, valid: "6000", excessive: "5000001" },
   { label: "Concurrency", key: "concurrency", personal: false, valid: "4", excessive: "9" },
 ] as const) {
   test(`repository ${field.label} keeps invalid drafts out of saved settings`, async ({ page }) => {
@@ -2896,7 +2925,11 @@ for (const field of [
     await input.fill("0");
     await repositorySection(page, "AI connection");
     await chooseOption(page, page.getByLabel("AI connection", { exact: true }), field.personal ? "Team reviews" : "My ChatGPT");
-    if (!field.personal) {
+    if (field.personal) {
+      await repositorySection(page, "Limits & rules");
+      await expect(input).toHaveValue("0");
+      await input.fill(field.valid);
+    } else {
       await repositorySection(page, "Limits & rules");
       await expect(input).toBeDisabled();
       await expect(input).toHaveValue("1");
@@ -3642,7 +3675,7 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
     name: "native context limit",
     state: { report: { manifest: { coverage: { selected: [{ path: "source.py" }], failed: [{ path: "source.py" }] } }, errors: [{ path: "source.py", message: "Delegated context budget exceeded; reduce the supplied context." }] } },
     summary: "The native context budget was reached.",
-    nextStep: "Increase Native context budget or reduce the review scope",
+    nextStep: "Subscription reviews now use the Token budget",
     fileReason: "Delegated context budget exceeded; reduce the supplied context.",
   },
   {
@@ -3842,7 +3875,9 @@ for (const [kind, label] of [["chatgpt", "Personal ChatGPT subscription"], ["cla
     let created: typeof connection | undefined;
     await page.route("**/api/v1/connections", (route) => {
       if (route.request().method() === "POST") {
-        expect(route.request().postDataJSON()).toEqual({ name: "Subscription setup", kind, model: "" });
+        expect(route.request().postDataJSON()).toEqual({
+          name: "Subscription setup", kind, model: "", options: { prompt_token_ceiling: 58888 },
+        });
         created = { ...connection, ...route.request().postDataJSON(), id: "personal", owner_id: 7, auth_status: "disconnected" };
         return route.fulfill({ json: created });
       }
@@ -5872,14 +5907,27 @@ for (const kind of ["chatgpt", "claude_code"] as const) {
       await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
       const dialog = page.getByRole("dialog");
       await expect(dialog.getByLabel("Evidence prompt ceiling (tokens)")).toHaveCount(0);
+      const ceiling = dialog.getByLabel("Prompt ceiling (tokens)", { exact: true });
+      await expect(ceiling).toHaveValue("58888");
+      for (const value of ["4095", "2000001", "4096.5"]) {
+        await ceiling.fill(value);
+        await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+      }
+      await ceiling.fill("200000");
+      await noOverflow(page);
+      if (model.trim()) await page.screenshot({ path: info.outputPath("subscription-prompt-ceiling.png"), fullPage: true });
       await dialog.getByLabel("Connection name").fill("Updated subscription");
       await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
-      await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model });
+      await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model,
+        options: { prompt_token_ceiling: 200000 } });
       if (model.trim()) {
         await expect(dialog).toHaveCount(0);
         await expect(page.getByRole("article", { name: "Updated subscription", exact: true })).toBeVisible();
         await expect(page.getByRole("button", { name: "Actions for Updated subscription", exact: true })).toBeFocused();
         await page.screenshot({ path: info.outputPath("saved-subscription.png"), fullPage: true });
+        await page.getByRole("button", { name: "Actions for Updated subscription", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+        await expect(dialog.getByLabel("Prompt ceiling (tokens)", { exact: true })).toHaveValue("200000");
       } else {
         await expect(dialog.getByRole("heading", { name: kind === "chatgpt" ? "Sign in to ChatGPT" : "Sign in to Claude Code", exact: true })).toBeVisible();
       }

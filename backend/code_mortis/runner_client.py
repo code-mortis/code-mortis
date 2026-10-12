@@ -8,13 +8,18 @@ from .config import settings
 
 
 class RunnerBlocked(ValueError):
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, usage=None):
         self.reason = reason
+        tokens = usage.get("tokens") if isinstance(usage, dict) else None
+        self.usage = {"tokens": tokens if type(tokens) is int and tokens >= 0 else None}
         super().__init__(
             {
                 "busy": "This personal connection is in use. The review will wait.",
                 "quota": "The subscription limit was reached. Retry when usage is available.",
                 "authentication": "This personal account needs to sign in again. Reconnect it in Settings, then retry.",
+                "prompt_limit": "The subscription prompt exceeds its conservative per-prompt token limit. Increase Prompt ceiling on the AI connection or reduce the supplied context.",
+                "token_limit": "The subscription request exceeded the remaining Token budget. Increase Token budget, choose Unlimited, or reduce the review scope.",
+                "usage_unknown": "The native client did not report valid token usage. Further AI checks were stopped because the remaining Token budget cannot be verified. Start a new review.",
                 "unavailable": "The service that runs ChatGPT and Claude Code is unavailable. Ask the administrator to check the runner service, then try again.",
             }.get(
                 reason,
@@ -55,9 +60,13 @@ def review(connection_id: str, run_id: str, payload: dict, stopped):
                 raise ReviewStopped()
             state = request("GET", path)
             if state["status"] == "completed":
-                return state["result"]
+                usage = state.get("usage")
+                tokens = usage.get("tokens") if isinstance(usage, dict) else None
+                if type(tokens) is not int or tokens < 0:
+                    raise RunnerBlocked("usage_unknown")
+                return state["result"], usage
             if state["status"] == "failed":
-                raise RunnerBlocked(state["reason"])
+                raise RunnerBlocked(state["reason"], state.get("usage"))
             time.sleep(1)
     finally:
         # The runner also enforces finite deadlines and expires unpolled unlimited work.

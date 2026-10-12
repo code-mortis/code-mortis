@@ -1577,7 +1577,7 @@ export interface components {
              * Delegated Context Bytes
              * @default 800000
              */
-            delegated_context_bytes: number;
+            delegated_context_bytes: number | null;
             /**
              * Concurrency
              * @default 2

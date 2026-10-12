@@ -1,13 +1,19 @@
 """Run inside Dockerfile.runner with empty temporary /profiles, no paid requests."""
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
+from code_mortis.delegated import output_schema
 from code_mortis.native_runner import (
     CLAUDE_VERSION,
     CODEX_VERSION,
+    NativeError,
+    ReviewBody,
     auth_console,
     auth_status,
     cancel_login,
@@ -15,7 +21,52 @@ from code_mortis.native_runner import (
     codex,
     consoles,
     locks,
+    run_codex,
 )
+
+
+async def codex_review_smoke(client, identity, model):
+    config = (await client.call("config/read", {"includeLayers": False}))["config"]
+    permissions = config["permissions"]["mortis-review"]
+    assert config["default_permissions"] == "mortis-review"
+    assert permissions["extends"] is None and not permissions["workspace_roots"]
+    assert {k: v for k, v in permissions["filesystem"].items() if v is not None} == {":workspace_roots": "read"}
+    assert {k: v for k, v in permissions["network"].items() if v is not None} == {"enabled": False}
+    call = client.call
+    thread = turn = None
+
+    async def checked_call(method, params=None):
+        nonlocal thread, turn
+        result = await call(method, params)
+        if method == "thread/start":
+            thread = result
+        if method == "turn/start":
+            turn = result["turn"]["id"]
+            assert thread["activePermissionProfile"] == {"id": "mortis-review", "extends": None}
+            assert thread["runtimeWorkspaceRoots"] == [thread["cwd"]]
+            assert thread["sandbox"] == {"type": "readOnly", "networkAccess": False}
+            assert thread["approvalPolicy"] == "never" and not thread["instructionSources"]
+            # Stop at native protocol acceptance; empty profiles cannot use a subscription.
+            raise asyncio.CancelledError
+        return result
+
+    client.call = checked_call
+    try:
+        with tempfile.TemporaryDirectory(prefix="mortis-context-") as temporary:
+            body = ReviewBody(
+                kind="chatgpt", model=model, effort="low", prompt="Return an empty comments array.",
+                output_schema=output_schema(), timeout=30,
+            )
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(run_codex(identity, body, Path(temporary), {"tokens": None}), 35)
+            assert turn is not None, "Codex rejected the review turn before startup"
+    finally:
+        client.call = call
+        if turn is not None:
+            await call("turn/interrupt", {"threadId": thread["thread"]["id"], "turnId": turn})
+        if thread is not None:
+            with contextlib.suppress(NativeError):
+                await call("thread/archive", {"threadId": thread["thread"]["id"]})
 
 
 async def claude_login_smoke():
@@ -65,6 +116,7 @@ async def main():
         assert (await client.call("account/read"))["account"] is None
         models = await client.call("model/list", {"limit": 100, "includeHidden": False})
         assert models["data"] and all(row["model"] and row["displayName"] for row in models["data"])
+        await codex_review_smoke(client, "00000000-0000-4000-8000-000000000001", models["data"][0]["model"])
         claude_catalog = await claude_models("00000000-0000-4000-8000-000000000002")
         assert claude_catalog and all(row.id and row.name for row in claude_catalog)
         if "--auth-start" in sys.argv:
@@ -85,7 +137,7 @@ async def main():
     finally:
         await client.close()
     print(
-        "Pinned Codex and Claude model discovery and auth status passed with isolated empty profiles, without inference."
+        "Pinned Codex review turn and sandbox, plus client model discovery and auth status, passed with empty profiles, without inference."
     )
 
 

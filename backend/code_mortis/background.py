@@ -346,6 +346,7 @@ def perform(job_id, attempt):
                       db.get(Connection, payload["connection_id"]))
             job.payload = {**job.payload, "inference_started": True, "source_sha": evidence["sha"]}
         prompt = INSTRUCTIONS + "\n\n" + json.dumps(evidence, ensure_ascii=False)
+        usage = None
         try:
             if stopped():
                 raise ocr.ReviewStopped("Background generation stopped.")
@@ -353,9 +354,11 @@ def perform(job_id, attempt):
             if snapshot["kind"] == "api":
                 result = api_generate(inference_path, snapshot, credentials, prompt, timeout, stopped, limits.token_budget)
             else:
-                result = runner_client.review(snapshot["id"], job_id, {
+                result, usage = runner_client.review(snapshot["id"], job_id, {
                     "task": "background", "kind": snapshot["kind"], "model": snapshot["model"],
                     "effort": "medium", "prompt": prompt, "output_schema": output_schema(), "timeout": timeout,
+                    "prompt_token_ceiling": snapshot.get("options", {}).get("prompt_token_ceiling", 58888),
+                    "token_budget": limits.token_budget,
                 }, stopped)
         except TimeoutError as exc:
             raise TimeoutError(
@@ -365,12 +368,19 @@ def perform(job_id, attempt):
                 "A background generation request timed out. Check the provider connection timeout, then generate again. Your background was not changed."
             ) from exc
         except runner_client.RunnerBlocked as exc:
+            usage = exc.usage
             if exc.reason == "busy":
                 with transaction() as db:
                     job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                     if job.status == "running" and job.attempts == attempt:
                         job.payload = {**job.payload, "inference_started": False}
             raise
+        finally:
+            if usage is not None:
+                with transaction() as db:
+                    job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                    if job.status == "running" and job.attempts == attempt:
+                        job.payload = {**job.payload, "usage": usage}
         background = clean_text(validate_result(result), (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
         if stopped():
             raise ocr.ReviewStopped("Background generation stopped.")

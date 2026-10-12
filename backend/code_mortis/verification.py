@@ -250,7 +250,7 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     required = {old_path} | ({current_path} if current_path else set())
     if not required.issubset(selected):
         raise ValueError("The finding's original or current source is excluded or unsupported by OCR.")
-    limit = min(options["delegated_context_bytes"], 1_500_000)
+    limit = 1_500_000
     sources = {"original": {old_path: original_source}, "current": {}}
     if current_path:
         sources["current"][current_path] = read_source(repo, env, head_sha, current_path, stopped)
@@ -512,15 +512,12 @@ def skip_pending(db, run, reason):
         finish(db, row, status="skipped", error=reason)
 
 
-def limit_error(options, kind, budget, remaining, usage_known):
+def limit_error(options, budget, remaining, usage_known):
     if budget is not None and budget <= 0:
-        if kind == "api":
-            limit = options["token_budget"]
-            if not usage_known:
-                return f"Token usage is unavailable or invalid; remaining budget cannot be verified against the {limit:,}-token limit."
-            return f"Token budget exhausted: {limit - budget:,} / {limit:,} tokens used or reserved."
-        limit = options["delegated_context_bytes"]
-        return f"Context limit exhausted: {limit - budget:,} / {limit:,} bytes used or reserved."
+        limit = options["token_budget"]
+        if not usage_known:
+            return f"Token usage is unavailable or invalid; remaining budget cannot be verified against the {limit:,}-token limit."
+        return f"Token budget exhausted: {limit - budget:,} / {limit:,} tokens used or reserved."
     if remaining is not None and remaining < 10:
         return (f"Time limit reached: {max(0, remaining):,} seconds remain of the "
                 f"{options['timeout_seconds']:,}-second run limit; at least 10 seconds are required.")
@@ -568,21 +565,17 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 continue
             summary = (run.report or {}).get("summary", {})
             used_tokens = summary.get("total_tokens")
-            used_context = (run.report or {}).get("limits", {}).get("context_bytes", 0)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
             prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
             usage_known = True
-            if connection["kind"] == "api":
-                budget = options["token_budget"]
-                if budget is not None:
-                    tokens = [used_tokens, *(u.get("tokens", 0) for u in prior_usage)]
-                    usage_known = all(type(value) is int and value >= 0 for value in tokens)
-                    budget = budget - sum(tokens) if usage_known else 0
-            else:
-                budget = options["delegated_context_bytes"] - used_context - sum(u.get("context_bytes", 0) for u in prior_usage)
+            budget = options["token_budget"]
+            if budget is not None:
+                tokens = [used_tokens, *(u.get("tokens", 0 if not u else None) for u in prior_usage)]
+                usage_known = all(type(value) is int and value >= 0 for value in tokens)
+                budget = budget - sum(tokens) if usage_known else 0
             if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
-                reason = limit_error(options, connection["kind"], budget, remaining, usage_known)
+                reason = limit_error(options, budget, remaining, usage_known)
                 finish(db, row, status="skipped", error=(reason or "The initial review did not complete.") + " Fix verification skipped.")
                 continue
             current_connection = db.get(Connection, run.connection_id)
@@ -601,14 +594,11 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             original_sha = original.get("source_sha") or original_head
             # Context preparation spends no provider allowance. Reserve durably only before analysis.
             row.status, row.started_at = "running", now()
-            row.usage = {"tokens": 0} if connection["kind"] == "api" else {"context_bytes": 0}
+            row.usage = {"tokens": 0}
         usage = dict(row.usage)
         try:
             context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped)
             prompt = json.dumps({"instructions": INSTRUCTIONS, "context": context, "language": options["language"]})
-            input_bytes = len(prompt.encode()) + 4096
-            if connection["kind"] != "api" and input_bytes > budget:
-                raise ValueError(f"Fix verification needs {input_bytes:,} bytes of source context, but only {budget:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
             remaining = int(deadline - now().timestamp()) if deadline is not None else None
             if (remaining is not None and remaining < 10) or stopped():
                 raise ocr.ReviewStopped()
@@ -618,14 +608,16 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 if current.progress.get("execution") != claim or current.cancel_requested or saved.status != "running":
                     return
                 saved.context = context
-                saved.usage = usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": input_bytes}
+                saved.usage = usage = {"tokens": budget}
             if connection["kind"] == "api":
                 raw, usage = api_verify(repo_path, env, connection, credentials, context, budget, remaining, stopped)
             else:
-                raw = runner_client.review(connection["id"], "verify-" + identity, {
+                raw, usage = runner_client.review(connection["id"], "verify-" + identity, {
                     "kind": connection["kind"], "task": "verification", "model": connection["model"],
                     "effort": options["effort"], "prompt": prompt, "output_schema": output_schema(),
                     "timeout": remaining,
+                    "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
+                    "token_budget": budget,
                 }, stopped)
             result = validate_result(raw, context)
             secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
@@ -635,6 +627,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             result, outcome = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
             if isinstance(exc, VerificationOutputError):
                 usage, outcome = exc.usage, exc.status
+            elif isinstance(exc, runner_client.RunnerBlocked):
+                usage = exc.usage
             error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ocr.ReviewStopped)) else "The fix could not be verified automatically. " + (
                 str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError} else "The AI returned an unsupported response. Start a new review or check the selected model."
             )
