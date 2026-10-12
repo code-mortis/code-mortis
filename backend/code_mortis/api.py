@@ -596,7 +596,7 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
                              github.installation_token(db, repo.installation_id))
     if current["state"] != "open" or current["head"]["sha"] != run.head_sha or current["base"]["sha"] != run.base_sha:
         raise HTTPException(409, "The pull request changed or closed. Start a review of the current commit.")
-    budget, known = assessment.remaining_budget(db, run, connection.kind)
+    budget, known = assessment.remaining_budget(db, run)
     if budget is not None and (not known or budget <= 0):
         raise HTTPException(409, "The saved run's remaining AI budget cannot support another assessment. Start a new review.")
     candidate.attempts = [*candidate.attempts, {

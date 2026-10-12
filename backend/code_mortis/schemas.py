@@ -119,7 +119,8 @@ class RepoSettings(RunLimits):
     exclusions: str = Field(default="", max_length=4000)
     background: str = Field(default="", max_length=20000)
     max_files: int | None = Field(default=40, ge=1, strict=True)
-    delegated_context_bytes: int = Field(default=800000, ge=4096, le=20000000)
+    # Retain legacy settings and snapshots; subscription runs now use token_budget.
+    delegated_context_bytes: int | None = Field(default=800000, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None
 

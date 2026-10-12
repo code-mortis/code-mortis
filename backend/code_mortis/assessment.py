@@ -281,7 +281,7 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
 
 def check_context_size(context, options):
     size = len(json.dumps(context).encode())
-    limit = min(options["delegated_context_bytes"], 1_500_000)
+    limit = 1_500_000
     if size > limit:
         raise ValueError(f"Assessment evidence requires {size:,} bytes; context limit is {limit:,} bytes. "
                          "Necessary evidence was not truncated.")
@@ -388,19 +388,16 @@ def accept(db, run, row, result):
                           inline_line=snapshot.get("inline_line")))
 
 
-def remaining_budget(db, run, kind):
+def remaining_budget(db, run):
     rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
     used = [item.usage for item in rows]
     used += [attempt["usage"] for item in rows for attempt in item.attempts]
     used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run.id)))
     options = run.config["settings"]
-    if kind == "api":
-        budget = options["token_budget"]
-        values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0) for item in used)]
-        known = all(type(value) is int and value >= 0 for value in values)
-        return (None if budget is None else budget - sum(values) if known else 0), known
-    budget = options["delegated_context_bytes"] - (run.report or {}).get("limits", {}).get("context_bytes", 0)
-    return budget - sum(item.get("context_bytes", 0) for item in used), True
+    budget = options["token_budget"]
+    values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0 if not item else None) for item in used)]
+    known = all(type(value) is int and value >= 0 for value in values)
+    return (None if budget is None else budget - sum(values) if known else 0), known
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
@@ -443,15 +440,15 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 return
             previous, history_key = history(db, run)
             snapshot = dict(row.snapshot)
-            budget, usage_known = remaining_budget(db, run, connection["kind"])
+            budget, usage_known = remaining_budget(db, run)
             attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
-        usage = {"tokens": 0} if connection["kind"] == "api" else {"context_bytes": 0}
+        usage = {"tokens": 0}
         try:
             if stopped():
                 raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
             context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
             result = exact_repeat(context)
-            unit = "tokens" if connection["kind"] == "api" else "context_bytes"
+            unit = "tokens"
             consumed = 0
             feedback, corrected = None, False
             for attempt in range(3):
@@ -462,7 +459,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 request_context = {**context, "validation_feedback": feedback} if feedback else context
                 check_context_size(request_context, options)
                 prompt = INSTRUCTIONS + "\n\n" + verification.evidence_bundle(request_context)
-                input_bytes = len(prompt.encode()) + 4096
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
@@ -489,11 +485,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         raise runner_client.RunnerBlocked("authentication")
                     if result is None:
                         if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
-                            reason = verification.limit_error(options, connection["kind"], allowance, remaining, usage_known)
+                            reason = verification.limit_error(options, allowance, remaining, usage_known)
                             raise ValueError(reason + " Assessment stopped.")
-                        if connection["kind"] != "api" and input_bytes > allowance:
-                            raise ValueError(f"Assessment needs {input_bytes:,} bytes of source context, but only {allowance:,} bytes remain of the {options['delegated_context_bytes']:,}-byte run limit. Increase Native context budget or reduce the review scope.")
-                        usage = {"tokens": budget} if connection["kind"] == "api" else {"context_bytes": consumed + input_bytes}
+                        usage = {"tokens": budget}
                     row.status, row.context, row.usage = "running", request_context, usage
                 if result is None:
                     try:
@@ -504,15 +498,20 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             )
                             consumed += spent[unit]
                         else:
-                            raw = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
+                            raw, spent = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
                                 "kind": connection["kind"], "task": "assessment", "model": connection["model"],
                                 "effort": options["effort"], "prompt": prompt,
                                 "output_schema": output_schema(context), "timeout": remaining,
                                 "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
+                                "token_budget": allowance,
                             }, stopped)
-                            consumed += input_bytes
+                            consumed += spent["tokens"]
                             usage = {unit: consumed}
                             result = validate_response(raw, context)
+                    except runner_client.RunnerBlocked as exc:
+                        spent = exc.usage["tokens"]
+                        usage = {"tokens": consumed + spent if type(spent) is int and spent >= 0 else None}
+                        raise
                     except (verification.VerificationOutputError, verification.ResultValidationError) as exc:
                         known = True
                         if isinstance(exc, verification.VerificationOutputError):

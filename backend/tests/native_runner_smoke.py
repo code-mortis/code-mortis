@@ -58,7 +58,7 @@ async def codex_review_smoke(client, identity, model):
                 output_schema=output_schema(), timeout=30,
             )
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.wait_for(run_codex(identity, body, Path(temporary)), 35)
+                await asyncio.wait_for(run_codex(identity, body, Path(temporary), {"tokens": None}), 35)
             assert turn is not None, "Codex rejected the review turn before startup"
     finally:
         client.call = call

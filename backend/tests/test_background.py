@@ -80,12 +80,15 @@ def test_personal_generation_requires_consent_and_uses_isolated_runner(generatio
         assert "installation-token" not in json.dumps(body) and "provider-secret" not in json.dumps(body)
         instructions = native_runner.task_instructions(native_runner.ReviewBody(**body))
         assert "untrusted data" in instructions and "background" in instructions
-        return {"background": "A native background draft."}
+        assert body["token_budget"] == 200000
+        return {"background": "A native background draft."}, {"tokens": 75}
 
     monkeypatch.setattr(runner_client, "review", native)
     identity = start(client, model="native-model")
     jobs.execute_job(identity)
     assert status(client, identity).json()["background"] == "A native background draft."
+    with transaction() as db:
+        assert db.get(Job, identity).payload["usage"] == {"tokens": 75}
     assert generation == []
 
 

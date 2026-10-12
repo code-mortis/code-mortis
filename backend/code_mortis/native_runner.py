@@ -245,7 +245,7 @@ class Codex:
                             if event["params"].get("success")
                             else "Enable device code authorization in ChatGPT security settings and reconnect."
                         )
-                elif event.get("method") in {"turn/completed", "item/completed"}:
+                elif event.get("method") in {"turn/completed", "item/completed", "thread/tokenUsage/updated"}:
                     await self.events.put(event)
         except (ValueError, OSError, asyncio.CancelledError):
             pass
@@ -583,6 +583,7 @@ class ReviewBody(BaseModel):
     prompt: str = Field(min_length=1, max_length=4_000_000)
     output_schema: dict
     prompt_token_ceiling: int = Field(default=58888, ge=4096, le=2_000_000, strict=True)
+    token_budget: int | None = Field(default=None, ge=1, le=5_000_000, strict=True)
     timeout: int | None = Field(ge=1, le=3600)
 
 
@@ -611,7 +612,11 @@ def task_instructions(body):
     return INSTRUCTIONS
 
 
-async def run_codex(connection_id, body, directory):
+def reported_tokens(values):
+    return sum(values) if all(type(value) is int and value >= 0 for value in values) else None
+
+
+async def run_codex(connection_id, body, directory, usage):
     client = await codex(connection_id)
     while not client.events.empty():
         client.events.get_nowait()
@@ -644,7 +649,11 @@ async def run_codex(connection_id, body, directory):
             params = event.get("params", {})
             if params.get("threadId") != thread_id:
                 continue
-            if event["method"] == "item/completed":
+            if event["method"] == "thread/tokenUsage/updated":
+                counts = params.get("tokenUsage")
+                total = counts.get("total") if isinstance(counts, dict) else None
+                usage["tokens"] = reported_tokens([total.get("totalTokens") if isinstance(total, dict) else None])
+            elif event["method"] == "item/completed":
                 item = params.get("item", {})
                 if item.get("type") == "agentMessage":
                     final = item.get("text")
@@ -661,7 +670,7 @@ async def run_codex(connection_id, body, directory):
             await client.call("thread/archive", {"threadId": thread_id})
 
 
-async def run_claude(connection_id, body, directory):
+async def run_claude(connection_id, body, directory, usage):
     # Read/Glob/Grep are the only built-in tools. Native restricted mode enforces the working directory.
     args = [
         "claude",
@@ -704,6 +713,15 @@ async def run_claude(connection_id, body, directory):
         if len(output) > LIMIT:
             raise NativeError("failed")
         data = json.loads(output)
+        if not isinstance(data, dict):
+            raise NativeError("failed")
+        counts = data.get("usage") or {}
+        if not isinstance(counts, dict):
+            counts = {}
+        usage["tokens"] = reported_tokens([
+            counts.get("input_tokens"), counts.get("output_tokens"),
+            counts.get("cache_creation_input_tokens", 0), counts.get("cache_read_input_tokens", 0),
+        ])
         if process.returncode or data.get("is_error") or data.get("subtype") != "success":
             raise NativeError(failure_reason(data))
         result = data.get("structured_output")
@@ -715,6 +733,7 @@ async def run_claude(connection_id, body, directory):
 
 
 async def execute(connection_id, body, entry):
+    entry["usage"] = {"tokens": 0}
     lock = locks.setdefault(connection_id, asyncio.Lock())
     if lock.locked():
         entry.update(status="failed", reason="busy")
@@ -735,7 +754,14 @@ async def execute(connection_id, body, entry):
                 with tempfile.TemporaryDirectory(prefix="mortis-context-") as temporary:
                     directory = Path(temporary)
                     runner = run_codex if body.kind == "chatgpt" else run_claude
-                    result = await runner(connection_id, body, directory)
+                    entry["usage"]["tokens"] = None
+                    result = await runner(connection_id, body, directory, entry["usage"])
+                    tokens = entry["usage"]["tokens"]
+                    if type(tokens) is not int or tokens < 0:
+                        raise NativeError("usage_unknown")
+                    # shortcut: native usage arrives after model requests, so a call can overshoot its allowance.
+                    if body.token_budget is not None and tokens > body.token_budget:
+                        raise NativeError("token_limit")
                     entry.update(status="completed", result=result)
         except asyncio.CancelledError:
             entry.update(status="failed", reason="cancelled")

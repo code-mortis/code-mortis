@@ -88,6 +88,11 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
     previous = checkpoint.get("items", {})
     items, comments = {}, []
     used = checkpoint.get("context_bytes", sum(item.get("input_bytes", 0) for item in previous.values()))
+    tokens = checkpoint.get("total_tokens", None if previous or used else 0)
+    if type(tokens) is not int or tokens < 0:
+        tokens = None
+    budget = options["token_budget"]
+    budget_exceeded = False
 
     def save():
         progress(
@@ -97,6 +102,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 "failed": sum(row["status"] == "failed" for row in items.values()),
                 "items": dict(items),
                 "context_bytes": used,
+                "total_tokens": tokens,
             }
         )
 
@@ -111,6 +117,14 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             continue
         if deadline is not None and time.monotonic() >= deadline:
             items[path] = {"status": "failed", "error": "Review time limit reached."}
+            save()
+            continue
+        if budget is not None and (tokens is None or tokens >= budget):
+            budget_exceeded |= tokens is not None
+            items[path] = {"status": "failed", "error": (
+                "Token usage is unavailable or invalid; remaining budget cannot be verified. Start a new review."
+                if tokens is None else f"Token budget exhausted: {tokens:,} / {budget:,} tokens used."
+            )}
             save()
             continue
         patch = ocr.git(
@@ -148,19 +162,19 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             ensure_ascii=False,
         )
         input_bytes = len(prompt.encode()) + 4096
-        # Native clients do not expose OCR's hard token cap. This separately named limit
-        # bounds supplied context; the native account's provider limits still apply.
-        if used + input_bytes > options["delegated_context_bytes"] or len(prompt) > 4_000_000:
+        if len(prompt) > 4_000_000:
             items[path] = {
                 "status": "failed",
-                "error": "Delegated context budget exceeded; increase the repository limit.",
+                "error": "Source context exceeds the native request size limit; reduce the review scope.",
             }
             save()
             continue
         used += input_bytes
+        prior_tokens, tokens = tokens, None
+        spent = {"tokens": None}
         save()  # Reserve failed or interrupted requests too; resuming must not reset consumed context.
         try:
-            data = runner_client.review(
+            data, spent = runner_client.review(
                 connection["id"],
                 run_id + "-" + digest(path)[:16],
                 {
@@ -170,6 +184,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                     "prompt": prompt,
                     "output_schema": output_schema(),
                     "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
+                    "token_budget": None if budget is None else budget - prior_tokens,
                     "timeout": max(1, int(deadline - time.monotonic())) if deadline is not None else None,
                 },
                 stopped,
@@ -180,16 +195,22 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             items[path] = {"status": "completed", "comments": found, "input_bytes": input_bytes}
             comments.extend(found)
         except runner_client.RunnerBlocked as exc:
-            if exc.reason not in {"failed", "prompt_limit"}:
-                save()
+            spent = exc.usage
+            if exc.reason not in {"failed", "prompt_limit", "token_limit", "usage_unknown"}:
                 raise
-            items[path] = {"status": "failed", "error": str(exc) if exc.reason == "prompt_limit" else "The official client did not complete this file."}
+            budget_exceeded |= exc.reason == "token_limit"
+            items[path] = {"status": "failed", "error": str(exc) if exc.reason != "failed" else "The official client did not complete this file."}
         except ValueError:
             items[path] = {
                 "status": "failed",
                 "error": "The official client returned invalid findings for this file.",
             }
-        save()
+        finally:
+            count = spent["tokens"]
+            tokens = prior_tokens + count if prior_tokens is not None and type(count) is int and count >= 0 else None
+            if path in items:
+                items[path]["tokens"] = count
+            save()
     completed = [path for path, value in items.items() if value["status"] == "completed"]
     failed = [path for path, value in items.items() if value["status"] == "failed"]
     status = (
@@ -217,10 +238,11 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         "errors": [{"path": path, "message": items[path]["error"]} for path in failed],
         "limits": {
             "context_bytes": used,
-            "context_budget": options["delegated_context_bytes"],
+            "token_budget": budget,
             "timeout_seconds": options["timeout_seconds"],
         },
         "warnings": [],
-        "summary": {"findings": len(comments)},
+        "summary": {"findings": len(comments), "total_tokens": tokens,
+                    "budget_exceeded": budget_exceeded or (budget is not None and tokens is not None and tokens > budget)},
     }
     return status, report, comments

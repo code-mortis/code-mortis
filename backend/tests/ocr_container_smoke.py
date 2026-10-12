@@ -204,7 +204,7 @@ def main():
             from code_mortis.schemas import RepoSettings
 
             original = runner_client.review
-            runner_client.review = lambda *args: {"comments": []}
+            runner_client.review = lambda *args: ({"comments": []}, {"tokens": 10})
             try:
                 events = []
                 native = {"id": "connection", "kind": "chatgpt", "model": "test-model"}

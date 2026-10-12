@@ -11,14 +11,13 @@ type Generation = Schema["BackgroundJobOut"];
 const BACKGROUND_MAX_LENGTH = 20_000;
 const STALE_MESSAGE = "Your selections or context changed. Generate again to use the current values.";
 
-export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, personal, value, onChange }: {
+export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange }: {
   repositoryId: number;
   connectionId: string;
   model: string;
   defaultModel: string;
   tokenBudget: number | null;
   timeoutSeconds: number | null;
-  personal: boolean;
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -136,7 +135,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
         }} />}
       </Field>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Generation uses these review limits: {personal ? "" : `${tokenLimit}, `}{timeLimit}.
+        Generation uses these review limits: {tokenLimit}, {timeLimit}.
         {" Provider limits still apply."}
       </p>
       <p role="status" aria-label="Context generation status" className="text-xs leading-relaxed text-muted-foreground">

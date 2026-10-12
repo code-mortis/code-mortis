@@ -146,7 +146,7 @@ export function runFeedback(run: Run) {
       destination = "repository";
     } else if (rows(report.errors).some((item) => text(item.message).startsWith("Delegated context budget"))) {
       summary = `${summary} The native context budget was reached.`;
-      nextStep = "Increase Native context budget or reduce the review scope, then start a new review.";
+      nextStep = "Start a new review. Subscription reviews now use the Token budget configured in repository settings.";
       destination = "repository";
     } else if (run.failure_reason === "worker_stopped") {
       summary = "The review worker stopped before the run could finish.";

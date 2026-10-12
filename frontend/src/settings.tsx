@@ -343,7 +343,6 @@ export function RepositorySettings({
               defaultModel={selectedConnection?.model ?? ""}
               tokenBudget={settings.token_budget}
               timeoutSeconds={settings.timeout_seconds}
-              personal={personal}
               value={settings.background}
               onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
             />
@@ -361,7 +360,7 @@ export function RepositorySettings({
                   hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
                 { key: "max_files", label: "Maximum files", min: 1, max: undefined,
                   hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
-              ] as const).filter(({ key }) => !personal || key !== "token_budget").map(({ key, label, min, max, hint }) => (
+              ] as const).map(({ key, label, min, max, hint }) => (
                 <Field key={key} label={label} hint={hint}>
                   {(id) => (
                     <div className="space-y-2">
@@ -396,28 +395,6 @@ export function RepositorySettings({
                   )}
                 </Field>
               ))}
-              {personal && (
-                <Field
-                  label="Native context budget (bytes)"
-                  hint="Bounds the code and rules supplied to the official client. Subscription usage limits still apply; this is not an output-token cap."
-                >
-                  {(id) => (
-                    <Input
-                      id={id}
-                      type="number"
-                      min={4096}
-                      max={20000000}
-                      required
-                      defaultValue={settings.delegated_context_bytes ?? 800000}
-                      onChange={(event) => {
-                        const value = event.target.valueAsNumber;
-                        if (!Number.isFinite(value) || !event.target.validity.valid) return;
-                        change("delegated_context_bytes", value);
-                      }}
-                    />
-                  )}
-                </Field>
-              )}
               <Field
                 label="Concurrency"
                 hint={
@@ -675,7 +652,7 @@ function ConnectionForm({
       </section>}
       {kind !== "api" && <Field
         label="Prompt ceiling (tokens)"
-        hint="Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The native context byte budget stays separate."
+        hint="Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The total review Token budget stays separate."
       >
         {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
           value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}

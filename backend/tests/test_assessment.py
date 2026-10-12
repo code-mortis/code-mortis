@@ -92,19 +92,23 @@ def pipeline(seed, github_stub, monkeypatch):
     def native(connection, identity, payload, stopped):
         assert payload["prompt_token_ceiling"] == state.get("prompt_token_ceiling", 58888)
         state["native_sizes"].append(len(payload["prompt"].encode()) + 4096)
+        state["allowances"].append(payload["token_budget"])
         state["native_ids"].append(identity)
         metadata, _ = json.JSONDecoder().raw_decode(payload["prompt"].split(
             "# Code Mortis verification evidence\n\n", 1,
         )[1])
         context = {**state["context"], **metadata}
         assert verification.evidence_bundle(context) in payload["prompt"]
-        return response(context)
+        return response(context), {"tokens": 25}
 
     def engine(*args, **kwargs):
         if not kwargs.get("saved_review"):
             state["analysis_calls"] += 1
         comments = [{**item, "source_sha": state["head"]} for item in state["comments"]]
-        result = kwargs.get("saved_review") or ("completed", {"summary": {"total_tokens": state.get("tokens", 100)}}, comments)
+        result = kwargs.get("saved_review") or ("completed", {
+            "summary": {"total_tokens": state.get("tokens", 100)},
+            "limits": {"context_bytes": state.get("context_bytes", 0)},
+        }, comments)
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
         return result
 
@@ -459,19 +463,59 @@ def test_concurrent_history_change_invalidates_new_identity(pipeline):
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-def test_native_clients_use_the_same_gate(pipeline, monkeypatch, kind):
+@pytest.mark.parametrize("budget", [200000, None])
+@pytest.mark.parametrize("used", [0, 200000])
+def test_native_clients_use_the_same_gate(pipeline, monkeypatch, kind, budget, used):
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+        db.get(Repository, 22).settings = {"token_budget": budget}
+    pipeline["tokens"] = used
+    calls = []
 
     def native(connection, identity, payload, stopped):
+        calls.append(payload)
         assert payload["task"] == "assessment"
+        assert payload["prompt_token_ceiling"] == 58888
         assert verification.evidence_bundle(pipeline["context"]) in payload["prompt"]
-        return verdict(pipeline["context"])
+        assert payload["token_budget"] == (None if budget is None else budget - used)
+        return verdict(pipeline["context"]), {"tokens": 25}
     monkeypatch.setattr(runner_client, "review", native)
-    run_and_publish()
-    assert len(pipeline["reviews"]) == 1
+    identity = run_and_publish()
+    allowed = budget is None or used < budget
+    assert len(pipeline["reviews"]) == len(calls) == int(allowed)
     assert pipeline["calls"] == 0
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert candidate.status == ("completed" if allowed else "failed")
+        assert candidate.usage == {"tokens": 25 if allowed else 0}
+
+
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
+@pytest.mark.parametrize("known", [False, True])
+def test_native_assessment_failure_keeps_usage_and_cannot_reset_allowance(pipeline, monkeypatch, kind, known):
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+        db.get(Repository, 22).settings = {"token_budget": 1000}
+    pipeline["comments"].append({**COMMENT, "path": "src/other.py"})
+    allowances = []
+
+    def native(connection, identity, payload, stopped):
+        allowances.append(payload["token_budget"])
+        if len(allowances) == 1:
+            raise runner_client.RunnerBlocked("failed", {"tokens": 25 if known else None})
+        return verdict(pipeline["context"]), {"tokens": 25}
+
+    monkeypatch.setattr(runner_client, "review", native)
+    identity = run_and_publish()
+    assert allowances == ([900, 875] if known else [900])
+    with transaction() as db:
+        candidates = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                                    .order_by(ReviewCandidate.position)))
+        assert candidates[0].usage == {"tokens": 25 if known else None}
+        assert candidates[1].status == ("completed" if known else "failed")
+        assert assessment.remaining_budget(db, db.get(ReviewRun, identity)) == ((850, True) if known else (0, False))
 
 
 def test_prior_candidates_are_not_finding_identities(pipeline):
@@ -577,11 +621,10 @@ def test_one_correction_uses_same_evidence_and_accounts_for_both_attempts(pipeli
         assert row.status == ("failed" if repeat else "completed")
         assert row.result is None if repeat else row.result["verdict"] == "rejected"
         assert row.finding_id is None and db.scalar(select(func.count()).select_from(Finding)) == 0
-        assert row.usage == ({"tokens": 50} if kind == "api" else {"context_bytes": sum(pipeline["native_sizes"])})
+        assert row.usage == {"tokens": 50}
         assert row.context["sources"] == contexts[0]["sources"]
-    if kind == "api":
-        assert pipeline["allowances"][1] == pipeline["allowances"][0] - 25
-    else:
+    assert pipeline["allowances"][1] == pipeline["allowances"][0] - 25
+    if kind != "api":
         assert len(set(pipeline["native_ids"])) == 2
         assert pipeline["native_sizes"][1] > pipeline["native_sizes"][0]
     assert pipeline["reviews"] == []
@@ -614,7 +657,7 @@ def test_correction_and_expansion_share_three_pass_limit(pipeline, monkeypatch, 
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert row.status == ("completed" if sequence == "expand_correct" else "failed")
-        assert row.usage == ({"tokens": 75} if kind == "api" else {"context_bytes": sum(pipeline["native_sizes"])})
+        assert row.usage == {"tokens": 75}
         assert row.finding_id is None
     assert pipeline["reviews"] == []
 
@@ -627,7 +670,7 @@ def test_correction_never_bypasses_execution_guards(pipeline, kind, stop):
             connection = db.get(Connection, "connection")
             connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
         if stop == "budget":
-            db.get(Repository, 22).settings = {"token_budget": 1000} if kind == "api" else {"delegated_context_bytes": 12000}
+            db.get(Repository, 22).settings = {"token_budget": 1000}
     def respond(context):
         if stop == "provider":
             raise ValueError("Provider authentication failed")
@@ -642,15 +685,14 @@ def test_correction_never_bypasses_execution_guards(pipeline, kind, stop):
         return verdict(context, evidence=[{"revision": "current", "path": COMMENT["path"],
                                           "start_line": 7, "end_line": 7, "quote": "invented"}])
     pipeline["respond"] = respond
-    if stop == "budget" and kind == "api":
+    if stop == "budget":
         pipeline["tokens"] = 975
     identity = run_and_publish()
     assert pipeline["calls"] == 1
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert row.status in {"failed", "skipped"} and row.finding_id is None
-        assert row.usage == ({"tokens": 25 if stop != "provider" else 200000 - 100} if kind == "api"
-                             else {"context_bytes": sum(pipeline["native_sizes"])})
+        assert row.usage == {"tokens": 25 if stop != "provider" else 200000 - 100}
         assert db.scalar(select(func.count()).select_from(Finding)) == 0
     assert pipeline["reviews"] == []
 
@@ -690,7 +732,7 @@ def test_correction_does_not_reset_the_deadline(pipeline, monkeypatch, kind):
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert row.status == "skipped" and row.finding_id is None
-        assert row.usage == ({"tokens": 25} if kind == "api" else {"context_bytes": sum(pipeline["native_sizes"])})
+        assert row.usage == {"tokens": 25}
     assert pipeline["reviews"] == []
 
 
@@ -849,7 +891,8 @@ def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pip
         assert verification.evidence_bundle(context) in payload["prompt"]
         sizes.append(len(payload["prompt"].encode()) + 4096)
         assert "required_paths" in payload["output_schema"]["required"]
-        return respond(context)
+        allowances.append(payload["token_budget"])
+        return respond(context), {"tokens": 25}
     monkeypatch.setattr(verification, "api_verify", api)
     monkeypatch.setattr(runner_client, "review", native)
     run_and_publish()
@@ -858,11 +901,10 @@ def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pip
         assert candidate.status == "completed"
         assert "helper.py" in candidate.context["sources"]["current"]
         assert "required_paths" not in candidate.result
-        assert candidate.usage == ({"tokens": 50} if kind == "api" else {"context_bytes": sum(sizes)})
+        assert candidate.usage == {"tokens": 50}
     assert len(calls) == 2 and len(pipeline["reviews"]) == 1
-    if kind == "api":
-        assert allowances[1] == allowances[0] - 25
-    else:
+    assert allowances[1] == allowances[0] - 25
+    if kind != "api":
         assert len(set(identities)) == 2
 
 
@@ -909,8 +951,10 @@ def test_requested_context_keeps_scope_and_reports_byte_limit(tmp_path, monkeypa
     monkeypatch.setattr(verification, "read_source", lambda *args: pytest.fail("Excluded source read"))
     with pytest.raises(ValueError, match="excluded.*secret.py"):
         assessment.expand_context(tmp_path, {}, run, context, ["secret.py"], lambda: False)
-    with pytest.raises(ValueError, match="limit is 4,096 bytes.*not truncated"):
-        assessment.check_context_size({"sources": {"current": {"main.py": "x" * 5000}}}, {"delegated_context_bytes": 4096})
+    assessment.check_context_size({"sources": {"current": {"main.py": "x" * 5000}}}, {"delegated_context_bytes": 4096})
+    assessment.check_context_size({"sources": {"current": {"main.py": "x" * 5000}}}, {"delegated_context_bytes": None})
+    with pytest.raises(ValueError, match="limit is 1,500,000 bytes.*not truncated"):
+        assessment.check_context_size({"sources": {"current": {"main.py": "x" * 1500000}}}, {"delegated_context_bytes": None})
 
 
 def test_exact_repeat_requires_previously_requested_evidence():
