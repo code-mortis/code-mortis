@@ -1,0 +1,43 @@
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate, useNavigationType, useSearchParams } from "react-router-dom";
+import { normalizeReviewFilters, reviewFilterKeys, reviewFilterPrefixes, withReviewFilters, type ReviewFilterKey, type ReviewFilterScope } from "../lib/review-filters";
+
+export function useReviewFilters(scope: ReviewFilterScope) {
+  const [raw, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const [navigation, setNavigation] = useState({ key: location.key, reset: 0 });
+  if (navigation.key !== location.key) setNavigation({ key: location.key, reset: navigation.reset + (navigationType === "POP" ? 1 : 0) });
+  const params = normalizeReviewFilters(raw, scope);
+  const canonical = params.toString();
+  const rawQuery = raw.toString();
+  const current = new URLSearchParams();
+  for (const key of reviewFilterKeys[scope]) for (const value of raw.getAll(`${reviewFilterPrefixes[scope]}${key}`)) current.append(key, value);
+  const needsNormalization = current.toString() !== canonical;
+  const normalized = withReviewFilters(raw, params, scope).toString();
+  useEffect(() => {
+    if (needsNormalization) setParams(normalized, { replace: true, state: location.state });
+  }, [needsNormalization, normalized, setParams, location.state]);
+  const search = useCallback((value: string) => {
+    const next = new URLSearchParams(rawQuery);
+    const key = `${reviewFilterPrefixes[scope]}q`;
+    if (value.trim()) next.set(key, value); else next.delete(key);
+    navigate({ search: withReviewFilters(next, normalizeReviewFilters(next, scope), scope).toString() },
+      { replace: true, state: location.state });
+  }, [rawQuery, scope, navigate, location.state]);
+  function change(key: ReviewFilterKey, values: string[]) {
+    const next = new URLSearchParams(raw);
+    const name = `${reviewFilterPrefixes[scope]}${key}`;
+    next.delete(name);
+    if (key === "status" && !values.length) next.set(name, "all");
+    else values.forEach((value) => next.append(name, value));
+    setParams(withReviewFilters(next, normalizeReviewFilters(next, scope), scope), { state: location.state });
+  }
+  function clear() {
+    const next = new URLSearchParams(scope === "pull" ? "status=all" : "");
+    setParams(withReviewFilters(raw, next, scope), { state: location.state });
+    setNavigation((current) => ({ ...current, reset: current.reset + 1 }));
+  }
+  return { params, canonical, search, change, clear, searchResetKey: navigation.reset };
+}

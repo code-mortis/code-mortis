@@ -1374,7 +1374,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
     } else {
       await (await breadcrumbAncestor(page, "Pull request #148")).click();
     }
-    await expect(page).toHaveURL(/\/pulls\/pr$/);
+    await expect(page).toHaveURL((url) => url.pathname === "/pulls/pr");
     await openNavigation(page);
     await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
@@ -1476,6 +1476,140 @@ for (const example of [
   });
 }
 
+test("pull filters, history tabs, and finding tabs survive reload and browser history", async ({ page }) => {
+  await mock(page);
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [run],
+    findings: [
+      { ...finding, status: "resolved", severity: "high", category: "bug" },
+      { ...finding, id: "open", status: "open", severity: "high", category: "bug" },
+      { ...finding, id: "dismissed", status: "dismissed", severity: "high", category: "bug" },
+    ],
+  }));
+  await page.goto("/pulls/pr?q=retry&status=resolved&severity=high&category=bug");
+  const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("retry");
+  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("status") === "all");
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
+  await page.goForward();
+  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
+  await resolved.getByRole("button").click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("finding") === "finding" && url.searchParams.get("finding_tab") === "activity");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: "Activity 1", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.goBack();
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("finding") && !url.searchParams.has("finding_tab") && url.searchParams.get("q") === "retry");
+  await page.getByRole("tab", { name: /Run history/ }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "history");
+  await page.reload();
+  await expect(page.getByRole("tab", { name: /Run history/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await expect(resolved.getByRole("button")).toHaveCount(1);
+});
+
+test("run tabs and independent finding and assessment filters survive shared URLs", async ({ page }, info) => {
+  const candidates: Schema["CandidateOut"][] = [{ id: "failed", snapshot: { path: "src/client.ts", content: "Timeout proposal.", severity: "low", category: "security" },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: false }];
+  await mock(page, { candidates,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1, pending: 0, incomplete: 1, published_comments: 0 },
+    occurrences: [{ finding_id: "finding", inline_line: 46, snapshot: { ...finding, severity: "high", category: "bug" } }],
+  });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run?q=retry&severity=high&category=bug&tab=assessment&assessment_q=timeout&assessment_outcome=withheld&assessment_severity=low&assessment_category=security");
+  const cards = page.getByRole("region", { name: "Candidate assessment", exact: true }).locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(1);
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("timeout");
+  expect(requests.at(-1)?.get("q")).toBe("timeout");
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["low"]);
+  expect(requests.at(-1)?.getAll("outcome")).toEqual(["withheld"]);
+  await page.reload();
+  await expect(page.getByRole("tab", { name: /^Assessment/ })).toHaveAttribute("aria-selected", "true");
+  await expect(cards).toHaveCount(1);
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await expect(page.getByLabel("Search run findings", { exact: true })).toHaveValue("retry");
+  const findingCards = page.getByRole("region", { name: "Findings at this run", exact: true }).getByRole("button");
+  await expect(findingCards).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => !url.searchParams.has("category") && url.searchParams.get("assessment_category") === "security");
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Edit Type: Bug", exact: true })).toBeVisible();
+  await findingCards.click();
+  const findingSheet = page.getByRole("dialog", { name: "Finding details" });
+  await findingSheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await page.reload();
+  await expect(findingSheet.getByRole("tab", { name: "Current status", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  for (const name of ["Coverage", "Details", "Assessment"]) {
+    await page.getByRole("tab", { name: new RegExp(`^${name}`) }).click();
+    await expect(page).toHaveURL((url) => url.searchParams.get("tab") === name.toLowerCase());
+    if (name === "Coverage") {
+      await page.goBack();
+      await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+      await page.goForward();
+      await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
+    }
+    await page.reload();
+    await expect(page.getByRole("tab", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-selected", "true");
+  }
+  await expect(cards).toHaveCount(1);
+  await cards.click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await sheet.getByRole("tab", { name: "Evidence 0", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("candidate") === "failed" && url.searchParams.get("assessment_tab") === "evidence");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: "Evidence 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("candidate") && !url.searchParams.has("assessment_tab") && url.searchParams.get("tab") === "assessment");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("timeout");
+  await noOverflow(page);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.getByRole("region", { name: "Candidate assessment", exact: true }).screenshot({ path: `../.impeccable/review/url-filters-${info.project.name}.png`, animations: "disabled" });
+});
+
+test("browser navigation cancels pending review search without changing the restored URL", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  await page.goto("/pulls/pr?q=retry&status=all&severity=high");
+  await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await expect(page).toHaveURL((url) => !url.searchParams.has("severity"));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  const search = page.getByLabel("Search findings", { exact: true });
+  await search.fill("unfinished draft");
+  await page.clock.runFor(100);
+  await page.goBack();
+  await expect(page).toHaveURL((url) => url.searchParams.get("severity") === "high");
+  await expect(search).toHaveValue("retry");
+  await page.clock.runFor(500);
+  await expect(page).toHaveURL((url) => url.searchParams.get("q") === "retry" && url.searchParams.get("severity") === "high");
+});
+
+test("invalid review tabs and URL filters recover to supported defaults", async ({ page }) => {
+  await mock(page);
+  await page.goto("/pulls/pr?tab=unknown&status=invalid&severity=invalid&category=&finding=finding&finding_tab=snapshot");
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("tab") && !url.searchParams.has("finding_tab")
+    && !url.searchParams.has("severity") && !url.searchParams.has("category") && url.searchParams.getAll("status").join(",") === "open,resolved");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+});
+
 test("focused finding cards preserve long file locations, state, and keyboard access on narrow screens", async ({ page }) => {
   const file = `${"long-finding-filename-".repeat(4)}.tsx`;
   const directory = `src/${"deeply-nested-directory/".repeat(4)}`;
@@ -1571,7 +1705,8 @@ test("review run workspace filters saved findings and separates original evidenc
   await page.getByRole("button", { name: "Clear search" }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(list.getByRole("button")).toHaveCount(3);
   await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("3 of 6 findings");
@@ -1579,7 +1714,8 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(list.getByRole("button")).toHaveCount(6);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^High/ }).check();
+  await page.getByRole("checkbox", { name: /^High/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^High/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Edit Severity: High", exact: true })).toBeFocused();
   await expect(list.getByRole("button")).toHaveCount(3);
@@ -3070,8 +3206,9 @@ test("assessment search keeps its debounce deadline when polling updates the lis
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
   await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "assessment");
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
-  await page.clock.runFor(5000);
+  await page.clock.runFor(6000);
   await expect.poll(() => reads).toBe(2);
   await page.getByLabel("Search assessments", { exact: true }).fill("Refreshed");
   await page.clock.runFor(150);
@@ -3366,7 +3503,8 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
   await page.getByLabel("Search type options", { exact: true }).fill("custom");
-  await page.getByRole("checkbox", { name: /^Custom rule/ }).check();
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Custom rule/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(cards).toHaveCount(1);
   await expect(cards).toContainText("handler-22.ts");
@@ -3388,7 +3526,8 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await expect(cards).toHaveCount(10);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Result", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^New validated finding/ }).check();
+  await page.getByRole("checkbox", { name: /^New validated finding/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^New validated finding/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(cards).toHaveCount(1);
   expect(requests.at(-1)?.getAll("outcome")).toEqual(["new"]);
@@ -3396,7 +3535,8 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await expect(cards).toHaveCount(10);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^High/ }).check();
+  await page.getByRole("checkbox", { name: /^High/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^High/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(list.getByText("12 of 23 assessments", { exact: true })).toHaveClass("sr-only");
   await list.getByRole("button", { name: "Load more assessments" }).click();
@@ -6319,11 +6459,14 @@ test("pull detail searches evidence and separates severity, status, and run hist
   }
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
   await expect(list.getByRole("button")).toHaveCount(2);
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).check();
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Dismissed/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved, Dismissed", exact: true })).toBeFocused();
   await expect(list.getByRole("button")).toHaveCount(3);
@@ -6337,13 +6480,15 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "View all findings", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
@@ -6354,13 +6499,17 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
-  await page.getByRole("checkbox", { name: /^Resolved/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
-  await page.getByRole("checkbox", { name: "Medium", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(list.getByRole("button")).toHaveCount(2);
   for (const theme of ["light", "dark"]) {
@@ -6638,9 +6787,11 @@ test("pull detail paginates each finding status independently and resets pages w
   await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Custom rule/ }).check();
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Custom rule/ })).toBeChecked();
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
-  await page.getByRole("checkbox", { name: /^Performance/ }).check();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(2);
   await page.keyboard.press("Escape");
   expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule", "performance"]);
@@ -6657,7 +6808,8 @@ test("pull detail paginates each finding status independently and resets pages w
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).check();
+  await page.getByRole("checkbox", { name: "High", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   for (const section of [open, resolved, dismissed]) {
     await expect(rows(section)).toHaveCount(10);
@@ -6670,7 +6822,8 @@ test("pull detail paginates each finding status independently and resets pages w
   await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(rows(open)).toHaveCount(10);
   await expect(resolved).toHaveCount(0);

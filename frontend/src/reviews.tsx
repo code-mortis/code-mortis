@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type MouseEventHandler, type ReactNode } from "react";
+import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
@@ -83,6 +83,9 @@ import {
 import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
+import { useReviewFilters } from "./hooks/use-review-filters";
+import { useUrlTab } from "./hooks/use-url-tab";
+import { candidateOutcomes, findingSeverities, findingStatuses } from "./lib/review-filters";
 
 function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
   run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
@@ -280,8 +283,6 @@ function RunList({ prId }: { prId: string }) {
   );
 }
 
-const findingStatuses = ["open", "resolved", "dismissed"] as const;
-
 function findingTypeChoices(counts: Record<string, number>) {
   return Object.entries(counts).filter(([value]) => value).sort(([a], [b]) => a.localeCompare(b))
     .map(([value, count]) => ({ value, name: label(value), count }));
@@ -297,24 +298,29 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const action = useAction<Run>();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [statuses, setStatuses] = useState<string[]>(["open", "resolved"]);
-  const [severities, setSeverities] = useState<string[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [search, setSearch] = useState("");
-  const [searchResetKey, setSearchResetKey] = useState(0);
+  const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
+  const filters = useReviewFilters("pull");
+  const statuses = filters.params.getAll("status").filter((value) => value !== "all");
+  const severities = filters.params.getAll("severity");
+  const categories = filters.params.getAll("category");
+  const search = filters.params.get("q") ?? "";
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
-  const [finding, setFinding] = useState<string | null>(null);
-  const filters = JSON.stringify([id, statuses, severities, categories, search]);
-  const [pagination, setPagination] = useState({ filters, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
-  if (pagination.filters !== filters) setPagination({ filters, pages: {} });
-  const findingFilters = new URLSearchParams();
-  if (search.trim()) findingFilters.set("q", search.trim());
-  statuses.forEach((value) => findingFilters.append("status", value));
-  severities.forEach((value) => findingFilters.append("severity", value));
-  categories.forEach((value) => findingFilters.append("category", value));
+  const [params, setParams] = useSearchParams();
+  const finding = params.get("finding");
+  function setFinding(value: string | null) {
+    const next = new URLSearchParams(params);
+    next.delete("finding_tab");
+    if (value) next.set("finding", value); else next.delete("finding");
+    setParams(next, { state: location.state });
+  }
+  const filterKey = JSON.stringify([id, filters.canonical]);
+  const [pagination, setPagination] = useState({ filters: filterKey, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
+  if (pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
+  const findingFilters = new URLSearchParams(filters.params);
+  if (findingFilters.get("status") === "all") findingFilters.delete("status");
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
-    queryKey: ["pull-findings", id, filters, pagination.pages],
+    queryKey: ["pull-findings", id, filters.canonical, pagination.pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
     enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
     refetchInterval: Object.values(pagination.pages).some((page) => page! > 1) ? false : 5000,
@@ -337,11 +343,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
-    setStatuses([]);
-    setSeverities([]);
-    setCategories([]);
-    setSearch("");
-    setSearchResetKey((key) => key + 1);
+    filters.clear();
     searchInput.current?.focus();
   }
   return <>
@@ -384,20 +386,20 @@ export function PullDetail({ admin }: { admin: boolean }) {
     </header>
     <ErrorNotice error={action.error || query.error} />
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
-    <Tabs defaultValue="findings">
+    <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4">
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={setSearch}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
-              { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value) })) },
+              { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
-            onChange={(key, values) => key === "status" ? setStatuses(values) : key === "severity" ? setSeverities(values) : setCategories(values)} />
+            onChange={filters.change} />
         </div>
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
@@ -417,7 +419,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
                 {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
                 {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
                 {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
-                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
+                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters: filterKey, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
                   <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
                 </div>}
               </div>
@@ -485,7 +487,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
   const action = useAction();
   const [dismiss, setDismiss] = useState(false);
   const [reason, setReason] = useState("");
-  const [tab, setTab] = useState(snapshot ? "snapshot" : "evidence");
+  const [tab, setTab] = useUrlTab("finding_tab", snapshot ? ["snapshot", "evidence", "activity"] : ["evidence", "activity"], snapshot ? "snapshot" : "evidence");
   const activityTab = useRef<HTMLButtonElement>(null);
   if (query.isPending && !snapshot)
     return (
@@ -641,31 +643,16 @@ function CandidateStatus({ candidate }: { candidate: Schema["CandidateOut"] }) {
   return <Status value={value} label={getCandidateLabel(candidate)} />;
 }
 
-const candidateOutcomes = [
-  { value: "new", name: "New validated finding" },
-  { value: "repeated", name: "Repeated observation" },
-  { value: "rejected", name: "Not supported" },
-  { value: "withheld", name: "Withheld" },
-  { value: "pending", name: "Awaiting assessment" },
-];
-
 function AssessmentList({ runId, running, onOpen }: {
   runId: string; running: boolean; onOpen: (candidate: Schema["CandidateOut"], trigger: HTMLButtonElement) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [searchResetKey, setSearchResetKey] = useState(0);
-  const [listVersion, setListVersion] = useState(0);
-  const handleAssessmentSearch = useCallback((value: string) => {
-    setSearch(value);
-    setListVersion((version) => version + 1);
-  }, []);
-  const [filters, setFilters] = useState<{ outcome: string[]; severity: string[]; category: string[] }>({ outcome: [], severity: [], category: [] });
+  const filters = useReviewFilters("assessment");
+  const { params, canonical } = filters;
+  const [list, setList] = useState({ filters: canonical, version: 0 });
+  if (list.filters !== canonical) setList({ filters: canonical, version: list.version + 1 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const params = new URLSearchParams();
-  if (search.trim()) params.set("q", search.trim());
-  for (const key of ["outcome", "severity", "category"] as const) for (const value of filters[key]) params.append(key, value);
   const query = useInfiniteQuery<Schema["CandidatePage"], ApiError>({
-    queryKey: ["run-candidates", runId, params.toString(), listVersion],
+    queryKey: ["run-candidates", runId, canonical, list.version],
     queryFn: ({ pageParam, signal }) => api<Schema["CandidatePage"]>(`/runs/${runId}/candidates?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
@@ -682,12 +669,12 @@ function AssessmentList({ runId, running, onOpen }: {
     return true;
   });
   return <div className="mt-4 space-y-4">
-    <FilterBar query={search} searchResetKey={searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={handleAssessmentSearch}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
-        { key: "outcome", label: "Result", values: filters.outcome, choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
-        { key: "severity", label: "Severity", values: filters.severity, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
-        { key: "category", label: "Type", values: filters.category, choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
-      ]} onChange={(key, values) => { setFilters((current) => ({ ...current, [key]: values })); setListVersion((version) => version + 1); }}>
+        { key: "outcome", label: "Result", values: params.getAll("outcome"), choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
+        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
+        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
+      ]} onChange={filters.change}>
       {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} assessments</span>}
     </FilterBar>
     <ErrorNotice error={query.error} />
@@ -696,7 +683,7 @@ function AssessmentList({ runId, running, onOpen }: {
         state={<CandidateStatus candidate={item} />}
         onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
-        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSearchResetKey((key) => key + 1); setFilters({ outcome: [], severity: [], category: [] }); setListVersion((version) => version + 1); searchInput.current?.focus(); }}>View all assessments</Button>}
+        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
       {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
         {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
@@ -736,7 +723,7 @@ function AssessmentError({ error, withheld }: { error: string; withheld: boolean
 function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
   candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; onOpenFinding: () => void;
 }) {
-  const [tab, setTab] = useState("assessment");
+  const [tab, setTab] = useUrlTab("assessment_tab", ["assessment", "evidence"], "assessment");
   const retry = useAction<Schema["CandidateOut"]>();
   const { snapshot, result } = candidate;
   const path = String(snapshot.path ?? "Path not recorded");
@@ -764,8 +751,8 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
     </div>
     <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
       <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Assessment information">
-        <TabsTrigger autoFocus value="assessment">Assessment</TabsTrigger>
-        <TabsTrigger value="evidence">Evidence <span className="text-xs font-normal tabular-nums text-muted-foreground">{result?.evidence.length ?? 0}</span></TabsTrigger>
+        <TabsTrigger autoFocus={tab === "assessment"} value="assessment">Assessment</TabsTrigger>
+        <TabsTrigger autoFocus={tab === "evidence"} value="evidence">Evidence <span className="text-xs font-normal tabular-nums text-muted-foreground">{result?.evidence.length ?? 0}</span></TabsTrigger>
       </TabsList></div>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="assessment-scroll">
         <TabsContent value="assessment" className="space-y-6">
@@ -833,20 +820,36 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
-  const [tab, setTab] = useState("findings");
-  const [search, setSearch] = useState("");
-  const [severities, setSeverities] = useState<string[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [finding, setFinding] = useState<{ finding_id: string; snapshot?: Schema["OccurrenceOut"]["snapshot"] } | null>(null);
-  const [selectedCandidate, setSelectedCandidate] = useState<Schema["CandidateOut"] | null>(null);
+  const [params, setParams] = useSearchParams();
+  const [tab, setTab] = useUrlTab("tab", ["findings", "coverage", "assessment", "details"], "findings");
+  const filters = useReviewFilters("run");
+  const search = filters.params.get("q") ?? "";
+  const severities = filters.params.getAll("severity");
+  const categories = filters.params.getAll("category");
+  const findingId = params.get("finding");
+  const finding = findingId ? { finding_id: findingId, snapshot: occurrences.find((item) => item.finding_id === findingId)?.snapshot } : null;
+  const candidateId = params.get("candidate");
+  const [candidateSeed, setCandidateSeed] = useState<Schema["CandidateOut"] | null>(null);
+  function showSheet(key: "finding" | "candidate", value: string | null) {
+    const next = new URLSearchParams(params);
+    next.delete(`${key === "finding" ? "finding" : "assessment"}_tab`);
+    if (key === "candidate") { next.delete("finding"); next.delete("finding_tab"); }
+    if (value) next.set(key, value); else next.delete(key);
+    setParams(next, { state: location.state });
+  }
+  function closeSheet() {
+    const next = new URLSearchParams(params);
+    for (const key of ["finding", "finding_tab", "candidate", "assessment_tab"]) next.delete(key);
+    setParams(next, { state: location.state });
+  }
   const candidateQuery = useQuery<Schema["CandidateOut"], ApiError>({
-    queryKey: ["run-candidate", run.id, selectedCandidate?.id],
-    queryFn: ({ signal }) => api<Schema["CandidateOut"]>(`/runs/${run.id}/candidates/${selectedCandidate!.id}`, "GET", undefined, undefined, signal),
-    enabled: !!selectedCandidate, initialData: selectedCandidate ?? undefined,
-    refetchInterval: (query) => selectedCandidate && !query.state.error && active(query.state.data?.status ?? "") ? 5000 : false,
+    queryKey: ["run-candidate", run.id, candidateId],
+    queryFn: ({ signal }) => api<Schema["CandidateOut"]>(`/runs/${run.id}/candidates/${encodeURIComponent(candidateId!)}`, "GET", undefined, undefined, signal),
+    enabled: !!candidateId, initialData: candidateSeed?.id === candidateId ? candidateSeed : undefined,
+    refetchInterval: (query) => candidateId && !query.state.error && active(query.state.data?.status ?? "") ? 5000 : false,
     retry: false,
   });
-  const candidateDenied = selectedCandidate && candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
+  const candidateDenied = candidateId && candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
   const candidate = candidateDenied ? undefined : candidateQuery.data;
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
@@ -929,12 +932,12 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         <TabsTrigger value="details">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        <div className="mb-4"><FilterBar query={search} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={setSearch}
+        <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
           filters={[
-            { key: "severity", label: "Severity", values: severities, choices: ["critical", "high", "medium", "low"].map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
+            { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
             { key: "category", label: "Type", values: categories, choices: findingTypeChoices(categoryCounts), searchPlaceholder: "Search types…" },
           ]}
-          onChange={(key, values) => key === "severity" ? setSeverities(values) : setCategories(values)}>
+          onChange={filters.change}>
           <span role="status" className="sr-only">{filtered.length} of {occurrences.length} findings</span>
         </FilterBar></div>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
@@ -942,10 +945,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
             state={<span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>}
-            onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item); }} />)}
+            onClick={(event) => { findingTrigger.current = event.currentTarget; showSheet("finding", item.finding_id); }} />)}
         </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
           <p>{occurrences.length ? "Try another search, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
-          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { setSearch(""); setSeverities([]); setCategories([]); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
+          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
         </Empty>}
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
@@ -957,7 +960,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           {assessment ? <>
             <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
-            <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFinding(null); setSelectedCandidate(item); }} />
+            <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setCandidateSeed(item); showSheet("candidate", item.id); }} />
           </> : <Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty>}
         </section>
       </TabsContent>
@@ -985,17 +988,18 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         </details>
       </TabsContent>
     </Tabs>
-    <Sheet open={!!finding || !!selectedCandidate} onOpenChange={(open) => { if (!open) { setFinding(null); setSelectedCandidate(null); } }}>
+    <Sheet open={!!finding || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
       <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : searchInput.current)?.focus(); }}>
         <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
-          {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => setFinding(null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
+          {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
           <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>
           <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
-        {selectedCandidate && <ErrorNotice error={candidateQuery.error} />}
+        {candidateId && <ErrorNotice error={candidateQuery.error} />}
+        {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
         {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
           canRetry={can_write && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
-          onOpenFinding={() => { if (candidate.finding_id) setFinding({ finding_id: candidate.finding_id, snapshot: occurrences.find((item) => item.finding_id === candidate.finding_id)?.snapshot }); }} />}
+          onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>
     </Sheet>
   </>;
