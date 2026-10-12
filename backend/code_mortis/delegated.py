@@ -169,6 +169,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                     "effort": options["effort"],
                     "prompt": prompt,
                     "output_schema": output_schema(),
+                    "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
                     "timeout": max(1, int(deadline - time.monotonic())) if deadline is not None else None,
                 },
                 stopped,
@@ -179,10 +180,10 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             items[path] = {"status": "completed", "comments": found, "input_bytes": input_bytes}
             comments.extend(found)
         except runner_client.RunnerBlocked as exc:
-            if exc.reason != "failed":
+            if exc.reason not in {"failed", "prompt_limit"}:
                 save()
                 raise
-            items[path] = {"status": "failed", "error": "The official client did not complete this file."}
+            items[path] = {"status": "failed", "error": str(exc) if exc.reason == "prompt_limit" else "The official client did not complete this file."}
         except ValueError:
             items[path] = {
                 "status": "failed",

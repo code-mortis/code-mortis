@@ -30,7 +30,7 @@ class ConnectionConfig(StrictModel):
                 self.api_key
                 or self.extra_headers
                 or self.base_url
-                or self.options
+                or set(self.options) - {"prompt_token_ceiling"}
                 or self.protocol != "native"
             ):
                 raise ValueError("Personal connections use only the official client's authentication")

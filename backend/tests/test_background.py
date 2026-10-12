@@ -67,6 +67,7 @@ def test_personal_generation_requires_consent_and_uses_isolated_runner(generatio
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+        connection.options = {"prompt_token_ceiling": 200000}
     denied = client.post("/api/v1/repositories/22/background", json={"connection_id": "connection"})
     assert denied.status_code == 422 and "Authorize this repository" in denied.text
     with transaction() as db:
@@ -75,6 +76,7 @@ def test_personal_generation_requires_consent_and_uses_isolated_runner(generatio
     def native(connection_id, identity, body, stopped):
         assert connection_id == "connection" and body["task"] == "background" and body["kind"] == kind
         assert body["model"] == "native-model" and not stopped()
+        assert body["prompt_token_ceiling"] == 200000
         assert "installation-token" not in json.dumps(body) and "provider-secret" not in json.dumps(body)
         instructions = native_runner.task_instructions(native_runner.ReviewBody(**body))
         assert "untrusted data" in instructions and "background" in instructions

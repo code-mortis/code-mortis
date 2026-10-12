@@ -582,6 +582,7 @@ class ReviewBody(BaseModel):
     effort: str = Field(pattern="^(low|medium|high)$")
     prompt: str = Field(min_length=1, max_length=4_000_000)
     output_schema: dict
+    prompt_token_ceiling: int = Field(default=58888, ge=4096, le=2_000_000, strict=True)
     timeout: int | None = Field(ge=1, le=3600)
 
 
@@ -721,6 +722,12 @@ async def execute(connection_id, body, entry):
     async with lock:
         try:
             async with asyncio.timeout(body.timeout):
+                # shortcut: UTF-8 bytes bound text tokens conservatively; use native token counting when available.
+                token_upper_bound = sum(len(text.encode()) for text in (
+                    body.prompt, task_instructions(body), json.dumps(body.output_schema),
+                ))
+                if token_upper_bound > body.prompt_token_ceiling * 4 // 5:
+                    raise NativeError("prompt_limit")
                 state = await auth_status(connection_id, body.kind)
                 if state["status"] != "connected":
                     raise NativeError("authentication")

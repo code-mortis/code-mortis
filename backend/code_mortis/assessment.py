@@ -508,6 +508,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                                 "kind": connection["kind"], "task": "assessment", "model": connection["model"],
                                 "effort": options["effort"], "prompt": prompt,
                                 "output_schema": output_schema(context), "timeout": remaining,
+                                "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
                             }, stopped)
                             consumed += input_bytes
                             usage = {unit: consumed}

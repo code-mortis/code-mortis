@@ -517,16 +517,19 @@ function ConnectionForm({
   const initialContext = useRef(context);
   const customEndpoint = provider === "custom";
   const preset = providers.find((item) => item.name === connection?.provider);
-  function apiBody() {
+  function promptTokenCeiling() {
     const ceiling = Number(promptCeiling);
     if (!Number.isInteger(ceiling) || ceiling < 4096 || ceiling > 2000000) {
-      throw new Error("Evidence prompt ceiling must be an integer between 4096 and 2000000.");
+      throw new Error(`${kind === "api" ? "Evidence prompt" : "Prompt"} ceiling must be an integer between 4096 and 2000000.`);
     }
+    return ceiling;
+  }
+  function apiBody() {
     return {
       kind, provider, protocol, base_url: url,
       ...(key ? { api_key: key } : {}),
       ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-      options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
+      options: { ...parseObject(options, "Options"), prompt_token_ceiling: promptTokenCeiling() },
     };
   }
   function choose(value: string) {
@@ -562,7 +565,7 @@ function ConnectionForm({
         try {
           const body =
             kind !== "api"
-              ? { name, kind, model: connection ? model : "" }
+              ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
               : { name, model, ...apiBody() };
           const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
@@ -670,6 +673,13 @@ function ConnectionForm({
           hint={kind !== "api" ? "Save and sign in to load models. You can choose a model afterward." : undefined}
         />
       </section>}
+      {kind !== "api" && <Field
+        label="Prompt ceiling (tokens)"
+        hint="Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The native context byte budget stays separate."
+      >
+        {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
+          value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
+      </Field>}
       {kind !== "api" && !connection && <p className="text-sm text-muted-foreground">
         First save your connection, then sign in with the official client and choose a model.
         Automatic reviews require your separate authorization per repository.

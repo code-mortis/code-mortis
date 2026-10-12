@@ -465,7 +465,8 @@ def test_native_verification_uses_same_connection_and_schema(scenario, monkeypat
         db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
         run = db.get(ReviewRun, scenario["run"])
         run.owner_id = 7
-        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7,
+                                                  "options": {"prompt_token_ceiling": 200000}}}
         if unlimited:
             run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None}}
             run.started_at = now() - timedelta(seconds=7300)
@@ -479,6 +480,7 @@ def test_native_verification_uses_same_connection_and_schema(scenario, monkeypat
     row, _, _ = perform(scenario)
     assert row.verdict == "fixed" and len(calls) == 1
     assert calls[0]["task"] == "verification" and calls[0]["output_schema"]["additionalProperties"] is False
+    assert calls[0]["prompt_token_ceiling"] == 200000
 
 
 def test_migration_preserves_findings_occurrences_and_defaults(scenario):

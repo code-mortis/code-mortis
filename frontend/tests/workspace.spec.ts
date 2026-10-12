@@ -5872,14 +5872,27 @@ for (const kind of ["chatgpt", "claude_code"] as const) {
       await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
       const dialog = page.getByRole("dialog");
       await expect(dialog.getByLabel("Evidence prompt ceiling (tokens)")).toHaveCount(0);
+      const ceiling = dialog.getByLabel("Prompt ceiling (tokens)", { exact: true });
+      await expect(ceiling).toHaveValue("58888");
+      for (const value of ["4095", "2000001", "4096.5"]) {
+        await ceiling.fill(value);
+        await expect.poll(() => ceiling.evaluate((element: HTMLInputElement) => element.checkValidity())).toBe(false);
+      }
+      await ceiling.fill("200000");
+      await noOverflow(page);
+      if (model.trim()) await page.screenshot({ path: info.outputPath("subscription-prompt-ceiling.png"), fullPage: true });
       await dialog.getByLabel("Connection name").fill("Updated subscription");
       await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
-      await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model });
+      await expect.poll(() => personal).toMatchObject({ name: "Updated subscription", kind, model,
+        options: { prompt_token_ceiling: 200000 } });
       if (model.trim()) {
         await expect(dialog).toHaveCount(0);
         await expect(page.getByRole("article", { name: "Updated subscription", exact: true })).toBeVisible();
         await expect(page.getByRole("button", { name: "Actions for Updated subscription", exact: true })).toBeFocused();
         await page.screenshot({ path: info.outputPath("saved-subscription.png"), fullPage: true });
+        await page.getByRole("button", { name: "Actions for Updated subscription", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+        await expect(dialog.getByLabel("Prompt ceiling (tokens)", { exact: true })).toHaveValue("200000");
       } else {
         await expect(dialog.getByRole("heading", { name: kind === "chatgpt" ? "Sign in to ChatGPT" : "Sign in to Claude Code", exact: true })).toBeVisible();
       }

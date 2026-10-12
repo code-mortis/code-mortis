@@ -356,6 +356,7 @@ def perform(job_id, attempt):
                 result = runner_client.review(snapshot["id"], job_id, {
                     "task": "background", "kind": snapshot["kind"], "model": snapshot["model"],
                     "effort": "medium", "prompt": prompt, "output_schema": output_schema(), "timeout": timeout,
+                    "prompt_token_ceiling": snapshot.get("options", {}).get("prompt_token_ceiling", 58888),
                 }, stopped)
         except TimeoutError as exc:
             raise TimeoutError(

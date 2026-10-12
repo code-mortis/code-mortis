@@ -90,6 +90,7 @@ def pipeline(seed, github_stub, monkeypatch):
         return result, {"tokens": 25}
 
     def native(connection, identity, payload, stopped):
+        assert payload["prompt_token_ceiling"] == state.get("prompt_token_ceiling", 58888)
         state["native_sizes"].append(len(payload["prompt"].encode()) + 4096)
         state["native_ids"].append(identity)
         metadata, _ = json.JSONDecoder().raw_decode(payload["prompt"].split(
@@ -129,7 +130,9 @@ def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipe
         with transaction() as db:
             connection = db.get(Connection, "connection")
             connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            connection.options = {"prompt_token_ceiling": 200000}
             connection.secret = seal("{}")
+        pipeline["prompt_token_ceiling"] = 200000
     pipeline["comments"] += [{**COMMENT, "path": "src/failed.py"}, {**COMMENT, "path": "src/uncertain.py"}]
 
     def initial(context):

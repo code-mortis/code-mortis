@@ -626,6 +626,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     "kind": connection["kind"], "task": "verification", "model": connection["model"],
                     "effort": options["effort"], "prompt": prompt, "output_schema": output_schema(),
                     "timeout": remaining,
+                    "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
                 }, stopped)
             result = validate_result(raw, context)
             secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
