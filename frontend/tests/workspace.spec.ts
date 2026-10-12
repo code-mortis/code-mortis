@@ -6545,7 +6545,8 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await page.goto("/pulls/pr");
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
   await page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Resolved/ }).uncheck();
+  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).not.toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
@@ -6554,7 +6555,8 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).check();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("Coverage is incomplete");
