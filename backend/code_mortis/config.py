@@ -27,6 +27,31 @@ class Settings(BaseSettings):
     allow_private_endpoints: bool = False
     trusted_endpoint_hosts: str = ""
     max_webhook_bytes: int = 10_000_000
+    sentry_dsn: str = ""
+    sentry_frontend_dsn: str = ""
+    sentry_environment: str = "production"
+    sentry_release: str = ""
+
+    @field_validator("sentry_dsn", "sentry_frontend_dsn")
+    @classmethod
+    def clean_sentry_dsn(cls, value: str) -> str:
+        from sentry_sdk.utils import Dsn
+
+        if not value:
+            return value
+        dsn = Dsn(value)
+        if dsn.secret_key:
+            raise ValueError("Use a public Sentry DSN without a secret key")
+        return str(dsn)
+
+    @property
+    def sentry_frontend_origin(self) -> str:
+        from urllib.parse import urlsplit
+
+        if not self.sentry_frontend_dsn:
+            return ""
+        parsed = urlsplit(self.sentry_frontend_dsn)
+        return f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}"
 
     @field_validator("public_url")
     @classmethod

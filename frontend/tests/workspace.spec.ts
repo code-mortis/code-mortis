@@ -1589,6 +1589,7 @@ test("browser navigation cancels pending review search without changing the rest
   await expect(page.getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
   await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
   await expect(page).toHaveURL((url) => !url.searchParams.has("severity"));
+  await expect(page.getByRole("button", { name: "Remove Severity filter", exact: true })).not.toBeVisible();
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   const search = page.getByLabel("Search findings", { exact: true });
   await search.fill("unfinished draft");

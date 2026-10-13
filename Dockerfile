@@ -4,6 +4,10 @@ WORKDIR /src/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY frontend/ ./
+ARG CM_SENTRY_FRONTEND_DSN=""
+ARG CM_SENTRY_ENVIRONMENT=production
+ARG CM_SENTRY_RELEASE=""
+ENV VITE_SENTRY_DSN=$CM_SENTRY_FRONTEND_DSN VITE_SENTRY_ENVIRONMENT=$CM_SENTRY_ENVIRONMENT VITE_SENTRY_RELEASE=$CM_SENTRY_RELEASE
 RUN bun run build
 
 FROM ${DOCKERHUB_REGISTRY}/library/python:3.13-slim-bookworm AS runtime

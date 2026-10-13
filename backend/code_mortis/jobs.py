@@ -2,7 +2,9 @@ import json
 import logging
 from datetime import timedelta
 
+import sentry_sdk
 from celery import Celery
+from celery.signals import worker_process_init
 from sqlalchemy import or_, select
 
 from . import background, checks, github, installations, ocr, runner_client, verification
@@ -31,6 +33,15 @@ from .reviews import (
     upsert_pr,
 )
 from .security import unseal
+from .telemetry import init_sentry
+
+init_sentry("worker")
+
+
+@worker_process_init.connect
+def init_worker_sentry(**kwargs):
+    init_sentry("worker")
+
 
 log = logging.getLogger("code_mortis.jobs")
 celery = Celery("code_mortis")
@@ -248,6 +259,7 @@ def execute_job(job_id: str):
                     run.error = str(exc)
         return
     except Exception as exc:
+        sentry_sdk.capture_exception(exc, tags={"job_id": job_id, "job_kind": kind})
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
             str(exc)

@@ -1,3 +1,5 @@
+import "./sentry";
+import { reactErrorHandler } from "@sentry/react";
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -320,7 +322,11 @@ class ErrorBoundary extends React.Component<
     );
   }
 }
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("root")!, {
+  onUncaughtError: reactErrorHandler(),
+  onCaughtError: reactErrorHandler(),
+  onRecoverableError: reactErrorHandler(),
+}).render(
   <React.StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={cache}>

@@ -15,6 +15,7 @@ dependencies = [
   "cryptography>=44",
   "pyjwt[crypto]>=2.10,<3",
   "authlib>=1.6,<2",
+  "sentry-sdk[celery]>=2.72,<3",
 ]
 
 [dependency-groups]

@@ -1,6 +1,7 @@
 import logging
 import secrets
 
+import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -12,6 +13,9 @@ from .config import settings
 from .db import engine
 from .github import GitHubError
 from .subscriptions import router as subscriptions_router
+from .telemetry import init_sentry
+
+init_sentry("api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -24,6 +28,8 @@ app.include_router(subscriptions_router)
 
 @app.exception_handler(GitHubError)
 def github_error(request: Request, exc: GitHubError):
+    if exc.status >= 500:
+        sentry_sdk.capture_exception(exc, tags={"request_id": getattr(request.state, "request_id", "unavailable")})
     return JSONResponse({"detail": str(exc)}, status_code=exc.status if exc.status < 500 else 502)
 
 
@@ -83,6 +89,7 @@ def invalid_request(request: Request, exc: RequestValidationError):
 @app.exception_handler(Exception)
 def unexpected_error(request: Request, exc: Exception):
     reference = getattr(request.state, "request_id", "unavailable")
+    sentry_sdk.capture_exception(exc, tags={"request_id": reference})
     logging.getLogger(__name__).error("Request %s failed (%s)", reference, type(exc).__name__)
     return JSONResponse({"detail": "Code Mortis could not complete this request. Try again. "
                          f"If it keeps failing, share request reference {reference} with the administrator."},
@@ -93,6 +100,8 @@ def unexpected_error(request: Request, exc: Exception):
 async def security_headers(request: Request, call_next):
     request.state.request_id = secrets.token_hex(12)
     response = await call_next(request)
+    sentry_origin = settings().sentry_frontend_origin
+    connect_src = "connect-src 'self'" + (f" {sentry_origin}" if sentry_origin else "")
     response.headers.update(
         {
             "X-Request-ID": request.state.request_id,
@@ -100,7 +109,7 @@ async def security_headers(request: Request, call_next):
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "DENY",
             "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com",
+            "Content-Security-Policy": f"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; {connect_src}; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com",
         }
     )
     if request.url.path.startswith("/api/"):

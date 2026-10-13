@@ -46,6 +46,8 @@ jobs:
       - run: uv run python -m pytest -q
   frontend:
     needs: export-openapi
+    env:
+      VITE_SENTRY_DSN: https://public@sentry.example.com/1
     runs-on: ubuntu-latest
     defaults:
       run:

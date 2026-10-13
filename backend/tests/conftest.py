@@ -16,6 +16,8 @@ os.environ["CM_BOOTSTRAP_TOKEN"] = "test-bootstrap-token-not-for-deployment"
 os.environ["CM_OWNER_GITHUB_LOGIN"] = "owner"
 os.environ["CM_PUBLIC_URL"] = "http://testserver"
 os.environ["CM_COOKIE_SECURE"] = "false"
+os.environ["CM_SENTRY_DSN"] = ""
+os.environ["CM_SENTRY_FRONTEND_DSN"] = ""
 os.environ["CM_WEBHOOK_URL"] = "https://relay.example.com/github"
 
 from code_mortis.db import Base, engine, now, transaction
