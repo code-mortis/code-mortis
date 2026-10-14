@@ -9,6 +9,8 @@ import os
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -22,6 +24,9 @@ from code_mortis import assessment, background, ocr, verification
 
 calls = []
 verification_mode = "fixed"
+assessment_barrier = None
+assessment_hold = None
+conversation_keys = []
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -89,6 +94,14 @@ class Provider(BaseHTTPRequestHandler):
                 elif verification_mode == "assessment_bad_citation":
                     value["verdict"] = "rejected"
                     value["evidence"][0]["quote"] = "invented"
+                if assessment_barrier is not None:
+                    path = "one.py" if "one.py" in text else "two.py"
+                    conversation_keys.append(self.headers.get("X-Smoke-Session"))
+                    assessment_barrier.wait(timeout=15)
+                    if assessment_hold is not None:
+                        assert assessment_hold.wait(timeout=15)
+                    value["evidence"][0]["path"] = path
+                    value["explanation"] = "The supplied loop repeats delivery in " + path
             content = [{"type": "tool_use", "id": "verify", "name": "task_done",
                         "input": {"state": "DONE", "result": value}}]
             if verification_mode == "no_verdict":
@@ -110,14 +123,17 @@ class Provider(BaseHTTPRequestHandler):
             "stop_reason": "tool_use" if content[0]["type"] == "tool_use" else "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 5},
         }
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(result).encode())
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except BrokenPipeError:
+            assert assessment_hold is not None, "Only cancelled assessments may close the provider connection."
 
 
 def main():
-    global verification_mode
+    global verification_mode, assessment_barrier, assessment_hold
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     connection = {
@@ -319,6 +335,79 @@ def main():
                 assert raw["required_paths"] == (["helper.py"] if verdict == "context" else [])
                 assert usage["tokens"] > 0
                 assert len(calls) == before + 1, "A submitted assessment must finish without another model turn."
+            verification_mode = "assessment_confirmed"
+            assessment_barrier = threading.Barrier(2)
+            before = len(calls)
+            terminals = []
+            original_terminal = verification.terminal_result
+
+            def capture_terminal(workspace, session_id):
+                assert (Path.home() / ".opencodereview/config.json").exists()
+                terminals.append((str(workspace), session_id))
+                return original_terminal(workspace, session_id)
+
+            def assess_path(path, stopped=lambda: False):
+                prepared = deepcopy(assessment_context)
+                prepared["finding"] = {"path": path}
+                prepared["current_path"] = path
+                prepared["sources"] = {revision: {path: source["main.py"]}
+                                       for revision, source in prepared["sources"].items()}
+                raw, usage = verification.api_verify(
+                    root, env, connection, {"api_key": "fake-test-key"}, prepared,
+                    None, 60, stopped, instructions=assessment.INSTRUCTIONS,
+                    schema=assessment.output_schema(prepared), validator=assessment.validate_response,
+                    configuration_managed=True,
+                )
+                assert raw["verdict"] == "confirmed" and usage["tokens"] > 0
+                assert raw["evidence"][0]["path"] == path and raw["explanation"].endswith(path)
+                return raw
+
+            verification.terminal_result = capture_terminal
+            try:
+                with ocr.configuration(connection, {
+                    "api_key": "fake-test-key", "extra_headers": {"X-Smoke-Session": "{ocr_session_key}"},
+                }, {}, session_per_task=True):
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(assess_path, ["one.py", "two.py"]))
+                    assert len(results) == 2
+                    assert (Path.home() / ".opencodereview/sessions").exists()
+            finally:
+                verification.terminal_result = original_terminal
+                assessment_barrier = None
+            assert len(calls) == before + 2, "Both independent assessment requests must overlap."
+            assert len(terminals) == 2 and len({item[0] for item in terminals}) == 2
+            assert len({item[1] for item in terminals}) == 2
+            assert all(conversation_keys) and len(set(conversation_keys)) == 2
+            assert "{ocr_session_key}" not in conversation_keys
+            assert not (Path.home() / ".opencodereview/config.json").exists()
+            assert not (Path.home() / ".opencodereview/sessions").exists()
+            print("Parallel pinned OCR assessments overlapped with separate conversations/results and joined cleanup (mock provider).")
+            assessment_barrier = threading.Barrier(3)
+            assessment_hold = threading.Event()
+            cancelled = threading.Event()
+            try:
+                with ocr.configuration(connection, {"api_key": "fake-test-key"}, {}, session_per_task=True):
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        futures = [pool.submit(assess_path, path, cancelled.is_set) for path in ("one.py", "two.py")]
+                        try:
+                            assessment_barrier.wait(timeout=15)
+                            cancelled.set()
+                            for future in futures:
+                                try:
+                                    future.result(timeout=10)
+                                except ocr.ReviewStopped:
+                                    pass
+                                else:
+                                    raise AssertionError("An active OCR process survived cancellation.")
+                        finally:
+                            cancelled.set()
+                    assert (Path.home() / ".opencodereview/config.json").exists()
+                assert not (Path.home() / ".opencodereview/config.json").exists()
+                assert not (Path.home() / ".opencodereview/sessions").exists()
+                print("Cancellation terminated both active pinned OCR processes before configuration cleanup.")
+            finally:
+                assessment_hold.set()
+                assessment_barrier = None
             for failure, field in (("identity", "finding_id"), ("citation", "evidence[0]")):
                 verification_mode = "assessment_bad_" + failure
                 before = len(calls)
