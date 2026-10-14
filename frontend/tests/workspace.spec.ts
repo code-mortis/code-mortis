@@ -4117,6 +4117,9 @@ test("personal setup saves without a model then signs in and selects one", async
   await page.getByRole("button", { name: "Connect ChatGPT", exact: true }).click();
   await expect(page.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tab", { name: "General", exact: true })).toBeFocused();
+  await page.getByRole("tab", { name: "Account", exact: true }).click();
+  await page.getByRole("button", { name: "Choose model", exact: true }).press("Enter");
+  await expect(page.getByRole("tab", { name: "General", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
   const model = page.getByLabel("Model", { exact: true });
   await expectOption(page, model, "personal-model", 1);
@@ -4131,7 +4134,8 @@ test("personal setup saves without a model then signs in and selects one", async
   expect(savedModel).toBe("personal-model");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/personal-model-picker-${info.project.name}.png`, fullPage: true });
-  await page.getByRole("button", { name: "Set up automatic reviews", exact: true }).click();
+  await page.getByRole("button", { name: "Set up automatic reviews", exact: true }).press("Enter");
+  await expect(page.getByRole("tab", { name: "Repositories", exact: true })).toBeFocused();
   await expect(page.getByRole("region", { name: "Repository authorization" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "I authorize automatic reviews with my subscription" })).not.toBeChecked();
   await page.getByRole("button", { name: "Done", exact: true }).click();
@@ -6024,6 +6028,38 @@ for (const [field, invalid, message] of [
   ["Extra headers JSON", '{"Authorization":"private-provider-key",', "Headers must contain valid JSON. Check quotes, commas, and braces, then try again."],
   ["Provider options JSON", "[]", "Options must be a JSON object."],
 ] as const) {
+  test(`new connection save reveals invalid ${field} inside collapsed advanced settings`, async ({ page }, info) => {
+    const requests = await mock(page);
+    await page.goto("/settings?tab=connections");
+    await page.getByRole("button", { name: "Add connection", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Connection name").fill("New connection");
+    await dialog.getByLabel("API key", { exact: true }).fill("draft-key");
+    await chooseOption(page, dialog.getByLabel("Model", { exact: true }), "Enter a custom model ID");
+    await dialog.getByLabel("Custom model ID").fill("custom-model");
+    const summary = dialog.getByText("Advanced provider settings", { exact: true });
+    const details = dialog.locator("details").filter({ hasText: "Advanced provider settings" });
+    await summary.click();
+    await dialog.getByLabel(field, { exact: true }).fill(invalid);
+    await summary.click();
+    await expect(details).not.toHaveAttribute("open");
+    await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+    await expect(details).toHaveAttribute("open", "");
+    await expect(summary).toBeFocused();
+    await expect(summary).toBeInViewport();
+    await expect(dialog.getByRole("alert")).toHaveText(message);
+    await expect(dialog.getByRole("alert")).not.toContainText("private-provider-key");
+    await expect(dialog.getByLabel(field, { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(invalid);
+    expect(requests.filter((request) => request.path === "/connections")).toHaveLength(0);
+    await noOverflow(page);
+    await page.screenshot({ path: info.outputPath("new-connection-json-validation.png") });
+    await dialog.getByLabel(field, { exact: true }).fill("{}");
+    await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(requests.filter((request) => request.path === "/connections")).toHaveLength(1);
+  });
+
   test(`model refresh keeps form errors and the current tab with invalid ${field}`, async ({ page }) => {
     const requests = await mock(page);
     const saveError = "Provider configuration could not be saved.";
@@ -6337,6 +6373,7 @@ test("subscription editor tabs preserve drafts and save General without changing
   await page.getByRole("menuitem", { name: "Edit", exact: true }).press("Enter");
   const dialog = page.getByRole("dialog", { name: "Edit subscription", exact: true });
   await expect(dialog.getByRole("tab")).toHaveText(["General", "Account", "Repositories"]);
+  await dialog.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
   const originalBounds = await dialog.boundingBox();
   const originalTabs = await dialog.getByRole("tablist").boundingBox();
   const originalDone = await dialog.getByRole("button", { name: "Done", exact: true }).boundingBox();
@@ -6768,6 +6805,32 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/orders");
   await expect(grants.getByRole("switch")).toBeChecked();
   await expect(model.getByLabel("Custom model ID")).toHaveValue("unsaved-model");
+});
+
+test("personal model catalog loads only when General opens", async ({ page }) => {
+  await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/connections/personal/auth", (route) => route.fulfill({ json: {
+    status: "connected", account: { email: "carlos@example.com" },
+  } }));
+  let reads = 0;
+  await page.route("**/api/v1/connections/personal/models", (route) => {
+    reads++;
+    return route.fallback();
+  });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Complete sign in", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Signed in as carlos@example.com")).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "Account", exact: true })).toHaveAttribute("aria-selected", "true");
+  await dialog.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Check status", exact: true })).toBeEnabled();
+  expect(reads).toBe(0);
+  await dialog.getByRole("tab", { name: "Repositories", exact: true }).click();
+  await expect(dialog.getByRole("region", { name: "Repository authorization" })).toBeVisible();
+  expect(reads).toBe(0);
+  await dialog.getByRole("tab", { name: "General", exact: true }).click();
+  await expectOption(page, dialog.getByLabel("Model", { exact: true }), "Next model");
+  expect(reads).toBe(1);
 });
 
 test("personal model saves disable controls while retaining the loaded catalog", async ({ page }) => {

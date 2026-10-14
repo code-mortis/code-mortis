@@ -477,6 +477,7 @@ function ConnectionForm({
   const [kind, setKind] = useState(connection?.kind ?? initialKind);
   const tabbed = !!connection && kind === "api";
   const [tab, setTab] = useState("general");
+  const advancedSettings = useRef<HTMLDetailsElement>(null);
   const first = providers.find((p) => p.name === "openai") ?? providers[0];
   const [name, setName] = useState(connection?.name ?? "");
   const [provider, setProvider] = useState(
@@ -621,6 +622,14 @@ function ConnectionForm({
             : { name, model, ...apiBody() };
         } catch (error) {
           if (tabbed) setTab("advanced");
+          else if (advancedSettings.current) {
+            advancedSettings.current.open = true;
+            requestAnimationFrame(() => {
+              const summary = advancedSettings.current?.querySelector("summary");
+              summary?.focus();
+              summary?.scrollIntoView({ block: "center" });
+            });
+          }
           setError(error);
           return;
         }
@@ -682,7 +691,7 @@ function ConnectionForm({
             Automatic reviews require your separate authorization per repository.
           </p>}
         </>}
-        {kind === "api" && <details className="border-t pt-5">
+        {kind === "api" && <details ref={advancedSettings} className="border-t pt-5">
           <summary className="cursor-pointer text-sm font-medium">Advanced provider settings</summary>
           <div className="mt-4 space-y-4">{advancedFields}</div>
         </details>}

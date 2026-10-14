@@ -204,6 +204,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
   const setupComplete = connected && !auth.isError && !!savedModel.trim();
   const heading = useRef<HTMLHeadingElement>(null);
   const generalTab = useRef<HTMLButtonElement>(null);
+  const repositoriesTab = useRef<HTMLButtonElement>(null);
   const wasConnected = useRef(false);
   const availableRepositories = grants.isSuccess ? (repositories.data ?? []).filter((repo) =>
     !grants.data?.some((grant) => grant.repository_id === repo.id),
@@ -266,7 +267,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
         <TabsList className="w-full shrink-0" aria-label="Subscription sections">
           <TabsTrigger ref={generalTab} value="general">General</TabsTrigger>
           <TabsTrigger value="account">Account</TabsTrigger>
-          <TabsTrigger value="repositories">Repositories</TabsTrigger>
+          <TabsTrigger ref={repositoriesTab} value="repositories">Repositories</TabsTrigger>
         </TabsList>
         <TabsContent value="account" forceMount className="-m-1 min-h-0 overflow-x-hidden overflow-y-auto p-1 data-[state=inactive]:hidden">
           <section className="space-y-4" aria-label="Account connection">
@@ -279,7 +280,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
             {!connected && !awaitingAuthorization && <p className="text-sm leading-relaxed text-muted-foreground">
               Use your {provider} account for reviews.{settingUp && " After signing in, choose a default model."}
             </p>}
-            {connected && !savedModel.trim() && <Button onClick={() => setTab("general")}>Choose model</Button>}
+            {connected && !savedModel.trim() && <Button onClick={() => { setTab("general"); generalTab.current?.focus(); }}>Choose model</Button>}
             {(connected || !awaitingAuthorization || auth.data?.message) && <div className="flex flex-wrap gap-2">
               {(connected || !awaitingAuthorization) &&
                 <Button
@@ -425,7 +426,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
               value={model} onChange={(value) => {
                 clearConnectionFeedback();
                 setModel(value);
-              }} disabled={generalPending}
+              }} enabled={tab === "general"} disabled={generalPending}
               path={connected ? `/connections/${identity}/models` : undefined}
               context={`${identity}:${connected}`}
               hint={connected ? "Choose a model or enter a custom model ID." : "Sign in to load this connection’s models, or enter a custom model ID."}
@@ -442,7 +443,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
           {settingUp && setupComplete && <div className="space-y-3 border-t pt-5">
             <p role="status" className="text-sm text-muted-foreground">You can start manual reviews in enabled repositories.</p>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => setTab("repositories")}>Set up automatic reviews</Button>
+              <Button variant="outline" onClick={() => { setTab("repositories"); repositoriesTab.current?.focus(); }}>Set up automatic reviews</Button>
             </div>
           </div>}
         </TabsContent>
