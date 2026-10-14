@@ -402,7 +402,7 @@ export function RepositorySettings({
                 hint={
                   personal
                     ? "Personal subscriptions run one review at a time."
-                    : undefined
+                    : "Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
                 }
               >
                 {(id) => (
@@ -426,7 +426,12 @@ export function RepositorySettings({
             </div>
             <Field
               label="OCR rules JSON"
-              hint="Optional rule-file object. Empty uses rules from the trusted base revision."
+              hint={<>Optional rule-file object. Empty uses rules from the trusted base revision.{" "}
+                <Button asChild variant="link" className="h-auto p-0 text-xs underline">
+                  <a href="https://github.com/alibaba/open-code-review/blob/main/pages/src/content/docs/en/review-rules.md"
+                    target="_blank" rel="noreferrer">Rule file documentation<ArrowUpRight aria-hidden="true" className="size-3" /></a>
+                </Button>
+              </>}
             >
               {(id) => (
                 <Textarea
