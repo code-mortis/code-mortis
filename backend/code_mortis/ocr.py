@@ -135,7 +135,8 @@ def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
 
 
 @contextmanager
-def configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False):
+def configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False,
+                  *, session_per_task=False):
     if not settings().ocr_isolated_runtime:
         raise ValueError("OCR execution requires the isolated Docker worker (CM_OCR_ISOLATED_RUNTIME=true).")
     folder = Path.home() / ".opencodereview"
@@ -161,13 +162,15 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
         headers = dict(credentials.get("extra_headers", {}))
         endpoint = urlsplit(connection.get("base_url", ""))
         if endpoint.hostname == "opencode.ai" and endpoint.path.rstrip("/") == "/zen/go/v1":
-            # One session per OCR invocation, stable across its model/tool round trips.
+            # Shared configuration uses OCR's own conversation keys for concurrent invocations.
             headers = {
                 key: value
                 for key, value in headers.items()
                 if key.lower() not in {"user-agent", "x-opencode-session"}
             }
-            headers.update({"User-Agent": "code-mortis/0.1.0", "x-opencode-session": str(uuid4())})
+            headers.update({"User-Agent": "code-mortis/0.1.0", "x-opencode-session": (
+                "{ocr_session_key}" if session_per_task else str(uuid4())
+            )})
         entry = dict(connection["options"])
         entry.pop("prompt_token_ceiling", None)
         entry.update(

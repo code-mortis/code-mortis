@@ -4,9 +4,10 @@ import copy
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -54,6 +55,7 @@ def verdict(context, **changes):
 def pipeline(seed, github_stub, monkeypatch):
     state = {"comments": [copy.deepcopy(COMMENT)], "calls": 0, "reviews": [], "head": "a" * 40,
              "allowances": [], "native_sizes": [], "native_ids": [], "analysis_calls": 0}
+    calls_lock = Lock()
 
     def request(method, path, token, **kwargs):
         if method == "GET":
@@ -67,13 +69,19 @@ def pipeline(seed, github_stub, monkeypatch):
         return item
 
     def context(repo, env, fetch_env, run, snapshot, previous, stopped):
+        anchor = snapshot.get("existing_code", "").strip()
+        def related(item):
+            return (item["snapshot"]["path"] == snapshot["path"]
+                    or (anchor and anchor == item["snapshot"].get("existing_code", "").strip()))
         state["context"] = {"finding": snapshot, "head_sha": run.head_sha, "original_sha": run.head_sha,
                             "sources": {"current": {snapshot["path"]: SOURCE}}, "diff": "-retry()\n+while True:",
-                            "history": previous["findings"], "prior_candidates": previous["prior_candidates"]}
+                            "history": [item for item in previous["findings"] if related(item)],
+                            "prior_candidates": [item for item in previous["prior_candidates"] if related(item)]}
         return state["context"]
 
     def response(context):
-        state["calls"] += 1
+        with calls_lock:
+            state["calls"] += 1
         if state.get("during_assessment"):
             state["during_assessment"]()
         if state.get("failure"):
@@ -115,6 +123,7 @@ def pipeline(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", request)
     monkeypatch.setattr(github, "pages", lambda *a: copy.deepcopy(state["reviews"]))
     monkeypatch.setattr(ocr, "review", engine)
+    monkeypatch.setattr(ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(assessment, "build_context", context)
     monkeypatch.setattr(verification, "api_verify", assess)
     monkeypatch.setattr(runner_client, "review", native)
@@ -1082,3 +1091,352 @@ def test_summary_batch_counts_one_published_comment(pipeline):
         assert db.scalar(select(func.count()).select_from(Finding)) == 2
         assert assessment.summary(db, db.get(ReviewRun, identity)).published_comments == 1
     assert len(pipeline["reviews"]) == 1
+
+
+def independent_comments(count):
+    return [{**COMMENT, "path": f"file_{index}.py", "existing_code": f"retry_{index}()",
+             "content": f"Retry defect {index}"} for index in range(count)]
+
+
+@pytest.mark.parametrize("concurrency,budget,kind,expected", [
+    (1, None, "api", 1), (2, None, "api", 2), (4, None, "api", 4),
+    (4, 1000, "api", 1), (4, None, "chatgpt", 1), (4, None, "claude_code", 1),
+    (None, None, "api", 1),
+])
+def test_assessment_concurrency_uses_saved_limits_and_preserves_model(pipeline, monkeypatch, concurrency, budget, kind, expected):
+    pipeline["comments"] = independent_comments(8)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": concurrency or 2, "token_budget": budget}
+        connection = db.get(Connection, "connection")
+        if kind != "api":
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    identity = new_run(assessed=True)
+    if concurrency is None:
+        with transaction() as db:
+            run = db.get(ReviewRun, identity)
+            options = {key: value for key, value in run.config["settings"].items() if key != "concurrency"}
+            run.config = {**run.config, "settings": options}
+    barrier, lock = Barrier(expected), Lock()
+    active, peak, leases = 0, 0, []
+
+    @contextmanager
+    def configuration(*args, **kwargs):
+        leases.append(kwargs["session_per_task"])
+        yield
+        assert active == 0
+
+    def respond(context):
+        nonlocal active, peak
+        with transaction() as db:
+            candidate = db.scalar(select(ReviewCandidate).where(
+                ReviewCandidate.run_id == identity,
+                ReviewCandidate.snapshot["path"].as_string() == context["finding"]["path"],
+            ))
+            assert candidate.status == "running" and candidate.context["sources"] == context["sources"]
+            assert candidate.usage["tokens"] is None if budget is None else candidate.usage["tokens"] > 0
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            barrier.wait(timeout=10)
+            return verdict(context, required_paths=[])
+        finally:
+            with lock:
+                active -= 1
+
+    original = verification.api_verify
+    def api(*args, **kwargs):
+        assert args[2]["model"] == "test-model" and args[2]["id"] == "connection"
+        assert kwargs["instructions"] == assessment.INSTRUCTIONS
+        assert kwargs["configuration_managed"] == (expected > 1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(verification, "api_verify", api)
+    monkeypatch.setattr(ocr, "configuration", configuration)
+    pipeline["respond"] = respond
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    assert peak == expected and pipeline["calls"] == 8
+    assert leases == ([True] if expected > 1 else [])
+    assert pipeline["allowances"] == ([None] * 8 if budget is None else [900 - 25 * index for index in range(8)])
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(Finding)) == 8
+        rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        assert all(row.status == "completed" and row.usage == {"tokens": 25} for row in rows)
+
+
+def test_independent_batches_merge_transitive_conflicts():
+    rows = [SimpleNamespace(id=str(index), position=index) for index in range(4)]
+    keys = {"0": {("path", "a")}, "1": {("finding", "shared")},
+            "2": {("path", "a"), ("finding", "shared")}, "3": {("anchor", "independent")}}
+    assert [row.id for row in assessment.independent_batch(rows, keys, 4)] == ["0", "3"]
+    assert [row.id for row in assessment.independent_batch(rows[1:], keys, 4)] == ["1", "3"]
+
+
+@pytest.mark.parametrize("distinct", [False, True])
+def test_parallel_assessments_keep_related_candidates_ordered(pipeline, distinct):
+    first, other = independent_comments(2)
+    pipeline["comments"] = [first, {**first, "content": "Reworded finding"}, other]
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    barrier = Barrier(2)
+    calls = []
+    lock = Lock()
+    def respond(context):
+        snapshot = context["finding"]
+        with lock:
+            calls.append(snapshot["content"])
+        if snapshot["content"] != "Reworded finding":
+            barrier.wait(timeout=10)
+        else:
+            assert len(context["history"]) == 1
+        changes = {"required_paths": []}
+        if distinct and snapshot["content"] == "Reworded finding":
+            changes.update(relationship="new", finding_id=None, cause="Credential logging",
+                           consequence="Credentials exposed", history_explanation="A separate defect in the same code")
+        return verdict(context, **changes)
+    pipeline["respond"] = respond
+    identity = run_and_publish()
+    assert calls.index("Reworded finding") > calls.index(first["content"])
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                              .order_by(ReviewCandidate.position)))
+        assert all(row.status == "completed" for row in rows)
+        assert (rows[0].finding_id != rows[1].finding_id) == distinct
+        assert db.scalar(select(func.count()).select_from(Finding)) == (3 if distinct else 2)
+        assert db.scalar(select(func.count()).select_from(Occurrence)) == (3 if distinct else 2)
+
+
+@pytest.mark.parametrize("decision", ["exact", "rejected", "contradictory"])
+def test_parallel_batches_retain_rejected_history_and_exact_repeat_checks(pipeline, decision):
+    first, other = independent_comments(2)
+    later = dict(first) if decision == "exact" else {**first, "content": "Reworded finding"}
+    pipeline["comments"] = [first, later, other]
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    barrier = Barrier(2)
+    def respond(context):
+        if context["finding"]["content"] != "Reworded finding":
+            barrier.wait(timeout=10)
+            return verdict(context, verdict="rejected" if decision == "rejected" else "confirmed")
+        if decision == "rejected":
+            assert not context["history"] and len(context["prior_candidates"]) == 1
+            return verdict(context, verdict="rejected", history_explanation="Same rejected proposal")
+        assert len(context["history"]) == 1
+        return verdict(context, relationship="new", finding_id=None, contradicts_prior=True)
+    pipeline["respond"] = respond
+    identity = run_and_publish()
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                              .order_by(ReviewCandidate.position)))
+        assert all(row.status == "completed" for row in rows)
+        assert rows[1].result["verdict"] == {"exact": "confirmed", "rejected": "rejected",
+                                             "contradictory": "uncertain"}[decision]
+        if decision == "exact":
+            assert rows[1].finding_id == rows[0].finding_id and rows[1].usage == {"tokens": 0}
+        else:
+            assert rows[1].finding_id is None
+        assert db.scalar(select(func.count()).select_from(Finding)) == (0 if decision == "rejected" else 2)
+    assert pipeline["calls"] == (2 if decision == "exact" else 3)
+
+
+@pytest.mark.parametrize("change", ["history", "head", "base", "closed", "permission", "connection", "disabled", "cancel", "claim", "deadline"])
+def test_parallel_batch_revalidates_history_and_execution(pipeline, monkeypatch, change):
+    pipeline["comments"] = independent_comments(3)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    identity = new_run(assessed=True)
+    barrier, changed = Barrier(2), Event()
+    clock = [now()]
+    monkeypatch.setattr(assessment, "now", lambda: clock[0])
+    calls = []
+    def api(*args, **kwargs):
+        context = args[4]
+        path = context["finding"]["path"]
+        calls.append(path)
+        if path in {"file_0.py", "file_1.py"}:
+            barrier.wait(timeout=10)
+            if path == "file_0.py":
+                with transaction() as db:
+                    run = db.get(ReviewRun, identity)
+                    pr = db.get(PullRequest, run.pr_id)
+                    if change == "history":
+                        finding = Finding(id="external", pr_id=run.pr_id, fingerprint="external",
+                                          path="other.py", content="External finding", severity="high",
+                                          category="bug", start_line=7, end_line=7, last_seen_run_id=identity)
+                        db.add(finding)
+                        db.flush()
+                        db.add(Occurrence(run_id=identity, finding_id=finding.id,
+                                          snapshot={**COMMENT, "path": "other.py"}))
+                    elif change == "head":
+                        pr.head_sha = "c" * 40
+                    elif change == "base":
+                        pr.base_sha = "d" * 40
+                    elif change == "closed":
+                        pr.state = "closed"
+                    elif change == "permission":
+                        db.get(User, 7).enabled = False
+                    elif change == "connection":
+                        db.get(Connection, "connection").base_url = "https://changed.example/v1"
+                    elif change == "disabled":
+                        db.get(Repository, 22).enabled = False
+                    elif change == "cancel":
+                        run.cancel_requested = True
+                    elif change == "claim":
+                        run.progress = {**run.progress, "execution": "replacement"}
+                    elif change == "deadline":
+                        clock[0] += timedelta(seconds=1000)
+                changed.set()
+            else:
+                assert changed.wait(timeout=10)
+        return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
+    monkeypatch.setattr(verification, "api_verify", api)
+    reviews.perform_review(identity)
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        if change == "claim":
+            assert all(row.status == "running" and row.usage == {"tokens": None} for row in rows[:2])
+            assert rows[2].status == "queued"
+        else:
+            assert all(row.status == "skipped" and row.finding_id is None for row in rows[:2])
+            assert all(row.usage == {"tokens": 25} for row in rows[:2])
+        assert db.scalar(select(func.count()).select_from(Finding)) == (2 if change == "history" else 0)
+        if change == "history":
+            assert rows[2].status == "completed"
+    assert len(calls) == (3 if change == "history" else 2)
+    assert pipeline["reviews"] == []
+
+
+def test_parallel_cancellation_stops_active_calls_before_cleanup(pipeline, monkeypatch):
+    pipeline["comments"] = independent_comments(4)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    identity = new_run(assessed=True)
+    barrier, lock, cancelled = Barrier(2), Lock(), Event()
+    active, started, cleaned = 0, [], []
+    @contextmanager
+    def configuration(*args, **kwargs):
+        yield
+        assert active == 0
+        cleaned.append(True)
+    def api(*args, **kwargs):
+        nonlocal active
+        with lock:
+            active += 1
+            started.append(args[4]["finding"]["path"])
+        try:
+            barrier.wait(timeout=10)
+            if args[4]["finding"]["path"] == "file_0.py":
+                with transaction() as db:
+                    db.get(ReviewRun, identity).cancel_requested = True
+                cancelled.set()
+            assert cancelled.wait(timeout=10)
+            assert args[7]()
+            raise ocr.ReviewStopped("Cancelled")
+        finally:
+            with lock:
+                active -= 1
+    monkeypatch.setattr(verification, "api_verify", api)
+    monkeypatch.setattr(ocr, "configuration", configuration)
+    reviews.perform_review(identity)
+    assert len(started) == 2 and cleaned == [True]
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        assert all(row.status == "skipped" and row.finding_id is None for row in rows)
+        assert all(row.usage == {"tokens": None} for row in rows[:2])
+        assert all(not row.usage for row in rows[2:])
+        assert db.scalar(select(func.count()).select_from(Finding)) == 0
+    assert not pipeline["reviews"]
+
+
+def test_parallel_worker_failure_joins_peers_and_never_replays_unknown_usage(pipeline, monkeypatch):
+    pipeline["comments"] = independent_comments(2)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    identity = new_run(assessed=True)
+    barrier, exited = Barrier(2), Event()
+    calls = []
+    def api(*args, **kwargs):
+        calls.append(args[4]["finding"]["path"])
+        barrier.wait(timeout=10)
+        if args[4]["finding"]["path"] == "file_1.py":
+            raise SystemExit("Worker terminated")
+        try:
+            for _ in range(500):
+                if args[7]():
+                    raise ocr.ReviewStopped("Peer stopped")
+                exited.wait(0.01)
+            pytest.fail("The peer was not stopped")
+        finally:
+            exited.set()
+    monkeypatch.setattr(verification, "api_verify", api)
+    with pytest.raises(SystemExit, match="Worker terminated"):
+        reviews.perform_review(identity)
+    assert exited.is_set()
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate)))
+        assert all(row.status == "running" and row.usage == {"tokens": None} for row in rows)
+    reviews.perform_review(identity)
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate)))
+        assert all(row.status == "failed" and row.usage == {"tokens": None} for row in rows)
+        assert db.scalar(select(func.count()).select_from(Finding)) == 0
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("failure", ["citation", "identity", "expand", "excluded", "unknown", "invalid_twice", "three_passes"])
+def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, monkeypatch, failure):
+    pipeline["comments"] = independent_comments(2)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    counts, lock, barrier = {}, Lock(), Barrier(2)
+    def expand(repo, env, run, context, paths, stopped):
+        assert paths in (["helper1.py"], ["helper2.py"]) if failure == "three_passes" else paths == ["helper.py"]
+        if failure == "excluded":
+            raise ValueError("Necessary assessment evidence is excluded")
+        context["sources"]["current"][paths[0]] = "dependency = 1\n"
+    def api(*args, **kwargs):
+        context = args[4]
+        path = context["finding"]["path"]
+        with lock:
+            counts[path] = counts.get(path, 0) + 1
+            attempt = counts[path]
+        if attempt == 1:
+            barrier.wait(timeout=10)
+        raw = verdict(context, required_paths=[])
+        if path == "file_0.py":
+            if attempt == 1 or failure in {"invalid_twice", "three_passes"}:
+                if failure == "unknown":
+                    raise verification.VerificationOutputError("Unknown usage", {"tokens": None},
+                                                               feedback={"field": "evidence[0]"})
+                if failure in {"citation", "invalid_twice"}:
+                    raw["evidence"][0]["quote"] = "invented"
+                elif failure == "identity":
+                    raw.update(relationship="duplicate", finding_id="not-a-finding")
+                elif failure in {"expand", "excluded", "three_passes"}:
+                    raw.update(verdict="uncertain", required_paths=[f"helper{attempt}.py" if failure == "three_passes" else "helper.py"])
+            elif failure == "expand":
+                assert context["sources"]["current"]["helper.py"] == "dependency = 1\n"
+            else:
+                assert context["validation_feedback"]["field"].startswith(
+                    "finding_id" if failure == "identity" else "evidence",
+                )
+        try:
+            result = kwargs["validator"](raw, context)
+        except verification.ResultValidationError as exc:
+            raise verification.VerificationOutputError(str(exc), {"tokens": 25}, feedback=exc.feedback) from exc
+        return result, {"tokens": 25}
+    monkeypatch.setattr(assessment, "expand_context", expand)
+    monkeypatch.setattr(verification, "api_verify", api)
+    identity = run_and_publish()
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        assert rows[1].status == "completed" and rows[1].usage == {"tokens": 25}
+        withheld = failure in {"excluded", "unknown", "invalid_twice", "three_passes"}
+        assert rows[0].status == ("failed" if failure in {"excluded", "unknown", "invalid_twice"} else "completed")
+        assert rows[0].usage == {"tokens": None if failure == "unknown" else 25 if failure == "excluded" else 75 if failure == "three_passes" else 50}
+        assert assessment.summary(db, db.get(ReviewRun, identity)).new_findings == (1 if withheld else 2)
+        if failure == "three_passes":
+            assert rows[0].result["verdict"] == "uncertain"
+        if failure == "expand":
+            assert rows[0].context["sources"]["current"]["helper.py"] == "dependency = 1\n"
+    assert counts == {"file_0.py": 1 if failure in {"excluded", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}

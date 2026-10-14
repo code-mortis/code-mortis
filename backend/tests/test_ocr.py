@@ -139,6 +139,23 @@ def test_opencode_go_headers_are_scoped_and_session_changes_per_invocation(url, 
     assert credentials["extra_headers"]["X-OpenCode-Session"] == "old"
 
 
+def test_shared_opencode_configuration_uses_native_conversation_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    connection = {"protocol": "openai-responses", "model": "same-model",
+                  "base_url": "https://opencode.ai/zen/go/v1", "options": {}}
+    credentials = {"api_key": "fake", "extra_headers": {"X-Test": "keep"}}
+    with ocr.configuration(connection, credentials, {}, session_per_task=True):
+        config = json.loads((tmp_path / ".opencodereview/config.json").read_text())
+        provider = config["custom_providers"]["mortis"]
+        assert provider["model"] == "same-model"
+        assert provider["extra_headers"] == {"User-Agent": "code-mortis/0.1.0",
+                                            "x-opencode-session": "{ocr_session_key}", "X-Test": "keep"}
+    assert not (tmp_path / ".opencodereview/config.json").exists()
+    assert credentials["extra_headers"] == {"X-Test": "keep"}
+
+
 def test_endpoints_reject_credentials_and_metadata(monkeypatch):
     with pytest.raises(ValueError, match="credentials"):
         safe_endpoint("https://token@example.com/v1")

@@ -1,7 +1,10 @@
 """Assess proposed comments before they acquire a finding identity or publication claim."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from datetime import datetime
+from threading import Event
 
 from pydantic import Field, ValidationError
 from sqlalchemy import func, select
@@ -209,26 +212,10 @@ def history(db, run, *, lock=False):
     return value, digest(json.dumps(value, sort_keys=True))
 
 
-def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
-    head = run.head_sha
-    source_sha = snapshot.get("source_sha") or head
-    context = verification.build_context(
-        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped, focused=True,
-    )
-    if source_sha == head:
-        context["sources"].pop("original", None)
-    # Keep a changed-path index for discovery, but load only the finding's actual evidence.
-    paths = ocr.git(repo, env, "diff", "--name-only", "--diff-filter=ACMRT", "-z",
-                    f"{run.base_sha}...{head}", stopped=stopped).rstrip("\0").split("\0")
-    selected = verification.filter_context(repo, env, dict.fromkeys(filter(None, paths), "# context\n"),
-                                           run.config["settings"], stopped)
-    context["changed_paths"] = sorted(selected)
-    focused = {snapshot["path"], context["current_path"]} - {None}
-    if focused:
-        context["diff"] = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
-                                  f"{run.base_sha}...{head}", "--",
-                                  *(f":(literal){path}" for path in sorted(focused)), stopped=stopped)
-    related, renamed = [], {}
+def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, renamed=None):
+    related = []
+    if renamed is None:
+        renamed = {}
     anchor = snapshot.get("existing_code", "").strip()
     for item in previous["findings"]:
         path = item["snapshot"]["path"]
@@ -258,6 +245,29 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
     prior_candidates = [item for item in previous["prior_candidates"]
                         if item["snapshot"]["path"] == snapshot["path"]
                         or (anchor and anchor == item["snapshot"].get("existing_code", "").strip())]
+    return related, prior_candidates
+
+
+def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
+    head = run.head_sha
+    source_sha = snapshot.get("source_sha") or head
+    context = verification.build_context(
+        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped, focused=True,
+    )
+    if source_sha == head:
+        context["sources"].pop("original", None)
+    # Keep a changed-path index for discovery, but load only the finding's actual evidence.
+    paths = ocr.git(repo, env, "diff", "--name-only", "--diff-filter=ACMRT", "-z",
+                    f"{run.base_sha}...{head}", stopped=stopped).rstrip("\0").split("\0")
+    selected = verification.filter_context(repo, env, dict.fromkeys(filter(None, paths), "# context\n"),
+                                           run.config["settings"], stopped)
+    context["changed_paths"] = sorted(selected)
+    focused = {snapshot["path"], context["current_path"]} - {None}
+    if focused:
+        context["diff"] = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
+                                  f"{run.base_sha}...{head}", "--",
+                                  *(f":(literal){path}" for path in sorted(focused)), stopped=stopped)
+    related, prior_candidates = related_history(repo, env, fetch_env, head, snapshot, previous, stopped)
     if related or prior_candidates:
         history_paths = {item["snapshot"]["path"] for item in [*related, *prior_candidates]}
         allowed = verification.filter_context(repo, env, dict.fromkeys(history_paths, "# history\n"),
@@ -400,6 +410,21 @@ def remaining_budget(db, run):
     return (None if budget is None else budget - sum(values) if known else 0), known
 
 
+def independent_batch(rows, keys, concurrency):
+    groups = []
+    for row in rows:
+        members, connected, remaining = [row], set(keys[row.id]), []
+        for group, group_keys in groups:
+            if connected & group_keys:
+                members.extend(group)
+                connected.update(group_keys)
+            else:
+                remaining.append((group, group_keys))
+        groups = [*remaining, (members, connected)]
+    first = [min(group, key=lambda row: row.position) for group, _ in groups]
+    return sorted(first, key=lambda row: row.position)[:concurrency]
+
+
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
     from .reviews import authorize_connection, execution_identity, review_stopped
 
@@ -413,40 +438,55 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         options = run.config["settings"]
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
+    concurrency = options.get("concurrency", 1)
+    parallel = (connection["kind"] == "api" and options["token_budget"] is None
+                and not retry and concurrency > 1 and len(ids) > 1)
+    stop_workers = Event()
 
     def stopped():
-        return review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline)
+        return stop_workers.is_set() or review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline)
 
-    for identity in ids:
+    def prepare():
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
             db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update().execution_options(populate_existing=True))
             if run.progress.get("execution") != claim:
-                return
-            row = db.get(ReviewCandidate, identity)
-            if row.status not in {"queued", "running"}:
-                continue
-            if row.status == "running":
-                row.status, row.error, row.finished_at = "failed", "The review worker stopped while checking this proposed finding. AI usage was not saved, so the reserved budget cannot be reused. Start a new review.", now()
+                return None
+            rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.id.in_(ids))
+                                   .order_by(ReviewCandidate.position)))
+            interrupted = False
+            for row in rows:
+                if row.status == "running":
+                    row.status, row.error, row.finished_at = "failed", "The review worker stopped while checking this proposed finding. AI usage was not saved, so the reserved budget cannot be reused. Start a new review.", now()
+                    interrupted = True
+            if interrupted:
+                db.flush()
                 record_summary(db, run)
-                continue
+            rows = [row for row in rows if row.status == "queued"]
+            if not rows:
+                return None
             pr = db.get(PullRequest, run.pr_id)
-            repo = db.get(Repository, pr.repository_id)
             if (run.cancel_requested or run.status in {"cancelled", "superseded"}
                 or pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open"
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
                 withhold_pending(db, run, "Assessment could not continue because the review stopped, was replaced by a newer run, or did not finish. Check the review outcome.")
-                return
+                return None
             previous, history_key = history(db, run)
-            snapshot = dict(row.snapshot)
             budget, usage_known = remaining_budget(db, run)
-            attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
+            return run, rows, previous, history_key, budget, usage_known
+
+    def assess(row, run, previous, history_key, budget, usage_known, context=None):
+        identity, snapshot = row.id, dict(row.snapshot)
+        attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
         usage = {"tokens": 0}
         try:
             if stopped():
                 raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
-            context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
+            if isinstance(context, Exception):
+                raise context
+            if context is None:
+                context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
             result = exact_repeat(context)
             unit = "tokens"
             consumed = 0
@@ -495,6 +535,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             result, spent = verification.api_verify(
                                 repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
                                 instructions=INSTRUCTIONS, schema=output_schema(context), validator=validate_response,
+                                configuration_managed=parallel,
                             )
                             consumed += spent[unit]
                         else:
@@ -547,39 +588,104 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 usage = exc.usage
                 status = exc.status
             error = str(exc) if isinstance(exc, (ValueError, TimeoutError, ocr.ReviewStopped)) else "The AI could not confirm or reject this proposed finding. No comment was published for it. Start a new review to try again."
+        return identity, result, status, error, usage
+
+    def save(outcomes, history_key):
         secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
             db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update().execution_options(populate_existing=True))
-            row = db.get(ReviewCandidate, identity)
             if run.progress.get("execution") != claim:
-                return
+                return False
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             current_connection = db.get(Connection, run.connection_id)
-            if (run.cancel_requested or run.status in {"cancelled", "superseded"} or pr.head_sha != run.head_sha
-                or pr.base_sha != run.base_sha or pr.state != "open" or not repo.enabled or not repo.active
-                or not db.get(Installation, repo.installation_id).active or not current_connection
-                or (current_connection.kind != "api" and current_connection.auth_status != "connected")
-                or any(connection[key] != getattr(current_connection, key)
-                       for key in ("kind", "owner_id", "provider", "protocol", "base_url"))
-                or history(db, run, lock=True)[1] != history_key):
-                result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
-            elif result:
-                try:
-                    actor_id, trigger = execution_identity(run)
-                    actor = db.get(User, actor_id) if actor_id else None
-                    if actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
-                        raise ValueError("The requesting user no longer has access.")
-                    if actor:
-                        github.authorize_repo(db, actor, repo.full_name, write=True)
-                    authorize_connection(db, current_connection, repo, trigger, actor)
-                except (ValueError, github.GitHubError):
-                    result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
-            row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None
-            row.status, row.error, row.usage, row.finished_at = status, clean_text(error, secrets)[:10000] if error else None, usage, now()
-            if result:
-                accept(db, run, row, row.result)
+            # Compare once before this batch's own atomic history updates.
+            stale = (run.cancel_requested or run.status in {"cancelled", "superseded"}
+                     or (deadline is not None and now().timestamp() >= deadline) or pr.head_sha != run.head_sha
+                     or pr.base_sha != run.base_sha or pr.state != "open" or not repo.enabled or not repo.active
+                     or not db.get(Installation, repo.installation_id).active or not current_connection
+                     or (current_connection.kind != "api" and current_connection.auth_status != "connected")
+                     or any(connection[key] != getattr(current_connection, key)
+                            for key in ("kind", "owner_id", "provider", "protocol", "base_url"))
+                     or history(db, run, lock=True)[1] != history_key)
+            for identity, result, status, error, usage in outcomes:
+                row = db.get(ReviewCandidate, identity)
+                if stale:
+                    result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
+                elif result:
+                    try:
+                        actor_id, trigger = execution_identity(run)
+                        actor = db.get(User, actor_id) if actor_id else None
+                        if actor_id and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
+                            raise ValueError("The requesting user no longer has access.")
+                        if actor:
+                            github.authorize_repo(db, actor, repo.full_name, write=True)
+                        authorize_connection(db, current_connection, repo, trigger, actor)
+                    except (ValueError, github.GitHubError):
+                        result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
+                row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None
+                row.status, row.error, row.usage, row.finished_at = status, clean_text(error, secrets)[:10000] if error else None, usage, now()
+                if result:
+                    accept(db, run, row, row.result)
             db.flush()
             record_summary(db, run)
+            return True
+
+    configuration = (ocr.configuration(connection, credentials, {}, stopped, session_per_task=True)
+                     if parallel else nullcontext())
+    with configuration, ThreadPoolExecutor(max_workers=concurrency) if parallel else nullcontext() as pool:
+        try:
+            while ids:
+                prepared = prepare()
+                if prepared is None:
+                    return
+                run, rows, previous, history_key, budget, usage_known = prepared
+                contexts = {}
+                batch = rows[:1]
+                if parallel:
+                    keys, renamed = {}, {}
+                    for row in rows:
+                        snapshot = row.snapshot
+                        keys[row.id] = {("path", snapshot["path"])}
+                        anchor = snapshot.get("existing_code", "").strip()
+                        if anchor:
+                            keys[row.id].add(("anchor", anchor))
+                        try:
+                            if snapshot.get("source_sha", run.head_sha) != run.head_sha:
+                                contexts[row.id] = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
+                                related = contexts[row.id]["history"]
+                                current_path = contexts[row.id].get("current_path")
+                                if current_path:
+                                    keys[row.id].add(("path", current_path))
+                            else:
+                                related, _ = related_history(repo_path, env, fetch_env, run.head_sha, snapshot,
+                                                             previous, stopped, renamed)
+                            keys[row.id].update(("finding", item["id"]) for item in related)
+                        except Exception as exc:
+                            contexts[row.id] = exc
+                    batch = independent_batch(rows, keys, concurrency)
+                    for row in batch:
+                        if row.id not in contexts:
+                            try:
+                                contexts[row.id] = build_context(repo_path, env, fetch_env, run, row.snapshot, previous, stopped)
+                            except Exception as exc:
+                                contexts[row.id] = exc
+                    futures = {pool.submit(assess, row, run, previous, history_key, budget, usage_known, contexts[row.id]): row.id
+                               for row in batch}
+                    results = {}
+                    for future in as_completed(futures):
+                        results[futures[future]] = future.result()
+                        if results[futures[future]] is None:
+                            stop_workers.set()
+                    outcomes = [results[row.id] for row in batch]
+                else:
+                    outcomes = [assess(batch[0], run, previous, history_key, budget, usage_known)]
+                if any(outcome is None for outcome in outcomes) or not save(outcomes, history_key):
+                    return
+                done = {row.id for row in batch}
+                ids = [identity for identity in ids if identity not in done]
+        except BaseException:
+            stop_workers.set()
+            raise

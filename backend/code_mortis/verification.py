@@ -3,6 +3,7 @@
 import json
 import re
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -364,7 +365,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
 
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
-               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result):
+               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result, configuration_managed=False):
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -406,7 +407,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 detail += " " + errors[-1500:]
             detail = clean_text(detail, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
             raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
-        with ocr.configuration(connection, credentials, {}, stopped):
+        with nullcontext() if configuration_managed else ocr.configuration(connection, credentials, {}, stopped):
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
             code, output, errors = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
