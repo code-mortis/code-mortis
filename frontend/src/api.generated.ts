@@ -935,6 +935,11 @@ export interface components {
              */
             repeated_observations: number;
             /**
+             * Rejected Candidates
+             * @default 0
+             */
+            rejected_candidates: number;
+            /**
              * Withheld Candidates
              * @default 0
              */

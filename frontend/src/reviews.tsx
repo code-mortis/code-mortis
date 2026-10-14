@@ -1031,6 +1031,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{[
               ["validated findings", assessment.new_findings],
               ["repeated", assessment.repeated_observations],
+              ["not supported", assessment.rejected_candidates],
               ["withheld", assessment.withheld_candidates],
               ["comments published", assessment.published_comments],
             ].map(([name, value]) => <div key={name} className="flex items-baseline gap-2">

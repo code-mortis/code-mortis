@@ -139,13 +139,15 @@ def summary(db, run):
         ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict,
     )):
         result.candidates += count
-        if status in {"queued", "running"}:
-            result.pending += count
-        elif has_finding:
+        if has_finding:
             if is_new:
                 result.new_findings += count
             else:
                 result.repeated_observations += count
+        elif decision == "rejected":
+            result.rejected_candidates += count
+        elif status in {"queued", "running"}:
+            result.pending += count
         else:
             result.withheld_candidates += count
         if status in {"failed", "skipped"} or decision == "uncertain":

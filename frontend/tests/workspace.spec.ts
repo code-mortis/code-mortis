@@ -1541,7 +1541,7 @@ test("run tabs and independent finding and assessment filters survive shared URL
   const candidates: Schema["CandidateOut"][] = [{ id: "failed", snapshot: { path: "src/client.ts", content: "Timeout proposal.", severity: "low", category: "security" },
     status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: false }];
   await mock(page, { candidates,
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1, pending: 0, incomplete: 1, published_comments: 0 },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1, pending: 0, incomplete: 1, published_comments: 0 },
     occurrences: [{ finding_id: "finding", inline_line: 46, snapshot: { ...finding, severity: "high", category: "bug" } }],
   });
   const requests: URLSearchParams[] = [];
@@ -1980,7 +1980,7 @@ test("run coverage updates file rows through polling and hides them after access
 });
 
 test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {
-  const requests = await mock(page, { run: { status: "running", publication: "pending", publication_error: null, report: null, finished_at: null, check_enabled: false, progress: { selected: 8, completed: 3 } }, occurrences: [], assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
+  const requests = await mock(page, { run: { status: "running", publication: "pending", publication_error: null, report: null, finished_at: null, check_enabled: false, progress: { selected: 8, completed: 3 } }, occurrences: [], assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
   await page.goto("/runs/run");
   await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
   await expect(page.getByText("The review is in progress.", { exact: true })).toHaveCount(0);
@@ -2870,6 +2870,7 @@ test("project background explains missing output and displays its generation ref
 });
 
 test("review limits save and reopen independent unlimited choices", async ({ page }, info) => {
+  await page.addInitScript(() => localStorage.setItem("color-theme", "code-mortis"));
   await mock(page);
   let current = structuredClone(repo) as Schema["RepositoryOut"];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [current] }));
@@ -3219,7 +3220,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   const requests = await mock(page, {
     run: { status: "completed", publication: "no_new_comments", publication_error: null,
       check_status: "completed", check_conclusion: "neutral", check_pending: false, check_error: null },
-    assessment: { candidates: 2, new_findings: 0, repeated_observations: 1, withheld_candidates: 1,
+    assessment: { candidates: 2, new_findings: 0, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "repeat", snapshot: { ...finding, content: "Same defect with different wording." },
@@ -3239,8 +3240,8 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await expect(page.getByText("No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates.", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: /Assessment/ }).click();
   const totals = page.getByRole("region", { name: "Candidate assessment", exact: true }).locator("dl");
-  await expect(totals.locator("dt")).toHaveText(["validated findings", "repeated", "withheld", "comments published"]);
-  await expect(totals.locator("dd")).toHaveText(["0", "1", "1", "0"]);
+  await expect(totals.locator("dt")).toHaveText(["validated findings", "repeated", "not supported", "withheld", "comments published"]);
+  await expect(totals.locator("dd")).toHaveText(["0", "1", "0", "1", "0"]);
   await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
   await publication.getByRole("status").focus();
@@ -3286,6 +3287,38 @@ test("candidate assessment separates withheld claims from repeated findings", as
   expect(requests).toEqual([]);
 });
 
+test("assessment summary separates not supported and withheld to match the cards", async ({ page }, info) => {
+  const result: Schema["CandidateOut"]["result"] = {
+    verdict: "rejected", relationship: "new", finding_id: null, explanation: "The evidence does not establish a defect.",
+    cause: "", trigger: "", consequence: "", history_explanation: "", contradicts_prior: false,
+    changed_conditions: "", suggestion_supported: false, evidence: [],
+  };
+  const candidates: Schema["CandidateOut"][] = Array.from({ length: 10 }, (_, index) => ({
+    id: `candidate-${index}`, snapshot: { path: `src/proposal-${index}.ts`, content: `Proposal ${index}` },
+    status: index === 9 ? "failed" : "completed",
+    result: index < 8 ? { ...result, verdict: index < 3 ? "confirmed" : "rejected" }
+      : index === 8 ? { ...result, verdict: "uncertain" } : null,
+    finding_id: index < 3 ? `finding-${index}` : null, is_new: index < 3, error: null, retryable: index === 9,
+  }));
+  const writes = await mock(page, { candidates, assessment: {
+    candidates: 10, new_findings: 3, repeated_observations: 0, rejected_candidates: 5,
+    withheld_candidates: 2, pending: 0, incomplete: 2, published_comments: 3,
+  } });
+  await page.goto("/runs/run?tab=assessment");
+  const assessment = page.getByRole("region", { name: "Candidate assessment", exact: true });
+  await expect(assessment.locator("dl dt")).toHaveText([
+    "validated findings", "repeated", "not supported", "withheld", "comments published",
+  ]);
+  await expect(assessment.locator("dl dd")).toHaveText(["3", "0", "5", "2", "3"]);
+  await expect(assessment.getByRole("button", { name: /New validated finding/ })).toHaveCount(3);
+  await expect(assessment.getByRole("button", { name: /Not supported/ })).toHaveCount(5);
+  await expect(assessment.getByRole("button", { name: /Withheld/ })).toHaveCount(2);
+  await noOverflow(page);
+  await assessment.locator("dl").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/assessment-summary-${info.project.name}.png` });
+  expect(writes).toEqual([]);
+});
+
 test("assessment result tooltips preserve card activation and keyboard access", async ({ page }, info) => {
   const result: Schema["CandidateOut"]["result"] = {
     verdict: "rejected", relationship: "new", finding_id: null, explanation: "The evidence does not establish a defect.",
@@ -3302,7 +3335,7 @@ test("assessment result tooltips preserve card activation and keyboard access", 
   const writes = await mock(page, { candidates: outcomes.map((outcome, index) => ({
     id: `result-${index}`, snapshot: { path: `src/result-${index}.ts`, content: `Proposal ${index}` },
     status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false, ...outcome,
-  })), assessment: { candidates: 5, new_findings: 1, repeated_observations: 1, withheld_candidates: 2,
+  })), assessment: { candidates: 5, new_findings: 1, repeated_observations: 1, rejected_candidates: 1, withheld_candidates: 1,
     pending: 1, incomplete: 0, published_comments: 0 } });
   await page.goto("/runs/run?tab=assessment");
   for (const { label, description } of outcomes) {
@@ -3343,7 +3376,7 @@ test("technical assessment retry preserves its previous attempt and polls only t
   };
   const writes = await mock(page, { candidates: [candidate],
     run: { status: "completed", publication: "no_new_comments", publication_error: null },
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
   });
   let release!: () => void;
@@ -3389,7 +3422,7 @@ test("assessment retry shows server errors without discarding the failed attempt
   await mock(page, { candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
     status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
     run: { status: "completed", publication: "no_new_comments", publication_error: null },
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
   });
   await page.route("**/api/v1/runs/run/candidates/failed/retry", (route) => route.fulfill({
@@ -3409,7 +3442,7 @@ test("read-only users cannot retry technical assessment failures", async ({ page
   await mock(page, { canWrite: false, candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
     status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", retryable: true }],
     run: { status: "completed", publication: "no_new_comments", publication_error: null },
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
   });
   await page.goto("/runs/run");
@@ -3425,7 +3458,7 @@ test("original proposal Markdown filters unsafe link protocols before rendering 
   ];
   const safe = [["https", "https://example.com"], ["http", "http://example.com"], ["email", "mailto:review@example.com"],
     ["relative", "/repositories/22"], ["fragment", "#evidence"]];
-  await mock(page, { assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+  await mock(page, { assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
     pending: 0, incomplete: 1, published_comments: 0 }, candidates: [{ id: "proposal", snapshot: { content: "Proposed links.\n\n"
     + [...unsafe, ...safe].map(([name, href]) => `[${name}](${href})`).join("\n\n")
     + '\n\n<img src=x onerror="alert(1)">\n\n<script>alert(1)</script>',
@@ -3446,7 +3479,7 @@ test("assessment search keeps its debounce deadline when polling updates the lis
   const candidates: Schema["CandidateOut"][] = [{ id: "pending", snapshot: finding,
     status: "running", result: null, finding_id: null, is_new: false, error: null, retryable: false }];
   await mock(page, { candidates, run: { status: "running", finished_at: null },
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0,
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0,
       pending: 1, incomplete: 0, published_comments: 0 } });
   let releasePoll!: () => void;
   const poll = new Promise<void>((resolve) => { releasePoll = resolve; });
@@ -3481,7 +3514,7 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   const source = "while True:\n    retry()";
   await mock(page, {
     run: { ...run, status: "completed", publication: "published", publication_error: null },
-    assessment: { candidates: 2, new_findings: 1, repeated_observations: 0, withheld_candidates: 1,
+    assessment: { candidates: 2, new_findings: 1, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, published_comments: 0 },
     candidates: [
       { id: "failed", snapshot: { path: "backend/client.py", start_line: 12, content: "Connection failure." },
@@ -3566,7 +3599,7 @@ for (const failure of assessmentErrors) {
   test(`assessment sheet explains ${failure.name} and preserves copyable diagnostics`, async ({ page }, info) => {
     await mock(page, {
       run: { ...run, status: "completed", publication: "no_new_comments", publication_error: null },
-      assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 1,
+      assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
         pending: 0, incomplete: 1, published_comments: 0 },
       candidates: [{ id: "failed", snapshot: { path: "frontend/src/settings.tsx", start_line: 525, content: "Proposed finding." },
         status: "failed", result: null, finding_id: null, is_new: false, error: failure.error, retryable: true }],
@@ -3632,7 +3665,7 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   const currentRun: Partial<Run> = { status: "running", publication: "pending", publication_error: null };
   const requests = await mock(page, {
     run: currentRun, canWrite: false, candidates: [candidate],
-    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, withheld_candidates: 0, pending: 1, incomplete: 0, published_comments: 0 },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0, pending: 1, incomplete: 0, published_comments: 0 },
   });
   let listReads = 0;
   let detailReads = 0;
@@ -3696,7 +3729,7 @@ for (const status of [401, 403, 404]) {
       finding_id: "finding", is_new: true, error: null,
     };
     await mock(page, { candidates: [candidate], assessment: {
-      candidates: 1, new_findings: 1, repeated_observations: 0, withheld_candidates: 0,
+      candidates: 1, new_findings: 1, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0,
       pending: 1, incomplete: 0, published_comments: 0,
     } });
     let denied = false;
@@ -3732,7 +3765,7 @@ test("assessments paginate on the backend and reset pages when filters change", 
     status: "completed", result: null, finding_id: index === 22 ? "finding" : null, is_new: index === 22, error: null, retryable: false,
   }));
   const writes = await mock(page, { candidates,
-    assessment: { candidates: 23, new_findings: 1, repeated_observations: 0, withheld_candidates: 22, pending: 0, incomplete: 0, published_comments: 1 },
+    assessment: { candidates: 23, new_findings: 1, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 22, pending: 0, incomplete: 0, published_comments: 1 },
   });
   const requests: URLSearchParams[] = [];
   page.on("request", (request) => {
@@ -3812,7 +3845,7 @@ test("assessment pages preserve loaded cards on failure and hide them on access 
     id: `candidate-${index}`, snapshot: { path: `src/file-${index}.ts`, content: `Saved proposal ${index}` },
     status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false,
   }));
-  await mock(page, { candidates, assessment: { candidates: 21, new_findings: 0, repeated_observations: 0, withheld_candidates: 21, pending: 0, incomplete: 0, published_comments: 0 } });
+  await mock(page, { candidates, assessment: { candidates: 21, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 21, pending: 0, incomplete: 0, published_comments: 0 } });
   let failure = 502;
   await page.route("**/api/v1/runs/run/candidates?**", (route) => failure
     ? route.fulfill({ status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Assessments temporarily unavailable" } })
@@ -3843,7 +3876,7 @@ for (const status of ["running", "completed"]) {
   test(`empty candidate assessment explains ${status} review`, async ({ page }) => {
     await mock(page, {
       run: { ...run, status, publication: status === "running" ? "pending" : "no_new_comments", publication_error: null },
-      assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, withheld_candidates: 0,
+      assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0,
         pending: 0, incomplete: 0, published_comments: 0 },
       candidates: [],
     });
@@ -4702,7 +4735,7 @@ test("run shows failed fix verification beside assessment with a keyboard toolti
     status: "completed", publication: "published", publication_error: null,
     check_pending: false, check_error: null, check_status: "completed", check_conclusion: "neutral",
     progress: { verification: { failed: 3, sync_failed: 8, resolved: 2 } },
-  }, assessment: { candidates: 10, new_findings: 0, repeated_observations: 1, withheld_candidates: 9,
+  }, assessment: { candidates: 10, new_findings: 0, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 9,
     pending: 0, incomplete: 9, published_comments: 0 } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
@@ -4733,7 +4766,7 @@ for (const [name, verification] of [
 ] as const) {
   test(`run hides fix verification badge with ${name}`, async ({ page }) => {
     await mock(page, { run: { progress: { verification } }, assessment: {
-      candidates: 5, new_findings: 0, repeated_observations: 0, withheld_candidates: 5,
+      candidates: 5, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 5,
       pending: 0, incomplete: 5, published_comments: 0,
     } });
     await page.goto("/runs/run");

@@ -455,6 +455,7 @@ class AssessmentSummary(StrictModel):
     candidates: int = 0
     new_findings: int = 0
     repeated_observations: int = 0
+    rejected_candidates: int = 0
     withheld_candidates: int = 0
     pending: int = 0
     incomplete: int = 0
