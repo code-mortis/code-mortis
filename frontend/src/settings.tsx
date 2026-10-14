@@ -511,17 +511,12 @@ function ConnectionForm({
   }
   function apiBody() {
     const ceiling = promptTokenCeiling();
-    try {
-      return {
-        kind, provider, protocol, base_url: url,
-        ...(key ? { api_key: key } : {}),
-        ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-        options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
-      };
-    } catch (error) {
-      if (tabbed) { setTab("advanced"); setError(error); }
-      throw error;
-    }
+    return {
+      kind, provider, protocol, base_url: url,
+      ...(key ? { api_key: key } : {}),
+      ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
+      options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
+    };
   }
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);
@@ -619,12 +614,19 @@ function ConnectionForm({
             return;
           }
         }
+        let body;
+        try {
+          body = kind !== "api"
+            ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
+            : { name, model, ...apiBody() };
+        } catch (error) {
+          if (tabbed) setTab("advanced");
+          setError(error);
+          return;
+        }
         onSavingChange(true);
         setError(undefined);
         try {
-          const body = kind !== "api"
-            ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
-            : { name, model, ...apiBody() };
           const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
             method: connection ? "PUT" : "POST", body,

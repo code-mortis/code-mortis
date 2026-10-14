@@ -205,9 +205,9 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
   const heading = useRef<HTMLHeadingElement>(null);
   const generalTab = useRef<HTMLButtonElement>(null);
   const wasConnected = useRef(false);
-  const availableRepositories = (repositories.data ?? []).filter((repo) =>
+  const availableRepositories = grants.isSuccess ? (repositories.data ?? []).filter((repo) =>
     !grants.data?.some((grant) => grant.repository_id === repo.id),
-  );
+  ) : [];
   useEffect(() => {
     if (grants.data?.some((grant) => String(grant.repository_id) === repository)) {
       setRepository("");

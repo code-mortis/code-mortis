@@ -6024,6 +6024,27 @@ for (const [field, invalid, message] of [
   ["Extra headers JSON", '{"Authorization":"private-provider-key",', "Headers must contain valid JSON. Check quotes, commas, and braces, then try again."],
   ["Provider options JSON", "[]", "Options must be a JSON object."],
 ] as const) {
+  test(`model refresh keeps form errors and the current tab with invalid ${field}`, async ({ page }) => {
+    const requests = await mock(page);
+    const saveError = "Provider configuration could not be saved.";
+    await page.route("**/api/v1/connections/connection", (route) => route.request().method() === "PUT"
+      ? route.fulfill({ status: 422, json: { detail: saveError } }) : route.fallback());
+    await page.goto("/settings?tab=connections");
+    await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(saveError);
+    await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+    await dialog.getByLabel(field, { exact: true }).fill(invalid);
+    await dialog.getByRole("tab", { name: "General", exact: true }).click();
+    await dialog.getByRole("button", { name: /^(Load|Refresh) models$/ }).click();
+    await expect(dialog.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("data-state", "active");
+    await expect(dialog.getByRole("alert").filter({ hasText: saveError })).toBeVisible();
+    await expect(dialog.getByRole("region", { name: "Default model", exact: true }).getByRole("alert")).toHaveText(message);
+    expect(requests.filter((request) => request.path === "/connections/models")).toHaveLength(0);
+  });
+
   test(`connection save reveals invalid ${field} from another tab`, async ({ page }, info) => {
     const requests = await mock(page);
     await page.goto("/settings?tab=connections");
@@ -6731,13 +6752,17 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByText("Loading repositories…")).toBeVisible();
   await expect(grants.getByRole("button", { name: "Retry authorizations", exact: true })).toBeEnabled();
   releaseRepositories();
-  await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled();
-  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
+  await expect(grants.getByText("Loading repositories…")).toHaveCount(0);
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  await expect(grants.getByRole("button", { name: "Save authorization", exact: true })).toBeDisabled();
   await expect(grants.getByRole("alert")).toHaveText("Authorizations unavailable.");
   await grants.getByRole("button", { name: "Retry authorizations", exact: true }).click();
   await expect(grants.getByText("Loading authorizations…")).toBeVisible();
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
   releaseGrants();
   await expect(grants.getByText("Manual use only")).toBeVisible();
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled();
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
   await expect(grants.getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("button", { name: /^Retry / })).toHaveCount(0);
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/orders");
@@ -6790,35 +6815,40 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  let fail = true;
+  let failLoad = true;
+  let failSave = true;
   await page.route("**/api/v1/connections/personal/grants", async (route) => {
     await held;
-    await route.fulfill(fail
+    await route.fulfill(failLoad
       ? { status: 503, json: { detail: "Authorizations could not be loaded." } }
       : { json: [] });
   });
-  await page.route("**/api/v1/connections/personal/grants/22", (route) => fail
+  await page.route("**/api/v1/connections/personal/grants/22", (route) => failSave
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings");
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   const grants = page.getByRole("region", { name: "Repository authorization", includeHidden: true });
   await expect(grants.getByRole("status")).toHaveText("Loading authorizations…");
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  await expect(grants.getByRole("button", { name: "Save authorization", exact: true })).toBeDisabled();
   await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
   release();
   await expect(grants.getByRole("alert")).toContainText("Authorizations could not be loaded");
   await expect(grants.getByText("Loading authorizations…")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toHaveCount(0);
+  await expect(grants.getByLabel("Repository", { exact: true })).toBeDisabled();
+  failLoad = false;
+  await grants.getByRole("button", { name: "Retry authorizations", exact: true }).click();
+  await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
   await grants.getByRole("button", { name: "Save authorization" }).click();
-  await expect(grants.getByRole("alert")).toHaveText([
-    "Authorizations could not be loaded.", "Repository authorization denied.",
-  ]);
+  await expect(grants.getByRole("alert")).toHaveText("Repository authorization denied.");
   await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
-  await expect(grants.getByRole("alert")).toHaveText("Authorizations could not be loaded.");
+  await expect(grants.getByRole("alert")).toHaveCount(0);
   await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
-  fail = false;
+  failSave = false;
   await grants.getByRole("button", { name: "Save authorization" }).click();
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
   await expect(grants.getByRole("alert")).toHaveCount(0);
@@ -6847,8 +6877,9 @@ test("subscription repository choices exclude authorizations and return after re
   const grants = page.getByRole("region", { name: "Repository authorization" });
   const repository = grants.getByRole("combobox", { name: "Repository", exact: true });
   const automatic = grants.getByRole("switch");
-  await chooseOption(page, repository, "acme/payments");
-  await automatic.check();
+  await expect(grants.getByText("Loading authorizations…")).toBeVisible();
+  await expect(repository).toBeDisabled();
+  await expect(grants.getByRole("button", { name: "Save authorization", exact: true })).toBeDisabled();
   release();
   await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
   await expect(repository).toHaveValue("");
