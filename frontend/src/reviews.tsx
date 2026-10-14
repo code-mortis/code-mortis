@@ -664,7 +664,7 @@ function ResolvedList({ runId, running, onOpen }: {
     queryFn: ({ pageParam, signal }) => api<Schema["ResolvedPage"]>(`/runs/${runId}/resolved?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
-    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    refetchInterval: (query) => running && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
     retry: false,
   });
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
@@ -974,7 +974,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
                 <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
               </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
-            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkDescriptions[checkValue || ""] || "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>}
+            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>}
           </div>}
         </div>
         {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}

@@ -510,12 +510,18 @@ function ConnectionForm({
     return ceiling;
   }
   function apiBody() {
-    return {
-      kind, provider, protocol, base_url: url,
-      ...(key ? { api_key: key } : {}),
-      ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-      options: { ...parseObject(options, "Options"), prompt_token_ceiling: promptTokenCeiling() },
-    };
+    const ceiling = promptTokenCeiling();
+    try {
+      return {
+        kind, provider, protocol, base_url: url,
+        ...(key ? { api_key: key } : {}),
+        ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
+        options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
+      };
+    } catch (error) {
+      if (tabbed) { setTab("advanced"); setError(error); }
+      throw error;
+    }
   }
   function choose(value: string) {
     const preset = providers.find((p) => p.name === value);

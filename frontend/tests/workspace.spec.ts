@@ -1701,6 +1701,23 @@ test("resolved findings use independent backend filters and reset pagination", a
   await page.screenshot({ path: `../.impeccable/review/resolved-filters-${info.project.name}.png`, fullPage: true, animations: "disabled" });
 });
 
+for (const status of ["running", "completed"] as const) {
+  test(`resolved findings polling respects ${status} run state`, async ({ page }) => {
+    await page.clock.install();
+    await mock(page, { run: { status }, resolved: [] });
+    let reads = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/v1/runs/run/resolved") reads++;
+    });
+    await page.goto("/runs/run?tab=resolved");
+    await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("heading")).toBeVisible();
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.clock.runFor(15000);
+    if (status === "running") await expect.poll(() => reads).toBeGreaterThan(1);
+    else expect(reads).toBe(1);
+  });
+}
+
 test("resolved pages preserve loaded cards on failure and hide them on access denial", async ({ page }) => {
   const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${index}`, status: "resolved", sync_intent: null }));
   await mock(page, { resolved });
@@ -4730,6 +4747,19 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "open" } });
 });
 
+for (const value of ["__proto__", "constructor", "toString", "unknown-check"] as const) {
+  test(`GitHub check tooltip handles unknown status ${value}`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mock(page, { run: { check_conclusion: value, check_status: "completed", check_pending: false } });
+    await page.goto("/runs/run");
+    await page.getByRole("region", { name: "GitHub publication", exact: true })
+      .getByRole("link", { name: /^View check on GitHub:/ }).focus();
+    await expect(page.getByRole("tooltip")).toHaveText("The saved GitHub check status is unavailable.");
+    expect(errors).toEqual([]);
+  });
+}
+
 test("run shows failed fix verification beside assessment with a keyboard tooltip", async ({ page }, info) => {
   const writes = await mock(page, { run: {
     status: "completed", publication: "published", publication_error: null,
@@ -5989,6 +6019,36 @@ test("error messages explain network failures", async ({ page }) => {
   await expect(page.getByRole("alert")).toContainText("Could not reach Code Mortis. Check your connection and try again.");
   await noOverflow(page);
 });
+
+for (const [field, invalid, message] of [
+  ["Extra headers JSON", '{"Authorization":"private-provider-key",', "Headers must contain valid JSON. Check quotes, commas, and braces, then try again."],
+  ["Provider options JSON", "[]", "Options must be a JSON object."],
+] as const) {
+  test(`connection save reveals invalid ${field} from another tab`, async ({ page }, info) => {
+    const requests = await mock(page);
+    await page.goto("/settings?tab=connections");
+    await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+    await dialog.getByLabel(field, { exact: true }).fill(invalid);
+    for (const tab of ["General", "Connection"]) {
+      await dialog.getByRole("tab", { name: tab, exact: true }).click();
+      await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+      await expect(dialog.getByRole("tab", { name: "Advanced", exact: true })).toHaveAttribute("data-state", "active");
+      await expect(dialog.getByRole("alert")).toHaveText(message);
+      await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(invalid);
+    }
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+    await noOverflow(page);
+    await page.screenshot({ path: info.outputPath("advanced-json-validation.png") });
+    await dialog.getByLabel(field, { exact: true }).fill("{}");
+    await dialog.getByRole("tab", { name: "General", exact: true }).click();
+    await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  });
+}
 
 test("error messages identify invalid JSON without exposing draft secrets", async ({ page }, info) => {
   const requests = await mock(page);
