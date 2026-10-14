@@ -922,6 +922,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const feedback = runFeedback(run);
+  const verification = run.progress?.verification;
+  const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const term = search.trim().toLowerCase();
   const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
     && (!categories.length || categories.includes(String(snapshot.category)))
@@ -958,6 +960,12 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <span className="text-muted-foreground">Assessment</span>
             <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessment.incomplete ? "Some candidates could not be fully assessed." : "Candidates are waiting for assessment."}</TooltipContent>
+            </Tooltip>
+          </div>}
+          {typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Fix verification</span>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
+              <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">

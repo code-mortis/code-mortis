@@ -4697,6 +4697,52 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "open" } });
 });
 
+test("run shows failed fix verification beside assessment with a keyboard tooltip", async ({ page }, info) => {
+  const writes = await mock(page, { run: {
+    status: "completed", publication: "published", publication_error: null,
+    check_pending: false, check_error: null, check_status: "completed", check_conclusion: "neutral",
+    progress: { verification: { failed: 3, sync_failed: 8, resolved: 2 } },
+  }, assessment: { candidates: 10, new_findings: 0, repeated_observations: 1, withheld_candidates: 9,
+    pending: 0, incomplete: 9, published_comments: 0 } });
+  await page.goto("/runs/run");
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  const failed = publication.getByRole("status", { name: "Failed fix verifications: 3", exact: true });
+  await expect(failed).toHaveText("Failed 3");
+  await expect(failed).toHaveCSS("cursor", "pointer");
+  await expect(publication.locator("div > span.text-muted-foreground")).toHaveText(["GitHub comments", "Assessment", "Fix verification", "GitHub check"]);
+  if (info.project.name === "desktop") {
+    const assessment = await publication.getByText("Assessment", { exact: true }).boundingBox();
+    const verification = await publication.getByText("Fix verification", { exact: true }).boundingBox();
+    expect(verification!.y).toBe(assessment!.y);
+  }
+  await failed.focus();
+  await expect(page.getByRole("tooltip")).toHaveText("Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(failed).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/failed-fix-verification-${info.project.name}.png` });
+  expect(writes).toEqual([]);
+});
+
+for (const [name, verification] of [
+  ["missing summary", undefined], ["missing count", { sync_failed: 4 }],
+  ["zero failures", { failed: 0, sync_failed: 4 }], ["negative count", { failed: -1 }],
+  ["fractional count", { failed: 1.5 }], ["string count", { failed: "3" }],
+  ["null summary", null], ["invalid summary", "failed"],
+] as const) {
+  test(`run hides fix verification badge with ${name}`, async ({ page }) => {
+    await mock(page, { run: { progress: { verification } }, assessment: {
+      candidates: 5, new_findings: 0, repeated_observations: 0, withheld_candidates: 5,
+      pending: 0, incomplete: 5, published_comments: 0,
+    } });
+    await page.goto("/runs/run");
+    const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+    await expect(publication.getByText("Partial", { exact: true })).toBeVisible();
+    await expect(publication.getByText("Fix verification", { exact: true })).toHaveCount(0);
+  });
+}
+
 test("run omits verification summary and orders assessment before coverage", async ({ page }) => {
   await mock(page, { run: { progress: { verification: {
     selected: 3, completed: 3, fixed: 1, still_present: 1, uncertain: 1, resolved: 0, pending: 1,
