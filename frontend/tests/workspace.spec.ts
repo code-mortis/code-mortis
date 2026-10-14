@@ -2,6 +2,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 import { mkdir, readFile } from "node:fs/promises";
 import type { Run, Schema } from "../src/api";
 import { contrast, themes } from "../src/lib/appearance";
+import { findingSeverities } from "../src/lib/review-filters";
 
 const at = "2026-10-05T13:20:00Z";
 const installation: Schema["InstallationOut"] = {
@@ -224,6 +225,20 @@ function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchPa
   };
 }
 
+function resolvedPage(findings: Schema["FindingOut"][], params: URLSearchParams): Schema["ResolvedPage"] {
+  const q = (params.get("q") ?? "").toLowerCase();
+  const matches = findings.filter((finding) => (!params.has("severity") || params.getAll("severity").includes(finding.severity))
+    && (!params.has("category") || params.getAll("category").includes(finding.category))
+    && (!q || [finding.path, finding.content, finding.category].some((value) => value.toLowerCase().includes(q))))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
+  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: findings.length,
+    page, has_more: page * 10 < matches.length, page_size: 10,
+    severity_counts: Object.fromEntries(findingSeverities.map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length])),
+    category_counts: Object.fromEntries([...new Set(findings.map((finding) => finding.category))].map((category) => [category, findings.filter((finding) => finding.category === category).length])),
+  };
+}
+
 async function mockPullDetail(page: Page, detail: () => PullDetailFixture) {
   await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ json: pullMetadata(detail()) }));
   await page.route("**/api/v1/pulls/pr/findings?**", (route) => route.fulfill({ json: findingPage(detail().findings, new URL(route.request().url()).searchParams) }));
@@ -244,6 +259,7 @@ async function mock(
     verifications?: Schema["VerificationOut"][];
     candidates?: Schema["CandidateOut"][];
     occurrences?: Schema["OccurrenceOut"][];
+    resolved?: Schema["FindingOut"][];
     assessment?: Schema["AssessmentSummary"] | null;
     background?: Schema["BackgroundJobOut"];
   } = {},
@@ -356,8 +372,10 @@ async function mock(
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
         ]),
         assessment: options.assessment ?? null,
+        resolved_count: options.resolved?.length ?? 0,
         can_write: options.canWrite !== false,
       };
+    else if (path === "/runs/run/resolved") data = resolvedPage(options.resolved ?? [], new URL(request.url()).searchParams);
     else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
     else if (path.startsWith("/runs/run/candidates/")) data = options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1));
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
@@ -1555,12 +1573,12 @@ test("run tabs and independent finding and assessment filters survive shared URL
   await page.reload();
   await expect(findingSheet.getByRole("tab", { name: "Current status", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
-  for (const name of ["Coverage", "Details", "Assessment"]) {
+  for (const name of ["Resolved", "Coverage", "Details", "Assessment"]) {
     await page.getByRole("tab", { name: new RegExp(`^${name}`) }).click();
     await expect(page).toHaveURL((url) => url.searchParams.get("tab") === name.toLowerCase());
     if (name === "Coverage") {
       await page.goBack();
-      await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
       await page.goForward();
       await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
     }
@@ -1580,6 +1598,132 @@ test("run tabs and independent finding and assessment filters survive shared URL
   await noOverflow(page);
   await mkdir("../.impeccable/review", { recursive: true });
   await page.getByRole("region", { name: "Candidate assessment", exact: true }).screenshot({ path: `../.impeccable/review/url-filters-${info.project.name}.png`, animations: "disabled" });
+});
+
+test("run resolved tab preserves verification history and a finding's current status", async ({ page }, info) => {
+  const requests = await mock(page, {
+    canWrite: false, occurrences: [], finding: { status: "open" },
+    resolved: [{ ...finding, status: "open", sync_intent: null }],
+    verifications: [{
+      id: "verification", run_id: "run", head_sha: run.head_sha, status: "completed", verdict: "fixed",
+      resolution: "resolved", error: null, created_at: at, finished_at: at,
+      result: { verdict: "fixed", original_issue_present: true, dismissal_recommended: false,
+        explanation: "The retry loop now stops after three attempts.", change_explanation: "The loop has a fixed attempt limit.", evidence: [] },
+    }],
+  });
+  await page.goto("/runs/run?tab=resolved&finding=finding");
+  const tab = page.getByRole("tab", { name: "Resolved 1", exact: true, includeHidden: true });
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await expect(sheet.getByText("open", { exact: true })).toBeVisible();
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveCount(0);
+  await sheet.getByRole("button", { name: "View verification", exact: true }).click();
+  await expect(sheet).toContainText("The retry loop now stops after three attempts.");
+  await expect(sheet).toContainText("Automatic resolution: resolved");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: /^Activity/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(tab).toBeFocused();
+  const card = page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("button");
+  await expect(card).toContainText("Currently open");
+  await card.focus();
+  await page.keyboard.press("Enter");
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/run-resolved-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  expect(requests).toEqual([]);
+});
+
+test("run resolved tab waits for GitHub confirmation and updates its count", async ({ page }) => {
+  const resolved: Schema["FindingOut"][] = [];
+  await mock(page, { resolved, occurrences: [], run: { status: "running", progress: { verification: { pending: 1, resolved: 0, selected: 1 } } } });
+  await page.goto("/runs/run?tab=resolved");
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("heading", { name: "No confirmed resolutions yet", exact: true })).toBeVisible();
+  await expect(page.getByText("Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved.")).toBeVisible();
+  resolved.push({ ...finding, status: "resolved", sync_intent: null });
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("button")).toContainText("Resolved");
+  await noOverflow(page);
+});
+
+test("resolved findings use independent backend filters and reset pagination", async ({ page }, info) => {
+  const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${String(index).padStart(2, "0")}`,
+    path: `src/handler-${index}.ts`, status: "resolved", sync_intent: null,
+    severity: index % 2 ? "low" : "high", category: index === 1 ? "custom_rule" : "bug" }));
+  await mock(page, { resolved });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/resolved") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run?tab=resolved&q=retry&severity=high&resolved_q=handler-1&resolved_severity=low&resolved_category=custom_rule");
+  const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("handler-1.ts");
+  await expect(page.getByRole("tab", { name: "Resolved 23", exact: true })).toHaveAttribute("aria-selected", "true");
+  expect(requests.at(-1)?.get("q")).toBe("handler-1");
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["low"]);
+  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule"]);
+  await page.reload();
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("handler-1");
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await expect(page.getByLabel("Search run findings", { exact: true })).toHaveValue("retry");
+  await expect(page.getByRole("button", { name: "Edit Severity: High", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Resolved 23", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  await expect(list.getByRole("status")).toHaveText("20 of 23 shown");
+  expect(requests.at(-1)?.get("page")).toBe("2");
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Low/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(10);
+  await expect(list.getByRole("status")).toHaveText("10 of 11 shown");
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await page.getByLabel("Search resolved findings", { exact: true }).fill("not-found");
+  await expect(page.getByRole("heading", { name: "No resolved findings match these filters", exact: true })).toBeVisible();
+  await list.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(page).toHaveURL((url) => url.searchParams.get("q") === "retry" && url.searchParams.get("severity") === "high"
+    && !url.searchParams.has("resolved_q") && !url.searchParams.has("resolved_severity"));
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/resolved-filters-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+});
+
+test("resolved pages preserve loaded cards on failure and hide them on access denial", async ({ page }) => {
+  const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${index}`, status: "resolved", sync_intent: null }));
+  await mock(page, { resolved });
+  let failure = 500;
+  await page.route("**/api/v1/runs/run/resolved?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    return failure && Number(params.get("page")) > 1 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
+      : route.fulfill({ json: resolvedPage(resolved, params) });
+  });
+  await page.goto("/runs/run?tab=resolved");
+  const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Resolved page unavailable" })).toBeVisible();
+  await expect(cards).toHaveCount(10);
+  failure = 0;
+  await list.getByRole("button", { name: "Retry resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  failure = 403;
+  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Resolved page unavailable" })).toBeVisible();
+  await expect(cards).toHaveCount(0);
 });
 
 test("browser navigation cancels pending review search without changing the restored URL", async ({ page }) => {
@@ -1672,8 +1816,12 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
   await expect(page.locator("main header")).toContainText("17m 36s");
   await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
-  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toContainText("3 resolved");
-  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toContainText("6 failed");
+  const published = page.getByRole("region", { name: "GitHub publication", exact: true }).locator("[data-slot=tooltip-trigger]").filter({ hasText: "Published" });
+  await published.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("The review results were published on GitHub.");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
   await expect(page.getByText(/7 of 13 findings verified/)).not.toBeVisible();
   if (info.project.name === "desktop") expect((await page.getByRole("tab", { name: "Findings 6" }).boundingBox())!.y).toBeLessThan(350);
   await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveAttribute("href", "/pulls/pr");
@@ -1690,6 +1838,10 @@ test("review run workspace filters saved findings and separates original evidenc
     await page.screenshot({ path: `../.impeccable/review/run-workspace-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
   }
   await page.getByRole("tab", { name: "Findings 6" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Assessment", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Reviewed files", exact: true }).getByText("src/config.ts", { exact: true })).toBeVisible();
@@ -1929,6 +2081,9 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await page.reload();
   await expect(check.getByText("success", { exact: true })).toBeVisible();
   await expect(check.getByRole("status")).toHaveCount(0);
+  await check.locator("[data-slot=tooltip-trigger]").filter({ hasText: "success" }).focus();
+  await expect(page.getByRole("tooltip")).toContainText("Findings are informational, not approval to merge.");
+  await page.keyboard.press("Escape");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-conclusion-${info.project.name}.png`, fullPage: true });
 
@@ -1947,6 +2102,7 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await expect(checkLink).toHaveAttribute("href", run.check_url);
   await checkLink.focus();
   await expect(checkLink).toBeFocused();
+  await expect(page.getByRole("tooltip")).toHaveText("The saved GitHub check status is unavailable.");
   await noOverflow(page);
 });
 
@@ -3082,8 +3238,21 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await expect(page.getByText("No new comments", { exact: true })).toBeVisible();
   await expect(page.getByText("No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates.", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: /Assessment/ }).click();
-  await expect(page.getByText(/0 new validated findings · 1 repeated observations · 1 withheld candidates/)).toBeVisible();
+  const totals = page.getByRole("region", { name: "Candidate assessment", exact: true }).locator("dl");
+  await expect(totals.locator("dt")).toHaveText(["validated findings", "repeated", "withheld", "comments published"]);
+  await expect(totals.locator("dd")).toHaveText(["0", "1", "1", "0"]);
   await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await publication.getByRole("status").focus();
+  await expect(page.getByRole("tooltip")).toHaveText("Some candidates could not be fully assessed.");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  const checkLink = publication.getByRole("link", { name: "View check on GitHub: Neutral", exact: true });
+  await checkLink.focus();
+  await expect(page.getByRole("tooltip")).toHaveText("The review completed, but assessment or fix verification is incomplete.");
+  await expect(checkLink).toHaveAttribute("href", run.check_url);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
   await expect(page.getByText(/Assessment is incomplete/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Inspect assessment", exact: true })).toHaveCount(0);
   const withheld = page.getByRole("button", { name: /index.css.*315.*Withheld/ });
@@ -3115,6 +3284,49 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/candidate-assessment-${info.project.name}.png`, fullPage: true });
   expect(requests).toEqual([]);
+});
+
+test("assessment result tooltips preserve card activation and keyboard access", async ({ page }, info) => {
+  const result: Schema["CandidateOut"]["result"] = {
+    verdict: "rejected", relationship: "new", finding_id: null, explanation: "The evidence does not establish a defect.",
+    cause: "", trigger: "", consequence: "", history_explanation: "", contradicts_prior: false,
+    changed_conditions: "", suggestion_supported: false, evidence: [],
+  };
+  const outcomes = [
+    { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding.", finding_id: "finding", is_new: true },
+    { label: "Repeated observation", description: "Matches an existing finding from review history.", finding_id: "finding" },
+    { label: "Not supported", description: "The evidence did not support this proposed issue.", result },
+    { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." },
+    { label: "Awaiting assessment", description: "Queued or being checked against evidence.", status: "queued" },
+  ];
+  const writes = await mock(page, { candidates: outcomes.map((outcome, index) => ({
+    id: `result-${index}`, snapshot: { path: `src/result-${index}.ts`, content: `Proposal ${index}` },
+    status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false, ...outcome,
+  })), assessment: { candidates: 5, new_findings: 1, repeated_observations: 1, withheld_candidates: 2,
+    pending: 1, incomplete: 0, published_comments: 0 } });
+  await page.goto("/runs/run?tab=assessment");
+  for (const { label, description } of outcomes) {
+    const card = page.getByRole("button", { name: new RegExp(label) });
+    const badge = card.getByText(label, { exact: true });
+    await expect(badge).toHaveCSS("cursor", "pointer");
+    await expect(card.locator("button, a, input, [tabindex]")).toHaveCount(0);
+    await expect(card).toHaveAccessibleName(new RegExp(description));
+    if (info.project.name === "desktop") {
+      await badge.hover();
+      await expect(page.getByRole("tooltip")).toHaveText(description);
+    }
+    await badge.click();
+    const sheet = page.getByRole("dialog", { name: "Assessment details" });
+    await sheet.getByText(label, { exact: true }).locator("..").focus();
+    await expect(page.getByRole("tooltip")).toHaveText(description);
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeVisible();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(card).toBeFocused();
+  }
+  expect(writes).toEqual([]);
+  await noOverflow(page);
 });
 
 test("legacy review findings are not labeled as validated", async ({ page }) => {
@@ -4485,22 +4697,13 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   expect(requests.at(-1)).toMatchObject({ path: "/findings/finding", method: "PATCH", body: { status: "open" } });
 });
 
-test("run shows verification separately from confirmed resolutions", async ({ page }) => {
+test("run omits verification summary and orders assessment before coverage", async ({ page }) => {
   await mock(page, { run: { progress: { verification: {
     selected: 3, completed: 3, fixed: 1, still_present: 1, uncertain: 1, resolved: 0, pending: 1,
   } } } });
-  await page.clock.install();
   await page.goto("/runs/run");
-  const summary = page.locator("summary").filter({ hasText: "Fix verification" });
-  await expect(summary).toContainText("0 resolved");
-  await expect(summary).toContainText("1 pending sync");
-  await expect(page.getByText(/3 of 3 findings verified/)).not.toBeVisible();
-  await summary.press("Enter");
-  await expect(page.getByText("3 of 3 findings verified. 0 automatically resolved, 1 pending synchronization.")).toBeVisible();
-  await page.clock.fastForward(5000);
-  await expect(summary.locator("..")).toHaveAttribute("open", "");
-  await summary.press("Enter");
-  await expect(page.getByText(/3 of 3 findings verified/)).not.toBeVisible();
+  await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
+  await expect(page.getByRole("tablist").getByRole("tab")).toHaveText(["Findings 1", "Resolved 0", "Assessment", "Coverage", "Details"]);
   await noOverflow(page);
 });
 
@@ -4541,15 +4744,6 @@ test("pending verification has one status and failed verification has an alert",
   await expect(panel.getByText("Automatic resolution: not applicable")).toHaveCount(2);
   await noOverflow(page);
 });
-
-for (const verification of [null, [1, 2], { selected: "3", completed: 3 }, { selected: 3, pending: -1 }]) {
-  test(`invalid verification counts are not presented: ${JSON.stringify(verification)}`, async ({ page }) => {
-    await mock(page, { run: { progress: { verification } } });
-    await page.goto("/runs/run");
-    await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
-    await expect(page.getByText(/findings verified/)).toHaveCount(0);
-  });
-}
 
 for (const webhook of [undefined, "https://hooks.example.com/a-long-webhook-channel"]) {
   test(`GitHub App icons open its profile and copy the ${webhook ? "configured" : "default"} webhook`, async ({ page }, info) => {

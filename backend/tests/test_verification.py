@@ -12,6 +12,7 @@ from threading import Event
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
@@ -144,6 +145,36 @@ def test_explicit_verdict_and_immutable_history(scenario, monkeypatch, verdict):
             assert db.scalar(select(func.count()).select_from(Activity).where(Activity.action == "automatically_resolved")) == 1
     else:
         assert finding.desired_status is None and not scenario["mutations"]
+
+
+def test_run_detail_lists_only_confirmed_resolutions_from_this_run(scenario, client, monkeypatch):
+    row, finding, run = perform(scenario)
+    path = f"/api/v1/runs/{run.id}/resolved"
+    assert row.resolution == "pending"
+    assert client.get(path).json()["items"] == []
+    reviews.synchronize_finding(finding.sync_intent)
+    resolved = client.get(path).json()["items"]
+    assert [(item["id"], item["status"]) for item in resolved] == [(finding.id, "resolved")]
+    assert resolved[0]["content"] == COMMENT["content"]
+    assert client.get(f"/api/v1/runs/{finding.last_seen_run_id}").json()["resolved_count"] == 0
+    assert client.get(f"/api/v1/runs/{run.id}").json()["resolved_count"] == 1
+    with transaction() as db:
+        db.get(Finding, finding.id).status = "open"
+        db.add(Finding(
+            id="manual", pr_id=finding.pr_id, fingerprint="manual", status="resolved",
+            path="src/manual.py", content="Manually resolved issue", start_line=1, end_line=1,
+            last_seen_run_id=finding.last_seen_run_id,
+        ))
+    resolved = client.get(path).json()["items"]
+    assert [(item["id"], item["status"]) for item in resolved] == [(finding.id, "open")]
+    with transaction() as db:
+        assert db.get(FindingVerification, row.id).resolution == "resolved"
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Repository access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    assert client.get(path).status_code == 403
 
 
 @pytest.mark.parametrize("change", [

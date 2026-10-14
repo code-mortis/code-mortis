@@ -22,6 +22,7 @@ from . import (
     inbox,
     installations,
     model_discovery,
+    resolved_list,
     runner_client,
     verification,
 )
@@ -76,6 +77,8 @@ from .schemas import (
     RepositoryInput,
     RepositoryOut,
     RepositoryPullFilters,
+    ResolvedFilters,
+    ResolvedPage,
     RunDetail,
     RunOut,
     RunPage,
@@ -533,8 +536,18 @@ def run_detail(run_id: str, db: DB, user: USER):
             OccurrenceOut.model_validate(item)
             for item in db.scalars(select(Occurrence).where(Occurrence.run_id == run.id))
         ],
+        resolved_count=db.scalar(select(func.count()).select_from(Finding).where(resolved_list.scope(run))),
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.get("/runs/{run_id}/resolved", response_model=ResolvedPage)
+def run_resolved(run_id: str, db: DB, user: USER, filters: Annotated[ResolvedFilters, Query()]):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    return resolved_list.list_resolved(db, run, filters)
 
 
 @router.get("/runs/{run_id}/candidates", response_model=CandidatePage)

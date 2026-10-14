@@ -35,3 +35,18 @@ test("run and assessment filters normalize independently and preserve tabs and o
   expect(withReviewFilters(next, new URLSearchParams(), "run").get("assessment_q")).toBe("timeout");
   expect(withReviewFilters(next, new URLSearchParams(), "assessment").get("q")).toBe("retry");
 });
+
+test("resolved filters normalize and clear without changing findings or assessment", () => {
+  const raw = new URLSearchParams("tab=resolved&finding=finding&q=retry&severity=high&assessment_q=timeout&resolved_q=%20fixed%20&resolved_severity=low&resolved_severity=invalid&resolved_category=bug&resolved_category=bug");
+  const filters = normalizeReviewFilters(raw, "resolved");
+  expect(filters.toString()).toBe("q=fixed&severity=low&category=bug");
+  const next = withReviewFilters(raw, filters, "resolved");
+  expect(normalizeReviewFilters(next, "run").toString()).toBe("q=retry&severity=high");
+  expect(normalizeReviewFilters(next, "assessment").toString()).toBe("q=timeout");
+  const cleared = withReviewFilters(next, new URLSearchParams(), "resolved");
+  expect(cleared.get("q")).toBe("retry");
+  expect(cleared.get("assessment_q")).toBe("timeout");
+  expect(cleared.get("tab")).toBe("resolved");
+  expect(cleared.get("finding")).toBe("finding");
+  expect(cleared.has("resolved_q")).toBe(false);
+});

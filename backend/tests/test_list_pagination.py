@@ -6,7 +6,14 @@ from test_inbox import pull, run
 
 from code_mortis import github
 from code_mortis.db import now, transaction
-from code_mortis.models import Finding, PullRequest, ReviewCandidate, ReviewRun
+from code_mortis.models import (
+    Finding,
+    FindingVerification,
+    Occurrence,
+    PullRequest,
+    ReviewCandidate,
+    ReviewRun,
+)
 
 
 def test_repository_pages_filter_and_sort_on_server(seed, github_stub, client):
@@ -132,6 +139,76 @@ def test_empty_run_history(seed, github_stub, client):
     assert client.get("/api/v1/pulls/missing/runs").status_code == 404
 
 
+def test_resolved_pages_filter_confirmed_run_history_on_server(seed, github_stub, client):
+    at = now()
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        original = run(db, pr, "completed", "original")
+        current = run(db, pr, "completed", "run")
+        other = run(db, pr, "completed", "other-run")
+        foreign = pull(db, "foreign")
+        examples = [(f"finding-{index:02}", pr.id, current.id, "resolved") for index in range(25)]
+        examples += [("pending", pr.id, current.id, "pending"), ("failed", pr.id, current.id, "failed"),
+                     ("manual", pr.id, None, None), ("other", pr.id, other.id, "resolved"),
+                     ("foreign", foreign.id, current.id, "resolved")]
+        for index, (identity, pr_id, run_id, resolution) in enumerate(examples):
+            finding = Finding(
+                id=identity, pr_id=pr_id, fingerprint=identity, status="open" if index == 24 else "resolved",
+                path=f"src/handler-{index}.py", content="Literal %_ match" if index == 24 else f"Finding {index}",
+                category="performance" if index == 24 else "custom_rule" if index == 23 else "bug",
+                severity="high" if index % 2 == 0 else "low", start_line=1, end_line=1,
+                last_seen_run_id=original.id, created_at=at,
+            )
+            db.add(finding)
+            db.flush()
+            if run_id:
+                db.add(Occurrence(id=identity, finding_id=identity, run_id=original.id, snapshot={}))
+                db.flush()
+                db.add(FindingVerification(
+                    finding_id=identity, run_id=run_id, occurrence_id=identity, head_sha=current.head_sha,
+                    finding_version=0, status="completed", verdict="fixed", resolution=resolution,
+                ))
+    path = "/api/v1/runs/run/resolved"
+    first = client.get(path).json()
+    assert first["total"] == first["registered_total"] == 25 and first["page_size"] == 10
+    assert first["severity_counts"] == {"critical": 0, "high": 13, "medium": 0, "low": 12}
+    assert first["category_counts"] == {"bug": 23, "custom_rule": 1, "performance": 1}
+    ids = []
+    for page in [1, 2, 3]:
+        result = client.get(path, params={"page": page}).json()
+        assert result["page"] == page and result["has_more"] is (page < 3)
+        assert len(result["items"]) == (5 if page == 3 else 10)
+        ids += [item["id"] for item in result["items"]]
+    assert ids == [f"finding-{index:02}" for index in reversed(range(25))]
+    assert first["items"][0]["status"] == "open"
+    assert client.get(path, params={"page": 1000000}).json()["page"] == 3
+    filtered = client.get(path, params=[("category", "custom_rule"), ("category", "performance"),
+                                       ("severity", "high"), ("q", "PERFORMANCE"), ("page", 3)]).json()
+    assert filtered["total"] == 1 and filtered["registered_total"] == 25
+    assert filtered["items"][0]["id"] == "finding-24" and filtered["page"] == 1
+    assert filtered["severity_counts"] == first["severity_counts"]
+    assert filtered["category_counts"] == first["category_counts"]
+    assert client.get(path, params={"q": "%_"}).json()["total"] == 1
+    assert client.get(path, params={"q": "HANDLER-23.PY"}).json()["items"][0]["id"] == "finding-23"
+    assert client.get(path, params={"q": "no-match"}).json()["total"] == 0
+    detail = client.get("/api/v1/runs/run").json()
+    assert detail["resolved_count"] == 25 and "resolved" not in detail
+    assert client.get("/api/v1/runs/original/resolved").json()["registered_total"] == 0
+    assert client.get("/api/v1/runs/missing/resolved").status_code == 404
+
+
+def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch):
+    with transaction() as db:
+        run(db, db.get(PullRequest, "pr"), "completed", "run")
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Repository access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    response = client.get("/api/v1/runs/run/resolved?page=2")
+    assert response.status_code == 403 and response.json() == {"detail": "Repository access revoked"}
+
+
 def test_candidate_pages_filter_full_run_and_preserve_evidence(seed, github_stub, client):
     decision = {
         "verdict": "uncertain", "relationship": "new", "finding_id": None,
@@ -219,6 +296,10 @@ def test_candidate_requests_revalidate_github_access(seed, client, monkeypatch, 
     ("/runs/run/candidates", {"q": "x" * 257}), ("/runs/run/candidates", {"unknown": "ignored"}),
     ("/runs/run/candidates", {"category": ""}), ("/runs/run/candidates", {"category": "x" * 51}),
     ("/runs/run/candidates", {"category": ["bug"] * 101}),
+    ("/runs/run/resolved", {"page": 0}), ("/runs/run/resolved", {"page": 1000001}),
+    ("/runs/run/resolved", {"severity": "urgent"}), ("/runs/run/resolved", {"q": "x" * 257}),
+    ("/runs/run/resolved", {"category": ""}), ("/runs/run/resolved", {"category": "x" * 51}),
+    ("/runs/run/resolved", {"category": ["bug"] * 101}), ("/runs/run/resolved", {"unknown": "ignored"}),
 ])
 def test_list_filters_are_validated(seed, github_stub, client, path, params):
     assert client.get("/api/v1" + path, params=params).status_code == 422

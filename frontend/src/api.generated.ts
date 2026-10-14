@@ -311,6 +311,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/resolved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Resolved */
+        get: operations["run_resolved_api_v1_runs__run_id__resolved_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/candidates": {
         parameters: {
             query?: never;
@@ -1624,6 +1641,32 @@ export interface components {
              */
             has_running_review: boolean;
         };
+        /** ResolvedPage */
+        ResolvedPage: {
+            /** Items */
+            items: components["schemas"]["FindingOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
+        };
         /** RunDetail */
         RunDetail: {
             run: components["schemas"]["RunOut"];
@@ -1631,6 +1674,11 @@ export interface components {
             repository: components["schemas"]["RepositoryOut"];
             /** Occurrences */
             occurrences: components["schemas"]["OccurrenceOut"][];
+            /**
+             * Resolved Count
+             * @default 0
+             */
+            resolved_count: number;
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
@@ -2419,6 +2467,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_resolved_api_v1_runs__run_id__resolved_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                page?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedPage"];
                 };
             };
             /** @description Validation Error */
