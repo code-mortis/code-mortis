@@ -1988,8 +1988,9 @@ test("connection editing never preloads saved credentials", async ({
   });
   await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
-  await expect(page.getByLabel("Replace API key (optional)")).toHaveValue("");
   await expect(page.getByLabel("Model", { exact: true })).toHaveValue("Review model · review-model");
+  await page.getByRole("tab", { name: "Connection", exact: true }).click();
+  await expect(page.getByLabel("Replace API key (optional)")).toHaveValue("");
 });
 
 test("searchable providers and protocols preserve presets and required model validation", async ({ page }, info) => {
@@ -2292,17 +2293,22 @@ for (const editing of [false, true]) {
     }
     await page.getByLabel("Connection name").fill("Custom reviews");
     const key = page.getByLabel(editing ? "Replace API key (optional)" : "API key", { exact: true });
+    if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();
     await key.fill("draft-key");
-    await page.getByText("Advanced provider settings", { exact: true }).click();
+    if (editing) await page.getByRole("tab", { name: "Advanced", exact: true }).click();
+    else await page.getByText("Advanced provider settings", { exact: true }).click();
     const headers = page.getByLabel("Extra headers JSON");
     await headers.fill('{"Authorization":"draft-header"}');
+    if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();
     await page.getByLabel("Provider", { exact: true }).click();
     await page.getByRole("option", { name: "OpenAI API", exact: true }).click();
     await expect(key).toHaveValue("draft-key");
     await expect(headers).toHaveValue('{"Authorization":"draft-header"}');
+    if (editing) await page.getByRole("tab", { name: "General", exact: true }).click();
     await page.getByRole("button", { name: /^(Load|Refresh) models$/, exact: true }).click();
     const model = page.getByLabel("Model", { exact: true });
     await chooseOption(page, model, "next-model");
+    if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();
     await chooseOption(page, page.getByLabel("Provider", { exact: true }), "Custom endpoint");
     await expect(model).toHaveValue("");
     await expect(key).toHaveValue("");
@@ -2314,7 +2320,9 @@ for (const editing of [false, true]) {
     const path = editing ? "/connections/connection" : "/connections";
     expect(requests.filter((request) => request.path === path)).toHaveLength(0);
     await page.screenshot({ path: info.outputPath("cleared-provider-credentials.png"), fullPage: true });
+    if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();
     await key.fill("custom-key");
+    if (editing) await page.getByRole("tab", { name: "General", exact: true }).click();
     await chooseOption(page, model, "Enter a custom model ID");
     await page.getByLabel("Custom model ID").fill("custom-model");
     await page.getByRole("button", { name: "Save connection", exact: true }).click();
@@ -4154,7 +4162,7 @@ test("appearance applies and persists all nine palettes in both color modes", as
   });
   await page.goto("/settings?tab=appearance");
   const appearance = page.getByRole("region", { name: "Appearance", exact: true });
-  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(appearance.getByRole("radio", { name: "Claude Code", exact: true })).toBeChecked();
   await expect(appearance.getByLabel("Color mode", { exact: true })).toHaveValue("system");
   for (const mode of ["light", "dark"] as const) {
     await appearance.getByLabel("Color mode", { exact: true }).selectOption(mode);
@@ -4253,7 +4261,7 @@ test("appearance defaults recover invalid preferences", async ({ page }) => {
   });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/settings?tab=appearance");
-  await expect(page.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Claude Code", exact: true })).toBeChecked();
   await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("system");
   await expect(page.locator("html")).toHaveClass("dark");
 });
@@ -4267,6 +4275,7 @@ test("appearance retains the legacy saved dark mode", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/settings?tab=appearance");
   await expect(page.getByLabel("Color mode", { exact: true })).toHaveValue("dark");
+  await expect(page.getByRole("radio", { name: "Claude Code", exact: true })).toBeChecked();
   await expect(page.locator("html")).toHaveClass("dark");
 });
 
@@ -4285,7 +4294,7 @@ test("appearance remains usable when local storage is unavailable", async ({ pag
   await expect(page.locator("html")).toHaveClass("dark");
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.reload();
-  await expect(appearance.getByRole("radio", { name: "Code Mortis", exact: true })).toBeChecked();
+  await expect(appearance.getByRole("radio", { name: "Claude Code", exact: true })).toBeChecked();
 });
 
 test("members manage personal subscriptions without administrative controls", async ({
@@ -4986,6 +4995,7 @@ test("settings group visible connections and distinguish tests from authenticati
   await expect(shared.locator("time")).toHaveCount(0);
   await expect(shared).toContainText("Not tested");
   await expect(personal.getByText("connected", { exact: true })).toBeVisible();
+  await expect(personal.getByRole("article", { name: "My subscription", exact: true }).locator(".lucide-check")).toBeVisible();
   await expect(shared).toContainText("openai · openai");
   await expect(personal.getByRole("article", { name: "My subscription", exact: true })).toContainText("ChatGPT subscription");
   await expect(personal.getByRole("article", { name: "My Claude subscription", exact: true })).toContainText("Claude Code subscription");
@@ -5372,8 +5382,8 @@ test("connection menus restore focus and deletion preserves server conflicts", a
   await trigger.press("Enter");
   await page.getByRole("menuitem", { name: "Edit", exact: true }).press("Enter");
   await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Connection type", exact: true })).toHaveValue("Shared API connection");
-  await expect(page.getByRole("combobox", { name: "Connection type", exact: true })).toBeDisabled();
+  await expect(page.getByRole("dialog").getByRole("tab")).toHaveText(["General", "Connection", "Advanced"]);
+  await expect(page.getByRole("combobox", { name: "Connection type", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(trigger).toBeFocused();
   await trigger.press("Enter");
@@ -5713,7 +5723,7 @@ test("error messages identify invalid JSON without exposing draft secrets", asyn
   await page.getByRole("button", { name: "Actions for Team reviews" }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByText("Advanced provider settings", { exact: true }).click();
+  await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
   await dialog.getByLabel("Extra headers JSON").fill('{"Authorization":"private-provider-key",');
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Headers must contain valid JSON. Check quotes, commas, and braces, then try again.");
@@ -5746,7 +5756,7 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Connection name").fill("Updated connection");
-  await dialog.getByText("Advanced provider settings", { exact: true }).click();
+  await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
   await expect(dialog.getByLabel("Extra headers JSON")).toHaveValue("");
   await expect(dialog.getByLabel("Replace API key (optional)")).toHaveValue("");
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
@@ -5765,7 +5775,7 @@ test("connection form errors preserve edits and omit unchanged secrets", async (
   await noOverflow(page);
   for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
-    await dialog.getByRole("heading", { name: "Connection details" }).scrollIntoViewIfNeeded();
+    await dialog.getByRole("tab", { name: "General", exact: true }).click();
     await page.screenshot({ path: `../.impeccable/review/settings-api-dialog-${info.project.name}-${theme}.png` });
     await dialog.getByRole("button", { name: "Save connection", exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `../.impeccable/review/settings-api-dialog-bottom-${info.project.name}-${theme}.png` });
@@ -5794,7 +5804,6 @@ test("API connection prompt ceiling defaults, saves, and reloads independently o
   async function edit() {
     await page.getByRole("button", { name: "Actions for Team reviews" }).click();
     await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
-    await page.getByText("Advanced provider settings", { exact: true }).click();
   }
   await edit();
   const dialog = page.getByRole("dialog");
@@ -5828,6 +5837,80 @@ test("API connection prompt ceiling defaults, saves, and reloads independently o
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(current.options).toEqual({ timeout_sec: 30, prompt_token_ceiling: 58888 });
+});
+
+test("shared connection tabs preserve drafts and reveal invalid fields without moving the modal", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/settings?tab=connections");
+  await page.getByRole("button", { name: "Actions for Team reviews", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("tab")).toHaveText(["General", "Connection", "Advanced"]);
+  const general = dialog.getByRole("tabpanel", { name: "General", exact: true });
+  const authentication = dialog.getByRole("tabpanel", { name: "Connection", exact: true });
+  const advanced = dialog.getByRole("tabpanel", { name: "Advanced", exact: true });
+  const save = dialog.getByRole("button", { name: "Save connection", exact: true });
+  await general.getByLabel("Connection name").fill("Shared review draft");
+  await chooseOption(page, general.getByLabel("Model", { exact: true }), "Enter a custom model ID");
+  await general.getByLabel("Custom model ID").fill("custom-model");
+  await general.getByLabel("Evidence prompt ceiling (tokens)").fill("200000");
+  await dialog.getByRole("tab", { name: "Connection", exact: true }).click();
+  await expect(authentication.getByLabel("Model", { exact: true })).toHaveCount(0);
+  await authentication.getByLabel("Replace API key (optional)").fill("replacement-key");
+  const url = authentication.getByLabel("API base URL");
+  await url.fill("invalid-url");
+  await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await expect(advanced.getByLabel("Model", { exact: true })).toHaveCount(0);
+  await advanced.getByLabel("Extra headers JSON").fill('{"X-Review":"draft"}');
+  await advanced.getByLabel("Provider options JSON").fill('{"timeout_sec":45}');
+  const originalBounds = await dialog.boundingBox();
+  const originalTabs = await dialog.getByRole("tablist").boundingBox();
+  const originalSave = await save.boundingBox();
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    for (const tab of ["General", "Connection", "Advanced"]) {
+      await dialog.getByRole("tab", { name: tab, exact: true }).click();
+      await noOverflow(page);
+      const bounds = await dialog.boundingBox();
+      const tabs = await dialog.getByRole("tablist").boundingBox();
+      const footer = await save.boundingBox();
+      expect(bounds!.height).toBeCloseTo(originalBounds!.height, 1);
+      expect(bounds!.y).toBeCloseTo(originalBounds!.y, 1);
+      expect(tabs!.y).toBeCloseTo(originalTabs!.y, 1);
+      expect(footer!.y).toBeCloseTo(originalSave!.y, 1);
+      await expect(save).toBeInViewport();
+      await page.screenshot({ path: `../.impeccable/review/shared-connection-${tab.toLowerCase()}-${theme}-${info.project.name}.png` });
+    }
+  }
+  await save.click();
+  await expect(dialog.getByRole("tab", { name: "Connection", exact: true })).toHaveAttribute("data-state", "active");
+  await expect(url).toBeFocused();
+  expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  await url.fill("https://custom.example/v1");
+  await dialog.getByRole("tab", { name: "General", exact: true }).click();
+  await expect(general.getByLabel("Connection name")).toHaveValue("Shared review draft");
+  await expect(general.getByLabel("Custom model ID")).toHaveValue("custom-model");
+  await expect(general.getByLabel("Evidence prompt ceiling (tokens)")).toHaveValue("200000");
+  const name = general.getByLabel("Connection name");
+  await name.fill("");
+  await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await save.click();
+  await expect(dialog.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("data-state", "active");
+  await expect(name).toBeFocused();
+  expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  await name.fill("Shared review draft");
+  await page.setViewportSize({ width: page.viewportSize()!.width, height: 500 });
+  await dialog.getByRole("tab", { name: "Connection", exact: true }).click();
+  expect(await authentication.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect(save).toBeInViewport();
+  await noOverflow(page);
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  expect(requests.find((request) => request.method === "PUT" && request.path === "/connections/connection")?.body).toMatchObject({
+    name: "Shared review draft", model: "custom-model", api_key: "replacement-key",
+    base_url: "https://custom.example/v1", extra_headers: { "X-Review": "draft" },
+    options: { timeout_sec: 45, prompt_token_ceiling: 200000 },
+  });
 });
 
 test("connection editing recovers when providers fail to load", async ({ page }) => {
@@ -5879,7 +5962,7 @@ test("subscription editor tabs preserve drafts and save General without changing
   const requests = await mock(page, { role: "member", personal: true });
   const authorizedRepositories = Array.from({ length: 24 }, (_, index) => index
     ? { ...repo, id: repo.id + index, full_name: `acme/service-${index}` } : repo);
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: authorizedRepositories }));
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [...authorizedRepositories, { ...repo, id: 99, full_name: "acme/new-service" }] }));
   await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json:
     authorizedRepositories.map((repository) => ({ repository_id: repository.id, automatic: true })),
   }));
@@ -5927,7 +6010,7 @@ test("subscription editor tabs preserve drafts and save General without changing
   await expect(repositories.getByLabel("Model", { exact: true })).toHaveCount(0);
   await expect(repositories.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(24);
   expect(await repositories.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-  await chooseOption(page, repositories.getByLabel("Repository", { exact: true }), "acme/payments");
+  await chooseOption(page, repositories.getByLabel("Repository", { exact: true }), "acme/new-service");
   await repositories.getByRole("switch").check();
   for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
@@ -5945,7 +6028,7 @@ test("subscription editor tabs preserve drafts and save General without changing
       await page.screenshot({ path: info.outputPath(`subscription-${tab.toLowerCase()}-${theme}.png`) });
     }
   }
-  await expect(repositories.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
+  await expect(repositories.getByLabel("Repository", { exact: true })).toHaveValue("acme/new-service");
   await expect(repositories.getByRole("switch")).toBeChecked();
   const generalTab = dialog.getByRole("tab", { name: "General", exact: true });
   await generalTab.click();
@@ -6290,7 +6373,7 @@ test("personal repository and authorization fetches retry independently without 
   await page.route("**/api/v1/repositories", async (route) => {
     if (!retry) return route.fulfill({ status: 503, json: { detail: "Repositories unavailable." } });
     await repositories;
-    await route.fulfill({ json: [repo] });
+    await route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] });
   });
   await page.route("**/api/v1/connections/personal/grants", async (route) => {
     if (!retry) return route.fulfill({ status: 503, json: { detail: "Authorizations unavailable." } });
@@ -6316,7 +6399,7 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByRole("button", { name: "Retry authorizations", exact: true })).toBeEnabled();
   releaseRepositories();
   await expect(grants.getByLabel("Repository", { exact: true })).toBeEnabled();
-  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
+  await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
   await expect(grants.getByRole("alert")).toHaveText("Authorizations unavailable.");
   await grants.getByRole("button", { name: "Retry authorizations", exact: true }).click();
   await expect(grants.getByText("Loading authorizations…")).toBeVisible();
@@ -6324,7 +6407,7 @@ test("personal repository and authorization fetches retry independently without 
   await expect(grants.getByText("Manual use only")).toBeVisible();
   await expect(grants.getByRole("alert")).toHaveCount(0);
   await expect(grants.getByRole("button", { name: /^Retry / })).toHaveCount(0);
-  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
+  await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/orders");
   await expect(grants.getByRole("switch")).toBeChecked();
   await expect(model.getByLabel("Custom model ID")).toHaveValue("unsaved-model");
 });
@@ -6408,6 +6491,53 @@ test("personal authorizations distinguish loading, fetch failure, mutation failu
   await expect(grants.getByRole("alert")).toHaveCount(0);
 });
 
+test("subscription repository choices exclude authorizations and return after revocation", async ({ page }, info) => {
+  await mock(page, { role: "member", personal: true });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
+  let saved = [{ repository_id: 22, automatic: false }];
+  let firstRead = true;
+  let release!: () => void;
+  const initial = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/connections/personal/grants", async (route) => {
+    if (firstRead) { firstRead = false; await initial; }
+    await route.fulfill({ json: saved });
+  });
+  await page.route("**/api/v1/connections/personal/grants/*", (route) => {
+    const id = Number(route.request().url().split("/").at(-1));
+    saved = saved.filter((grant) => grant.repository_id !== id);
+    if (route.request().method() === "PUT") saved.push({ repository_id: id, automatic: route.request().postDataJSON().automatic });
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/settings");
+  await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  const grants = page.getByRole("region", { name: "Repository authorization" });
+  const repository = grants.getByRole("combobox", { name: "Repository", exact: true });
+  const automatic = grants.getByRole("switch");
+  await chooseOption(page, repository, "acme/payments");
+  await automatic.check();
+  release();
+  await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
+  await expect(repository).toHaveValue("");
+  await expect(automatic).not.toBeChecked();
+  await repository.click();
+  await expect(page.getByRole("option", { name: "acme/payments", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "acme/orders", exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/subscription-available-repositories-${info.project.name}.png` });
+  await page.getByRole("option", { name: "acme/orders", exact: true }).click();
+  await automatic.check();
+  await grants.getByRole("button", { name: "Save authorization", exact: true }).click();
+  await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
+  await expect(repository).toBeDisabled();
+  await expect(grants.getByText("All accessible repositories are authorized.")).toBeVisible();
+  await grants.getByRole("button", { name: "Revoke", exact: true }).first().click();
+  await expect(repository).toBeEnabled();
+  await repository.click();
+  await expect(page.getByRole("option", { name: "acme/payments", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "acme/orders", exact: true })).toHaveCount(0);
+});
+
 test("personal authorization confirmations match saved changes and revocations", async ({ page }, info) => {
   await mock(page, { role: "member", personal: true });
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
@@ -6451,11 +6581,8 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(repository).toHaveValue("");
   await expect(automatic).not.toBeChecked();
   await expect(save).toBeDisabled();
-  await chooseOption(page, repository, "acme/payments");
-  await expect(grants.getByRole("status")).toHaveCount(0);
-  await save.click();
-  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository authorization updated." }).last()).toBeVisible();
-  await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
+  await expectOption(page, repository, "acme/payments", 0);
+  await expectOption(page, repository, "acme/orders");
   await grants.getByRole("button", { name: "Revoke" }).click();
   await expect(grants.getByRole("button", { name: "Revoking…", exact: true })).toBeDisabled();
   await expect(save).toBeDisabled();
@@ -6465,8 +6592,8 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(grants.locator("form").getByRole("alert")).toHaveCount(0);
   await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toHaveCount(0);
   await expect(grants.getByRole("status")).toHaveCount(0);
-  await expect(grants.getByText("Manual use only", { exact: true })).toBeVisible();
-  await chooseOption(page, repository, "acme/payments");
+  await expect(grants.getByText("Automatic reviews authorized", { exact: true })).toBeVisible();
+  await chooseOption(page, repository, "acme/orders");
   await automatic.check();
   await expect(grants.getByRole("alert")).toContainText("Authorization could not be revoked");
   failRevoke = false;
@@ -6474,8 +6601,9 @@ test("personal authorization confirmations match saved changes and revocations",
   await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Authorization revoked." })).toBeVisible();
   await expect(grants.locator("form").getByRole("status")).toHaveCount(0);
   await expect(grants.getByText("No repositories authorized yet.")).toBeVisible();
+  await expectOption(page, repository, "acme/payments");
   await automatic.uncheck();
-  await chooseOption(page, repository, "acme/orders");
+  await expect(repository).toHaveValue("acme/orders");
   await expect(grants.getByRole("status")).toHaveCount(0);
   await expect(save).toBeEnabled();
 });
@@ -6487,9 +6615,10 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
       status: "connected", attempt: { status: "pending", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" },
     } }));
     await page.route("**/api/v1/connections/personal/grants", (route) => route.fulfill({ json: [{ repository_id: 22, automatic: false }] }));
+    await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "acme/orders" }] }));
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    const paths = { auth: "/auth", model: "", grant: "/grants/22", revoke: "/grants/22" };
+    const paths = { auth: "/auth", model: "", grant: "/grants/23", revoke: "/grants/22" };
     await page.route(`**/api/v1/connections/personal${paths[operation]}`, async (route) => {
       if (route.request().method() === "GET") return route.fallback();
       await held;
@@ -6506,7 +6635,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await chooseOption(page, model.getByLabel("Model", { exact: true }), "Enter a custom model ID");
     await model.getByLabel("Custom model ID").fill("custom-model");
     await page.getByRole("tab", { name: "Repositories", exact: true }).click();
-    await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/payments");
+    await chooseOption(page, grants.getByLabel("Repository", { exact: true }), "acme/orders");
     const triggers = {
       auth: account.getByRole("button", { name: "Reconnect", exact: true, includeHidden: true }),
       model: model.getByRole("button", { name: "Save changes", includeHidden: true }),
@@ -6543,7 +6672,7 @@ for (const operation of ["auth", "model", "grant", "revoke"] as const) {
     await expect(triggers.grant).toBeEnabled();
     await expect(triggers.revoke).toBeEnabled();
     await expect(model.getByLabel("Custom model ID")).toHaveValue("custom-model");
-    await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/payments");
+    await expect(grants.getByLabel("Repository", { exact: true })).toHaveValue("acme/orders");
   });
 }
 

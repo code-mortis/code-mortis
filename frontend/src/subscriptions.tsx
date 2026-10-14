@@ -205,6 +205,15 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
   const heading = useRef<HTMLHeadingElement>(null);
   const generalTab = useRef<HTMLButtonElement>(null);
   const wasConnected = useRef(false);
+  const availableRepositories = (repositories.data ?? []).filter((repo) =>
+    !grants.data?.some((grant) => grant.repository_id === repo.id),
+  );
+  useEffect(() => {
+    if (grants.data?.some((grant) => String(grant.repository_id) === repository)) {
+      setRepository("");
+      setAutomatic(false);
+    }
+  }, [grants.data, repository]);
   useEffect(() => { heading.current?.focus(); }, []);
   useEffect(() => {
     if (!savedModel.trim() && connected && !wasConnected.current && !auth.isError) {
@@ -490,7 +499,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
               className="space-y-4"
               onSubmit={(event) => {
                 event.preventDefault();
-                if (grantPending || !repository) return;
+                if (grantPending || !availableRepositories.some((repo) => String(repo.id) === repository)) return;
                 grantAction.mutate({
                   path: `/connections/${identity}/grants/${repository}`,
                   method: "PUT",
@@ -503,19 +512,20 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
               {!revoking && <ErrorNotice error={grantAction.error} />}
               {repositories.isPending && <p role="status" className="text-sm text-muted-foreground">Loading repositories…</p>}
               {repositories.isSuccess && !repositories.data?.length && <p className="text-sm text-muted-foreground">No accessible repositories.</p>}
+              {repositories.isSuccess && !!repositories.data?.length && grants.isSuccess && !availableRepositories.length && <p className="text-sm text-muted-foreground">All accessible repositories are authorized.</p>}
               <Field label="Repository">
                 {(id) => (
                   <SearchSelect
                     id={id}
                     required
-                    disabled={grantPending || repositories.isPending || !repositories.data?.length}
+                    disabled={grantPending || repositories.isPending || !availableRepositories.length}
                     value={repository}
                     placeholder="Choose a repository"
                     onChange={(value) => {
                       clearGrantFeedback();
                       setRepository(value);
                     }}
-                    options={repositories.data?.map((repo) => ({ value: String(repo.id), label: repo.full_name })) ?? []}
+                    options={availableRepositories.map((repo) => ({ value: String(repo.id), label: repo.full_name }))}
                   />
                 )}
               </Field>
@@ -535,7 +545,7 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
                   />
                 )}
               </Field>
-              <Button disabled={grantPending || !repository} type="submit">
+              <Button disabled={grantPending || !availableRepositories.some((repo) => String(repo.id) === repository)} type="submit">
                 {grantAction.isPending && !revoking ? "Saving…" : "Save authorization"}
               </Button>
             </form>

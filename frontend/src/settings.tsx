@@ -23,6 +23,7 @@ import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
 import { Switch } from "./components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import {
   Dialog,
@@ -30,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogFooter,
 } from "./components/ui/dialog";
 import {
   date,
@@ -468,6 +470,8 @@ function ConnectionForm({
   onSavingChange: (saving: boolean) => void;
 }) {
   const [kind, setKind] = useState(connection?.kind ?? initialKind);
+  const tabbed = !!connection && kind === "api";
+  const [tab, setTab] = useState("general");
   const first = providers.find((p) => p.name === "openai") ?? providers[0];
   const [name, setName] = useState(connection?.name ?? "");
   const [provider, setProvider] = useState(
@@ -493,7 +497,6 @@ function ConnectionForm({
   const context = JSON.stringify([kind, provider, protocol, url, key, headers, options]);
   const initialContext = useRef(context);
   const customEndpoint = provider === "custom";
-  const preset = providers.find((item) => item.name === connection?.provider);
   function promptTokenCeiling() {
     const ceiling = Number(promptCeiling);
     if (!Number.isInteger(ceiling) || ceiling < 4096 || ceiling > 2000000) {
@@ -531,193 +534,153 @@ function ConnectionForm({
       {(id) => <Input id={id} required type="url" value={url} onChange={(event) => setUrl(event.target.value)} />}
     </Field>}
   </>;
+  const nameField = <Field label="Connection name">
+    {(id) => <Input id={id} required maxLength={100} value={name}
+      onChange={(event) => setName(event.target.value)} placeholder="Team review model" />}
+  </Field>;
+  const ceilingField = <Field
+    label={kind === "api" ? "Evidence prompt ceiling (tokens)" : "Prompt ceiling (tokens)"}
+    hint={kind === "api"
+      ? "For assessments and fix verification. OCR accepts prompts up to 80% of this value. Choose a value your model supports; the total review token budget stays separate."
+      : "Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The total review Token budget stays separate."}
+  >
+    {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
+      value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
+  </Field>;
+  const authentication = <section className={tabbed ? "space-y-4" : "space-y-4 border-t pt-5"} aria-label="Provider and authentication">
+    <h3 className="text-sm font-semibold">Provider and authentication</h3>
+    <Field label="Provider">
+      {(id) => <SearchSelect id={id} value={provider} onChange={choose}
+        options={providers.map((p) => {
+          const logo = apiProviderLogos.get(p.name);
+          return { value: p.name, label: p.displayName, icon: logo ? <ProviderLogo logo={logo} /> : <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> };
+        })} />}
+    </Field>
+    {(customEndpoint || tabbed) && endpointFields}
+    <Field label={connection?.has_key ? "Replace API key (optional)" : "API key"}
+      hint={protocol === "anthropic-bedrock"
+        ? "Bedrock can use the worker’s AWS credentials."
+        : connection?.has_key
+          ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
+          : customEndpoint
+            ? "For a trusted local endpoint without authentication, enter a placeholder."
+            : "Keys are encrypted and never returned to the browser."}
+    >
+      {(id) => <Input id={id} type="password" autoComplete="new-password"
+        required={!connection?.has_key && protocol !== "anthropic-bedrock"}
+        value={key} onChange={(event) => setKey(event.target.value)} />}
+    </Field>
+  </section>;
+  const modelFields = <section className={tabbed ? "space-y-4" : "space-y-4 border-t pt-5"} aria-label="Default model">
+    <h3 className="text-sm font-semibold">Default model</h3>
+    <ModelPicker value={model} onChange={setModel} required context={context}
+      path={connection && context === initialContext.current ? `/connections/${connection.id}/models` : undefined}
+      loadDraft={() => api<Schema["ModelCatalog"]>("/connections/models", "POST", {
+        ...apiBody(), ...(connection ? { connection_id: connection.id } : {}),
+      })} />
+  </section>;
+  const advancedFields = <>
+    {!customEndpoint && !tabbed && endpointFields}
+    {!tabbed && ceilingField}
+    <Field label="Extra headers JSON"
+      hint={connection?.header_names?.length
+        ? `Stored headers: ${connection.header_names!.join(", ")}. Leave blank to keep them; use {} to clear.`
+        : "Values are encrypted alongside the API key."}
+    >
+      {(id) => <Textarea id={id} rows={3} className="font-mono text-xs" value={headers}
+        onChange={(event) => setHeaders(event.target.value)} placeholder={'{"X-Custom-Header": "value"}'} />}
+    </Field>
+    <Field label="Provider options JSON" hint="timeout_sec, extra_body, retry_codes, aws_region, aws_profile, or auth_header.">
+      {(id) => <Textarea id={id} rows={4} className="font-mono text-xs" value={options}
+        onChange={(event) => setOptions(event.target.value)} />}
+    </Field>
+  </>;
   return (
-    <form
-      className="space-y-5"
-      onSubmit={async (e) => {
-        e.preventDefault();
+    <form className={tabbed ? "flex min-h-0 flex-1 flex-col gap-5" : "space-y-5"} noValidate={tabbed}
+      onSubmit={async (event) => {
+        event.preventDefault();
         if (action.isPending) return;
+        if (tabbed) {
+          const invalid = event.currentTarget.querySelector<HTMLInputElement | HTMLTextAreaElement>("input:invalid, textarea:invalid");
+          if (invalid) {
+            setTab(invalid.closest<HTMLElement>("[data-connection-tab]")!.dataset.connectionTab!);
+            requestAnimationFrame(() => { invalid.focus(); invalid.reportValidity(); });
+            return;
+          }
+        }
         onSavingChange(true);
         setError(undefined);
         try {
-          const body =
-            kind !== "api"
-              ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
-              : { name, model, ...apiBody() };
+          const body = kind !== "api"
+            ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
+            : { name, model, ...apiBody() };
           const saved = await action.mutateAsync({
             path: connection ? `/connections/${connection.id}` : "/connections",
-            method: connection ? "PUT" : "POST",
-            body,
+            method: connection ? "PUT" : "POST", body,
           });
           toast.success(connection ? "Connection saved." : "Connection created.");
           onSaved(saved);
-        } catch (e) {
-          setError(e);
+        } catch (error) {
+          setError(error);
         } finally {
           onSavingChange(false);
         }
       }}
     >
-      <ErrorNotice error={error} />
-      <section className="space-y-4" aria-label="Connection details">
-        <h3 className="text-sm font-semibold">Connection details</h3>
-        <Field label="Connection type">
-          {(id) => (
-            <SearchSelect
-              id={id}
-              value={kind}
-              disabled={!!connection}
-              onChange={setKind}
+      {tabbed ? <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-5">
+        <TabsList className="grid w-full shrink-0 grid-cols-3" aria-label="Shared connection settings">
+          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="connection">Connection</TabsTrigger>
+          <TabsTrigger value="advanced">Advanced</TabsTrigger>
+        </TabsList>
+        <TabsContent value="general" data-connection-tab="general" forceMount
+          className="-m-1 min-h-0 space-y-4 overflow-x-hidden overflow-y-auto p-1 data-[state=inactive]:hidden">
+          <ErrorNotice error={error} />
+          {nameField}{modelFields}{ceilingField}
+        </TabsContent>
+        <TabsContent value="connection" data-connection-tab="connection" forceMount
+          className="-m-1 min-h-0 space-y-4 overflow-x-hidden overflow-y-auto p-1 data-[state=inactive]:hidden">
+          <ErrorNotice error={error} />
+          {authentication}
+        </TabsContent>
+        <TabsContent value="advanced" data-connection-tab="advanced" forceMount
+          className="-m-1 min-h-0 space-y-4 overflow-x-hidden overflow-y-auto p-1 data-[state=inactive]:hidden">
+          <ErrorNotice error={error} />
+          {advancedFields}
+        </TabsContent>
+      </Tabs> : <>
+        <ErrorNotice error={error} />
+        <section className="space-y-4" aria-label="Connection details">
+          <h3 className="text-sm font-semibold">Connection details</h3>
+          <Field label="Connection type">
+            {(id) => <SearchSelect id={id} value={kind} disabled={!!connection} onChange={setKind}
               options={[
                 ...(canCreateApi ? [{ value: "api", label: "Shared API connection", icon: <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> }] : []),
                 { value: "chatgpt", label: "Personal ChatGPT subscription", icon: <ProviderLogo logo="openai" /> },
                 { value: "claude_code", label: "Personal Claude Code subscription", icon: <ProviderLogo logo="claude" /> },
-              ]}
-            />
-          )}
-        </Field>
-        <Field label="Connection name">
-          {(id) => (
-            <Input
-              id={id}
-              required
-              maxLength={100}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Team review model"
-            />
-          )}
-        </Field>
-      </section>
-      {kind === "api" && (
-        <section className="space-y-4 border-t pt-5" aria-label="Provider and authentication">
-          <h3 className="text-sm font-semibold">Provider and authentication</h3>
-          <Field label="Provider">
-            {(id) => (
-              <SearchSelect
-                id={id}
-                value={provider}
-                onChange={choose}
-                options={providers.map((p) => {
-                  const logo = apiProviderLogos.get(p.name);
-                  return { value: p.name, label: p.displayName, icon: logo ? <ProviderLogo logo={logo} /> : <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> };
-                })}
-              />
-            )}
+              ]} />}
           </Field>
-          {customEndpoint && endpointFields}
-          <Field
-            label={
-              connection?.has_key ? "Replace API key (optional)" : "API key"
-            }
-            hint={
-              protocol === "anthropic-bedrock"
-                ? "Bedrock can use the worker’s AWS credentials."
-                : connection?.has_key
-                  ? "Leave blank to keep the stored key. Keys are encrypted and never returned to the browser."
-                  : customEndpoint
-                    ? "For a trusted local endpoint without authentication, enter a placeholder."
-                    : "Keys are encrypted and never returned to the browser."
-            }
-          >
-            {(id) => (
-              <Input
-                id={id}
-                type="password"
-                autoComplete="new-password"
-                required={
-                  !connection?.has_key && protocol !== "anthropic-bedrock"
-                }
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-              />
-            )}
-          </Field>
+          {nameField}
         </section>
-      )}
-      {kind === "api" && <section className="space-y-4 border-t pt-5" aria-label="Default model">
-        <h3 className="text-sm font-semibold">Default model</h3>
-        <ModelPicker
-          value={model}
-          onChange={setModel}
-          required={kind === "api"}
-          context={context}
-          path={connection && (kind !== "api" || context === initialContext.current)
-            ? `/connections/${connection.id}/models` : undefined}
-          loadDraft={kind === "api" ? () => api<Schema["ModelCatalog"]>("/connections/models", "POST", {
-            ...apiBody(), ...(connection ? { connection_id: connection.id } : {}),
-          }) : undefined}
-          hint={kind !== "api" ? "Save and sign in to load models. You can choose a model afterward." : undefined}
-        />
-      </section>}
-      {kind !== "api" && <Field
-        label="Prompt ceiling (tokens)"
-        hint="Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The total review Token budget stays separate."
-      >
-        {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
-          value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
-      </Field>}
-      {kind !== "api" && !connection && <p className="text-sm text-muted-foreground">
-        First save your connection, then sign in with the official client and choose a model.
-        Automatic reviews require your separate authorization per repository.
-      </p>}
-      {kind === "api" && (
-        <details className="border-t pt-5" open={!!connection && !!preset && (
-          connection.protocol !== preset.protocol || connection.base_url !== preset.baseUrl
-        )}>
-          <summary className="cursor-pointer text-sm font-medium">
-            Advanced provider settings
-          </summary>
-          <div className="mt-4 space-y-4">
-            {!customEndpoint && endpointFields}
-            <Field
-              label="Evidence prompt ceiling (tokens)"
-              hint="For assessments and fix verification. OCR accepts prompts up to 80% of this value. Choose a value your model supports; the total review token budget stays separate."
-            >
-              {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
-                value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
-            </Field>
-            <Field
-              label="Extra headers JSON"
-              hint={
-                connection?.header_names?.length
-                  ? `Stored headers: ${connection.header_names!.join(", ")}. Leave blank to keep them; use {} to clear.`
-                  : "Values are encrypted alongside the API key."
-              }
-            >
-              {(id) => (
-                <Textarea
-                  id={id}
-                  rows={3}
-                  className="font-mono text-xs"
-                  value={headers}
-                  onChange={(e) => setHeaders(e.target.value)}
-                  placeholder={'{"X-Custom-Header": "value"}'}
-                />
-              )}
-              </Field>
-              <Field
-                label="Provider options JSON"
-                hint="timeout_sec, extra_body, retry_codes, aws_region, aws_profile, or auth_header."
-              >
-                {(id) => (
-                  <Textarea
-                    id={id}
-                    rows={4}
-                    className="font-mono text-xs"
-                    value={options}
-                    onChange={(e) => setOptions(e.target.value)}
-                  />
-                )}
-              </Field>
-            </div>
-          </details>
-      )}
-      <div className="sticky bottom-0 border-t bg-background py-4">
+        {kind === "api" ? <>{authentication}{modelFields}</> : <>
+          {ceilingField}
+          {!connection && <p className="text-sm text-muted-foreground">
+            First save your connection, then sign in with the official client and choose a model.
+            Automatic reviews require your separate authorization per repository.
+          </p>}
+        </>}
+        {kind === "api" && <details className="border-t pt-5">
+          <summary className="cursor-pointer text-sm font-medium">Advanced provider settings</summary>
+          <div className="mt-4 space-y-4">{advancedFields}</div>
+        </details>}
+      </>}
+      {tabbed ? <DialogFooter className="shrink-0 border-t pt-4">
+        <Button disabled={action.isPending} type="submit">{action.isPending ? "Saving…" : "Save connection"}</Button>
+      </DialogFooter> : <div className="sticky bottom-0 border-t bg-background py-4">
         <Button disabled={action.isPending} type="submit">
           {action.isPending ? "Saving…" : kind !== "api" && !connection ? "Continue to sign in" : "Save connection"}
         </Button>
-      </div>
+      </div>}
     </form>
   );
 }
@@ -878,7 +841,8 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                           returnFocus.current = event.currentTarget;
                           setPersonalTab("account");
                           setPersonal(connection);
-                        }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
+                        }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status}
+                        icon={connection.auth_status === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} /> : <Status value={testStatus}
                         label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
                         icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
@@ -1042,8 +1006,10 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
       if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
     }}>
-      <DialogContent className={personal ? "flex h-[min(660px,90dvh)] overflow-hidden sm:max-w-lg" : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"} onCloseAutoFocus={restoreFocus}>
-        {editing && <DialogHeader>
+      <DialogContent className={personal ? "flex h-[min(660px,90dvh)] overflow-hidden sm:max-w-lg"
+        : editing && editing !== "new" ? "flex h-[min(660px,90dvh)] flex-col overflow-hidden sm:max-w-lg"
+        : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"} onCloseAutoFocus={restoreFocus}>
+        {editing && <DialogHeader className="shrink-0">
           <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
           <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
         </DialogHeader>}
