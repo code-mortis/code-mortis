@@ -635,7 +635,7 @@ function ConnectionForm({
           </Field>
         </section>
       )}
-      {(kind === "api" || connection) && <section className="space-y-4 border-t pt-5" aria-label="Default model">
+      {kind === "api" && <section className="space-y-4 border-t pt-5" aria-label="Default model">
         <h3 className="text-sm font-semibold">Default model</h3>
         <ModelPicker
           value={model}
@@ -745,6 +745,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
   const [savingConnection, setSavingConnection] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [personal, setPersonal] = useState<Connection | null>(null);
+  const [personalTab, setPersonalTab] = useState<"general" | "account">("account");
   const [member, setMember] = useState<Instance["members"][number] | "new" | null>(null);
   const [removingMember, setRemovingMember] = useState<Instance["members"][number] | null>(null);
   const [login, setLogin] = useState("");
@@ -848,7 +849,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                   const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
                   let nextAction = "Sign in";
                   if (personalConnection) {
-                    if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Manage" : "Choose model";
+                    if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Edit" : "Choose model";
                     else if (connection.auth_status === "connecting") nextAction = "Continue setup";
                     else if (connection.auth_status === "unavailable") nextAction = "Check account";
                   }
@@ -875,15 +876,17 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                       {canManage && needsSignIn ? <Button variant="link" size="sm" className="px-0 text-xs underline" disabled={action.isPending}
                         onClick={(event) => {
                           returnFocus.current = event.currentTarget;
+                          setPersonalTab("account");
                           setPersonal(connection);
                         }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status} /> : <Status value={testStatus}
                         label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
                         icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
-                      {canManage && personalConnection && !needsSignIn && nextAction !== "Manage" && <Button variant="outline" size="sm" disabled={action.isPending}
+                      {canManage && personalConnection && !needsSignIn && nextAction !== "Edit" && <Button variant="outline" size="sm" disabled={action.isPending}
                         onClick={(event) => {
                           returnFocus.current = event.currentTarget;
+                          setPersonalTab(nextAction === "Choose model" ? "general" : "account");
                           setPersonal(connection);
                         }}>
                         {nextAction}
@@ -897,8 +900,12 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
-                            <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
-                            {personalConnection && nextAction === "Manage" && <DropdownMenuItem onSelect={() => setPersonal(connection)}>Manage</DropdownMenuItem>}
+                            <DropdownMenuItem disabled={!personalConnection && !providers.data} onSelect={() => {
+                              if (personalConnection) {
+                                setPersonalTab(connection.auth_status === "connected" ? "general" : "account");
+                                setPersonal(connection);
+                              } else setEditing(connection);
+                            }}>Edit</DropdownMenuItem>
                             {!personalConnection && <DropdownMenuItem disabled={testing} onSelect={() => {
                               action.reset(); action.mutate({ path: `/connections/${connection.id}/test` });
                             }}>{testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection"}</DropdownMenuItem>}
@@ -1035,7 +1042,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
       if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
     }}>
-      <DialogContent className={`max-h-[90dvh] overflow-y-auto ${personal ? "sm:max-w-lg" : "sm:max-w-xl"}`} onCloseAutoFocus={restoreFocus}>
+      <DialogContent className={personal ? "flex h-[min(660px,90dvh)] overflow-hidden sm:max-w-lg" : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"} onCloseAutoFocus={restoreFocus}>
         {editing && <DialogHeader>
           <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
           <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
@@ -1044,8 +1051,9 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
           connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
           initialKind={newKind}
           onSavingChange={setSavingConnection}
-          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api" && !saved.model.trim()) setPersonal(saved); }} />}
-        {personal && <PersonalConnection key={personal.id} connection={personal} onDone={() => setPersonal(null)} />}
+          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api") { setPersonalTab("account"); setPersonal(saved); } }} />}
+        {personal && <PersonalConnection key={personal.id} connection={personal} initialTab={personalTab}
+          onSavingChange={setSavingConnection} onDone={() => setPersonal(null)} />}
       </DialogContent>
     </Dialog>
     <Dialog open={!!deleting} onOpenChange={(open) => { if (!open && !action.isPending) { setDeleting(null); action.reset(); } }}>
