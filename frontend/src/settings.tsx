@@ -1021,7 +1021,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
             Each person signs in with GitHub and only sees repositories they can access there.
           </p>
         </section>}
-        {tab !== "appearance" && !!instance?.failed_jobs.length && <details className="border-t pt-5">
+        {tab !== "appearance" && !!instance?.failed_jobs.length && <details className="pt-5">
           <summary className="cursor-pointer text-sm text-muted-foreground">Recent background errors ({instance.failed_jobs.length})</summary>
           <ul className="mt-4 space-y-3">
             {instance.failed_jobs.map((job) => <li key={job.id} className="rounded-md border p-3 text-xs">

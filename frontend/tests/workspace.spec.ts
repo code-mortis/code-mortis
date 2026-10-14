@@ -4552,7 +4552,7 @@ for (const webhook of [undefined, "https://hooks.example.com/a-long-webhook-chan
     await page.goto("/settings?tab=github");
     const app = page.getByRole("region", { name: "GitHub App", exact: true });
     await expect(page.getByRole("article", { name: "acme", exact: true }).locator('[data-slot="badge"]')).toHaveText("Installed");
-    await expect(page.getByRole("region", { name: "Accounts to connect" })).toContainText("No additional installations available. Install the app on another account, then refresh.");
+    await expect(page.getByRole("region", { name: "Accounts to connect" })).toHaveCount(0);
     const link = app.getByRole("link", { name: "Open GitHub App on GitHub", exact: true });
     await expect(link).toHaveAttribute("href", "https://github.com/apps/code-mortis-acme");
     await expect(link).toHaveAttribute("target", "_blank");
@@ -4653,7 +4653,9 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
   await page.keyboard.press("Escape");
   expect(deletes).toBe(1);
   current = { ...current, active: false, status: "uninstalled", operation_status: "done", settings_url: null, can_remove: true };
-  await expect(account).toContainText("Uninstalled from GitHub. Saved review history is retained.");
+  await expect(account.locator('[data-slot="badge"]')).toHaveText("uninstalled");
+  await expect(account).toContainText("No repository access.");
+  await expect(account.locator(".settings-row-note")).toHaveCount(0);
   await account.getByRole("button", { name: "Actions for acme" }).click();
   await expect(page.getByRole("menuitem", { name: "Remove from list" })).toBeEnabled();
   await expect(page.getByRole("menuitem", { name: /^Uninstall$|^Manage repositories$/ })).toHaveCount(0);
@@ -4769,11 +4771,11 @@ test("GitHub installations show recoverable failures and unavailable actions", a
   await account.getByRole("button", { name: "Actions for acme" }).click();
   await expect(page.getByRole("menuitem", { name: "Retry uninstall" })).toBeDisabled();
   await page.keyboard.press("Escape");
-  await expect(account.getByText("Uninstalled from GitHub", { exact: false })).toHaveCount(0);
+  await expect(account.locator('[data-slot="badge"]')).not.toHaveText("uninstalled");
   refreshError = false;
   current = { ...current, operation_status: "done", status: "uninstalled", can_uninstall: false };
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(account).toContainText("Uninstalled from GitHub");
+  await expect(account.locator('[data-slot="badge"]')).toHaveText("uninstalled");
   await noOverflow(page);
 });
 
@@ -4802,9 +4804,10 @@ test("GitHub installation lists order and label uninstall operations consistentl
     const rows = section.locator(".settings-record:not(.settings-list-heading)");
     await expect(rows.first()).toContainText("Selected repositories");
     await expect(rows.first().locator('[data-slot="badge"]')).toHaveClass(/bg-emerald/);
+    if (name === "Connected installations") await expect(rows.last()).toContainText("No repository access.");
     for (const row of await rows.all()) {
       if (await row.locator('[data-slot="badge"]').textContent() === "Installed") continue;
-      await expect(row).not.toContainText("repository access");
+      await expect(row).not.toContainText("Unknown repository access");
       await expect(row).not.toContainText("Selected repositories");
       await expect(row.locator('[data-slot="badge"]')).not.toHaveClass(/bg-emerald/);
     }
@@ -4845,8 +4848,7 @@ test("GitHub installations refresh on return and connect available accounts", as
   await page.getByRole("menuitem", { name: "Connect", exact: true }).click();
   await expect(page.getByRole("article", { name: "acme" })).toContainText("All repositories on GitHub");
   await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository sync queued for acme" })).toBeVisible();
-  await expect(available).toContainText("No additional installations available. Install the app on another account, then refresh.");
-  await expect(available.getByRole("button")).toHaveCount(0);
+  await expect(available).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: info.outputPath("installation-empty-state.png"), fullPage: true });
   expect(requests.some((request) => request.path === "/installations/10" && request.method === "POST")).toBe(true);

@@ -33,8 +33,6 @@ function repositoryAccess(selection: Installation["repository_selection"]) {
 function installationDescription(item: Installation, status: string) {
   const paused = item.active ? "" : " Reviews are paused.";
   switch (status) {
-    case "uninstalled":
-      return "Uninstalled from GitHub. Saved review history is retained.";
     case "uninstalling":
       return "Uninstall requested. Waiting for GitHub to confirm removal.";
     case "failed":
@@ -110,9 +108,9 @@ export function GitHubInstallations() {
                     <h4 className="min-w-0 break-words text-sm font-medium">{item.account}</h4>
                   </div>
                   <div className="min-w-0 text-xs">
-                    {status === "active" && <>
+                    {(status === "active" || removed) && <>
                       <span className="settings-cell-label mb-1 text-muted-foreground">Repository access</span>
-                      {repositoryAccess(item.repository_selection)} on GitHub.
+                      {removed ? "No repository access." : `${repositoryAccess(item.repository_selection)} on GitHub.`}
                     </>}
                   </div>
                   <div>
@@ -147,7 +145,7 @@ export function GitHubInstallations() {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                  {(removed || busy || failed || !item.active) && <p className="settings-row-note text-xs leading-relaxed text-muted-foreground">{installationDescription(item, status)}</p>}
+                  {!removed && (busy || failed || !item.active) && <p className="settings-row-note text-xs leading-relaxed text-muted-foreground">{installationDescription(item, status)}</p>}
                   {failed && item.operation_error && <p role="alert" className="settings-row-note break-words text-sm text-destructive">{item.operation_error}</p>}
                   {!removed && !busy && item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
                 </article>
@@ -156,10 +154,10 @@ export function GitHubInstallations() {
           </div>
         ) : !query.isError && <Empty title="No connected installations">Install the app on GitHub and connect an account to sync its repositories.</Empty>}
       </section>
-      {!query.isPending && !query.isError && <section aria-label="Accounts to connect" className="settings-container">
+      {!query.isPending && !query.isError && available.length > 0 && <section aria-label="Accounts to connect" className="settings-container">
         <h3 className="mb-2.5 flex items-baseline gap-2 text-sm font-semibold">Accounts to connect<span className="text-xs font-normal tabular-nums text-muted-foreground">{available.length}</span></h3>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Connect a GitHub account to sync its repositories.</p>
-        {available.length ? <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="overflow-hidden rounded-lg border bg-card">
           <div aria-hidden="true" className="settings-record settings-installation-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
             <span>Account</span><span>Repository access</span><span>Status</span><span />
           </div>
@@ -180,7 +178,7 @@ export function GitHubInstallations() {
             </div>
             {item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
           </div>)}
-        </div> : <p className="text-xs leading-relaxed text-muted-foreground">No additional installations available. Install the app on another account, then refresh.</p>}
+        </div>
       </section>}
       <Dialog open={!!uninstalling} onOpenChange={(open) => { if (!open && !uninstallAction.isPending) setUninstalling(null); }}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
