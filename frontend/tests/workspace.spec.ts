@@ -6874,6 +6874,7 @@ test("personal model catalog loads only when General opens", async ({ page }) =>
   await expect(dialog.getByRole("region", { name: "Repository authorization" })).toBeVisible();
   expect(reads).toBe(0);
   await dialog.getByRole("tab", { name: "General", exact: true }).click();
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("Review model · review-model");
   await expectOption(page, dialog.getByLabel("Model", { exact: true }), "Next model");
   expect(reads).toBe(1);
 });
@@ -6901,6 +6902,7 @@ test("personal model saves disable controls while retaining the loaded catalog",
   await page.getByRole("tab", { name: "General", exact: true }).click();
   const form = page.getByRole("form", { name: "Subscription settings", includeHidden: true });
   const select = form.getByLabel("Model", { exact: true });
+  await expect(select).toHaveValue("Review model · review-model");
   await chooseOption(page, select, "next-model");
   await form.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(select).toBeDisabled();
