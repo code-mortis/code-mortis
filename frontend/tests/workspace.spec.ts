@@ -2078,7 +2078,7 @@ test("partial review and publication retry remain distinct", async ({
   await expect(page.locator("pre .language-json .hljs-attr").first()).toHaveText('"manifest"');
 });
 
-test("GitHub check handles pending, conclusion-only, and empty states", async ({ page }, info) => {
+test("GitHub check handles pending, errors, conclusion-only, and empty states", async ({ page }, info) => {
   const checkState: Partial<Run> = {
     check_status: null,
     check_conclusion: null,
@@ -2088,13 +2088,27 @@ test("GitHub check handles pending, conclusion-only, and empty states", async ({
   await mock(page, { run: checkState });
   await page.goto("/runs/run");
   const check = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await expect(check.getByText("Pending", { exact: true })).toBeVisible();
   await expect(check.getByRole("status")).toHaveCount(0);
   await expect(check.locator(":scope > :empty")).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-pending-${info.project.name}.png`, fullPage: true });
 
+  for (const pending of [false, true]) {
+    checkState.check_pending = pending;
+    checkState.check_error = "GitHub check could not be updated.";
+    await page.reload();
+    await expect(check.getByText("Error", { exact: true })).toBeVisible();
+    await expect(check.getByText("Pending", { exact: true })).toHaveCount(0);
+    await expect(check.getByRole("alert").filter({ hasText: checkState.check_error })).toBeVisible();
+    await expect(check.getByRole("link", { name: /^View check on GitHub:/ })).toHaveCount(0);
+  }
+  await noOverflow(page);
+  await page.screenshot({ path: info.outputPath("check-error.png"), fullPage: true });
+
   checkState.check_conclusion = "success";
   checkState.check_pending = false;
+  checkState.check_error = null;
   await page.reload();
   await expect(check.getByText("success", { exact: true })).toBeVisible();
   await expect(check.getByRole("status")).toHaveCount(0);
