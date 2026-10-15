@@ -426,8 +426,8 @@ export function PersonalConnection({ connection, initialTab, onDone, onSavingCha
               value={model} onChange={(value) => {
                 clearConnectionFeedback();
                 setModel(value);
-              }} enabled={tab === "general"} disabled={generalPending}
-              path={connected ? `/connections/${identity}/models` : undefined}
+              }} disabled={generalPending}
+              path={connected && tab === "general" ? `/connections/${identity}/models` : undefined}
               context={`${identity}:${connected}`}
               hint={connected ? "Choose a model or enter a custom model ID." : "Sign in to load this connection’s models, or enter a custom model ID."}
             />
