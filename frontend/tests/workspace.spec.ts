@@ -6038,9 +6038,9 @@ test("error messages explain network failures", async ({ page }) => {
   await noOverflow(page);
 });
 
-for (const [field, invalid, message] of [
-  ["Extra headers JSON", '{"Authorization":"private-provider-key",', "Headers must contain valid JSON. Check quotes, commas, and braces, then try again."],
-  ["Provider options JSON", "[]", "Options must be a JSON object."],
+for (const [field, invalid, message, advancedMessage] of [
+  ["Extra headers JSON", '{"Authorization":"private-provider-key",', "Headers must contain valid JSON. Check quotes, commas, and braces, then try again.", "Extra headers JSON in the Advanced tab must contain valid JSON. Check quotes, commas, and braces, then try again."],
+  ["Provider options JSON", "[]", "Options must be a JSON object.", "Provider options JSON in the Advanced tab must be a JSON object."],
 ] as const) {
   test(`new connection save reveals invalid ${field} inside collapsed advanced settings`, async ({ page }, info) => {
     const requests = await mock(page);
@@ -6074,7 +6074,7 @@ for (const [field, invalid, message] of [
     expect(requests.filter((request) => request.path === "/connections")).toHaveLength(1);
   });
 
-  test(`model refresh keeps form errors and the current tab with invalid ${field}`, async ({ page }) => {
+  test(`model refresh identifies Advanced ${field} while keeping form errors and the current tab`, async ({ page }, info) => {
     const requests = await mock(page);
     const saveError = "Provider configuration could not be saved.";
     await page.route("**/api/v1/connections/connection", (route) => route.request().method() === "PUT"
@@ -6091,8 +6091,19 @@ for (const [field, invalid, message] of [
     await dialog.getByRole("button", { name: /^(Load|Refresh) models$/ }).click();
     await expect(dialog.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("data-state", "active");
     await expect(dialog.getByRole("alert").filter({ hasText: saveError })).toBeVisible();
-    await expect(dialog.getByRole("region", { name: "Default model", exact: true }).getByRole("alert")).toHaveText(message);
+    await expect(dialog.getByRole("region", { name: "Default model", exact: true }).getByRole("alert")).toHaveText(advancedMessage);
+    await expect(dialog.getByRole("alert").filter({ hasText: "private-provider-key" })).toHaveCount(0);
     expect(requests.filter((request) => request.path === "/connections/models")).toHaveLength(0);
+    await noOverflow(page);
+    await page.screenshot({ path: info.outputPath("model-advanced-json-error.png") });
+    await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+    await dialog.getByLabel(field, { exact: true }).fill("{}");
+    await dialog.getByRole("tab", { name: "General", exact: true }).click();
+    await dialog.getByRole("button", { name: /^(Load|Refresh) models$/ }).click();
+    await expectOption(page, dialog.getByLabel("Model", { exact: true }), "Next model");
+    await expect(dialog.getByRole("region", { name: "Default model", exact: true }).getByRole("alert")).toHaveCount(0);
+    await expect(dialog.getByRole("alert").filter({ hasText: saveError })).toBeVisible();
+    expect(requests.filter((request) => request.path === "/connections/models")).toHaveLength(1);
   });
 
   test(`connection save reveals invalid ${field} from another tab`, async ({ page }, info) => {
@@ -6107,7 +6118,7 @@ for (const [field, invalid, message] of [
       await dialog.getByRole("tab", { name: tab, exact: true }).click();
       await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
       await expect(dialog.getByRole("tab", { name: "Advanced", exact: true })).toHaveAttribute("data-state", "active");
-      await expect(dialog.getByRole("alert")).toHaveText(message);
+      await expect(dialog.getByRole("alert")).toHaveText(advancedMessage);
       await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(invalid);
     }
     expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
@@ -6130,7 +6141,7 @@ test("error messages identify invalid JSON without exposing draft secrets", asyn
   await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
   await dialog.getByLabel("Extra headers JSON").fill('{"Authorization":"private-provider-key",');
   await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("Headers must contain valid JSON. Check quotes, commas, and braces, then try again.");
+  await expect(dialog.getByRole("alert")).toHaveText("Extra headers JSON in the Advanced tab must contain valid JSON. Check quotes, commas, and braces, then try again.");
   await expect(dialog.getByRole("alert")).not.toContainText("private-provider-key");
   expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
   await noOverflow(page);

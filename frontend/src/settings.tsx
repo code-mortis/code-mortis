@@ -515,8 +515,8 @@ function ConnectionForm({
     return {
       kind, provider, protocol, base_url: url,
       ...(key ? { api_key: key } : {}),
-      ...(headers.trim() ? { extra_headers: parseObject(headers, "Headers") } : {}),
-      options: { ...parseObject(options, "Options"), prompt_token_ceiling: ceiling },
+      ...(headers.trim() ? { extra_headers: parseObject(headers, tabbed ? "Extra headers JSON in the Advanced tab" : "Headers") } : {}),
+      options: { ...parseObject(options, tabbed ? "Provider options JSON in the Advanced tab" : "Options"), prompt_token_ceiling: ceiling },
     };
   }
   function choose(value: string) {
