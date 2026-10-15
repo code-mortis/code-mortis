@@ -5780,6 +5780,26 @@ for (const scenario of [
   }
 });
 
+test("closing member menu cannot steal focus from the dialog role picker", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], failed_jobs: [], public_url: "https://reviews.example.com",
+    members: [{ id: 7, login: "carlos", role: "admin" }, { id: 8, login: "sam", role: "admin" }],
+  } }));
+  await page.goto("/settings?tab=team");
+  await page.addStyleTag({ content: '[data-slot="dropdown-menu-content"][data-state="closed"] { animation-duration: 10s !important; animation-play-state: paused !important; }' });
+  await page.getByRole("button", { name: "Actions for @sam" }).click();
+  const item = page.getByRole("menuitem", { name: "Edit role", includeHidden: true });
+  await item.click();
+  const role = page.getByRole("dialog").getByRole("combobox", { name: "Role", exact: true });
+  await role.fill("Member");
+  await expect(page.getByRole("menu", { includeHidden: true })).toHaveAttribute("data-state", "closed");
+  await item.dispatchEvent("pointerout", { pointerType: "mouse" });
+  await expect(role).toBeFocused();
+  await page.getByRole("option", { name: "Member", exact: true }).click();
+  await expect(role).toHaveValue("Member");
+});
+
 test("team rows preserve unknown roles and align labels with resized avatars in both directions", async ({ page }, info) => {
   await mock(page);
   const role = "repository-observer-with-limited-access";
