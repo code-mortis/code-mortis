@@ -60,6 +60,7 @@ function DropdownMenuItem({
   className,
   inset,
   variant = "default",
+  onPointerLeave,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & {
   inset?: boolean
@@ -75,6 +76,11 @@ function DropdownMenuItem({
         className
       )}
       {...props}
+      onPointerLeave={(event) => {
+        // Closing menus stay mounted for their exit animation and must not reclaim focus.
+        if (event.currentTarget.closest('[role="menu"]')?.getAttribute("data-state") === "closed") event.preventDefault()
+        onPointerLeave?.(event)
+      }}
     />
   )
 }

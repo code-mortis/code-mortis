@@ -104,7 +104,7 @@ export type ThemeId = typeof themes[number]["id"];
 
 export function readAppearance(): { mode: ColorMode; theme: ThemeId } {
   let mode: ColorMode = "system";
-  let theme: ThemeId = "code-mortis";
+  let theme: ThemeId = "claude-code";
   try {
     const savedMode = localStorage.getItem("theme");
     if (savedMode === "light" || savedMode === "dark") mode = savedMode;

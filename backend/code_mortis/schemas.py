@@ -455,6 +455,7 @@ class AssessmentSummary(StrictModel):
     candidates: int = 0
     new_findings: int = 0
     repeated_observations: int = 0
+    rejected_candidates: int = 0
     withheld_candidates: int = 0
     pending: int = 0
     incomplete: int = 0
@@ -466,6 +467,7 @@ class RunDetail(BaseModel):
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
+    resolved_count: int = 0
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -497,6 +499,24 @@ class CandidatePage(BaseModel):
     total: int
     registered_total: int
     outcome_counts: dict[str, int]
+    severity_counts: dict[str, int]
+    category_counts: dict[str, int]
+    page: int
+    has_more: bool
+    page_size: int = LIST_PAGE_SIZE
+
+
+class ResolvedFilters(StrictModel):
+    q: str = Field(default="", max_length=256)
+    severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
+    category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
+    page: int = Field(default=1, ge=1, le=1000000)
+
+
+class ResolvedPage(BaseModel):
+    items: list[FindingOut]
+    total: int
+    registered_total: int
     severity_counts: dict[str, int]
     category_counts: dict[str, int]
     page: int

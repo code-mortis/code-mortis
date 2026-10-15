@@ -112,6 +112,7 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         lines[1] = (
             f"New validated findings: {assessment['new_findings']}. "
             f"Repeated observations: {assessment['repeated_observations']}. "
+            f"Not supported candidates: {assessment.get('rejected_candidates', 0)}. "
             f"Withheld candidates: {assessment['withheld_candidates']}. "
             f"Comments published: {assessment['published_comments']}."
         )

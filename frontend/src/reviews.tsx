@@ -57,6 +57,7 @@ import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 import {
   Sheet,
   SheetContent,
@@ -627,20 +628,79 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
-function getCandidateLabel(candidate: Schema["CandidateOut"]) {
-  if (candidate.finding_id && candidate.is_new) return "New validated finding";
-  if (candidate.finding_id) return "Repeated observation";
-  if (candidate.result?.verdict === "rejected") return "Not supported";
-  if (candidate.status === "queued" || candidate.status === "running") return "Awaiting assessment";
-  return "Withheld";
+function getCandidateFeedback(candidate: Schema["CandidateOut"]) {
+  if (candidate.finding_id && candidate.is_new) return { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding." };
+  if (candidate.finding_id) return { label: "Repeated observation", description: "Matches an existing finding from review history." };
+  if (candidate.result?.verdict === "rejected") return { label: "Not supported", description: "The evidence did not support this proposed issue." };
+  if (active(candidate.status)) return { label: "Awaiting assessment", description: "Queued or being checked against evidence." };
+  return { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." };
 }
 
-function CandidateStatus({ candidate }: { candidate: Schema["CandidateOut"] }) {
+function CandidateStatus({ candidate, inCard = false }: { candidate: Schema["CandidateOut"]; inCard?: boolean }) {
+  const feedback = getCandidateFeedback(candidate);
   let value = "partial";
   if (candidate.finding_id) value = "completed";
   else if (candidate.result?.verdict === "rejected") value = "rejected";
   else if (active(candidate.status)) value = candidate.status;
-  return <Status value={value} label={getCandidateLabel(candidate)} />;
+  return <Tooltip>
+    <TooltipTrigger asChild><span tabIndex={inCard ? undefined : 0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">
+      <Status value={value} label={feedback.label} />
+      {inCard && <span className="sr-only">{feedback.description}</span>}
+    </span></TooltipTrigger>
+    <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.description}</TooltipContent>
+  </Tooltip>;
+}
+
+function ResolvedList({ runId, running, onOpen }: {
+  runId: string; running: boolean; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
+}) {
+  const filters = useReviewFilters("resolved");
+  const { params, canonical } = filters;
+  const [list, setList] = useState({ filters: canonical, version: 0 });
+  if (list.filters !== canonical) setList({ filters: canonical, version: list.version + 1 });
+  const searchInput = useRef<HTMLInputElement>(null);
+  const query = useInfiniteQuery<Schema["ResolvedPage"], ApiError>({
+    queryKey: ["run-resolved", runId, canonical, list.version],
+    queryFn: ({ pageParam, signal }) => api<Schema["ResolvedPage"]>(`/runs/${runId}/resolved?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
+    refetchInterval: (query) => running && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    retry: false,
+  });
+  if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
+  const first = query.data?.pages[0];
+  const last = query.data?.pages.at(-1);
+  const seen = new Set<string>();
+  const findings = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((finding) => {
+    if (seen.has(finding.id)) return false;
+    seen.add(finding.id);
+    return true;
+  });
+  return <div className="space-y-4">
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+      filters={[
+        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
+        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
+      ]} onChange={filters.change}>
+      {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} resolved findings</span>}
+    </FilterBar>
+    <ErrorNotice error={query.error} />
+    <section aria-label="Findings resolved by this run" className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
+      {query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
+        state={<Status value={item.status} label={item.status === "resolved" ? "Resolved" : `Currently ${words(item.status)}`} />}
+        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No resolved findings match these filters" : running ? "No confirmed resolutions yet" : "No findings resolved by this run"}>
+        <p>{first?.registered_total ? "Try another search, severity, or type." : "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved."}</p>
+        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
+      </Empty>}
+      {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+        {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
+          {query.isFetchingNextPage && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
+        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry resolved findings</Button>
+          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining resolved findings.</p> : null}
+        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{findings.length} of {last.total} shown</span>}
+      </div>}
+    </section>
+  </div>;
 }
 
 function AssessmentList({ runId, running, onOpen }: {
@@ -668,7 +728,7 @@ function AssessmentList({ runId, running, onOpen }: {
     seen.add(candidate.id);
     return true;
   });
-  return <div className="mt-4 space-y-4">
+  return <div className="mt-6 space-y-4">
     <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "outcome", label: "Result", values: params.getAll("outcome"), choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
@@ -680,7 +740,7 @@ function AssessmentList({ runId, running, onOpen }: {
     <ErrorNotice error={query.error} />
     <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
-        state={<CandidateStatus candidate={item} />}
+        state={<CandidateStatus candidate={item} inCard />}
         onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
@@ -797,16 +857,6 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
   </div>;
 }
 
-function verificationSummary(value: unknown): Record<string, number> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return;
-  const counts: Record<string, number> = {};
-  for (const [key, count] of Object.entries(value)) {
-    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return;
-    counts[key] = count;
-  }
-  return counts;
-}
-
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
@@ -815,13 +865,26 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} />;
 }
 
+const checkDescriptions: Record<string, string> = {
+  queued: "Waiting for the review to start.",
+  in_progress: "Review, publication, or fix synchronization is still in progress.",
+  completed: "The GitHub check has finished.",
+  success: "The review completed and comments were handled. Findings are informational, not approval to merge.",
+  neutral: "The review completed, but assessment or fix verification is incomplete.",
+  failure: "The review failed, coverage is incomplete, or comments could not be fully published.",
+  cancelled: "The review was cancelled or no longer applies to this pull request.",
+  skipped: "The review was skipped. Inspect the run outcome for the reason.",
+  timed_out: "The review exceeded its time limit.",
+  action_required: "The review or GitHub synchronization needs attention.",
+};
+
 function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
-  const { run, pull_request: pr, repository, occurrences, assessment, can_write } = detail;
+  const { run, pull_request: pr, repository, occurrences, resolved_count = 0, assessment, can_write } = detail;
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useUrlTab("tab", ["findings", "coverage", "assessment", "details"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details"], "findings");
   const filters = useReviewFilters("run");
   const search = filters.params.get("q") ?? "";
   const severities = filters.params.getAll("severity");
@@ -853,12 +916,14 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const candidate = candidateDenied ? undefined : candidateQuery.data;
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
+  const resolvedTab = useRef<HTMLButtonElement>(null);
   const assessmentTab = useRef<HTMLButtonElement>(null);
   const duration = runDuration(run);
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
-  const verification = verificationSummary(run.progress?.verification);
   const feedback = runFeedback(run);
+  const verification = run.progress?.verification;
+  const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const term = search.trim().toLowerCase();
   const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
     && (!categories.length || categories.includes(String(snapshot.category)))
@@ -886,36 +951,37 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </div>
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span><Status value={run.publication} label={feedback.publicationLabel} /></div>
+          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
+              <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
+            </Tooltip>
+          </div>
           {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
-            <span role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span></TooltipTrigger>
+              <TooltipContent className="max-w-xs" sideOffset={6}>{assessment.incomplete ? "Some candidates could not be fully assessed." : "Candidates are waiting for assessment."}</TooltipContent>
+            </Tooltip>
+          </div>}
+          {typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Fix verification</span>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
+              <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
+            </Tooltip>
           </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
-            {run.check_url ? <a className="inline-flex rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
-              <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
-            </a> : checkValue && <Status value={checkValue} />}
+            {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
+              {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
+                <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
+              </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
+            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
+              : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
           </div>}
         </div>
         {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
-      {!!verification?.selected && <details className="group mt-3">
-        <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">
-          <span className="font-medium">Fix verification</span>
-          <span className="text-muted-foreground">{verification.resolved ?? 0} resolved</span>
-          {!!verification.pending && <span className="text-muted-foreground">{verification.pending} pending sync</span>}
-          {!!verification.failed && <span className="text-destructive">{verification.failed} failed</span>}
-          <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-        </summary>
-        <div className="space-y-2 pt-2 text-xs leading-relaxed text-muted-foreground">
-          <p>{verification.completed ?? 0} of {verification.selected} findings verified. {verification.resolved ?? 0} automatically resolved, {verification.pending ?? 0} pending synchronization.</p>
-          <p>{verification.still_present ?? 0} still present, {verification.uncertain ?? 0} uncertain, {verification.skipped ?? 0} skipped, {verification.failed ?? 0} failed.</p>
-          <p>Verified fixes remain open until GitHub confirms resolution. Evidence is saved in each finding’s Activity.</p>
-        </div>
-      </details>}
     </header>
     <ErrorNotice error={action.error || error} />
     <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
@@ -927,11 +993,13 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
-        <TabsTrigger value="coverage">Coverage</TabsTrigger>
+        <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
-        <TabsTrigger value="details">Details</TabsTrigger>
+        <TabsTrigger value="coverage">Coverage</TabsTrigger>
+        <TabsTrigger value="details" className="col-span-2 sm:col-span-1">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
         <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
           filters={[
             { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
@@ -940,7 +1008,6 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           onChange={filters.change}>
           <span role="status" className="sr-only">{filtered.length} of {occurrences.length} findings</span>
         </FilterBar></div>
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
         {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
@@ -951,22 +1018,35 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
         </Empty>}
       </TabsContent>
+      <TabsContent value="resolved" className="min-w-0">
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings automatically resolved by this run after fix verification and GitHub confirmation. Open a finding to inspect its current status and verification history.</p>
+        <ResolvedList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
+      </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">
-          <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Proposed findings are checked against evidence and earlier reviews before becoming new comments.</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">Proposed findings are checked against evidence and earlier reviews before becoming new comments.</p>
           {assessment ? <>
-            <p className="text-sm">{assessment.new_findings} new validated findings · {assessment.repeated_observations} repeated observations · {assessment.withheld_candidates} withheld candidates · {assessment.published_comments} comments published</p>
+            <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{[
+              ["validated findings", assessment.new_findings],
+              ["repeated", assessment.repeated_observations],
+              ["not supported", assessment.rejected_candidates],
+              ["withheld", assessment.withheld_candidates],
+              ["comments published", assessment.published_comments],
+            ].map(([name, value]) => <div key={name} className="flex items-baseline gap-2">
+              <dt className="text-xs capitalize text-muted-foreground">{name}</dt>
+              <dd className="text-sm tabular-nums">{value}</dd>
+            </div>)}</dl>
             {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
             <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setCandidateSeed(item); showSheet("candidate", item.id); }} />
-          </> : <Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty>}
+          </> : <div className="mt-4"><Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty></div>}
         </section>
       </TabsContent>
       <TabsContent value="details" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Review setup, execution details, revisions, and the configuration saved for this run.</p>
-        <div className="grid min-w-0 gap-x-8 gap-y-6 md:grid-cols-2">{[
+        <div className="grid min-w-0 gap-6">{[
           { title: "Review setup", rows: [
             ["Connection", String(connection?.name ?? "Not recorded")], ["Model", String(connection?.model ?? "Not recorded")], ["Engine", engine],
             ["Account owner", run.owner_id == null ? "Shared connection" : `Member #${run.owner_id}`],
@@ -976,10 +1056,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             ["Started", run.started_at ? date(run.started_at) : "Not started"], ["Finished", run.finished_at ? date(run.finished_at) : "Not finished"],
           ] },
           { title: "Revisions", rows: [["Head commit", run.head_sha], ["Base commit", run.base_sha]] },
-        ].map(({ title, rows }) => <section key={title} aria-label={title} className={`min-w-0 ${title === "Revisions" ? "md:col-span-2" : ""}`}>
+        ].map(({ title, rows }) => <section key={title} aria-label={title} className="min-w-0">
           <h2 className="mb-2 text-sm font-semibold">{title}</h2>
-          <dl className="divide-y border-y text-sm">{rows.map(([key, value]) => <div key={key} className="grid grid-cols-[104px_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1 py-2.5">
-            <dt className="text-xs text-muted-foreground">{key}</dt><dd className={`min-w-0 break-words [overflow-wrap:anywhere] ${title === "Revisions" ? "font-mono text-xs" : ""}`}>{value}</dd>
+          <dl className="divide-y border-y text-xs">{rows.map(([key, value]) => <div key={key} className="grid grid-cols-[104px_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1 py-2.5">
+            <dt className="text-muted-foreground">{key}</dt><dd className={`min-w-0 break-words [overflow-wrap:anywhere] ${title === "Revisions" ? "font-mono" : ""}`}>{value}</dd>
           </div>)}</dl>
         </section>)}</div>
         <details className="group mt-6 pt-4 text-sm">
@@ -989,7 +1069,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsContent>
     </Tabs>
     <Sheet open={!!finding || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
-      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : searchInput.current)?.focus(); }}>
+      <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : tab === "resolved" ? resolvedTab.current : searchInput.current)?.focus(); }}>
         <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
           {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
           <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>

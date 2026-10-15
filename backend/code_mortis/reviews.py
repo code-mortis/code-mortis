@@ -689,6 +689,7 @@ def assessed_publication_plan(db, run, *, append=False):
         body = (
             f"Code Mortis review: **{run.status}**. {counts.new_findings} new validated finding(s), "
             f"{counts.repeated_observations} repeated observation(s), "
+            f"{counts.rejected_candidates} not supported candidate(s), "
             f"{counts.withheld_candidates} withheld candidate(s).\n\n"
             f"This batch contains {len(comments)} inline comment(s) and {len(unanchored)} summary finding(s).\n\n"
             f"[View evidence and coverage]({settings().public_url}/runs/{run.id})"

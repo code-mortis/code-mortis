@@ -9,14 +9,15 @@ export const candidateOutcomes = [
   { value: "withheld", name: "Withheld" },
   { value: "pending", name: "Awaiting assessment" },
 ];
-export type ReviewFilterScope = "pull" | "run" | "assessment";
+export type ReviewFilterScope = "pull" | "run" | "assessment" | "resolved";
 export type ReviewFilterKey = "q" | "status" | "severity" | "category" | "outcome";
 export const reviewFilterKeys = {
   pull: ["q", "status", "severity", "category"],
   run: ["q", "severity", "category"],
   assessment: ["q", "outcome", "severity", "category"],
+  resolved: ["q", "severity", "category"],
 } as const;
-export const reviewFilterPrefixes = { pull: "", run: "", assessment: "assessment_" };
+export const reviewFilterPrefixes = { pull: "", run: "", assessment: "assessment_", resolved: "resolved_" };
 
 export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilterScope) {
   const result = new URLSearchParams();

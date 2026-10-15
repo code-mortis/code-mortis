@@ -355,10 +355,46 @@ def test_unsupported_candidates_never_become_findings(pipeline, decision):
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Finding)) == 0
         run = db.get(ReviewRun, identity)
-        assert assessment.summary(db, run).withheld_candidates == 1
+        counts = assessment.summary(db, run)
+        rejected = decision == {"verdict": "rejected"}
+        assert counts.rejected_candidates == int(rejected)
+        assert counts.withheld_candidates == int(not rejected)
         assert run.publication == "no_new_comments"
         assert checks.check_payload(run, 0)["conclusion"] == ("success" if decision == {"verdict": "rejected"} else "neutral")
     assert pipeline["reviews"] == []
+
+
+def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, client):
+    identity = new_run(assessed=True)
+    with transaction() as db:
+        for index in range(10):
+            finding_id = None
+            if index < 3:
+                finding = Finding(pr_id="pr", fingerprint=str(index), path=COMMENT["path"],
+                                  content=COMMENT["content"], start_line=7, end_line=7,
+                                  last_seen_run_id=identity)
+                db.add(finding)
+                db.flush()
+                finding_id = finding.id
+            decision = "confirmed" if index < 3 else "rejected" if index < 8 else "uncertain"
+            db.add(ReviewCandidate(
+                run_id=identity, position=index, snapshot=COMMENT,
+                status="failed" if index == 9 else "completed",
+                result=None if index == 9 else {"verdict": decision},
+                finding_id=finding_id, is_new=index < 3,
+            ))
+        db.flush()
+        assessment.record_summary(db, db.get(ReviewRun, identity))
+    response = client.get(f"/api/v1/runs/{identity}")
+    assert response.status_code == 200
+    assert response.json()["assessment"] == {
+        "candidates": 10, "new_findings": 3, "repeated_observations": 0,
+        "rejected_candidates": 5, "withheld_candidates": 2, "pending": 0,
+        "incomplete": 2, "published_comments": 0,
+    }
+    with transaction() as db:
+        payload = checks.check_payload(db.get(ReviewRun, identity), 3)
+        assert "Not supported candidates: 5. Withheld candidates: 2." in payload["output"]["summary"]
 
 
 def test_bad_suggestion_is_preserved_as_input_but_not_published(pipeline):

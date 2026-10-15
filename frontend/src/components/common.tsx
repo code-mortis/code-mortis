@@ -131,7 +131,7 @@ export function Field({
 }: {
   label: string;
   children: (id: string) => ReactNode;
-  hint?: string;
+  hint?: ReactNode;
   action?: ReactNode;
 }) {
   const id = useId();
