@@ -259,7 +259,10 @@ def execute_job(job_id: str):
                     run.error = str(exc)
         return
     except Exception as exc:
-        sentry_sdk.capture_exception(exc, tags={"job_id": job_id, "job_kind": kind})
+        tags = {"job_id": job_id, "job_kind": kind, "job_attempt": attempt}
+        if isinstance(exc, github.GitHubError):
+            tags["github_status"] = exc.status
+        sentry_sdk.capture_exception(exc, tags=tags)
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
             str(exc)

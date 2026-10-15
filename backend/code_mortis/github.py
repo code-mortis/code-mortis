@@ -51,12 +51,23 @@ def request(method: str, path: str, token: str, **kwargs):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     headers.update(kwargs.pop("headers", {}))
-    try:
-        response = httpx.request(
-            method, API + path, headers=headers, timeout=25, follow_redirects=False, **kwargs
-        )
-    except httpx.HTTPError as exc:
-        raise GitHubError(503, "GitHub could not be reached. Try again shortly.") from exc
+    for attempt in range(2):
+        retry_get = method.upper() == "GET" and attempt == 0
+        try:
+            response = httpx.request(
+                method, API + path, headers=headers, timeout=25, follow_redirects=False, **kwargs
+            )
+        except httpx.HTTPError as exc:
+            if not retry_get or not isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)):
+                raise GitHubError(503, "GitHub could not be reached. Try again shortly.") from exc
+        else:
+            if (
+                not retry_get
+                or response.status_code not in {500, 502, 503, 504}
+                or "retry-after" in response.headers
+            ):
+                break
+        time.sleep(1)
     if response.status_code >= 300:
         retry = response.headers.get("retry-after", "0")
         message = {
