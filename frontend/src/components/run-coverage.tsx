@@ -85,7 +85,7 @@ export function RunCoverage({ run }: { run: Run }) {
         })}
         {!items.length && <Empty title="No file coverage recorded">Inspect the saved report for scope and review details. No selected files does not imply a clean review.</Empty>}
       </div>
-      <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Inspect coverage report</summary><div className="mt-3"><Code language="json">{JSON.stringify(run.report, null, 2)}</Code></div></details>
+      <details className="mt-6 pt-4 text-sm"><summary className="cursor-pointer font-medium">Inspect coverage report</summary><div className="mt-3"><Code language="json">{JSON.stringify(run.report, null, 2)}</Code></div></details>
     </>}
   </section>;
 }
