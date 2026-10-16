@@ -305,12 +305,12 @@ RESULT_DELIVERY = (
 )
 
 
-def verification_tools(instructions=INSTRUCTIONS, schema=None):
+def verification_tools(instructions=INSTRUCTIONS, schema=None, delivery=RESULT_DELIVERY):
     result = dict(schema or output_schema())
     definitions = result.pop("$defs", {})
     # OCR terminates on task_done; putting the verdict in that call avoids its asynchronous comment loop.
     return [{"name": "task_done", "main_task": True, "definition": {
-        "name": "task_done", "description": instructions + RESULT_DELIVERY +
+        "name": "task_done", "description": instructions + delivery +
         " This is an internal result transport, including non-confirming outcomes.",
         "parameters": {"type": "object", "$defs": definitions, "properties": {
             "state": {"type": "string", "enum": ["DONE"]}, "result": result,
@@ -365,7 +365,8 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
 
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
-               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result, configuration_managed=False):
+               *, instructions=INSTRUCTIONS, schema=None, validator=validate_result, configuration_managed=False,
+               delivery=RESULT_DELIVERY):
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -378,11 +379,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         bundle = evidence_bundle(context)
         evidence.write_text(bundle)
         rule = root / "rules.json"
-        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + RESULT_DELIVERY + (
+        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + delivery + (
             " The result must match this schema, including non-confirming outcomes: "
         ) + json.dumps(schema or output_schema())}]}))
         tools = root / "tools.json"
-        tools.write_text(json.dumps(verification_tools(instructions, schema)))
+        tools.write_text(json.dumps(verification_tools(instructions, schema, delivery)))
         # Legacy connections retain OCR 1.12.11's scan default.
         max_tokens = connection.get("options", {}).get("prompt_token_ceiling", 58888)
         token_limit = max_tokens * 4 // 5

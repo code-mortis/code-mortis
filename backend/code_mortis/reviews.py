@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import assessment, github, ocr, runner_client, verification
+from . import assessment, github, ocr, pr_summary, runner_client, verification
 from .checks import queue_check_changes as queue_check_changes
 from .config import settings
 from .db import now, transaction, uid
@@ -138,6 +138,7 @@ def create_run(
         owner_id=connection.owner_id,
         engine="ocr" if connection.kind == "api" else connection.kind,
         progress={"comment_requests": {request_key: True}} if request_key else {},
+        summary={"status": "pending", "tokens": 0},
     )
     db.add(run)
     enqueue(db, "review", {"run_id": run.id})
@@ -320,6 +321,8 @@ def perform_review(run_id: str, claim: str | None = None):
             prior_job = db.get(Job, job_id)
             if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
                 return
+        if run.summary.get("status") == "running":
+            pr_summary.interrupt(run)
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         installation = db.get(Installation, repo.installation_id)
@@ -400,7 +403,7 @@ def perform_review(run_id: str, claim: str | None = None):
                 run.status, run.finished_at = "failed", now()
                 run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review."
             return
-        run.progress = {**run.progress, "analysis_started": True}
+        run.progress = {**run.progress, "analysis_started": True, "phase": "analysis"}
         args = (
             repo.full_name,
             pr.number,
@@ -426,10 +429,14 @@ def perform_review(run_id: str, claim: str | None = None):
                     current = db.get(ReviewRun, run_id)
                     if current.progress.get("execution") == claim:
                         verification.skip_pending(db, current, result[1].get("message") or "Review skipped.")
-                return
-            assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
-            if not retry:
-                verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
+            else:
+                progress({"phase": "assessment"})
+                assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
+                if not retry:
+                    progress({"phase": "fix verification"})
+                    verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
+            progress({"phase": "summary"})
+            pr_summary.generate(run_id, repo_path, env, args[4], credentials, claim)
 
         status, report, comments = ocr.review(
             *args,
@@ -469,6 +476,7 @@ def complete_saved_review(db, run, interruption=None):
         return False
     if interruption:
         verification.skip_pending(db, run, interruption)
+        pr_summary.interrupt(run)
     assessment.withhold_pending(db, run, interruption or "Assessment did not finish; candidate withheld.")
     run.status = status
     if not run.progress.get("assessment_retry"):
@@ -551,11 +559,15 @@ def marker(kind: str, identity: str) -> str:
     return f"<!-- code-mortis:{kind}:{identity} -->"
 
 
-def comment_body(finding_id: str, snapshot: dict) -> str:
+def comment_body(finding_id: str, snapshot: dict, *, with_prompt=False) -> str:
     severity = snapshot["severity"]
     icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}[severity]
     body = f"**{icon} {severity.title()} · {snapshot['category']}**\n\n{snapshot['content']}"
+    if with_prompt:
+        body = f"**{icon} {severity.title()} · {pr_summary.text(snapshot['category'])}**\n\n{pr_summary.text(snapshot['content'])}"
     suffix = "\n\n" + marker("finding", finding_id)
+    if with_prompt:
+        suffix = "\n\n" + pr_summary.fix_section([snapshot], budget=12000) + suffix
     section = ""
     suggestion = snapshot.get("suggestion_code")
     if suggestion:
@@ -570,6 +582,8 @@ def comment_body(finding_id: str, snapshot: dict) -> str:
             code = suggestion
             path = PurePosixPath(snapshot["path"])
             language = "dockerfile" if path.name.lower() == "dockerfile" else CODE_LANGUAGES.get(path.suffix.lower(), "text")
+        if with_prompt:
+            code = code.replace("<!-- code-mortis:", "&lt;!-- code-mortis:")
         fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", code)), default=0) + 1)
         section = f"\n\n**Suggested change**\n\n{fence}{language}\n{code}\n{fence}"
         if len(body) + len(section) + len(suffix) > 60000:
@@ -619,6 +633,8 @@ def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str
 
 def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
     if run.status == "skipped" and file_limit_exceeded(run):
+        if run.summary:
+            return []
         count = len(run.report["manifest"]["coverage"]["selected"])
         maximum = run.config["settings"]["max_files"]
         return [{
@@ -696,6 +712,8 @@ def assessed_publication_plan(db, run, *, append=False):
         )
         if run.status == "partial" or counts.incomplete:
             body += "\n\nCoverage or assessment is incomplete. This is not a clean review of the entire PR."
+        if run.summary:
+            body = ""
         if unanchored:
             body += "\n\nFindings without a valid inline location:\n" + "\n\n".join(unanchored)
         index = len(batches)
@@ -719,13 +737,18 @@ def assessed_publication_plan(db, run, *, append=False):
         ).limit(1))
         if not confirmed:
             continue
+        snapshot = {**occurrence.snapshot, "source_sha": occurrence.snapshot.get("source_sha") or run.head_sha}
         if len(identities) >= 30 or sum(len(text) for text in unanchored) > 45000:
             save_batch()
         if occurrence.inline_line:
             comments.append({"path": occurrence.snapshot["path"], "line": occurrence.inline_line,
-                             "side": "RIGHT", "body": comment_body(finding.id, occurrence.snapshot)})
+                             "side": "RIGHT", "body": comment_body(finding.id, snapshot, with_prompt=bool(run.summary))})
         else:
-            unanchored.append(f"- `{occurrence.snapshot['path']}`: {occurrence.snapshot['content'][:1200]}\n" + marker("finding", finding.id))
+            entry = f"- `{occurrence.snapshot['path']}`: {occurrence.snapshot['content'][:1200]}\n"
+            if run.summary:
+                entry = f"- {pr_summary.text(snapshot['path'])}: {pr_summary.text(snapshot['content'][:1200])}\n"
+                entry += pr_summary.fix_section([snapshot], budget=12000) + "\n"
+            unanchored.append(entry + marker("finding", finding.id))
         identities.append(finding.id)
     save_batch()
     return batches

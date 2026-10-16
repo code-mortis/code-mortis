@@ -153,6 +153,8 @@ export function RepositorySettings({
   const limitedValues = useRef({
     timeout_seconds: repo.settings.timeout_seconds ?? 900,
     token_budget: repo.settings.token_budget ?? 200000,
+    summary_timeout_seconds: repo.settings.summary_timeout_seconds ?? 180,
+    summary_token_budget: repo.settings.summary_token_budget ?? 60000,
     max_files: repo.settings.max_files ?? 40,
   });
   const [rules, setRules] = useState(
@@ -360,6 +362,10 @@ export function RepositorySettings({
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
                 { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
                   hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
+                { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600,
+                  hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
+                { key: "summary_token_budget", label: "Summary token allowance", min: 1000, max: 5000000,
+                  hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
                 { key: "max_files", label: "Maximum files", min: 1, max: undefined,
                   hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
               ] as const).map(({ key, label, min, max, hint }) => (

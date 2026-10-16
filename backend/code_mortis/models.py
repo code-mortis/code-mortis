@@ -12,8 +12,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    or_,
+    select,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, mapped_column
 
 from .db import Base, now, uid
 
@@ -142,6 +144,11 @@ class PullRequest(Base):
     head_ref: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    summary_comment_id: Mapped[int | None] = mapped_column(BigInteger)
+    summary_url: Mapped[str | None] = mapped_column(Text)
+    summary_error: Mapped[str | None] = mapped_column(Text)
+    summary_hash: Mapped[str | None] = mapped_column(String(64))
+    summary_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ReviewRun(Base):
@@ -161,6 +168,7 @@ class ReviewRun(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     publication_error: Mapped[str | None] = mapped_column(Text)
     review_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
@@ -297,3 +305,11 @@ class Job(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# Read pending state from durable jobs instead of locking the PR while flushing a locked run.
+PullRequest.summary_pending = column_property(or_(
+    PullRequest.summary_error.is_not(None),
+    select(Job.id).where(Job.kind == "sync_summary", Job.status.in_(["queued", "running"]),
+                         Job.payload["pr_id"].as_string() == PullRequest.id).correlate_except(Job).exists(),
+))

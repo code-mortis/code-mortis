@@ -430,6 +430,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Summary Sync */
+        post: operations["retry_summary_sync_api_v1_pulls__pr_id__summary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/findings/{finding_id}": {
         parameters: {
             query?: never;
@@ -1535,6 +1552,17 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Summary Url */
+            summary_url?: string | null;
+            /**
+             * Summary Pending
+             * @default false
+             */
+            summary_pending: boolean;
+            /** Summary Error */
+            summary_error?: string | null;
+            /** Summary Synced At */
+            summary_synced_at?: string | null;
             latest_run?: components["schemas"]["RunOut"] | null;
             /**
              * Open Findings
@@ -1554,6 +1582,16 @@ export interface components {
              * @default 200000
              */
             token_budget: number | null;
+            /**
+             * Summary Token Budget
+             * @default 60000
+             */
+            summary_token_budget: number | null;
+            /**
+             * Summary Timeout Seconds
+             * @default 180
+             */
+            summary_timeout_seconds: number | null;
             /**
              * Automatic
              * @default true
@@ -1738,6 +1776,7 @@ export interface components {
             report: {
                 [key: string]: unknown;
             } | null;
+            summary?: components["schemas"]["SummaryState"];
             /** Engine */
             engine: string;
             /** Connection Id */
@@ -1789,6 +1828,43 @@ export interface components {
         StartRunInput: {
             /** Connection Id */
             connection_id?: string | null;
+        };
+        /** SummaryGroup */
+        SummaryGroup: {
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Paths */
+            paths: string[];
+        };
+        /** SummaryResult */
+        SummaryResult: {
+            /** Narrative */
+            narrative: string;
+            /** Groups */
+            groups: components["schemas"]["SummaryGroup"][];
+        };
+        /** SummaryState */
+        SummaryState: {
+            /**
+             * Status
+             * @default not_applicable
+             * @enum {string}
+             */
+            status: "not_applicable" | "pending" | "running" | "completed" | "failed" | "skipped";
+            /** Tokens */
+            tokens?: number | null;
+            /** Inference Started At */
+            inference_started_at?: string | null;
+            result?: components["schemas"]["SummaryResult"] | null;
+            /**
+             * Limited Context
+             * @default false
+             */
+            limited_context: boolean;
+            /** Error */
+            error?: string | null;
         };
         /** UserOut */
         UserOut: {
@@ -2690,6 +2766,39 @@ export interface operations {
             header?: never;
             path: {
                 run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_summary_sync_api_v1_pulls__pr_id__summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
             };
             cookie?: never;
         };

@@ -83,6 +83,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
     paths = ocr.preview_paths(selected, preview.get("reviewable_count"))
     limited = ocr.file_limit_result(paths, options.get("max_files"))
     if limited:
+        if isinstance(preview.get("excluded_files"), list):
+            limited[1]["excluded_files"] = preview["excluded_files"]
         return limited
     # Existing checkpoints belong to this immutable run and its exact commit/config snapshot.
     previous = checkpoint.get("items", {})

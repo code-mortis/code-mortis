@@ -293,6 +293,8 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
         "warnings": data.get("warnings", []),
         "message": data.get("message", ""),
     }
+    if isinstance(data.get("excluded_files"), list):
+        report["excluded_files"] = data["excluded_files"]
     report = json.loads(clean_text(json.dumps(report), secrets))
     return ("completed" if state == "complete" else state), report, comments
 
@@ -496,6 +498,8 @@ def review(
                     raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
                 paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
                 limited = file_limit_result(paths, review_settings["max_files"])
+                if limited and isinstance(preview.get("excluded_files"), list):
+                    limited[1]["excluded_files"] = preview["excluded_files"]
             if limited is None:
                 code, output, _ = command(
                     args, repo, env, timeout=None, stopped=stopped

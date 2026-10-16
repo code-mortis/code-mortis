@@ -7,7 +7,7 @@ from celery import Celery
 from celery.signals import worker_process_init
 from sqlalchemy import or_, select
 
-from . import background, checks, github, installations, ocr, runner_client, verification
+from . import background, checks, github, installations, ocr, pr_summary, runner_client, verification
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -105,6 +105,8 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
         pr = upsert_pr(db, repo, data)
         reconcile_threads(db, pr, repo, token)
+        if pr.summary_comment_id or pr_summary.latest_run(db, pr.id):
+            pr_summary.enqueue_sync(db, pr)
         if (
             automatic
             and repo.enabled
@@ -200,6 +202,8 @@ def execute(kind: str, payload: dict):
         publish_run(payload["run_id"])
     elif kind == "sync_check":
         checks.sync_check(payload["run_id"])
+    elif kind == "sync_summary":
+        pr_summary.sync(payload["pr_id"])
     elif kind == "resolve":
         synchronize_finding(payload)
     elif kind == "webhook":
@@ -295,6 +299,10 @@ def execute_job(job_id: str):
                 run = db.get(ReviewRun, payload["run_id"])
                 if run:
                     run.check_error, run.check_pending = message[:2000], True
+            elif kind == "sync_summary":
+                pr = db.get(PullRequest, payload["pr_id"])
+                if pr:
+                    pr.summary_error = message[:2000]
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
                 if run and not run.cancel_requested:
@@ -352,6 +360,10 @@ def dispatch():
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
                         run.check_error, run.check_pending = job.error, True
+                elif job.kind == "sync_summary":
+                    pr = db.get(PullRequest, job.payload["pr_id"])
+                    if pr:
+                        pr.summary_error = job.error
                 elif job.kind == "publish":
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
@@ -389,6 +401,8 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
+        for pr in db.scalars(select(PullRequest).where(PullRequest.summary_error.is_not(None))):
+            pr_summary.enqueue_sync(db, pr)
         for run in db.scalars(select(ReviewRun).where(
             ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
         )):

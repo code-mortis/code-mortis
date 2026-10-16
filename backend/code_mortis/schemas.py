@@ -111,6 +111,8 @@ class RunLimits(StrictModel):
 
 
 class RepoSettings(RunLimits):
+    summary_token_budget: int | None = Field(default=60000, ge=1000, le=5000000)
+    summary_timeout_seconds: int | None = Field(default=180, ge=60, le=3600)
     automatic: bool = True
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
@@ -280,6 +282,26 @@ class RepositoryOut(ORMModel):
     has_running_review: bool = False
 
 
+class SummaryGroup(StrictModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str = Field(min_length=1, max_length=1200)
+    paths: list[str] = Field(min_length=1, max_length=1000)
+
+
+class SummaryResult(StrictModel):
+    narrative: str = Field(min_length=1, max_length=3000)
+    groups: list[SummaryGroup] = Field(max_length=12)
+
+
+class SummaryState(StrictModel):
+    status: Literal["not_applicable", "pending", "running", "completed", "failed", "skipped"] = "not_applicable"
+    tokens: int | None = None
+    inference_started_at: datetime | None = None
+    result: SummaryResult | None = None
+    limited_context: bool = False
+    error: str | None = None
+
+
 class RunOut(ORMModel):
     id: str
     pr_id: str
@@ -295,6 +317,7 @@ class RunOut(ORMModel):
     publication_error: str | None
     config: dict[str, Any]
     report: dict[str, Any] | None
+    summary: SummaryState = Field(default_factory=SummaryState)
     engine: str
     connection_id: str | None
     owner_id: int | None
@@ -325,6 +348,10 @@ class PullRequestOut(ORMModel):
     base_sha: str
     head_ref: str
     updated_at: datetime
+    summary_url: str | None = None
+    summary_pending: bool = False
+    summary_error: str | None = None
+    summary_synced_at: datetime | None = None
     latest_run: RunOut | None = None
     open_findings: int = 0
 

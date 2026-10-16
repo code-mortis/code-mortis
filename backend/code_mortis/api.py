@@ -22,6 +22,7 @@ from . import (
     inbox,
     installations,
     model_discovery,
+    pr_summary,
     resolved_list,
     runner_client,
     verification,
@@ -681,6 +682,17 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     run.publication, run.publication_error = "pending", None
     job = enqueue(db, "publish", {"run_id": run.id})
     return {"job_id": job.id}
+
+
+@router.post("/pulls/{pr_id}/summary", status_code=202)
+def retry_summary_sync(pr_id: str, db: DB, user: USER) -> dict:
+    pr_access(db, user, pr_id, write=True)
+    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
+    if not pr_summary.latest_run(db, pr.id):
+        raise HTTPException(409, "This pull request has no overview to synchronize. Start a new review first.")
+    pr.summary_error = None
+    pr_summary.enqueue_sync(db, pr)
+    return {"status": "pending"}
 
 
 @router.get("/findings/{finding_id}", response_model=FindingDetail)

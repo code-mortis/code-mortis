@@ -981,6 +981,19 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
+        {run.summary && run.summary.status !== "not_applicable" && <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">PR summary</span>
+            <Status value={run.summary.status} />
+            <span className="text-muted-foreground">{run.summary.tokens === null ? "Usage unknown" : `${(run.summary.tokens ?? 0).toLocaleString()} tokens`} · separate allowance</span>
+            {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
+            {pr.summary_pending && <span className="text-muted-foreground">Overview update pending</span>}
+            {can_write && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry overview sync</Button>}
+          </div>
+          <p className="text-muted-foreground">The overview follows the latest review. Retrying sync sends saved content and uses no AI tokens.</p>
+          <ErrorNotice error={run.summary.error} />
+          <ErrorNotice error={pr.summary_error} />
+        </div>}
       </section>
     </header>
     <ErrorNotice error={action.error || error} />

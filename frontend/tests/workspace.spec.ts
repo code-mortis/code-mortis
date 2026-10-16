@@ -28,6 +28,8 @@ const repo = {
     background: "",
     timeout_seconds: 900,
     token_budget: 200000,
+    summary_token_budget: 60000,
+    summary_timeout_seconds: 180,
     max_files: 40,
     delegated_context_bytes: 800000,
     concurrency: 2,
@@ -255,6 +257,7 @@ async function mock(
     personal?: boolean;
     claude?: boolean;
     run?: Partial<Run>;
+    overview?: Partial<Schema["PullRequestOut"]>;
     finding?: Partial<Schema["FindingOut"]>;
     verifications?: Schema["VerificationOut"][];
     candidates?: Schema["CandidateOut"][];
@@ -366,7 +369,7 @@ async function mock(
     } else if (path === "/runs/run")
       data = {
         run: currentRun,
-        pull_request: pr,
+        pull_request: { ...pr, ...options.overview },
         repository: repo,
         occurrences: options.occurrences ?? (currentRun.status === "skipped" ? [] : [
           { finding_id: "finding", snapshot: finding, inline_line: 46 },
@@ -1023,6 +1026,53 @@ test("repository configuration keeps drafts across sections and restores filtere
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     settings: { automatic: false, effort: "high", background: "Keep this draft while changing sections.", max_files: 75 },
   });
+});
+
+test("summary allowance is separate and keeps unlimited preferences", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings?tab=limits");
+  await expect(page.getByLabel("Summary token allowance", { exact: true })).toHaveValue("60000");
+  await expect(page.getByLabel("Summary timeout (seconds)", { exact: true })).toHaveValue("180");
+  await expect(page.getByText(/Adds input and output token usage beyond the review budget/)).toBeVisible();
+  await page.getByLabel("Summary token allowance", { exact: true }).fill("45000");
+  await page.getByLabel("Unlimited summary token allowance", { exact: true }).check();
+  await expect(page.getByLabel("Summary token allowance", { exact: true })).toBeDisabled();
+  await page.getByLabel("Unlimited summary token allowance", { exact: true }).uncheck();
+  await expect(page.getByLabel("Summary token allowance", { exact: true })).toHaveValue("45000");
+  await page.getByLabel("Summary timeout (seconds)", { exact: true }).fill("240");
+  await noOverflow(page);
+  await page.screenshot({ path: `/tmp/pr-summary-settings-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    settings: { summary_token_budget: 45000, summary_timeout_seconds: 240, token_budget: 200000, timeout_seconds: 900 },
+  });
+});
+
+test("PR overview shows saved usage and retries synchronization without starting a review", async ({ page }, info) => {
+  const requests = await mock(page, {
+    run: { summary: { status: "completed", tokens: 1234, limited_context: true } },
+    overview: { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10", summary_pending: true, summary_error: "GitHub rate limit reached." },
+  });
+  await page.goto("/runs/run");
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await expect(publication.getByText("PR summary", { exact: true })).toBeVisible();
+  await expect(publication.getByText("1,234 tokens · separate allowance")).toBeVisible();
+  await expect(publication.getByRole("link", { name: "View PR overview" })).toHaveAttribute("href", /#issuecomment-10$/);
+  await expect(publication.getByText("Overview update pending")).toBeVisible();
+  await expect(publication.getByRole("alert").filter({ hasText: "GitHub rate limit reached." })).toBeVisible();
+  await publication.getByRole("button", { name: "Retry overview sync" }).click();
+  expect(requests.map((request) => request.path)).toEqual(["/pulls/pr/summary"]);
+  await noOverflow(page);
+  await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
+});
+
+test("PR summary failure exposes unknown usage and preserves read-only permissions", async ({ page }) => {
+  await mock(page, { canWrite: false, run: { summary: { status: "failed", tokens: null, limited_context: false, error: "Summary generation was interrupted." } } });
+  await page.goto("/runs/run");
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  await expect(publication.getByText("Usage unknown · separate allowance")).toBeVisible();
+  await expect(publication.getByRole("alert").filter({ hasText: "Summary generation was interrupted." })).toBeVisible();
+  await expect(publication.getByRole("button", { name: "Retry overview sync" })).toHaveCount(0);
 });
 
 test("repository configuration validates hidden fields and retains drafts after a failed save", async ({ page }) => {

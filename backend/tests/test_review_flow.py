@@ -286,7 +286,7 @@ def remote(head="a" * 40):
     }
 
 
-def new_run(*, assessed=False):
+def new_run(*, assessed=False, overview=False):
     with transaction() as db:
         run = reviews.create_run(
             db, db.get(PullRequest, "pr"), db.get(Repository, 22), "manual", db.get(User, 7)
@@ -294,6 +294,9 @@ def new_run(*, assessed=False):
         if not assessed:
             # Existing lifecycle tests also protect pre-assessment run recovery.
             run.config = {key: value for key, value in run.config.items() if key != "assessment_policy"}
+        if not overview:
+            # Preserve recovery coverage for runs created before PR overviews were enabled.
+            run.summary = {}
         db.flush()
         return run.id
 
