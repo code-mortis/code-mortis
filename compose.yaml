@@ -79,6 +79,28 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  verification-worker:
+    <<: *app
+    environment:
+      <<: *environment
+      CM_OCR_ISOLATED_RUNTIME: "true"
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, verification, --concurrency=1, --loglevel=INFO, --hostname=verification@%h]
+    stop_grace_period: 30s
+    networks: [default, runners]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  summary-worker:
+    <<: *app
+    environment:
+      <<: *environment
+      CM_OCR_ISOLATED_RUNTIME: "true"
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, summaries, --concurrency=1, --loglevel=INFO, --hostname=summaries@%h]
+    stop_grace_period: 30s
+    networks: [default, runners]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
   sync-worker:
     <<: *app
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, sync, --concurrency=1, --loglevel=INFO, --hostname=sync@%h]

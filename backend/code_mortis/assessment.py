@@ -164,9 +164,16 @@ def summary(db, run):
 
 
 def record_summary(db, run):
+    from . import pipeline
+
     value = summary(db, run)
     if value is not None:
         run.progress = {**run.progress, "assessment": value.model_dump()}
+    if pipeline.enabled(run) and run.stages.get("assessment"):
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
+        amounts = [row.usage.get("tokens", 0 if not row.usage else None) for row in rows]
+        amounts += [attempt["usage"].get("tokens", 0 if not attempt["usage"] else None) for row in rows for attempt in row.attempts]
+        pipeline.update(run, "assessment", run.stages["assessment"]["status"], tokens=pipeline.usage(amounts))
 
 
 def withhold_pending(db, run, reason):
@@ -404,10 +411,14 @@ def remaining_budget(db, run):
     rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
     used = [item.usage for item in rows]
     used += [attempt["usage"] for item in rows for attempt in item.attempts]
-    used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run.id)))
     options = run.config["settings"]
-    budget = options["token_budget"]
-    values = [(run.report or {}).get("summary", {}).get("total_tokens"), *(item.get("tokens", 0 if not item else None) for item in used)]
+    separate = run.config.get("pipeline_version") == 2
+    if not separate:
+        used += list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run.id)))
+    budget = options["assessment_token_budget"] if separate else options["token_budget"]
+    values = [item.get("tokens", 0 if not item else None) for item in used]
+    if not separate:
+        values.insert(0, ocr.report_tokens(run.report))
     known = all(type(value) is int and value >= 0 for value in values)
     return (None if budget is None else budget - sum(values) if known else 0), known
 
@@ -437,7 +448,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         retry = run.progress.get("assessment_retry")
         ids = [retry["candidate_id"]] if retry else list(db.scalars(select(ReviewCandidate.id)
             .where(ReviewCandidate.run_id == run_id).order_by(ReviewCandidate.position)))
-        options = run.config["settings"]
+        options = dict(run.config["settings"])
+        if run.config.get("pipeline_version") == 2:
+            options["token_budget"] = options["assessment_token_budget"]
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     concurrency = options.get("concurrency", 1)
@@ -529,8 +542,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
                             reason = verification.limit_error(options, allowance, remaining, usage_known)
                             raise ValueError(reason + " Assessment stopped.")
-                        usage = {"tokens": budget}
+                        usage = ({"tokens": None, "reserved_tokens": budget} if run.config.get("pipeline_version") == 2 else {"tokens": budget})
                     row.status, row.context, row.usage = "running", request_context, usage
+                    record_summary(db, current)
                 if result is None:
                     try:
                         if connection["kind"] == "api":
@@ -562,8 +576,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             known = type(spent) is int and spent >= 0
                             if known:
                                 consumed += spent
-                            exc.usage = {"tokens": consumed if known else budget}
-                        usage = {unit: consumed} if known else {"tokens": budget}
+                            exc.usage = {"tokens": consumed if known else None if run.config.get("pipeline_version") == 2 else budget}
+                        usage = {unit: consumed} if known else {"tokens": None if run.config.get("pipeline_version") == 2 else budget}
                         if exc.feedback and known and not corrected and attempt < 2:
                             if stopped():
                                 raise ocr.ReviewStopped("The assessment stopped before its invalid response could be corrected.") from exc

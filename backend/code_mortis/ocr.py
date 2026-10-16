@@ -293,8 +293,15 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
         "warnings": data.get("warnings", []),
         "message": data.get("message", ""),
     }
+    if isinstance(data.get("excluded_files"), list):
+        report["excluded_files"] = data["excluded_files"]
     report = json.loads(clean_text(json.dumps(report), secrets))
     return ("completed" if state == "complete" else state), report, comments
+
+
+def report_tokens(report: dict | None):
+    summary = (report or {}).get("summary")
+    return summary.get("total_tokens") if isinstance(summary, dict) else None
 
 
 def fingerprint(comment: dict) -> str:
@@ -375,6 +382,7 @@ def review(
     checkpoint: dict | None = None,
     saved_review: tuple | None = None,
     after_review: Callable | None = None,
+    before_analysis: Callable | None = None,
 ) -> tuple[str, dict, list[dict]]:
     deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
     cancelled = stopped
@@ -446,6 +454,7 @@ def review(
                 stopped,
                 progress,
                 checkpoint or {},
+                before_analysis=before_analysis,
             ))
         args = [
             settings().ocr_binary,
@@ -496,6 +505,10 @@ def review(
                     raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
                 paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
                 limited = file_limit_result(paths, review_settings["max_files"])
+                if limited and isinstance(preview.get("excluded_files"), list):
+                    limited[1]["excluded_files"] = preview["excluded_files"]
+            if before_analysis:
+                before_analysis(limited)
             if limited is None:
                 code, output, _ = command(
                     args, repo, env, timeout=None, stopped=stopped

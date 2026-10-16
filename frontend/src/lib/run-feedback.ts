@@ -5,8 +5,17 @@ const record = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
-export function assessmentFeedback(error: string) {
+export function assessmentFeedback(error: string, stage: "assessment" | "verification" | "review" = "assessment") {
   const message = error.split("; response=", 1)[0];
+  const name = stage[0].toUpperCase() + stage.slice(1);
+  const budget = /used (\d+) tokens \+ next-file estimate exceeds budget (\d+)/.exec(message);
+  if (budget && [budget[1], budget[2]].every((value) => Number.isSafeInteger(Number(value)))) {
+    const used = Number(budget[1]);
+    const limit = Number(budget[2]).toLocaleString("en-US");
+    return { title: `${name} token limit reached`, message: used === 0
+      ? `This check stopped before contacting the AI: its estimated request exceeded the saved limit of ${limit} tokens. Start a new review to use current settings.`
+      : `The next request would exceed this check's saved limit of ${limit} tokens (${used.toLocaleString("en-US")} already used). Start a new review to use current settings.` };
+  }
   let detail: Record<string, unknown> = {};
   const start = message.indexOf('{"field":');
   if (start >= 0) {
@@ -46,27 +55,27 @@ export function assessmentFeedback(error: string) {
     return { title: "Finding reference could not be verified", message: "The AI returned an invalid finding reference. Only findings supplied in the review history can be linked." };
   }
   if (/without returning a final assessment|did not return exactly one final assessment|unsupported response instead of a finding assessment|invalid verification verdict/.test(message)) {
-    return { title: "No usable assessment returned", message: "The AI did not return a complete assessment in the required format. Check the selected model and technical details before starting another review." };
+    return { title: `No usable ${stage} returned`, message: `The AI did not return a complete ${stage} in the required format. Check the selected model and technical details before starting another review.` };
   }
   if (/OCR evidence prompt exceeds|Context limit exhausted|Assessment needs .* bytes|Token budget exhausted|No token budget remains/.test(message)) {
     const limit = message.split(" Technical details:", 1)[0];
-    return { title: "Assessment limit reached", message: limit.length <= 240 && !/[{}]/.test(limit)
-      ? limit : "The assessment could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review." };
+    return { title: `${name} limit reached`, message: limit.length <= 240 && !/[{}]/.test(limit)
+      ? limit : `The ${stage} could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review.` };
   }
   if (/Token usage is unavailable or invalid|did not report valid token usage/.test(message)) {
-    return { title: "Token usage could not be verified", message: "The AI's token usage was unavailable, so this assessment could not continue. Check the technical details before starting another review." };
+    return { title: "Token usage could not be verified", message: `The AI's token usage was unavailable, so this ${stage} could not continue. Check the technical details before starting another review.` };
   }
   if (/Assessment timed out|Time limit reached/.test(message)) {
-    return { title: "Assessment timed out", message: "The time limit was reached before this assessment finished. Review the run's timeout before starting another review." };
+    return { title: `${name} timed out`, message: `The time limit was reached before this ${stage} finished. Review the run's timeout before starting another review.` };
   }
   if (/cancelled|replaced by a newer run|pull request or finding history changed|Access to the repository or AI connection changed/.test(message)) {
-    return { title: "Assessment stopped", message: "The review stopped or its context changed before this assessment could finish. Check the run outcome and current access." };
+    return { title: `${name} stopped`, message: `The review stopped or its context changed before this ${stage} could finish. Check the run outcome and current access.` };
   }
   if (/authentication|HTTP 40[13]|quota|rate.limit|OCR verification process failed|AI did not finish checking|AI could not confirm or reject/i.test(message)) {
-    return { title: "AI request could not complete", message: "The selected AI service could not complete this assessment. Check the connection and technical details before trying again." };
+    return { title: "AI request could not complete", message: `The selected AI service could not complete this ${stage}. Check the connection and technical details before trying again.` };
   }
-  return { title: "Assessment could not be completed", message: error.length <= 240 && !/[{}]/.test(error)
-    ? error : "No usable assessment was saved. Inspect the technical details before starting another review." };
+  return { title: `${name} could not be completed`, message: error.length <= 240 && !/[{}]/.test(error)
+    ? error : `No usable ${stage} was saved. Inspect the technical details before starting another review.` };
 }
 
 export function runFeedback(run: Run) {
@@ -167,12 +176,10 @@ export function runFeedback(run: Run) {
     pending: ["Waiting to publish", ""],
     publishing: ["Publishing comments", "Saved review results are being sent to GitHub."],
     published: ["Published", "The review results were published on GitHub."],
-    no_new_comments: ["No new comments", "No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates."],
+    no_new_comments: ["No new comments", "No additional GitHub comments were needed."],
     failed: ["Publication failed", "Check the GitHub error, then retry publication. Retrying sends saved results without rerunning AI analysis."],
     partially_published: ["Some comments published", "Some saved comments could not be published. Retry publication to send the remaining comments without rerunning AI analysis."],
-    not_applicable: ["No comments published", run.status === "skipped"
-      ? "This review was skipped, so there were no new review results to publish."
-      : "No review comments were published for this run. See the review outcome for the reason."],
+    not_applicable: ["No comments published", ""],
   };
   if (fileLimitSkip) {
     publications.pending = ["Waiting to publish skip notice", "The file-limit notice is waiting to be sent to GitHub."];

@@ -430,6 +430,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Summary Sync */
+        post: operations["retry_summary_sync_api_v1_pulls__pr_id__summary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/summary/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Summary Generation */
+        post: operations["retry_summary_generation_api_v1_runs__run_id__summary_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/findings/{finding_id}": {
         parameters: {
             query?: never;
@@ -1134,6 +1168,22 @@ export interface components {
             /** Auth Message */
             auth_message: string | null;
         };
+        /** DiagramEdge */
+        DiagramEdge: {
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+        };
+        /** DiagramNode */
+        DiagramNode: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Paths */
+            paths: string[];
+        };
         /** FindingAction */
         FindingAction: {
             /**
@@ -1535,6 +1585,17 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Summary Url */
+            summary_url?: string | null;
+            /**
+             * Summary Pending
+             * @default false
+             */
+            summary_pending: boolean;
+            /** Summary Error */
+            summary_error?: string | null;
+            /** Summary Synced At */
+            summary_synced_at?: string | null;
             latest_run?: components["schemas"]["RunOut"] | null;
             /**
              * Open Findings
@@ -1554,6 +1615,36 @@ export interface components {
              * @default 200000
              */
             token_budget: number | null;
+            /**
+             * Assessment Token Budget
+             * @default 200000
+             */
+            assessment_token_budget: number | null;
+            /**
+             * Verification Token Budget
+             * @default 200000
+             */
+            verification_token_budget: number | null;
+            /**
+             * Summary Token Budget
+             * @default 60000
+             */
+            summary_token_budget: number | null;
+            /**
+             * Summary Timeout Seconds
+             * @default 180
+             */
+            summary_timeout_seconds: number | null;
+            /**
+             * Summary Diagram Enabled
+             * @default false
+             */
+            summary_diagram_enabled: boolean;
+            /**
+             * Ai Fix Prompts Enabled
+             * @default false
+             */
+            ai_fix_prompts_enabled: boolean;
             /**
              * Automatic
              * @default true
@@ -1738,6 +1829,11 @@ export interface components {
             report: {
                 [key: string]: unknown;
             } | null;
+            summary?: components["schemas"]["SummaryState"];
+            /** Stages */
+            stages?: {
+                [key: string]: components["schemas"]["StageState"];
+            };
             /** Engine */
             engine: string;
             /** Connection Id */
@@ -1785,10 +1881,83 @@ export interface components {
              */
             page_size: number;
         };
+        /** StageState */
+        StageState: {
+            /**
+             * Status
+             * @default pending
+             * @enum {string}
+             */
+            status: "pending" | "waiting" | "running" | "completed" | "partial" | "failed" | "skipped" | "cancelled";
+            /** Execution */
+            execution?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens: number | null;
+            /** Error */
+            error?: string | null;
+        };
         /** StartRunInput */
         StartRunInput: {
             /** Connection Id */
             connection_id?: string | null;
+        };
+        /** SummaryDiagram */
+        SummaryDiagram: {
+            /** Nodes */
+            nodes: components["schemas"]["DiagramNode"][];
+            /** Edges */
+            edges: components["schemas"]["DiagramEdge"][];
+        };
+        /** SummaryGroup */
+        SummaryGroup: {
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Paths */
+            paths: string[];
+        };
+        /** SummaryResult */
+        SummaryResult: {
+            /** Narrative */
+            narrative: string;
+            /** Groups */
+            groups: components["schemas"]["SummaryGroup"][];
+            diagram?: components["schemas"]["SummaryDiagram"] | null;
+        };
+        /** SummaryState */
+        SummaryState: {
+            /**
+             * Status
+             * @default not_applicable
+             * @enum {string}
+             */
+            status: "not_applicable" | "pending" | "running" | "completed" | "failed" | "skipped";
+            /** Tokens */
+            tokens?: number | null;
+            /** Inference Started At */
+            inference_started_at?: string | null;
+            result?: components["schemas"]["SummaryResult"] | null;
+            /**
+             * Limited Context
+             * @default false
+             */
+            limited_context: boolean;
+            /** Error */
+            error?: string | null;
+            /** Diagram Warning */
+            diagram_warning?: string | null;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
         };
         /** UserOut */
         UserOut: {
@@ -2685,6 +2854,72 @@ export interface operations {
         };
     };
     retry_publication_api_v1_runs__run_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_summary_sync_api_v1_pulls__pr_id__summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_summary_generation_api_v1_runs__run_id__summary_retry_post: {
         parameters: {
             query?: never;
             header?: never;

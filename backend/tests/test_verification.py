@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import checks, github, jobs, ocr, reviews, runner_client, verification
+from code_mortis import checks, github, jobs, ocr, pipeline, reviews, runner_client, verification
 from code_mortis.db import now, transaction
 from code_mortis.github import threads as github_threads
 from code_mortis.models import (
@@ -73,6 +73,9 @@ def scenario(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote(HEAD))
     with transaction() as db:
         run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
+        # Historical runs retain the shared-budget, sequential verification contract.
+        run.config = {key: value for key, value in run.config.items() if key != "pipeline_version"}
+        run.stages = {}
         db.flush()
         run_id = run.id
     calls = []
@@ -121,6 +124,91 @@ def saved():
 def perform(scenario):
     reviews.perform_review(scenario["run"])
     return saved()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+def test_manual_reviews_verify_and_resolve_without_automatic_review_grant(scenario, monkeypatch, automatic, kind):
+    with transaction() as db:
+        repo, run = db.get(Repository, 22), db.get(ReviewRun, scenario["run"])
+        repo.settings = {"automatic": automatic, "auto_resolve": True}
+        run.trigger, run.actor_id = "manual", 7
+        if kind != "api":
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            run.owner_id = 7
+            run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: (copy.deepcopy(RESULT), {"tokens": 50}))
+    row, finding, run = perform(scenario)
+    assert row.status == "completed" and row.resolution == "pending"
+    reviews.synchronize_finding(finding.sync_intent)
+    row, finding, _ = saved()
+    assert finding.status == "resolved" and row.resolution == "resolved"
+    assert scenario["mutations"] == [True]
+
+
+@pytest.mark.parametrize("previous_status", ["failed", "skipped", "completed", "running"])
+def test_new_manual_run_retries_unsuccessful_verification_with_current_settings(scenario, monkeypatch, previous_status):
+    with transaction() as db:
+        old, repo = db.get(ReviewRun, scenario["run"]), db.get(Repository, 22)
+        verification.prepare(db, old, repo, "token")
+        db.flush()
+        previous = db.scalar(select(FindingVerification))
+        previous.status, previous.error, previous.usage = previous_status, "Previous attempt", {"tokens": 19}
+        previous_id = previous.id
+        old.status = "completed"
+        repo.settings = {"automatic": False, "auto_resolve": True, "verification_token_budget": None,
+                         "timeout_seconds": None, "language": "Spanish", "model": "current-model"}
+        run = reviews.create_run(db, db.get(PullRequest, "pr"), repo, "manual", db.get(User, 7))
+        db.flush()
+        identity = run.id
+        verification.prepare(db, run, repo, "token")
+        verification.prepare(db, run, repo, "token")
+        db.flush()
+        attempts = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == identity)))
+        assert len(attempts) == (1 if previous_status in {"failed", "skipped"} else 0)
+        run.status, run.started_at = "running", now()
+        pipeline.enqueue_stages(db, run)
+        job = db.scalar(select(Job).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == identity))
+        job_id = job.id if job else None
+    calls = []
+
+    def verify(*args):
+        calls.append((args[2]["model"], args[5], args[6]))
+        return copy.deepcopy(RESULT), {"tokens": 50}
+
+    monkeypatch.setattr(verification, "api_verify", verify)
+    if job_id:
+        jobs.execute_job.run(job_id)
+        jobs.execute_job.run(job_id)
+    assert calls == ([("current-model", None, None)] if job_id else [])
+    with transaction() as db:
+        previous = db.get(FindingVerification, previous_id)
+        assert (previous.status, previous.error, previous.usage) == (previous_status, "Previous attempt", {"tokens": 19})
+        run = db.get(ReviewRun, identity)
+        assert run.config["settings"]["language"] == "Spanish"
+        if job_id:
+            attempt = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
+            assert attempt.status == "completed" and attempt.usage["tokens"] == 50
+            assert run.stages["verification"]["status"] == "completed"
+
+
+def test_retry_migration_preserves_previous_attempt(scenario):
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        verification.prepare(db, run, db.get(Repository, 22), "token")
+        db.flush()
+        row = db.scalar(select(FindingVerification))
+        row.status, row.error, row.usage = "failed", "Original failure", {"tokens": None, "reserved_tokens": 200000}
+        identity = row.id
+    config = Config("alembic.ini")
+    command.downgrade(config, "20261017_parallel_stages")
+    command.upgrade(config, "head")
+    with transaction() as db:
+        row = db.get(FindingVerification, identity)
+        assert row.status == "failed" and row.error == "Original failure"
+        assert row.usage == {"tokens": None, "reserved_tokens": 200000}
+        assert db.scalar(select(func.count()).select_from(Occurrence)) == 1
 
 
 @pytest.mark.parametrize("verdict", ["fixed", "still_present", "uncertain"])
@@ -202,6 +290,185 @@ def test_partial_line_quotes_preserve_literal_text_and_source_location(quote, st
     else:
         with pytest.raises(ValueError):
             verification.validate_result(data, CONTEXT)
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct"])
+def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
+    identity = scenario["run"]
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        if parallel:
+            run.config = {**run.config, "pipeline_version": 2,
+                          "settings": {**run.config["settings"], "max_files": None}}
+            run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
+        if kind != "api":
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
+            run.owner_id = 7
+            run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+    helper = "\n\ndef report_tokens(report):\n    return None\n"
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths))
+    reads, calls, native_ids = [], [], []
+    def read(repo, env, sha, path, stopped):
+        reads.append((sha, path))
+        assert path == "helper.py" and sha == HEAD and not stopped()
+        return helper
+    monkeypatch.setattr(verification, "read_source", read)
+
+    def respond(context, budget, remaining, stopped):
+        assert not stopped() and remaining > 0
+        calls.append((copy.deepcopy(context), budget))
+        raw = copy.deepcopy(RESULT)
+        loaded = "helper.py" in context["sources"]["current"]
+        if sequence == "correct_request" and len(calls) == 1:
+            raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": 1,
+                                    "end_line": 2, "quote": helper.strip()})
+        elif not loaded:
+            raw.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "helper.py"}])
+        else:
+            start = 1 if sequence == "request_correct" and len(calls) == 2 else 3
+            raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": start,
+                                    "end_line": start + 1, "quote": helper.strip()})
+        return raw
+
+    def api(repo, env, connection, credentials, context, budget, remaining, stopped):
+        raw = respond(context, budget, remaining, stopped)
+        try:
+            return verification.validate_response(raw, context), {"tokens": 25}
+        except verification.ResultValidationError as exc:
+            raise verification.VerificationOutputError(str(exc), {"tokens": 25}, feedback=exc.feedback) from exc
+
+    def native(connection, attempt_id, payload, stopped):
+        native_ids.append(attempt_id)
+        assert "required_sources" in payload["output_schema"]["required"]
+        assert "1 | while True:" in payload["prompt"]
+        with transaction() as db:
+            context = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity)).context
+        return respond(context, payload["token_budget"], payload["timeout"], stopped), {"tokens": 25}
+    monkeypatch.setattr(verification, "api_verify", api)
+    monkeypatch.setattr(runner_client, "review", native)
+    reviews.perform_review(identity)
+    if parallel:
+        with transaction() as db:
+            if kind != "api":
+                # The personal profile becomes available after the main review's job releases it.
+                db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity)).status = "done"
+            job_id = db.scalar(select(Job.id).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == identity))
+        jobs.execute_job.run(job_id)
+    with transaction() as db:
+        row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
+        assert row.status == "completed" and row.verdict == "fixed", row.error
+        assert row.usage == {"tokens": 25 * len(calls)}
+        assert row.context["sources"]["current"]["helper.py"] == helper
+        assert "required_sources" not in row.result
+    assert len(calls) == (2 if sequence == "request" else 3)
+    assert reads == [(HEAD, "helper.py")]
+    assert [budget for _, budget in calls] == [calls[0][1] - 25 * index for index in range(len(calls))]
+    assert len(native_ids) == len(set(native_ids))
+
+
+@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "unknown", "three_passes", "repeat_citation"])
+def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, stop):
+    calls = []
+    tick = now()
+    monkeypatch.setattr(verification, "now", lambda: tick)
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if stop == "excluded" else set(paths))
+    monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
+    if stop == "budget":
+        with transaction() as db:
+            run = db.get(ReviewRun, scenario["run"])
+            run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 125}}
+    def infer(repo, env, connection, credentials, context, budget, remaining, stopped):
+        nonlocal tick
+        calls.append(budget)
+        if stop == "unknown":
+            raise verification.VerificationOutputError("Unknown usage", {"tokens": None}, feedback={"field": "evidence[0]"})
+        if stop == "repeat_citation":
+            raise verification.VerificationOutputError("Bad citation", {"tokens": 25}, feedback={"field": "evidence[0]"})
+        with transaction() as db:
+            if stop == "timeout":
+                tick += timedelta(hours=1)
+            elif stop == "cancel":
+                db.get(ReviewRun, scenario["run"]).cancel_requested = True
+            elif stop == "disabled":
+                db.get(Repository, 22).settings = {"auto_resolve": False}
+            elif stop == "connection":
+                db.get(Connection, "connection").base_url = "https://changed.example.com/v1"
+            elif stop == "finding":
+                db.get(Finding, scenario["finding"]).sync_version += 1
+        return {**RESULT, "verdict": "uncertain", "required_sources": [
+            {"revision": "current", "path": f"helper{len(calls)}.py"},
+        ]}, {"tokens": 25}
+    monkeypatch.setattr(verification, "api_verify", infer)
+    row, finding, _ = perform(scenario)
+    assert len(calls) == (3 if stop == "three_passes" else 2 if stop == "repeat_citation" else 1)
+    assert row.verdict == "uncertain" and finding.desired_status is None
+    assert row.usage == {"tokens": calls[0] if stop == "unknown" else 25 * len(calls)}
+    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "unknown", "repeat_citation"} else "skipped")
+
+
+@pytest.mark.parametrize("bad", ["excluded", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
+def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
+    context = copy.deepcopy(CONTEXT)
+    if bad == "file_limit":
+        context["diff_only_paths"] = [f"changed{index}.py" for index in range(99)]
+    path = "../secret" if bad == "traversal" else "src/retry.py" if bad == "already_loaded" else "helper.py"
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if bad == "excluded" else set(paths))
+    commands = []
+    def git(repo, env, *args, **kwargs):
+        commands.append(args)
+        assert args[1] == HEAD if args[0] == "ls-tree" else args[1] == HEAD + ":" + path
+        if args[0] == "ls-tree":
+            return f"{'120000' if bad == 'symlink' else '100644'} blob {'a' * 40}\thelper.py"
+        return "\x00binary" if bad == "binary" else "x" * 1_500_001
+    monkeypatch.setattr(ocr, "git", git)
+    with pytest.raises(ValueError):
+        verification.expand_context(tmp_path, {}, context, [{"revision": "current", "path": path}], {}, lambda: False)
+    if bad in {"excluded", "traversal", "already_loaded", "file_limit"}:
+        assert not commands
+
+
+def test_requested_original_dependency_uses_pinned_revision(tmp_path, monkeypatch):
+    context = copy.deepcopy(CONTEXT)
+    context["diff_only_paths"] = ["helper.py"]
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths))
+    reads = []
+    def read(repo, env, sha, path, stopped):
+        reads.append((sha, path))
+        return "old dependency\n"
+    monkeypatch.setattr(verification, "read_source", read)
+    source = {"revision": "original", "path": "helper.py"}
+    verification.expand_context(tmp_path, {}, context, [source, source], {}, lambda: False)
+    assert reads == [(CONTEXT["original_sha"], "helper.py")]
+    assert context["sources"]["original"]["helper.py"] == "old dependency\n"
+    assert "helper.py" not in context["sources"]["current"]
+    assert not context["diff_only_paths"]
+    assert 'original source: "helper.py"' in verification.evidence_bundle(context)
+    assert "1 | old dependency" in verification.evidence_bundle(context)
+
+
+@pytest.mark.parametrize("verdict,count,path", [("fixed", 1, "helper.py"), ("uncertain", 11, "helper.py"), ("uncertain", 1, "../secret")])
+def test_dependency_requests_cannot_claim_a_fix_or_escape_limits(verdict, count, path):
+    raw = {**RESULT, "verdict": verdict, "required_sources": [{"revision": "current", "path": path}] * count}
+    with pytest.raises(ValueError):
+        verification.validate_response(raw, CONTEXT)
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_correction_failure_accounts_for_previous_consumption(scenario, monkeypatch, known):
+    calls = []
+    def infer(*args):
+        calls.append(args[5])
+        raise verification.VerificationOutputError("Invalid citation", {"tokens": 25 if len(calls) == 1 or known else None},
+                                                   feedback={"field": "evidence[0]"})
+    monkeypatch.setattr(verification, "api_verify", infer)
+    row, finding, _ = perform(scenario)
+    assert len(calls) == 2 and calls[1] == calls[0] - 25
+    assert row.status == "failed" and row.usage == {"tokens": 50 if known else calls[0]}
+    assert finding.desired_status is None
 
 
 @pytest.mark.parametrize("mode", [

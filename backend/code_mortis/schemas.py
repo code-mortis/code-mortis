@@ -111,6 +111,12 @@ class RunLimits(StrictModel):
 
 
 class RepoSettings(RunLimits):
+    assessment_token_budget: int | None = Field(default=200000, ge=1000, le=5000000)
+    verification_token_budget: int | None = Field(default=200000, ge=1000, le=5000000)
+    summary_token_budget: int | None = Field(default=60000, ge=1000, le=5000000)
+    summary_timeout_seconds: int | None = Field(default=180, ge=60, le=3600)
+    summary_diagram_enabled: bool = False
+    ai_fix_prompts_enabled: bool = False
     automatic: bool = True
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
@@ -280,6 +286,54 @@ class RepositoryOut(ORMModel):
     has_running_review: bool = False
 
 
+class SummaryGroup(StrictModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str = Field(min_length=1, max_length=1200)
+    paths: list[str] = Field(min_length=1, max_length=1000)
+
+
+class DiagramNode(StrictModel):
+    id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+    label: str = Field(min_length=1, max_length=120)
+    paths: list[str] = Field(min_length=1, max_length=8)
+
+
+class DiagramEdge(StrictModel):
+    source: str
+    target: str
+
+
+class SummaryDiagram(StrictModel):
+    nodes: list[DiagramNode] = Field(min_length=1, max_length=12)
+    edges: list[DiagramEdge] = Field(max_length=20)
+
+
+class SummaryResult(StrictModel):
+    narrative: str = Field(min_length=1, max_length=3000)
+    groups: list[SummaryGroup] = Field(max_length=12)
+    diagram: SummaryDiagram | None = None
+
+
+class SummaryState(StrictModel):
+    status: Literal["not_applicable", "pending", "running", "completed", "failed", "skipped"] = "not_applicable"
+    tokens: int | None = None
+    inference_started_at: datetime | None = None
+    result: SummaryResult | None = None
+    limited_context: bool = False
+    error: str | None = None
+    diagram_warning: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class StageState(StrictModel):
+    status: Literal["pending", "waiting", "running", "completed", "partial", "failed", "skipped", "cancelled"] = "pending"
+    execution: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    tokens: int | None = 0
+    error: str | None = None
+
+
 class RunOut(ORMModel):
     id: str
     pr_id: str
@@ -295,6 +349,8 @@ class RunOut(ORMModel):
     publication_error: str | None
     config: dict[str, Any]
     report: dict[str, Any] | None
+    summary: SummaryState = Field(default_factory=SummaryState)
+    stages: dict[str, StageState] = Field(default_factory=dict)
     engine: str
     connection_id: str | None
     owner_id: int | None
@@ -325,6 +381,10 @@ class PullRequestOut(ORMModel):
     base_sha: str
     head_ref: str
     updated_at: datetime
+    summary_url: str | None = None
+    summary_pending: bool = False
+    summary_error: str | None = None
+    summary_synced_at: datetime | None = None
     latest_run: RunOut | None = None
     open_findings: int = 0
 

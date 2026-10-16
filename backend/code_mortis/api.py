@@ -22,6 +22,8 @@ from . import (
     inbox,
     installations,
     model_discovery,
+    pipeline,
+    pr_summary,
     resolved_list,
     runner_client,
     verification,
@@ -621,6 +623,8 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     candidate.context, candidate.usage = {}, {}
     run.progress = {**run.progress, "assessment_retry": {"candidate_id": candidate.id, "actor_id": user.id}}
     run.status, run.error, run.blocked_reason = "queued", None, None
+    if pipeline.enabled(run):
+        pipeline.update(run, "assessment", "pending", started_at=None, finished_at=None, error=None, execution=None)
     enqueue(db, "review", {"run_id": run.id})
     assessment.record_summary(db, run)
     return CandidateOut.model_validate(candidate)
@@ -681,6 +685,34 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     run.publication, run.publication_error = "pending", None
     job = enqueue(db, "publish", {"run_id": run.id})
     return {"job_id": job.id}
+
+
+@router.post("/pulls/{pr_id}/summary", status_code=202)
+def retry_summary_sync(pr_id: str, db: DB, user: USER) -> dict:
+    pr_access(db, user, pr_id, write=True)
+    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
+    if not pr_summary.latest_run(db, pr.id):
+        raise HTTPException(409, "This pull request has no overview to synchronize. Start a new review first.")
+    if not pr.summary_error:
+        raise HTTPException(409, "There is no failed GitHub overview update to retry.")
+    pr.summary_error = None
+    pr_summary.enqueue_sync(db, pr)
+    return {"status": "pending"}
+
+
+@router.post("/runs/{run_id}/summary/retry", status_code=202)
+def retry_summary_generation(run_id: str, db: DB, user: USER) -> dict:
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    _, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    db.refresh(repo)
+    try:
+        job = pr_summary.retry_generation(db, run, repo, user)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": "pending", "job_id": job.id}
 
 
 @router.get("/findings/{finding_id}", response_model=FindingDetail)

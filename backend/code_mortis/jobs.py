@@ -7,7 +7,17 @@ from celery import Celery
 from celery.signals import worker_process_init
 from sqlalchemy import or_, select
 
-from . import background, checks, github, installations, ocr, runner_client, verification
+from . import (
+    background,
+    checks,
+    github,
+    installations,
+    ocr,
+    pipeline,
+    pr_summary,
+    runner_client,
+    verification,
+)
 from .config import settings
 from .db import now, transaction
 from .models import (
@@ -105,6 +115,8 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
         pr = upsert_pr(db, repo, data)
         reconcile_threads(db, pr, repo, token)
+        if pr.summary_comment_id or pr_summary.latest_run(db, pr.id):
+            pr_summary.enqueue_sync(db, pr)
         if (
             automatic
             and repo.enabled
@@ -200,6 +212,14 @@ def execute(kind: str, payload: dict):
         publish_run(payload["run_id"])
     elif kind == "sync_check":
         checks.sync_check(payload["run_id"])
+    elif kind == "sync_summary":
+        pr_summary.sync(payload["pr_id"])
+    elif kind == "generate_summary":
+        pr_summary.perform_retry(payload)
+    elif kind in pipeline.KINDS:
+        pipeline.perform(payload)
+    elif kind == "finalize_review":
+        pipeline.finalize(payload["run_id"])
     elif kind == "resolve":
         synchronize_finding(payload)
     elif kind == "webhook":
@@ -233,6 +253,15 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        if job.kind == "sync_summary":
+            # Serialize claims, then release the PR lock before GitHub calls.
+            db.scalar(select(PullRequest).where(PullRequest.id == job.payload["pr_id"]).with_for_update())
+            if db.scalar(select(Job.id).where(
+                Job.kind == "sync_summary", Job.status == "running",
+                Job.payload["pr_id"].as_string() == job.payload["pr_id"],
+            ).limit(1)):
+                job.available_at, job.dispatched_at = now() + timedelta(seconds=10), None
+                return
         lease_seconds = ((job.payload.get("limits", {}).get("timeout_seconds", 900) or 300) + 60
                          if job.kind == "generate_background" else 7200)
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
@@ -240,7 +269,7 @@ def execute_job(job_id: str):
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "generate_background", "uninstall_installation"} else payload)
+        execute(kind, execution if kind in {"review", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -249,6 +278,8 @@ def execute_job(job_id: str):
             waiting = exc.reason in {"busy", "unavailable"}
             if kind == "generate_background":
                 waiting = exc.reason == "busy" and now().timestamp() < payload["expires_at"]
+            if kind == "generate_summary":
+                waiting = exc.reason == "busy"
             job.status, job.lease_until, job.dispatched_at = "queued" if waiting else "failed", None, None
             job.available_at, job.error = now() + timedelta(seconds=30), str(exc)
             job.attempts -= 1
@@ -257,6 +288,14 @@ def execute_job(job_id: str):
                 if run and not run.cancel_requested:
                     run.status, run.blocked_reason = "queued" if waiting else "blocked", exc.reason
                     run.error = str(exc)
+            elif kind == "generate_summary" and not waiting:
+                pr_summary.fail_retry(db, job, str(exc))
+            elif kind in pipeline.KINDS:
+                run = db.scalar(select(ReviewRun).where(ReviewRun.id == payload["run_id"]).with_for_update())
+                if waiting:
+                    pipeline.update(run, pipeline.KINDS[kind], "waiting", error=str(exc))
+                else:
+                    pipeline.fail_stage(db, run, pipeline.KINDS[kind], str(exc))
         return
     except Exception as exc:
         tags = {"job_id": job_id, "job_kind": kind, "job_attempt": attempt}
@@ -270,7 +309,7 @@ def execute_job(job_id: str):
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
-        retry = retryable and attempt < 3
+        retry = retryable and attempt < 3 and kind not in {"generate_summary", *pipeline.KINDS}
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
@@ -295,6 +334,15 @@ def execute_job(job_id: str):
                 run = db.get(ReviewRun, payload["run_id"])
                 if run:
                     run.check_error, run.check_pending = message[:2000], True
+            elif kind == "sync_summary":
+                pr = db.get(PullRequest, payload["pr_id"])
+                if pr:
+                    pr.summary_error = message[:2000]
+            elif kind == "generate_summary":
+                pr_summary.fail_retry(db, job, message[:2000])
+            elif kind in pipeline.KINDS:
+                run = db.scalar(select(ReviewRun).where(ReviewRun.id == payload["run_id"]).with_for_update())
+                pipeline.fail_stage(db, run, pipeline.KINDS[kind], message[:2000])
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
                 if run and not run.cancel_requested:
@@ -322,6 +370,14 @@ def execute_job(job_id: str):
     log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
 
 
+def job_queue(kind):
+    if kind == "verify_fixes":
+        return "verification"
+    if kind in {"summarize_review", "generate_summary"}:
+        return "summaries"
+    return "reviews" if kind in {"review", "test_connection", "generate_background"} else "sync"
+
+
 @celery.task(name="mortis.dispatch")
 def dispatch():
     with transaction() as db:
@@ -331,6 +387,15 @@ def dispatch():
             .where(Job.status == "running", Job.lease_until < now())
             .with_for_update(skip_locked=True)
         ):
+            if job.kind in pipeline.KINDS:
+                job.status, job.error, job.lease_until = "failed", "The worker stopped during this stage. Retry explicitly to start new inference.", None
+                run = db.scalar(select(ReviewRun).where(ReviewRun.id == job.payload["run_id"]).with_for_update())
+                pipeline.fail_stage(db, run, pipeline.KINDS[job.kind], job.error)
+                continue
+            if job.kind == "generate_summary":
+                job.status, job.error, job.lease_until = "failed", "Summary generation was interrupted. Retry generation to start a new attempt.", None
+                pr_summary.fail_retry(db, job, job.error)
+                continue
             if job.kind == "generate_background" and (job.payload.get("background") or job.payload.get("inference_started")):
                 job.status = "done" if job.payload.get("background") else "failed"
                 job.error = None if job.status == "done" else background.INTERRUPTED
@@ -352,6 +417,10 @@ def dispatch():
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
                         run.check_error, run.check_pending = job.error, True
+                elif job.kind == "sync_summary":
+                    pr = db.get(PullRequest, job.payload["pr_id"])
+                    if pr:
+                        pr.summary_error = job.error
                 elif job.kind == "publish":
                     run = db.get(ReviewRun, job.payload["run_id"])
                     if run:
@@ -381,7 +450,7 @@ def dispatch():
                 job.status, job.error = "failed", "Background generation expired. Generate again to retry."
                 continue
             execute_job.apply_async(
-                args=[job.id], queue="reviews" if job.kind in {"review", "test_connection", "generate_background"} else "sync"
+                args=[job.id], queue=job_queue(job.kind)
             )
             job.dispatched_at = now()
 
@@ -389,6 +458,14 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
+        for run in db.scalars(select(ReviewRun).where(
+            ReviewRun.config["pipeline_version"].as_integer() == 2,
+            ReviewRun.status.in_(["running", "queued", "cancelled", "superseded"]),
+        ).with_for_update()):
+            if not run.progress.get("pipeline_finalized"):
+                pipeline.enqueue_finalizer(db, run)
+        for pr in db.scalars(select(PullRequest).where(PullRequest.summary_error.is_not(None))):
+            pr_summary.enqueue_sync(db, pr)
         for run in db.scalars(select(ReviewRun).where(
             ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
         )):
