@@ -677,7 +677,7 @@ def reconcile_threads(db: Session, pr: PullRequest, repo: Repository, token: str
 
 def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
     if run.status == "skipped" and file_limit_exceeded(run):
-        if run.summary:
+        if pr_summary.ready_to_sync(run):
             return []
         count = len(run.report["manifest"]["coverage"]["selected"])
         maximum = run.config["settings"]["max_files"]
@@ -756,7 +756,7 @@ def assessed_publication_plan(db, run, *, append=False):
         )
         if run.status == "partial" or counts.incomplete:
             body += "\n\nCoverage or assessment is incomplete. This is not a clean review of the entire PR."
-        if run.summary:
+        if pr_summary.ready_to_sync(run):
             body = ""
         if unanchored:
             body += "\n\nFindings without a valid inline location:\n" + "\n\n".join(unanchored)

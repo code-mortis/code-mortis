@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import (
@@ -20,7 +20,7 @@ from code_mortis import (
     runner_client,
     verification,
 )
-from code_mortis.db import now, transaction
+from code_mortis.db import engine, now, transaction
 from code_mortis.models import (
     Connection,
     Finding,
@@ -107,8 +107,11 @@ def test_single_comment_uncertain_create_duplicate_jobs_and_deletion(seed, overv
         assert db.get(PullRequest, "pr").summary_comment_id is None
         db.get(ReviewRun, identity).summary = {"status": "completed", "result": {**RESULT, "narrative": "Updated summary."}}
     monkeypatch.setattr(github, "request", original)
+    with transaction() as db:
+        first = db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+        second = reviews.enqueue(db, "sync_summary", {"pr_id": "pr"}).id
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(pr_summary.sync, ["pr", "pr"]))
+        list(pool.map(jobs.execute_job.run, [first, second]))
     assert [method for method, _ in writes] == ["POST", "PATCH"]
     stored.clear()
     pr_summary.sync("pr")
@@ -117,6 +120,82 @@ def test_single_comment_uncertain_create_duplicate_jobs_and_deletion(seed, overv
         pr = db.get(PullRequest, "pr")
         assert pr.summary_url and pr.summary_synced_at
         assert db.get(ReviewRun, identity).review_ids == []
+
+
+@pytest.mark.parametrize("changed_during_publish", [False, True])
+def test_concurrent_summary_jobs_create_once_without_holding_database(seed, overview_api, monkeypatch, changed_during_publish):
+    stored, writes, _ = overview_api
+    identity = completed_run()
+    with transaction() as db:
+        first = db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+        second = reviews.enqueue(db, "sync_summary", {"pr_id": "pr"}).id
+    entered, release = threading.Event(), threading.Event()
+    original = github.request
+
+    def request(method, *args, **kwargs):
+        assert engine().pool.checkedout() == 0
+        if method == "POST":
+            entered.set()
+            assert release.wait(5)
+        return original(method, *args, **kwargs)
+
+    monkeypatch.setattr(github, "request", request)
+    def token(*args):
+        assert engine().pool.checkedout() == 0
+        return "installation-token"
+    monkeypatch.setattr(github, "installation_token_from_jwt", token)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        publishing = pool.submit(jobs.execute_job.run, first)
+        try:
+            assert entered.wait(5)
+            jobs.execute_job(second)
+            with transaction() as db:
+                db.execute(text("SET LOCAL lock_timeout = '1s'"))
+                db.scalar(select(PullRequest).where(PullRequest.id == "pr").with_for_update())
+                job = db.get(Job, second)
+                assert job.status == "queued" and job.attempts == 0
+                job.available_at = now()
+                db.get(ReviewRun, identity).publication = "published"
+                if changed_during_publish:
+                    db.get(ReviewRun, identity).summary = {"status": "completed", "result": {**RESULT, "narrative": "Updated during publication."}}
+        finally:
+            release.set()
+        publishing.result()
+    jobs.execute_job(second)
+    assert len(stored) == 1
+    assert [method for method, _ in writes] == (["POST", "PATCH"] if changed_during_publish else ["POST"])
+    if changed_during_publish:
+        assert "Updated during publication" in stored[0]["body"]
+    with transaction() as db:
+        assert all(db.get(Job, job_id).status == "done" for job_id in (first, second))
+
+
+@pytest.mark.parametrize("change", ["new_run", "revision", "disabled"])
+def test_summary_rechecks_state_after_github_reads(seed, overview_api, monkeypatch, change):
+    _, writes, _ = overview_api
+    completed_run()
+    original = github.request
+
+    def request(method, path, *args, **kwargs):
+        result = original(method, path, *args, **kwargs)
+        if "/pulls/" in path:
+            if change == "new_run":
+                ready_run()
+            else:
+                with transaction() as db:
+                    if change == "revision":
+                        db.get(PullRequest, "pr").head_sha = "f" * 40
+                    else:
+                        db.get(Repository, 22).enabled = False
+        return result
+
+    monkeypatch.setattr(github, "request", request)
+    if change == "disabled":
+        with pytest.raises(ValueError, match="access was removed"):
+            pr_summary.sync("pr")
+    else:
+        pr_summary.sync("pr")
+    assert writes == []
 
 
 def test_overview_keeps_previous_summary_until_latest_revision_is_ready(seed, overview_api):
@@ -422,6 +501,33 @@ def test_generation_has_independent_allowance_and_no_repeat(seed, generation, st
         assert run.status == status and reviews.publication_plan(db, run) == []
 
 
+@pytest.mark.parametrize("native", [False, True])
+def test_legacy_summary_settings_keep_default_limits(seed, generation, monkeypatch, native):
+    identity = ready_run()
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        options = {key: value for key, value in run.config["settings"].items()
+                   if key not in {"summary_token_budget", "summary_timeout_seconds"}}
+        run.config = {**run.config, "settings": options}
+        if native:
+            connection = db.get(Connection, run.connection_id)
+            connection.kind, connection.owner_id, connection.auth_status = "codex", 7, "connected"
+            run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
+    def review(_connection, _run, payload, _stopped):
+        assert payload["token_budget"] == 60000 and 0 < payload["timeout"] <= 180
+        return RESULT, {"tokens": 321}
+    monkeypatch.setattr(runner_client, "review", review)
+    if native:
+        monkeypatch.setattr(reviews, "authorize_connection", lambda *a: None)
+    generate(identity)
+    if not native:
+        assert generation[0][0][5] == 60000 and 0 < generation[0][0][6] <= 180
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.summary["status"] == "completed"
+        assert "summary_token_budget" not in run.config["settings"]
+
+
 @pytest.mark.parametrize("failure", ["exception", "unknown", "overspent", "paths", "cancelled", "interrupted", "context"])
 def test_generation_failures_never_repeat_or_change_review_outcome(seed, generation, monkeypatch, failure):
     identity = ready_run()
@@ -466,6 +572,8 @@ def test_context_is_bounded_and_paths_are_literal(seed, monkeypatch):
     monkeypatch.setattr(ocr, "git", git)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "settings": {key: value for key, value in run.config["settings"].items()
+                                               if key not in {"summary_token_budget", "summary_timeout_seconds"}}}
         context = pr_summary.build_context(None, {}, run, lambda: False)
         assert context["limited_context"] and len(context["diff"].encode()) <= 12000
         assert calls[-1][-2:] == ("--", ":(literal)src/retry.py")
@@ -474,10 +582,12 @@ def test_context_is_bounded_and_paths_are_literal(seed, monkeypatch):
             pr_summary.build_context(None, {}, run, lambda: False)
 
 
-def test_validated_snapshots_prompts_history_and_resolution(seed):
+@pytest.mark.parametrize("summary_status", ["pending", "running", "failed", "skipped", "completed"])
+def test_validated_snapshots_prompts_history_and_resolution(seed, summary_status):
     identity = ready_run()
     with transaction() as db:
         run = db.get(ReviewRun, identity)
+        run.summary = {"status": summary_status, "result": RESULT if summary_status == "completed" else None}
         run.config = {**run.config, "settings": {**run.config["settings"], "ai_fix_prompts_enabled": True}}
         candidate = ReviewCandidate(run_id=identity, position=0, snapshot={**COMMENT, "suggestion_code": "REJECTED_SUGGESTION"},
                                     status="completed", result={"verdict": "confirmed"})
@@ -492,7 +602,8 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
         plan = reviews.assessed_publication_plan(db, run)
         body = plan[0]["comments"][0]["body"]
         assert "Prompt to fix with AI" in body and "Source revision: " + run.head_sha in body
-        assert "REJECTED_SUGGESTION" not in body and "Code Mortis review:" not in plan[0]["body"]
+        assert "REJECTED_SUGGESTION" not in body
+        assert ("Code Mortis review:" in plan[0]["body"]) == (summary_status != "completed")
         finding = db.get(Finding, candidate.finding_id)
         finding.publication_run_id = None
         for occurrence in db.scalars(select(Occurrence)):
@@ -521,6 +632,50 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
             assert pr.summary_pending
             body = pr_summary.render(db, pr, run)
             assert ("Prompt to fix with AI" in body) == (status == "open")
+
+
+@pytest.mark.parametrize("summary_status", ["pending", "running", "failed", "skipped", "completed"])
+def test_file_limit_notice_remains_until_summary_is_ready(seed, summary_status):
+    identity = ready_run("skipped")
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status = "skipped"
+        run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
+        run.summary = {"status": summary_status, "result": RESULT if summary_status == "completed" else None}
+        plan = reviews.publication_plan(db, run)
+        if summary_status == "completed":
+            assert plan == []
+        else:
+            assert "No files were reviewed" in plan[0]["body"] and "review anyway" in plan[0]["body"]
+
+
+def test_render_batches_latest_occurrences_and_preserves_history(seed):
+    old = completed_run()
+    latest = completed_run()
+    with transaction() as db:
+        db.get(ReviewRun, old).created_at = now() - timedelta(days=1)
+        db.get(ReviewRun, old).head_sha = "b" * 40
+        for index in range(4):
+            finding = Finding(id=f"finding-{index}", pr_id="pr", fingerprint=str(index), path=COMMENT["path"],
+                              content="Old content", severity="high", start_line=1, end_line=1, last_seen_run_id=old)
+            db.add(finding)
+            db.flush()
+            db.add(Occurrence(finding_id=finding.id, run_id=old, snapshot={**COMMENT, "content": f"Old {index}"}))
+            if index < 3:
+                db.add(Occurrence(finding_id=finding.id, run_id=latest, snapshot={**COMMENT, "content": f"New {index}"}))
+    queries = []
+    def record(_connection, _cursor, statement, *_args):
+        if "SELECT" in statement and "occurrences" in statement:
+            queries.append(statement)
+    event.listen(engine(), "before_cursor_execute", record)
+    try:
+        with transaction() as db:
+            body = pr_summary.render(db, db.get(PullRequest, "pr"), db.get(ReviewRun, latest))
+    finally:
+        event.remove(engine(), "before_cursor_execute", record)
+    assert len(queries) == 1
+    assert "New 0" in body and "Old 0" not in body and "New 2" in body
+    assert "Old 3 (earlier finding; not observed in this review)" in body
 
 
 def test_hostile_markdown_and_large_prompts_keep_fences_and_identity():

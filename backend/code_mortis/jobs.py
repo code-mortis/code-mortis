@@ -253,6 +253,15 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        if job.kind == "sync_summary":
+            # Serialize claims, then release the PR lock before GitHub calls.
+            db.scalar(select(PullRequest).where(PullRequest.id == job.payload["pr_id"]).with_for_update())
+            if db.scalar(select(Job.id).where(
+                Job.kind == "sync_summary", Job.status == "running",
+                Job.payload["pr_id"].as_string() == job.payload["pr_id"],
+            ).limit(1)):
+                job.available_at, job.dispatched_at = now() + timedelta(seconds=10), None
+                return
         lease_seconds = ((job.payload.get("limits", {}).get("timeout_seconds", 900) or 300) + 60
                          if job.kind == "generate_background" else 7200)
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)

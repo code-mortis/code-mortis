@@ -165,7 +165,7 @@ def perform(payload):
         update(run, stage, "running", execution=claim, started_at=now().isoformat(), error=None)
         options = dict(run.config["settings"])
         if stage == "summary":
-            options["timeout_seconds"] = options["summary_timeout_seconds"]
+            options["timeout_seconds"] = options.get("summary_timeout_seconds", 180)
         elif options["timeout_seconds"] is not None:
             options["timeout_seconds"] = max(1, int(options["timeout_seconds"] - (now() - run.started_at).total_seconds()))
         full_name, number = repo.full_name, pr.number

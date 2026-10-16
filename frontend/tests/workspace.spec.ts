@@ -1032,6 +1032,24 @@ test("repository configuration keeps drafts across sections and restores filtere
   });
 });
 
+for (const reason of ["The native runner is temporarily unavailable. Try again shortly.", "The selected connection is busy."]) {
+  test(`summary waiting preserves its reason: ${reason}`, async ({ page }, info) => {
+    await mock(page, { run: {
+      status: "running", publication: "pending", publication_error: null,
+      summary: { status: "pending", tokens: 0, limited_context: false },
+      stages: { summary: { status: "waiting", tokens: 0, error: reason } },
+    } });
+    await page.goto("/runs/run");
+    await page.getByRole("button", { name: "PR summary details: Pending", exact: true }).click();
+    const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+    await expect(details).toContainText("Waiting to generate the summary.");
+    await expect(details).toContainText(reason);
+    await expect(details).not.toContainText("Waiting for the personal connection.");
+    await noOverflow(page);
+    await page.screenshot({ path: `/tmp/pr-summary-waiting-${reason.includes("busy") ? "busy" : "unavailable"}-${info.project.name}.png` });
+  });
+}
+
 test("summary allowance is separate and keeps unlimited preferences", async ({ page }, info) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=limits");
@@ -1645,7 +1663,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
     await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
     if (entry === "feedback") {
-      await page.getByRole("link", { name: "Open pull request to run a new review", exact: true }).click();
+      await page.getByRole("link", { name: "#148 · Add retry handling for payment webhooks", exact: true }).click();
     } else {
       await (await breadcrumbAncestor(page, "Pull request #148")).click();
     }

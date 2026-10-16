@@ -132,7 +132,7 @@ def test_default_settings_and_assessment_budget_are_independent(seed):
 @pytest.mark.parametrize("invalid", [False, True])
 def test_diagram_validation_is_independent_and_rendering_is_safe(invalid):
     diagram = copy.deepcopy(DIAGRAM)
-    diagram["nodes"][0]["label"] = 'A"\n```\n</details><script>test</script>'
+    diagram["nodes"][0]["label"] = 'A"] & # \' \\ \n```\n</details><script>test</script>'
     if invalid:
         diagram["edges"] = [{"source": "retry", "target": "invented"}]
     context = {**CONTEXT, "diagram_enabled": True}
@@ -144,6 +144,7 @@ def test_diagram_validation_is_independent_and_rendering_is_safe(invalid):
         rendered = pr_summary.diagram_section(result["diagram"])
         assert "<summary>Diagram</summary>" in rendered
         assert rendered.count("```") == 2 and "<script>" not in rendered
+        assert "#34;] #38; #35; ' #92;" in rendered and "&#" not in rendered
     assert "diagram" not in pr_summary.validate_result({**RESULT, "diagram": diagram}, CONTEXT)
 
 

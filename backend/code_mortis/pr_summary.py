@@ -8,6 +8,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import event, inspect, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session
 
 from . import github, ocr, runner_client, verification
@@ -204,7 +205,7 @@ def build_context(repo, env, run, stopped):
     merge_base = ocr.git(repo, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
     ceiling = run.config["connection"].get("options", {}).get("prompt_token_ceiling", 58888)
     # Conservative byte bound leaves room for instructions, transport and generated output.
-    limit = min(128000, ceiling, run.config["settings"]["summary_token_budget"] or 128000)
+    limit = min(128000, ceiling, run.config["settings"].get("summary_token_budget", 60000) or 128000)
     context = {"paths": paths, "base_sha": run.base_sha, "head_sha": run.head_sha,
                "language": run.config["settings"]["language"], "limited_context": False,
                "sources": {}, "diff": ""}
@@ -325,7 +326,7 @@ def perform_retry(payload):
 
     # Reuse the isolated checkout only; detailed review, assessment and publication remain untouched.
     ocr.review(full_name, number, run.base_sha, run.head_sha, snapshot, credentials,
-               {**payload["config"]["settings"], "timeout_seconds": payload["config"]["settings"]["summary_timeout_seconds"]},
+               {**payload["config"]["settings"], "timeout_seconds": payload["config"]["settings"].get("summary_timeout_seconds", 180)},
                token, stopped, saved_review=(run.status, run.report, []), after_review=after_checkout)
 
 
@@ -348,7 +349,7 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
                            "error": "Summary unavailable because the review encountered an authentication or account usage restriction. Restore access before starting another review."}
             return
         config = config or run.config
-        options = config["settings"]
+        options = {**RepoSettings().model_dump(), **config["settings"]}
         flags = {name: options.get(name, False) for name in ("summary_diagram_enabled", "ai_fix_prompts_enabled")}
         run.summary = {"status": "running", "tokens": 0, "settings": flags}
         if retry_job_id and pipeline.enabled(run):
@@ -496,13 +497,17 @@ def render(db, pr, run):
     findings = list(db.scalars(select(Finding).where(Finding.pr_id == pr.id, Finding.status == "open")
                               .order_by(Finding.created_at, Finding.id)))
     findings.sort(key=lambda row: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(row.severity, 4))
+    observed = {occurrence.finding_id: (occurrence, source) for occurrence, source in db.execute(
+        select(Occurrence, ReviewRun.head_sha).join(ReviewRun).join(Finding, Occurrence.finding_id == Finding.id)
+        .where(Finding.pr_id == pr.id, Finding.status == "open")
+        .ext(distinct_on(Occurrence.finding_id))
+        .order_by(Occurrence.finding_id, ReviewRun.created_at.desc(), Occurrence.id.desc())
+    )}
     rows, snapshots = [], []
     for finding in findings:
-        observed = db.execute(select(Occurrence, ReviewRun.head_sha).join(ReviewRun).where(Occurrence.finding_id == finding.id)
-                              .order_by(ReviewRun.created_at.desc(), Occurrence.id.desc()).limit(1)).first()
-        if not observed:
+        if finding.id not in observed:
             continue
-        occurrence, source = observed
+        occurrence, source = observed[finding.id]
         url = finding.github_url or f"{settings().public_url}/pulls/{pr.id}?finding={finding.id}"
         note = "" if occurrence.run_id == run.id else (
             " (earlier finding; review in progress)" if reviewing else " (earlier finding; not observed in this review)"
@@ -557,9 +562,9 @@ def render(db, pr, run):
 
 
 def sync(pr_id):
+    # execute_job serializes sync_summary jobs for this PR without holding a connection here.
     with transaction() as db:
-        # Serialize publishers while allowing review writes to check their PR foreign key.
-        pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update(key_share=True))
+        pr = db.get(PullRequest, pr_id)
         if not pr:
             return
         run = latest_run(db, pr.id)
@@ -568,34 +573,46 @@ def sync(pr_id):
         repo = db.get(Repository, pr.repository_id)
         if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The PR overview cannot be updated because GitHub installation access was removed.")
-        token = github.installation_token(db, repo.installation_id)
+        app_token = github.app_token(db)
         expected = f"<!-- code-mortis:pr-summary:{pr.id} -->"
         bot = github.app_config(db).github_slug + "[bot]"
-        existing = None
-        if pr.summary_comment_id:
-            try:
-                existing = github.request("GET", f"/repos/{repo.full_name}/issues/comments/{pr.summary_comment_id}", token)
-            except github.GitHubError as exc:
-                if exc.status != 404:
-                    raise
-        if existing is not None and existing.get("user", {}).get("login") != bot:
-            raise ValueError("The saved overview comment does not belong to this GitHub App.")
-        if existing is None:
-            existing = next((item for item in github.pages(f"/repos/{repo.full_name}/issues/{pr.number}/comments", token)
-                             if item.get("user", {}).get("login") == bot and expected in (item.get("body") or "")), None)
-        remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
-        if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
-                   for sha in (remote.get("head", {}).get("sha"), remote.get("base", {}).get("sha"))):
-            raise ValueError("GitHub returned an invalid PR revision. Refresh the pull request before retrying synchronization.")
-        db.refresh(run)
-        if (not ready_to_sync(run) or latest_run(db, pr.id).id != run.id or remote["state"] != "open"
-            or (run.head_sha, run.base_sha) != (remote["head"]["sha"], remote["base"]["sha"])):
+    token = github.installation_token_from_jwt(app_token, repo.installation_id)
+    existing = None
+    if pr.summary_comment_id:
+        try:
+            existing = github.request("GET", f"/repos/{repo.full_name}/issues/comments/{pr.summary_comment_id}", token)
+        except github.GitHubError as exc:
+            if exc.status != 404:
+                raise
+    if existing is not None and existing.get("user", {}).get("login") != bot:
+        raise ValueError("The saved overview comment does not belong to this GitHub App.")
+    if existing is None:
+        existing = next((item for item in github.pages(f"/repos/{repo.full_name}/issues/{pr.number}/comments", token)
+                         if item.get("user", {}).get("login") == bot and expected in (item.get("body") or "")), None)
+    remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
+    if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
+               for sha in (remote.get("head", {}).get("sha"), remote.get("base", {}).get("sha"))):
+        raise ValueError("GitHub returned an invalid PR revision. Refresh the pull request before retrying synchronization.")
+    with transaction() as db:
+        current = latest_run(db, pr.id)
+        pr = db.get(PullRequest, pr.id)
+        repo = db.get(Repository, pr.repository_id)
+        if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+            raise ValueError("The PR overview cannot be updated because GitHub installation access was removed.")
+        if (not ready_to_sync(current) or current.id != run.id or remote["state"] != "open" or pr.state != "open"
+            or (current.head_sha, current.base_sha) != (remote["head"]["sha"], remote["base"]["sha"])
+            or (current.head_sha, current.base_sha) != (pr.head_sha, pr.base_sha)):
             return
-        body = render(db, pr, run)
-        if existing is None:
-            existing = github.request("POST", f"/repos/{repo.full_name}/issues/{pr.number}/comments", token, json={"body": body})
-        elif existing.get("body") != body:
-            github.request("PATCH", f"/repos/{repo.full_name}/issues/comments/{existing['id']}", token, json={"body": body})
+        body = render(db, pr, current)
+    if existing is None:
+        existing = github.request("POST", f"/repos/{repo.full_name}/issues/{pr.number}/comments", token, json={"body": body})
+    elif existing.get("body") != body:
+        github.request("PATCH", f"/repos/{repo.full_name}/issues/comments/{existing['id']}", token, json={"body": body})
+    with transaction() as db:
+        pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
         pr.summary_comment_id, pr.summary_url = existing["id"], existing["html_url"]
         pr.summary_hash, pr.summary_synced_at = digest(body), now()
         pr.summary_error = None
+        current = latest_run(db, pr_id)
+        if ready_to_sync(current) and render(db, pr, current) != body:
+            enqueue_sync(db, pr)

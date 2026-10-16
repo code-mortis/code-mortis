@@ -967,7 +967,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           </div>
           {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} /></span></TooltipTrigger>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessmentStatus === "partial" ? "Some candidates could not be fully assessed." : assessmentStatus === "running" ? "Candidates are being assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
@@ -1016,8 +1016,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                 <p className="text-muted-foreground">{tokenUsage(run.summary.tokens, run.summary.status)}</p>
                 {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
                 <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview available" : "Not published yet"}</p>
-                <ErrorNotice error={run.summary.error} />
-                {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting for the personal connection.</p>}
+                <ErrorNotice error={run.summary.error || run.stages?.summary?.error} />
+                {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
                 {run.summary.diagram_warning && <p className="text-muted-foreground">{run.summary.diagram_warning}</p>}
                 <ErrorNotice error={pr.summary_error} />
                 {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
