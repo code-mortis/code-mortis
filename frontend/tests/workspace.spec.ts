@@ -4546,13 +4546,14 @@ for (const configured of [false, true]) {
     });
     const entry = configured ? "/repositories?from=local#setup" : "/?from=local#setup";
     await page.goto(entry);
-    await expect(page).toHaveURL(`http://127.0.0.1:4178${entry}`);
     await expect(
       page.getByRole("heading", {
         name: configured ? repo.full_name : "Give your reviews a home.",
         exact: true,
       }),
     ).toBeVisible();
+    const destination = configured ? `/repositories/${repo.id}?state=open` : entry;
+    await expect(page).toHaveURL(`http://127.0.0.1:4178${destination}`);
     expect(sessionOrigins).toEqual(configured ? ["http://127.0.0.1:4178"] : []);
     expect(requests).toEqual([]);
   });
