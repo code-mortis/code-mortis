@@ -1285,6 +1285,7 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   await page.getByRole("button", { name: "PR summary details: Failed", exact: true }).click();
   const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
   await page.clock.runFor(500);
+  await details.click({ trial: true });
   const original = await details.elementHandle();
   const focused = await page.locator(":focus").elementHandle();
   const bounds = await details.boundingBox();
