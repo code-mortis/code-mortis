@@ -93,7 +93,7 @@ def assessment_done(db, run, error=None):
         assessment.withhold_pending(db, run, error)
     rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
     amounts = [item.usage.get("tokens", 0 if not item.usage else None) for item in rows]
-    amounts += [attempt["usage"].get("tokens") for item in rows for attempt in item.attempts]
+    amounts += [attempt["usage"].get("tokens", 0 if not attempt["usage"] else None) for item in rows for attempt in item.attempts]
     outcome = "skipped" if status not in {"completed", "partial"} else "partial" if any(row.status != "completed" for row in rows) else "completed"
     update(run, "assessment", outcome, tokens=usage(amounts), error=error)
 

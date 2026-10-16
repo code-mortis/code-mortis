@@ -172,7 +172,7 @@ def record_summary(db, run):
     if pipeline.enabled(run) and run.stages.get("assessment"):
         rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
         amounts = [row.usage.get("tokens", 0 if not row.usage else None) for row in rows]
-        amounts += [attempt["usage"].get("tokens") for row in rows for attempt in row.attempts]
+        amounts += [attempt["usage"].get("tokens", 0 if not attempt["usage"] else None) for row in rows for attempt in row.attempts]
         pipeline.update(run, "assessment", run.stages["assessment"]["status"], tokens=pipeline.usage(amounts))
 
 

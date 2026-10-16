@@ -213,6 +213,36 @@ def test_default_settings_and_assessment_budget_are_independent(seed):
         assert assessment.remaining_budget(db, run) == (None, False)
 
 
+@pytest.mark.parametrize("location", ["row", "attempt"])
+@pytest.mark.parametrize("saved_usage,expected", [
+    ({}, 40), ({"tokens": 0}, 40), ({"tokens": 7}, 47),
+    ({"tokens": None}, None), ({"reserved_tokens": 100}, None),
+    ({"tokens": -1}, None), ({"tokens": True}, None), ({"tokens": "7"}, None),
+])
+def test_assessment_stage_totals_match_retry_budget(seed, location, saved_usage, expected):
+    identity = new_run(assessed=True, parallel=True)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "settings": {**run.config["settings"], "assessment_token_budget": 1000}}
+        run.progress = {**run.progress, "analysis_status": "completed"}
+        row = ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT, status="completed",
+                              usage={"tokens": 25}, attempts=[{"usage": {"tokens": 15}}])
+        db.add(row)
+        if location == "attempt":
+            row.attempts = [*row.attempts, {"usage": saved_usage}]
+        else:
+            db.add(ReviewCandidate(run_id=identity, position=1, snapshot=COMMENT, status="completed",
+                                   usage=saved_usage))
+        db.flush()
+        assert assessment.remaining_budget(db, run) == ((0, False) if expected is None else (1000 - expected, True))
+        assessment.record_summary(db, run)
+        assert run.stages["assessment"]["tokens"] == expected
+        assert run.stages["assessment"]["status"] == "pending"
+        pipeline.assessment_done(db, run)
+        assert run.stages["assessment"]["tokens"] == expected
+        assert run.stages["assessment"]["status"] == "completed"
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_diagram_validation_is_independent_and_rendering_is_safe(invalid):
     diagram = copy.deepcopy(DIAGRAM)
