@@ -927,6 +927,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const feedback = runFeedback(run);
+  const savedAssessmentStatus = run.stages?.assessment?.status;
+  const assessmentStatus = run.status === "running" && (assessment?.pending ?? 0) > 0
+    && (!savedAssessmentStatus || savedAssessmentStatus === "partial")
+    ? "running" : savedAssessmentStatus ?? (assessment?.incomplete ? "partial" : "pending");
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const term = search.trim().toLowerCase();
@@ -963,8 +967,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           </div>
           {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span></TooltipTrigger>
-              <TooltipContent className="max-w-xs" sideOffset={6}>{assessment.incomplete ? "Some candidates could not be fully assessed." : "Candidates are waiting for assessment."}</TooltipContent>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} /></span></TooltipTrigger>
+              <TooltipContent className="max-w-xs" sideOffset={6}>{assessmentStatus === "partial" ? "Some candidates could not be fully assessed." : assessmentStatus === "running" ? "Candidates are being assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
           {!run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
@@ -986,9 +990,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                 {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
                   const stage = run.stages?.[key];
                   if (!stage) return null;
+                  const status = key === "assessment" ? assessmentStatus : stage.status;
                   return <div key={key} className="space-y-2">
-                    <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={stage.status} /></div>
-                    <p className="text-muted-foreground">{tokenUsage(stage.tokens, stage.status)}</p>
+                    <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
+                    <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
                     {stage.error && <InferenceError error={stage.error} stage={key === "ocr" ? "review" : key} />}
                   </div>;
                 })}

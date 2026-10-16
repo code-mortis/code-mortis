@@ -1093,6 +1093,45 @@ test("parallel stage details preserve an open popover while the run refreshes", 
   await page.screenshot({ path: `/tmp/parallel-stage-details-${info.project.name}.png`, fullPage: true });
 });
 
+for (const withStages of [true, false]) {
+  test(`assessment stays Running until processing finishes (${withStages ? "stages" : "legacy"})`, async ({ page }, info) => {
+    const assessment = { candidates: 3, new_findings: 0, repeated_observations: 0, rejected_candidates: 0,
+      withheld_candidates: 1, pending: 2, incomplete: 1, published_comments: 0 };
+    const currentRun: Partial<Run> = { status: "running", publication: "pending", publication_error: null,
+      stages: withStages ? {
+        ocr: { status: "completed", tokens: 100 }, assessment: { status: "partial", tokens: 20 },
+        verification: { status: "completed", tokens: 10 },
+      } : undefined };
+    await mock(page, { run: currentRun, assessment });
+    await page.clock.install();
+    await page.goto("/runs/run");
+    if (withStages) await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+    const scope = withStages ? page.getByRole("dialog", { name: "Review stage details", exact: true })
+      : page.getByRole("region", { name: "GitHub publication", exact: true });
+    const row = scope.getByText("Assessment", { exact: true }).locator("..");
+    await expect(row.getByText(/^running$/i)).toBeVisible();
+    await expect(row.getByText(/^partial$/i)).toHaveCount(0);
+    assessment.pending = 1;
+    assessment.incomplete = assessment.withheld_candidates = 2;
+    await page.clock.runFor(5500);
+    await expect(row.getByText(/^running$/i)).toBeVisible();
+    await page.screenshot({ path: `/tmp/assessment-running-${withStages ? "stages" : "legacy"}-${info.project.name}.png`, fullPage: true });
+    if (currentRun.stages?.assessment) {
+      currentRun.stages.assessment.status = "running";
+      assessment.pending = 0;
+      await page.clock.runFor(5500);
+      await expect(row.getByText(/^running$/i)).toBeVisible();
+      currentRun.stages.assessment.status = "partial";
+      currentRun.stages.assessment.finished_at = at;
+    }
+    assessment.pending = 0;
+    await page.clock.runFor(5500);
+    await expect(row.getByText(/^partial$/i)).toBeVisible();
+    await expect(row.getByText(/^running$/i)).toHaveCount(0);
+    await noOverflow(page);
+  });
+}
+
 test("verification failure explains the saved budget and collapses technical diagnostics", async ({ page }, info) => {
   const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
     + JSON.stringify({ exit_code: 0, status: "completed_with_warnings", summary: { total_tokens: 0, budget_exceeded: true },
