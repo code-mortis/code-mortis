@@ -690,9 +690,26 @@ def retry_summary_sync(pr_id: str, db: DB, user: USER) -> dict:
     pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
     if not pr_summary.latest_run(db, pr.id):
         raise HTTPException(409, "This pull request has no overview to synchronize. Start a new review first.")
+    if not pr.summary_error:
+        raise HTTPException(409, "There is no failed GitHub overview update to retry.")
     pr.summary_error = None
     pr_summary.enqueue_sync(db, pr)
     return {"status": "pending"}
+
+
+@router.post("/runs/{run_id}/summary/retry", status_code=202)
+def retry_summary_generation(run_id: str, db: DB, user: USER) -> dict:
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    _, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    db.refresh(repo)
+    try:
+        job = pr_summary.retry_generation(db, run, repo, user)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": "pending", "job_id": job.id}
 
 
 @router.get("/findings/{finding_id}", response_model=FindingDetail)

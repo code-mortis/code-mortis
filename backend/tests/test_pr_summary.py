@@ -1,6 +1,7 @@
 import copy
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 import pytest
 from alembic import command
@@ -19,7 +20,7 @@ from code_mortis import (
     runner_client,
     verification,
 )
-from code_mortis.db import transaction
+from code_mortis.db import now, transaction
 from code_mortis.models import (
     Connection,
     Finding,
@@ -117,6 +118,10 @@ def test_latest_revision_wins_and_hides_old_narrative(seed, overview_api):
         run.status, run.summary = "completed", {"status": "completed", "tokens": 12, "result": RESULT}
     pr_summary.sync("pr")
     assert RESULT["narrative"].replace(".", "\\.") in writes[-1][1]
+    assert "Reviewed commit:" not in writes[-1][1] and "Finding publication:" not in writes[-1][1]
+    assert "<details>\n<summary>Grouped changes</summary>\n\n| Files | Change |" in writes[-1][1]
+    assert "Stop pending retries\\. |\n\n</details>" in writes[-1][1]
+    assert "<details>\n<summary>Open findings (0)</summary>\n\nNo open validated findings.\n\n</details>" in writes[-1][1]
     revision["head"]["sha"] = "c" * 40
     pr_summary.sync("pr")
     assert "c" * 40 in writes[-1][1] and "Retries now" not in writes[-1][1]
@@ -163,6 +168,118 @@ def test_sync_errors_and_retry_only_send_saved_content(seed, overview_api, monke
     pr_summary.sync("pr")
     with transaction() as db:
         assert not db.get(PullRequest, "pr").summary_error
+
+
+def failed_summary():
+    identity = ready_run()
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status, run.publication = "completed", "no_new_comments"
+        run.summary = {"status": "failed", "tokens": 17, "error": "Previous failure"}
+    return identity
+
+
+def test_retry_summary_uses_current_settings_without_repeating_review(seed, overview_api, generation, client, monkeypatch, tmp_path):
+    identity = failed_summary()
+    pr_summary.sync("pr")
+    with transaction() as db:
+        original = copy.deepcopy(db.get(ReviewRun, identity).config)
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "summary_token_budget": None, "summary_timeout_seconds": None,
+                         "model": "current-model", "language": "Spanish", "exclusions": "excluded.py"}
+    response = client.post(f"/api/v1/runs/{identity}/summary/retry")
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+    assert client.post(f"/api/v1/runs/{identity}/summary/retry").json()["job_id"] == job_id
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "src/retry.py\0excluded.py\0" if "diff" in a else "b" * 40)
+    def scope(_repo, _env, paths, options, _stopped):
+        assert set(paths) == {"src/retry.py", "excluded.py"}
+        assert options["exclusions"] == "excluded.py"
+        return {"src/retry.py"}
+    monkeypatch.setattr(verification, "filter_context", scope)
+    def checkout(*args, **kwargs):
+        assert kwargs["saved_review"][0] == "completed"
+        assert args[6]["timeout_seconds"] is None
+        kwargs["after_review"](kwargs["saved_review"], tmp_path, {}, {})
+    monkeypatch.setattr(ocr, "review", checkout)
+    for module in (assessment, verification):
+        monkeypatch.setattr(module, "perform", lambda *a: pytest.fail("Detailed review must not run"))
+    jobs.execute_job(job_id)
+    jobs.execute_job(job_id)
+    assert len(generation) == 1
+    args, _ = generation[0]
+    assert args[2]["model"] == "current-model" and args[5:7] == (None, None)
+    with transaction() as db:
+        run, job = db.get(ReviewRun, identity), db.get(Job, job_id)
+        assert run.summary["status"] == "completed" and run.summary["tokens"] == 321
+        assert run.status == "completed" and run.publication == "no_new_comments"
+        assert run.report["summary"]["total_tokens"] == 123 and run.config == original
+        assert job.payload["previous_summary"]["tokens"] == 17
+        assert job.payload["config"]["settings"]["language"] == "Spanish"
+        assert job.status == "done"
+    assert client.post(f"/api/v1/runs/{identity}/summary/retry").status_code == 409
+    assert client.post("/api/v1/pulls/pr/summary").status_code == 409
+    pr_summary.sync("pr")
+    stored, writes, _ = overview_api
+    assert len(stored) == 1 and writes[-1][0] == "PATCH"
+    assert "Retries now stop after cancellation" in stored[0]["body"]
+
+
+def test_summary_retry_rechecks_write_permission(seed, overview_api, client, monkeypatch):
+    identity = failed_summary()
+    original = github.authorize_repo
+    def denied(db, user, name, write=False):
+        if write:
+            raise github.GitHubError(403, "Write access required")
+        return original(db, user, name, write=write)
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    assert client.post(f"/api/v1/runs/{identity}/summary/retry").status_code == 403
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).summary["status"] == "failed"
+        assert not db.scalar(select(Job.id).where(Job.kind == "generate_summary"))
+
+
+@pytest.mark.parametrize("change", ["newer_run", "new_revision", "disabled", "interrupted"])
+def test_retry_summary_never_spends_after_invalidation(seed, overview_api, client, monkeypatch, change):
+    identity = failed_summary()
+    response = client.post(f"/api/v1/runs/{identity}/summary/retry")
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    if change == "newer_run":
+        ready_run()
+    with transaction() as db:
+        if change == "new_revision":
+            db.get(PullRequest, "pr").head_sha = "f" * 40
+        elif change == "disabled":
+            db.get(Repository, 22).enabled = False
+        elif change == "interrupted":
+            run = db.get(ReviewRun, identity)
+            run.summary = {"status": "running", "tokens": None}
+            job = db.get(Job, job_id)
+            job.status, job.attempts, job.lease_until = "running", 1, now() - timedelta(seconds=1)
+    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("No inference after invalidation"))
+    monkeypatch.setattr(jobs.execute_job, "apply_async", lambda *a, **k: None)
+    if change == "interrupted":
+        jobs.dispatch()
+    else:
+        jobs.execute_job(job_id)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.summary["status"] == "failed"
+        assert run.status == "completed" and run.publication == "no_new_comments"
+        assert db.get(Job, job_id).status == "failed"
+
+
+def test_summary_preserves_sanitized_transport_failure_and_zero_usage(seed, generation, monkeypatch):
+    identity = ready_run()
+    def fail(*a, **k):
+        raise verification.VerificationOutputError("Provider rejected summary schema; provider-secret", {"tokens": 0})
+    monkeypatch.setattr(verification, "api_verify", fail)
+    generate(identity)
+    with transaction() as db:
+        state = db.get(ReviewRun, identity).summary
+        assert state["tokens"] == 0 and state["status"] == "failed"
+        assert state["error"] == "Provider rejected summary schema; [redacted]"
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "completed", "partial", "skipped", "blocked", "failed", "cancelled"])
@@ -304,6 +421,7 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
         run, pr = db.get(ReviewRun, newer), db.get(PullRequest, "pr")
         body = pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
         assert "earlier finding; not observed" in body and "REJECTED_SUGGESTION" not in body
+        assert "<details>\n<summary>Open findings (1)</summary>\n\n- **" in body
         previous = db.scalar(select(Occurrence).where(Occurrence.finding_id == finding_id))
         db.add(Occurrence(finding_id=finding_id, run_id=newer, snapshot=previous.snapshot))
         db.flush()

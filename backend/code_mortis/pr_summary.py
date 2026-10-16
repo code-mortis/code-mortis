@@ -4,6 +4,8 @@ import html
 import json
 import re
 import time
+from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import event, inspect, select
 from sqlalchemy.orm import Session
@@ -25,8 +27,8 @@ from .models import (
     ReviewRun,
     User,
 )
-from .schemas import ReviewComment, SummaryResult
-from .security import clean_text, digest
+from .schemas import RepoSettings, ReviewComment, SummaryResult
+from .security import clean_text, digest, unseal
 
 INSTRUCTIONS = (
     "Describe the supplied pull request changes in the requested language. Return a short narrative "
@@ -191,28 +193,137 @@ def build_context(repo, env, run, stopped):
     return context
 
 
-def generate(run_id, repo_path, env, connection, credentials, claim):
+def retry_generation(db, run, repo, actor):
+    from .reviews import ACTIVE, authorize_connection, connection_snapshot, enqueue
+
+    if run.summary.get("status") == "pending":
+        job = db.get(Job, run.progress.get("summary_retry"))
+        if job and job.status in {"queued", "running"}:
+            return job
+    if run.summary.get("status") != "failed" or run.status in ACTIVE or run.cancel_requested:
+        raise ValueError("Only a failed summary can be regenerated after the review finishes.")
+    pr = db.get(PullRequest, run.pr_id)
+    if latest_run(db, pr.id).id != run.id or (run.head_sha, run.base_sha) != (pr.head_sha, pr.base_sha):
+        raise ValueError("This is an earlier review. Open the latest review to retry its summary.")
+    if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+        raise ValueError("The repository or GitHub installation has been disabled.")
+    connection = db.get(Connection, repo.connection_id) if repo.connection_id else None
+    if not connection:
+        raise ValueError("Select an AI connection in repository settings before retrying the summary.")
+    authorize_connection(db, connection, repo, "manual", actor)
+    config = {"settings": RepoSettings.model_validate(repo.settings).model_dump(),
+              "connection": connection_snapshot(connection)}
+    config["connection"]["model"] = config["settings"]["model"] or connection.model
+    job = enqueue(db, "generate_summary", {"run_id": run.id, "actor_id": actor.id,
+                  "connection_id": connection.id, "config": config, "previous_summary": run.summary})
+    run.progress = {**run.progress, "summary_retry": job.id}
+    run.summary = {"status": "pending", "tokens": 0}
+    return job
+
+
+def retry_stopped(db, run, job_id, claim):
+    job = db.get(Job, job_id)
+    if not run or not job or job.status != "running" or f"{job.id}:{job.attempts}" != claim:
+        return True
+    pr = db.get(PullRequest, run.pr_id)
+    repo = db.get(Repository, pr.repository_id)
+    actor = db.get(User, job.payload["actor_id"])
+    return (run.progress.get("summary_retry") != job_id or run.cancel_requested
+            or latest_run(db, pr.id).id != run.id or pr.state != "open"
+            or (run.head_sha, run.base_sha) != (pr.head_sha, pr.base_sha)
+            or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active
+            or not actor or not actor.enabled or not db.get(Membership, actor.id))
+
+
+def fail_retry(db, job, message):
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == job.payload["run_id"]).with_for_update())
+    if run and run.progress.get("summary_retry") == job.id and run.summary.get("status") in {"pending", "running"}:
+        run.summary = {**run.summary, "status": "failed", "error": message}
+
+
+def perform_retry(payload):
+    from .reviews import authorize_connection
+
+    job_id, claim = payload["_job_id"], payload["_claim"]
+    with transaction() as db:
+        run = db.get(ReviewRun, payload["run_id"])
+        if not run or run.summary.get("status") not in {"pending", "running"}:
+            return
+        if retry_stopped(db, run, job_id, claim):
+            raise SummaryUnavailable("Summary generation stopped because the review or repository access changed.")
+        if run.summary.get("status") == "running":
+            raise SummaryUnavailable("Summary generation was interrupted. Retry generation to start a new attempt.")
+        pr = db.get(PullRequest, run.pr_id)
+        repo = db.get(Repository, pr.repository_id)
+        actor = db.get(User, payload["actor_id"])
+        github.authorize_repo(db, actor, repo.full_name, write=True)
+        connection = db.get(Connection, payload["connection_id"])
+        snapshot = payload["config"]["connection"]
+        if not connection or any(snapshot[key] != getattr(connection, key)
+                                 for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
+            raise SummaryUnavailable("The AI connection changed. Retry generation with the current settings.")
+        authorize_connection(db, connection, repo, "manual", actor)
+        if connection.kind != "api" and db.scalar(select(ReviewRun.id).where(
+            ReviewRun.connection_id == connection.id, ReviewRun.status == "running",
+        ).limit(1)):
+            raise runner_client.RunnerBlocked("busy")
+        credentials = json.loads(unseal(connection.secret))
+        token = github.installation_token(db, repo.installation_id)
+        remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
+        if remote["state"] != "open" or (remote["head"]["sha"], remote["base"]["sha"]) != (run.head_sha, run.base_sha):
+            raise SummaryUnavailable("The pull request changed. Review its latest revision before generating a summary.")
+        full_name, number = repo.full_name, pr.number
+
+    def stopped():
+        with transaction() as db:
+            cancelled = retry_stopped(db, db.get(ReviewRun, run.id), job_id, claim)
+            job = db.get(Job, job_id)
+            if not cancelled and job.lease_until and job.lease_until < now() + timedelta(hours=1):
+                job.lease_until = now() + timedelta(hours=2)
+            return cancelled
+
+    def after_checkout(_result, repo_path, env, _fetch_env):
+        generate(run.id, repo_path, env, snapshot, credentials, claim, retry_job_id=job_id,
+                 config=payload["config"], actor_id=payload["actor_id"])
+
+    # Reuse the isolated checkout only; detailed review, assessment and publication remain untouched.
+    ocr.review(full_name, number, run.base_sha, run.head_sha, snapshot, credentials,
+               {**payload["config"]["settings"], "timeout_seconds": payload["config"]["settings"]["summary_timeout_seconds"]},
+               token, stopped, saved_review=(run.status, run.report, []), after_review=after_checkout)
+
+
+def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_job_id=None, config=None, actor_id=None):
     from .reviews import authorize_connection, execution_identity, review_stopped
 
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or not run.summary or run.summary.get("status") != "pending":
             return
-        if run.progress.get("execution") != claim or run.cancel_requested:
+        if (retry_stopped(db, run, retry_job_id, claim) if retry_job_id else
+                run.progress.get("execution") != claim or run.cancel_requested):
             return
         if run.progress.get("analysis_status") not in {"completed", "partial", "skipped"}:
             run.summary = {"status": "skipped", "tokens": 0, "error": "Review analysis did not produce usable context."}
             return
-        if account_restriction(db, run):
+        if not retry_job_id and account_restriction(db, run):
             run.summary = {"status": "skipped", "tokens": 0,
                            "error": "Summary unavailable because the review encountered an authentication or account usage restriction. Restore access before starting another review."}
             return
-        options = run.config["settings"]
+        config = config or run.config
+        options = config["settings"]
         run.summary = {"status": "running", "tokens": 0}
     deadline = time.monotonic() + options["summary_timeout_seconds"] if options["summary_timeout_seconds"] else None
 
     def stopped():
-        if review_stopped(run_id, claim):
+        if retry_job_id:
+            with transaction() as db:
+                cancelled = retry_stopped(db, db.get(ReviewRun, run_id), retry_job_id, claim)
+                job = db.get(Job, retry_job_id)
+                if not cancelled and job.lease_until and job.lease_until < now() + timedelta(hours=1):
+                    job.lease_until = now() + timedelta(hours=2)
+        else:
+            cancelled = review_stopped(run_id, claim)
+        if cancelled:
             raise ocr.ReviewStopped()
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Summary generation reached its time limit.")
@@ -221,21 +332,31 @@ def generate(run_id, repo_path, env, connection, credentials, claim):
     usage, context, result, error = {"tokens": 0}, {}, None, None
     try:
         stopped()
-        context = build_context(repo_path, env, run, stopped)
+        report = run.report
+        if retry_job_id:
+            merge_base = ocr.git(repo_path, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
+            paths = ocr.git(repo_path, env, "diff", "--name-only", "--no-renames", "-z", f"{merge_base}..{run.head_sha}", stopped=stopped).strip("\0").split("\0")
+            for path in filter(None, paths):
+                ReviewComment.relative_path(path)
+            paths = verification.filter_context(repo_path, env, dict.fromkeys(filter(None, paths), "# scope preview\n"), options, stopped)
+            report = {"manifest": {"coverage": {"selected": [{"path": path} for path in sorted(paths)]}}}
+        context = build_context(repo_path, env, SimpleNamespace(config=config, report=report,
+                                base_sha=run.base_sha, head_sha=run.head_sha), stopped)
         secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         context = json.loads(clean_text(json.dumps(context), secrets))
         with transaction() as db:
             current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-            if current.progress.get("execution") != claim or current.cancel_requested:
+            if (retry_stopped(db, current, retry_job_id, claim) if retry_job_id else
+                    current.progress.get("execution") != claim or current.cancel_requested):
                 raise ocr.ReviewStopped()
             repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
             if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
                 raise ocr.ReviewStopped()
-            selected = db.get(Connection, current.connection_id)
+            selected = db.get(Connection, connection["id"])
             if not selected or any(connection[key] != getattr(selected, key)
                                    for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
                 raise SummaryUnavailable("The selected connection changed before summary generation.")
-            actor_id, trigger = execution_identity(current)
+            actor_id, trigger = (actor_id, "manual") if retry_job_id else execution_identity(current)
             actor = db.get(User, actor_id) if actor_id else None
             if actor_id:
                 if not actor or not actor.enabled or not db.get(Membership, actor.id):
@@ -257,7 +378,7 @@ def generate(run_id, repo_path, env, connection, credentials, claim):
                 delivery=DELIVERY,
             )
         else:
-            raw, usage = runner_client.review(connection["id"], run_id + "-summary", {
+            raw, usage = runner_client.review(connection["id"], (retry_job_id or run_id) + "-summary", {
                 "kind": connection["kind"], "task": "summary", "model": connection["model"],
                 "effort": options["effort"], "prompt": INSTRUCTIONS + "\n\n" + verification.evidence_bundle(context),
                 "output_schema": SummaryResult.model_json_schema(), "timeout": remaining,
@@ -280,18 +401,19 @@ def generate(run_id, repo_path, env, connection, credentials, claim):
             error = "Summary generation was cancelled or superseded."
         elif isinstance(exc, TimeoutError):
             error = "Summary generation reached its time limit."
-        elif isinstance(exc, (SummaryUnavailable, runner_client.RunnerBlocked)):
-            error = str(exc)
+        elif isinstance(exc, (SummaryUnavailable, runner_client.RunnerBlocked, verification.VerificationOutputError)):
+            error = clean_text(str(exc), (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:4000]
         else:
-            error = "Summary generation could not complete within its context, account or output limits. Start a new review to try again."
+            error = "Summary generation failed unexpectedly. Retry generation; if it fails again, check the worker logs."
         result = None
     with transaction() as db:
         current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if current.progress.get("execution") == claim and current.summary.get("status") == "running":
+        owns = current.progress.get("summary_retry") == retry_job_id if retry_job_id else current.progress.get("execution") == claim
+        if owns and current.summary.get("status") == "running":
             current.summary = {**current.summary, "status": "completed" if result else "failed", "result": result,
                                "tokens": usage.get("tokens"), "error": error,
                                "limited_context": context.get("limited_context", False)}
-        elif current.progress.get("execution") == claim:
+        elif owns:
             current.summary = {**current.summary, "tokens": usage.get("tokens")}
 
 
@@ -299,11 +421,12 @@ def render(db, pr, run, head, base):
     current = run.head_sha == head and run.base_sha == base
     state = run.status if current else "pending"
     title = "Preparing summary" if current and run.summary.get("status") == "running" else state.replace("_", " ").capitalize()
-    parts = [f"## Code Mortis: {title}", f"{'Reviewed' if state in {'completed', 'partial'} else 'Review target'} commit: `{head}`"]
+    parts = [f"## Code Mortis: {title}"]
+    if state not in {"completed", "partial"}:
+        parts.append(f"Review target commit: `{head}`")
     if not current:
         parts.append("These changes have not been reviewed yet. Earlier findings remain listed below.")
     if current:
-        parts.append(f"Finding publication: {run.publication.replace('_', ' ')}.")
         if run.status == "running" and run.progress.get("phase"):
             parts.append(f"Current phase: {text(run.progress['phase'])}.")
         for value in (run.error, run.blocked_reason, run.publication_error):
@@ -315,14 +438,14 @@ def render(db, pr, run, head, base):
             if run.summary.get("limited_context"):
                 parts.append("This summary uses limited diff excerpts. Review coverage is reported separately below.")
             if result["groups"]:
-                rows = ["### Grouped changes", "| Files | Change |", "| --- | --- |"]
+                rows = ["| Files | Change |", "| --- | --- |"]
                 for group in result["groups"]:
                     paths = group["paths"][:8]
                     label = ", ".join(text(path) for path in paths)
                     if len(paths) < len(group["paths"]):
                         label += f" and {len(group['paths']) - len(paths)} more"
                     rows.append(f"| {label} | **{text(group['title'])}**: {text(group['description'])} |")
-                parts.append("\n".join(rows))
+                parts.append("<details>\n<summary>Grouped changes</summary>\n\n" + "\n".join(rows) + "\n\n</details>")
         elif run.summary.get("error"):
             parts.extend(["### Summary", text(run.summary["error"])])
         if run.status == "skipped" and (run.report or {}).get("message"):
@@ -347,7 +470,8 @@ def render(db, pr, run, head, base):
     visible = rows[:50]
     if len(visible) < len(rows):
         visible.append(f"{len(rows) - len(visible)} more open findings. Open Code Mortis for the full list.")
-    parts.extend([f"### Open findings ({len(findings)})", "\n".join(visible) or "No open validated findings."])
+    parts.append(f"<details>\n<summary>Open findings ({len(findings)})</summary>\n\n"
+                 + ("\n".join(visible) or "No open validated findings.") + "\n\n</details>")
     if current:
         coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
         details = []

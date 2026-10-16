@@ -204,6 +204,8 @@ def execute(kind: str, payload: dict):
         checks.sync_check(payload["run_id"])
     elif kind == "sync_summary":
         pr_summary.sync(payload["pr_id"])
+    elif kind == "generate_summary":
+        pr_summary.perform_retry(payload)
     elif kind == "resolve":
         synchronize_finding(payload)
     elif kind == "webhook":
@@ -244,7 +246,7 @@ def execute_job(job_id: str):
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "generate_background", "uninstall_installation"} else payload)
+        execute(kind, execution if kind in {"review", "generate_background", "generate_summary", "uninstall_installation"} else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -253,6 +255,8 @@ def execute_job(job_id: str):
             waiting = exc.reason in {"busy", "unavailable"}
             if kind == "generate_background":
                 waiting = exc.reason == "busy" and now().timestamp() < payload["expires_at"]
+            if kind == "generate_summary":
+                waiting = exc.reason == "busy"
             job.status, job.lease_until, job.dispatched_at = "queued" if waiting else "failed", None, None
             job.available_at, job.error = now() + timedelta(seconds=30), str(exc)
             job.attempts -= 1
@@ -261,6 +265,8 @@ def execute_job(job_id: str):
                 if run and not run.cancel_requested:
                     run.status, run.blocked_reason = "queued" if waiting else "blocked", exc.reason
                     run.error = str(exc)
+            elif kind == "generate_summary" and not waiting:
+                pr_summary.fail_retry(db, job, str(exc))
         return
     except Exception as exc:
         tags = {"job_id": job_id, "job_kind": kind, "job_attempt": attempt}
@@ -274,7 +280,7 @@ def execute_job(job_id: str):
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
-        retry = retryable and attempt < 3
+        retry = retryable and attempt < 3 and kind != "generate_summary"
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
@@ -303,6 +309,8 @@ def execute_job(job_id: str):
                 pr = db.get(PullRequest, payload["pr_id"])
                 if pr:
                     pr.summary_error = message[:2000]
+            elif kind == "generate_summary":
+                pr_summary.fail_retry(db, job, message[:2000])
             elif kind == "publish":
                 run = db.get(ReviewRun, payload["run_id"])
                 if run and not run.cancel_requested:
@@ -339,6 +347,10 @@ def dispatch():
             .where(Job.status == "running", Job.lease_until < now())
             .with_for_update(skip_locked=True)
         ):
+            if job.kind == "generate_summary":
+                job.status, job.error, job.lease_until = "failed", "Summary generation was interrupted. Retry generation to start a new attempt.", None
+                pr_summary.fail_retry(db, job, job.error)
+                continue
             if job.kind == "generate_background" and (job.payload.get("background") or job.payload.get("inference_started")):
                 job.status = "done" if job.payload.get("background") else "failed"
                 job.error = None if job.status == "done" else background.INTERRUPTED
@@ -393,7 +405,7 @@ def dispatch():
                 job.status, job.error = "failed", "Background generation expired. Generate again to retry."
                 continue
             execute_job.apply_async(
-                args=[job.id], queue="reviews" if job.kind in {"review", "test_connection", "generate_background"} else "sync"
+                args=[job.id], queue="reviews" if job.kind in {"review", "test_connection", "generate_background", "generate_summary"} else "sync"
             )
             job.dispatched_at = now()
 

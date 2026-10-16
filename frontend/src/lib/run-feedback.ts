@@ -167,7 +167,7 @@ export function runFeedback(run: Run) {
     pending: ["Waiting to publish", ""],
     publishing: ["Publishing comments", "Saved review results are being sent to GitHub."],
     published: ["Published", "The review results were published on GitHub."],
-    no_new_comments: ["No new comments", "No additional GitHub comments were needed. Inspect assessment results for repeated or withheld candidates."],
+    no_new_comments: ["No new comments", "No additional GitHub comments were needed."],
     failed: ["Publication failed", "Check the GitHub error, then retry publication. Retrying sends saved results without rerunning AI analysis."],
     partially_published: ["Some comments published", "Some saved comments could not be published. Retry publication to send the remaining comments without rerunning AI analysis."],
     not_applicable: ["No comments published", run.status === "skipped"

@@ -58,6 +58,7 @@ import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import {
   Sheet,
   SheetContent,
@@ -869,7 +870,7 @@ const checkDescriptions: Record<string, string> = {
   queued: "Waiting for the review to start.",
   in_progress: "Review, publication, or fix synchronization is still in progress.",
   completed: "The GitHub check has finished.",
-  success: "The review completed and comments were handled. Findings are informational, not approval to merge.",
+  success: "Findings are informational, not approval to merge.",
   neutral: "The review completed, but assessment or fix verification is incomplete.",
   failure: "The review failed, coverage is incomplete, or comments could not be fully published.",
   cancelled: "The review was cancelled or no longer applies to this pull request.",
@@ -977,23 +978,33 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
               : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
           </div>}
+          {run.summary && run.summary.status !== "not_applicable" && <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">PR summary</span>
+            <Popover>
+              <Tooltip>
+                <TooltipTrigger asChild><PopoverTrigger asChild>
+                  <button type="button" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" aria-label={`PR summary details: ${pr.summary_error ? "Sync failed" : label(run.summary.status)}`}>
+                    <Status value={pr.summary_error ? "failed" : run.summary.status} label={pr.summary_error ? "Sync failed" : undefined} icon={<ChevronDown aria-hidden="true" className="size-3" />} />
+                  </button>
+                </PopoverTrigger></TooltipTrigger>
+                <TooltipContent sideOffset={6}>View summary details.</TooltipContent>
+              </Tooltip>
+              <PopoverContent align="start" aria-label="PR summary details" className="w-80 max-w-[calc(100vw-2rem)] space-y-3 text-xs">
+                <div className="flex items-center justify-between gap-2"><span className="font-medium">PR summary</span><Status value={run.summary.status} /></div>
+                <p className="text-muted-foreground">{run.summary.tokens === null ? "Usage unknown" : `${(run.summary.tokens ?? 0).toLocaleString()} tokens`}</p>
+                {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
+                <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview published" : "Not published yet"}</p>
+                <ErrorNotice error={run.summary.error} />
+                <ErrorNotice error={pr.summary_error} />
+                {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+                {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
+              </PopoverContent>
+            </Popover>
+          </div>}
         </div>
         {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
-        {run.summary && run.summary.status !== "not_applicable" && <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">PR summary</span>
-            <Status value={run.summary.status} />
-            <span className="text-muted-foreground">{run.summary.tokens === null ? "Usage unknown" : `${(run.summary.tokens ?? 0).toLocaleString()} tokens`} · separate allowance</span>
-            {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
-            {pr.summary_pending && <span className="text-muted-foreground">Overview update pending</span>}
-            {can_write && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry overview sync</Button>}
-          </div>
-          <p className="text-muted-foreground">The overview follows the latest review. Retrying sync sends saved content and uses no AI tokens.</p>
-          <ErrorNotice error={run.summary.error} />
-          <ErrorNotice error={pr.summary_error} />
-        </div>}
       </section>
     </header>
     <ErrorNotice error={action.error || error} />
