@@ -73,11 +73,16 @@ class Provider(BaseHTTPRequestHandler):
                 "explanation": "The supplied retry loop is now bounded.",
                 "change_explanation": "The infinite loop was replaced with three attempts.",
                 "dismissal_recommended": False,
+                "required_sources": [],
                 "evidence": [
                     {"revision": "original", "path": "main.py", "start_line": 1, "end_line": 1, "quote": "while True: retry()"},
                     {"revision": "current", "path": "main.py", "start_line": 1, "end_line": 1, "quote": "for attempt in range(3): retry()"},
                 ],
             }
+            if verification_mode == "context":
+                value.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "helper.py"}])
+            elif verification_mode == "bad_citation":
+                value["evidence"][1]["quote"] = "invented"
             if verification_mode.startswith("assessment_"):
                 assert verification.RESULT_DELIVERY in text
                 value = {
@@ -322,6 +327,20 @@ def main():
                 ocr.command = original_command
             assert verification.validate_result(raw, context)["verdict"] == "fixed"
             assert usage["tokens"] > 0
+            for verification_mode in ("context", "bad_citation"):
+                before = len(calls)
+                try:
+                    raw, usage = verification.api_verify(root, env, connection, {"api_key": "fake-test-key"},
+                                                         context, None, 60, lambda: False)
+                except verification.VerificationOutputError as exc:
+                    assert verification_mode == "bad_citation" and exc.usage["tokens"] > 0
+                    assert exc.feedback["field"] == "evidence[1]" and exc.feedback["path"] == "main.py"
+                else:
+                    assert verification_mode == "context" and raw["verdict"] == "uncertain"
+                    assert raw["required_sources"] == [{"revision": "current", "path": "helper.py"}]
+                    assert usage["tokens"] > 0
+                assert len(calls) == before + 1
+            print("Pinned OCR transported dependency requests and strict citation feedback (mock provider).")
             assessment_context = {**context, "history": [], "finding": {}}
             for verdict in ("confirmed", "rejected", "uncertain", "context"):
                 verification_mode = "assessment_" + verdict
