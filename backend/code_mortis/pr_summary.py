@@ -40,7 +40,7 @@ INSTRUCTIONS = (
     "modify files or reproduce secrets."
 )
 DELIVERY = " Submit exactly one task_done call with state DONE and the complete structured result in result. Do not use code_comment."
-RUN_FIELDS = {"status", "publication", "error", "publication_error", "report", "summary", "cancel_requested"}
+RUN_FIELDS = {"status", "publication", "summary"}
 FINDING_FIELDS = {"status", "desired_status", "last_seen_run_id", "github_url", "published_review_id", "sync_error"}
 
 
@@ -100,6 +100,11 @@ def latest_run(db, pr_id):
     ).order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1))
 
 
+def ready_to_sync(run):
+    return bool(run and run.status in {"completed", "partial", "skipped"} and not run.cancel_requested
+                and run.summary.get("status") == "completed" and run.summary.get("result"))
+
+
 def enqueue_sync(db, pr):
     if any(isinstance(item, Job) and item.kind == "sync_summary" and item.payload.get("pr_id") == pr.id
            for item in db.new):
@@ -133,20 +138,14 @@ def queue_changes(db, _context, _instances):
             if item.status in {"failed", "cancelled", "superseded"}:
                 interrupt(item)
             enabled.add(item.pr_id)
-            progress = inspect(item).attrs.progress.history
-            phase_changed = progress.has_changes() and (
-                (progress.deleted[0] if progress.deleted else {}).get("phase") != (item.progress or {}).get("phase")
-            )
-            if item in db.new or phase_changed or any(inspect(item).attrs[key].history.has_changes() for key in RUN_FIELDS):
+            if ready_to_sync(item) and (item in db.new or any(
+                inspect(item).attrs[key].history.has_changes() for key in RUN_FIELDS
+            )):
                 affected.add(item.pr_id)
         elif isinstance(item, Finding) and (item in db.new or any(
             inspect(item).attrs[key].history.has_changes() for key in FINDING_FIELDS
         )):
             affected.add(item.pr_id)
-        elif isinstance(item, PullRequest) and item.summary_comment_id and any(
-            inspect(item).attrs[key].history.has_changes() for key in ("head_sha", "base_sha", "state")
-        ):
-            affected.add(item.id)
     for pr_id in sorted(affected):
         pr = db.get(PullRequest, pr_id)
         if pr and (pr_id in enabled or pr.summary_comment_id or latest_run(db, pr_id)):
@@ -417,40 +416,27 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
             current.summary = {**current.summary, "tokens": usage.get("tokens")}
 
 
-def render(db, pr, run, head, base):
-    current = run.head_sha == head and run.base_sha == base
-    state = run.status if current else "pending"
-    title = "Preparing summary" if current and run.summary.get("status") == "running" else state.replace("_", " ").capitalize()
-    parts = [f"## Code Mortis: {title}"]
-    if state not in {"completed", "partial"}:
-        parts.append(f"Review target commit: `{head}`")
-    if not current:
-        parts.append("These changes have not been reviewed yet. Earlier findings remain listed below.")
-    if current:
-        if run.status == "running" and run.progress.get("phase"):
-            parts.append(f"Current phase: {text(run.progress['phase'])}.")
-        for value in (run.error, run.blocked_reason, run.publication_error):
-            if value:
-                parts.append(text(value))
-        if run.summary.get("result"):
-            result = run.summary["result"]
-            parts.extend(["### Summary", text(result["narrative"])])
-            if run.summary.get("limited_context"):
-                parts.append("This summary uses limited diff excerpts. Review coverage is reported separately below.")
-            if result["groups"]:
-                rows = ["| Files | Change |", "| --- | --- |"]
-                for group in result["groups"]:
-                    paths = group["paths"][:8]
-                    label = ", ".join(text(path) for path in paths)
-                    if len(paths) < len(group["paths"]):
-                        label += f" and {len(group['paths']) - len(paths)} more"
-                    rows.append(f"| {label} | **{text(group['title'])}**: {text(group['description'])} |")
-                parts.append("<details>\n<summary>Grouped changes</summary>\n\n" + "\n".join(rows) + "\n\n</details>")
-        elif run.summary.get("error"):
-            parts.extend(["### Summary", text(run.summary["error"])])
-        if run.status == "skipped" and (run.report or {}).get("message"):
-            parts.append(text(run.report["message"]) + "\n\nTo bypass only the file limit for this revision, post "
-                         f"`@{github.app_config(db).github_slug}[bot] review anyway`. Requires repository write access.")
+def render(db, pr, run):
+    parts = [f"## Code Mortis: {run.status.replace('_', ' ').capitalize()}"]
+    if run.summary.get("result"):
+        result = run.summary["result"]
+        parts.extend(["### Summary", text(result["narrative"])])
+        if run.summary.get("limited_context"):
+            parts.append("This summary uses limited diff excerpts. Review coverage is reported separately below.")
+        if result["groups"]:
+            rows = ["| Files | Change |", "| --- | --- |"]
+            for group in result["groups"]:
+                paths = group["paths"][:8]
+                label = ", ".join(text(path) for path in paths)
+                if len(paths) < len(group["paths"]):
+                    label += f" and {len(group['paths']) - len(paths)} more"
+                rows.append(f"| {label} | **{text(group['title'])}**: {text(group['description'])} |")
+            parts.append("<details>\n<summary>Grouped changes</summary>\n\n" + "\n".join(rows) + "\n\n</details>")
+    elif run.summary.get("error"):
+        parts.extend(["### Summary", text(run.summary["error"])])
+    if run.status == "skipped" and (run.report or {}).get("message"):
+        parts.append(text(run.report["message"]) + "\n\nTo bypass only the file limit for this revision, post "
+                     f"`@{github.app_config(db).github_slug}[bot] review anyway`. Requires repository write access.")
     findings = list(db.scalars(select(Finding).where(Finding.pr_id == pr.id, Finding.status == "open")
                               .order_by(Finding.created_at, Finding.id)))
     findings.sort(key=lambda row: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(row.severity, 4))
@@ -462,7 +448,7 @@ def render(db, pr, run, head, base):
             continue
         occurrence, source = observed
         url = finding.github_url or f"{settings().public_url}/pulls/{pr.id}?finding={finding.id}"
-        note = "" if current and occurrence.run_id == run.id else " (earlier finding; not observed in this review)"
+        note = "" if occurrence.run_id == run.id else " (earlier finding; not observed in this review)"
         if finding.desired_status:
             note += " (status synchronization pending)"
         rows.append(f"- **{finding.severity.title()}** [{text(finding.path)}]({url}): {text(occurrence.snapshot['content'][:350])}{note}")
@@ -472,26 +458,25 @@ def render(db, pr, run, head, base):
         visible.append(f"{len(rows) - len(visible)} more open findings. Open Code Mortis for the full list.")
     parts.append(f"<details>\n<summary>Open findings ({len(findings)})</summary>\n\n"
                  + ("\n".join(visible) or "No open validated findings.") + "\n\n</details>")
-    if current:
-        coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
-        details = []
-        if isinstance(coverage.get("selected"), list):
-            completed = len(coverage.get("completed", [])) + len(coverage.get("reused", []))
-            details = [f"Selected: {len(coverage['selected'])}. Completed: {completed}. Failed: {len(coverage.get('failed', []))}. Skipped: {len(coverage.get('waived', []))}."]
-            excluded = (run.report or {}).get("excluded_files")
-            if isinstance(excluded, list):
-                details.append(f"Excluded: {len(excluded)}.")
-            if run.status != "completed" or completed != len(coverage["selected"]):
-                details.append("Detailed review coverage is incomplete. This is not a clean review of the entire PR.")
-            for item in coverage.get("failed", [])[:10] + coverage.get("waived", [])[:10]:
-                details.append(f"- {text(item.get('path', ''))}: {text(item.get('reason', 'Not completed'))}")
-        else:
-            details.append("Detailed review coverage is not available yet. Completeness cannot be confirmed.")
-        assessment = run.progress.get("assessment")
-        if assessment:
-            details.append(f"Assessment: {assessment['new_findings']} new validated finding(s), {assessment['withheld_candidates']} withheld candidate(s)."
-                           + (" Assessment is incomplete." if assessment.get("incomplete") else ""))
-        parts.append("<details>\n<summary>Coverage and status</summary>\n\n" + "\n\n".join(details) + "\n\n</details>")
+    coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
+    details = []
+    if isinstance(coverage.get("selected"), list):
+        completed = len(coverage.get("completed", [])) + len(coverage.get("reused", []))
+        details = [f"Selected: {len(coverage['selected'])}. Completed: {completed}. Failed: {len(coverage.get('failed', []))}. Skipped: {len(coverage.get('waived', []))}."]
+        excluded = (run.report or {}).get("excluded_files")
+        if isinstance(excluded, list):
+            details.append(f"Excluded: {len(excluded)}.")
+        if run.status != "completed" or completed != len(coverage["selected"]):
+            details.append("Detailed review coverage is incomplete. This is not a clean review of the entire PR.")
+        for item in coverage.get("failed", [])[:10] + coverage.get("waived", [])[:10]:
+            details.append(f"- {text(item.get('path', ''))}: {text(item.get('reason', 'Not completed'))}")
+    else:
+        details.append("Detailed review coverage is not available yet. Completeness cannot be confirmed.")
+    assessment = run.progress.get("assessment")
+    if assessment:
+        details.append(f"Assessment: {assessment['new_findings']} new validated finding(s), {assessment['withheld_candidates']} withheld candidate(s)."
+                       + (" Assessment is incomplete." if assessment.get("incomplete") else ""))
+    parts.append("<details>\n<summary>Coverage and status</summary>\n\n" + "\n\n".join(details) + "\n\n</details>")
     prompt = fix_section(snapshots)
     if prompt:
         parts.append(prompt)
@@ -516,7 +501,7 @@ def sync(pr_id):
         if not pr:
             return
         run = latest_run(db, pr.id)
-        if not run:
+        if not ready_to_sync(run):
             return
         repo = db.get(Repository, pr.repository_id)
         if not repo.active or not db.get(Installation, repo.installation_id).active:
@@ -540,7 +525,9 @@ def sync(pr_id):
         if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
                    for sha in (remote.get("head", {}).get("sha"), remote.get("base", {}).get("sha"))):
             raise ValueError("GitHub returned an invalid PR revision. Refresh the pull request before retrying synchronization.")
-        body = render(db, pr, run, remote["head"]["sha"], remote["base"]["sha"])
+        if (run.head_sha, run.base_sha) != (remote["head"]["sha"], remote["base"]["sha"]):
+            return
+        body = render(db, pr, run)
         if existing is None:
             existing = github.request("POST", f"/repos/{repo.full_name}/issues/{pr.number}/comments", token, json={"body": body})
         elif existing.get("body") != body:

@@ -53,6 +53,15 @@ def ready_run(status="completed"):
         return identity
 
 
+def completed_run():
+    identity = ready_run()
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status, run.summary = "completed", {"status": "completed", "tokens": 12, "result": RESULT}
+        run.publication = "no_new_comments"
+    return identity
+
+
 @pytest.fixture
 def overview_api(monkeypatch, github_stub):
     stored, writes = [], []
@@ -81,7 +90,7 @@ def overview_api(monkeypatch, github_stub):
 
 def test_single_comment_uncertain_create_duplicate_jobs_and_deletion(seed, overview_api, monkeypatch):
     stored, writes, _ = overview_api
-    identity = new_run(assessed=True, overview=True)
+    identity = completed_run()
     original = github.request
 
     def lost(*args, **kwargs):
@@ -96,7 +105,7 @@ def test_single_comment_uncertain_create_duplicate_jobs_and_deletion(seed, overv
     assert len(stored) == 1
     with transaction() as db:
         assert db.get(PullRequest, "pr").summary_comment_id is None
-        db.get(ReviewRun, identity).status = "running"
+        db.get(ReviewRun, identity).summary = {"status": "completed", "result": {**RESULT, "narrative": "Updated summary."}}
     monkeypatch.setattr(github, "request", original)
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(pr_summary.sync, ["pr", "pr"]))
@@ -110,33 +119,61 @@ def test_single_comment_uncertain_create_duplicate_jobs_and_deletion(seed, overv
         assert db.get(ReviewRun, identity).review_ids == []
 
 
-def test_latest_revision_wins_and_hides_old_narrative(seed, overview_api):
-    _, writes, revision = overview_api
-    old = ready_run()
-    with transaction() as db:
-        run = db.get(ReviewRun, old)
-        run.status, run.summary = "completed", {"status": "completed", "tokens": 12, "result": RESULT}
+def test_overview_keeps_previous_summary_until_latest_revision_is_ready(seed, overview_api):
+    stored, writes, revision = overview_api
+    old = completed_run()
     pr_summary.sync("pr")
     assert RESULT["narrative"].replace(".", "\\.") in writes[-1][1]
     assert "Reviewed commit:" not in writes[-1][1] and "Finding publication:" not in writes[-1][1]
     assert "<details>\n<summary>Grouped changes</summary>\n\n| Files | Change |" in writes[-1][1]
     assert "Stop pending retries\\. |\n\n</details>" in writes[-1][1]
     assert "<details>\n<summary>Open findings (0)</summary>\n\nNo open validated findings.\n\n</details>" in writes[-1][1]
+    original = copy.deepcopy(stored[0])
     revision["head"]["sha"] = "c" * 40
     pr_summary.sync("pr")
-    assert "c" * 40 in writes[-1][1] and "Retries now" not in writes[-1][1]
+    assert stored[0] == original and len(writes) == 1
     with transaction() as db:
         db.get(PullRequest, "pr").head_sha = "c" * 40
     newest = new_run(assessed=True, overview=True)
     with transaction() as db:
         db.get(ReviewRun, old).publication = "published"
     pr_summary.sync("pr")
-    assert "Queued" in writes[-1][1] and newest in writes[-1][1] and "Retries now" not in writes[-1][1]
+    assert stored[0] == original and len(writes) == 1
+    for status, summary_status in [("running", "pending"), ("running", "running"), ("running", "completed"),
+                                   ("completed", "failed"), ("blocked", "failed"), ("failed", "failed"),
+                                   ("cancelled", "completed"), ("superseded", "completed")]:
+        with transaction() as db:
+            run = db.get(ReviewRun, newest)
+            run.status = status
+            run.progress = {"phase": "summary"}
+            run.summary = {"status": summary_status, "result": {**RESULT, "narrative": "Replacement summary."}}
+        pr_summary.sync("pr")
+        assert stored[0] == original and len(writes) == 1
+    with transaction() as db:
+        db.get(ReviewRun, newest).status = "completed"
+    pr_summary.sync("pr")
+    assert [method for method, _ in writes] == ["POST", "PATCH"]
+    assert "Replacement summary" in stored[0]["body"] and newest in stored[0]["body"]
+    assert "Review target commit:" not in stored[0]["body"] and "Current phase:" not in stored[0]["body"]
+    with transaction() as db:
+        db.get(ReviewRun, old).summary = {"status": "completed", "result": {**RESULT, "narrative": "Late old summary."}}
+    pr_summary.sync("pr")
+    assert len(writes) == 2
+
+
+def test_no_overview_is_created_before_first_summary_completes(seed, overview_api):
+    stored, writes, _ = overview_api
+    identity = ready_run()
+    for status in ["pending", "running", "failed", "skipped"]:
+        with transaction() as db:
+            db.get(ReviewRun, identity).summary = {"status": status}
+        pr_summary.sync("pr")
+    assert stored == [] and writes == []
 
 
 def test_marker_recovery_requires_bot_ownership(seed, overview_api):
     stored, _, _ = overview_api
-    new_run(assessed=True, overview=True)
+    completed_run()
     stored.append({"id": 10, "body": "<!-- code-mortis:pr-summary:pr -->", "user": {"login": "attacker"}})
     pr_summary.sync("pr")
     assert len(stored) == 2
@@ -144,7 +181,7 @@ def test_marker_recovery_requires_bot_ownership(seed, overview_api):
 
 def test_invalid_github_revision_never_reaches_comment(seed, overview_api):
     _, writes, revision = overview_api
-    new_run(assessed=True, overview=True)
+    completed_run()
     revision["head"]["sha"] = "` <!-- forged -->"
     with pytest.raises(ValueError, match="invalid PR revision"):
         pr_summary.sync("pr")
@@ -152,7 +189,7 @@ def test_invalid_github_revision_never_reaches_comment(seed, overview_api):
 
 
 def test_sync_errors_and_retry_only_send_saved_content(seed, overview_api, monkeypatch, client):
-    ready_run()
+    completed_run()
     with transaction() as db:
         job = db.scalar(select(Job).where(Job.kind == "sync_summary"))
         job_id = job.id
@@ -180,9 +217,12 @@ def failed_summary():
 
 
 def test_retry_summary_uses_current_settings_without_repeating_review(seed, overview_api, generation, client, monkeypatch, tmp_path):
-    identity = failed_summary()
+    identity = completed_run()
+    with transaction() as db:
+        db.get(ReviewRun, identity).summary = {"status": "completed", "result": {**RESULT, "narrative": "Previous summary."}}
     pr_summary.sync("pr")
     with transaction() as db:
+        db.get(ReviewRun, identity).summary = {"status": "failed", "tokens": 17, "error": "Previous failure"}
         original = copy.deepcopy(db.get(ReviewRun, identity).config)
         repo = db.get(Repository, 22)
         repo.settings = {**repo.settings, "summary_token_budget": None, "summary_timeout_seconds": None,
@@ -288,10 +328,12 @@ def test_lifecycle_coverage_is_separate_from_summary(seed, status):
     with transaction() as db:
         run, pr = db.get(ReviewRun, identity), db.get(PullRequest, "pr")
         run.status = status
+        run.progress = {**run.progress, "phase": "analysis"}
         run.summary = {"status": "completed", "tokens": 20, "result": RESULT}
         run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
-        body = pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
+        body = pr_summary.render(db, pr, run)
         assert status.capitalize() in body
+        assert "Review target commit:" not in body and "Reviewed commit:" not in body and "Current phase:" not in body
         assert "Selected: 2. Completed: 0." in body
         assert "coverage is incomplete" in body and "No open validated findings" in body
         assert "Prompt to fix with AI" not in body
@@ -419,7 +461,7 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
     newer = ready_run()
     with transaction() as db:
         run, pr = db.get(ReviewRun, newer), db.get(PullRequest, "pr")
-        body = pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
+        body = pr_summary.render(db, pr, run)
         assert "earlier finding; not observed" in body and "REJECTED_SUGGESTION" not in body
         assert "<details>\n<summary>Open findings (1)</summary>\n\n- **" in body
         previous = db.scalar(select(Occurrence).where(Occurrence.finding_id == finding_id))
@@ -427,13 +469,13 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
         db.flush()
         # An older concurrent completion may update last_seen_run_id after this occurrence was saved.
         assert db.get(Finding, finding_id).last_seen_run_id == identity
-        assert "earlier finding; not observed" not in pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
+        assert "earlier finding; not observed" not in pr_summary.render(db, pr, run)
         for status in ["resolved", "open", "dismissed"]:
             db.get(Finding, finding_id).status = status
             db.flush()
             db.refresh(pr)
             assert pr.summary_pending
-            body = pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
+            body = pr_summary.render(db, pr, run)
             assert ("Prompt to fix with AI" in body) == (status == "open")
 
 
@@ -466,7 +508,7 @@ def test_summary_defaults_migration_preserve_history(seed):
         assert options.summary_token_budget == 60000 and options.summary_timeout_seconds == 180
 
 
-def test_phase_changes_coalesce_without_locking_pr_behind_run(seed):
+def test_only_completed_summaries_enqueue_updates_without_locking_pr_behind_run(seed):
     identity = ready_run()
     # Overview publication must allow review state to flush while it owns the PR.
     locked, written = threading.Event(), threading.Event()
@@ -487,6 +529,12 @@ def test_phase_changes_coalesce_without_locking_pr_behind_run(seed):
                 for phase in ("analysis", "assessment", "fix verification", "summary"):
                     run.progress = {**run.progress, "phase": phase}
                     db.flush()
+                assert not db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+                run.summary = {"status": "completed", "result": RESULT}
+                db.flush()
+                assert not db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+                run.status = "completed"
+                db.flush()
                 assert len(list(db.scalars(select(Job).where(Job.kind == "sync_summary")))) == 1
         finally:
             written.set()
@@ -548,7 +596,7 @@ def test_full_overview_is_bounded_with_links_and_safe_markdown(seed):
                        "result": {"narrative": "</details><script>alert(1)</script>", "groups": [
                            {"title": "x" * 150, "description": "x" * 1200, "paths": ["long|name.py" * 50] * 10}
                        ] * 12}}
-        body = pr_summary.render(db, pr, run, pr.head_sha, pr.base_sha)
+        body = pr_summary.render(db, pr, run)
         assert len(body) < 60000 and body.endswith("<!-- code-mortis:pr-summary:pr -->")
         assert "<script>" not in body and "limited diff excerpts" in body
         assert f"http://testserver/runs/{identity}" in body and "Some details were omitted" in body

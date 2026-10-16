@@ -943,7 +943,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
           </div>}
         </div>
-        <Link className="mt-2 block break-words rounded-sm text-sm underline-offset-4 hover:text-primary hover:underline [overflow-wrap:anywhere]" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
+        <Link className="mt-2 block w-fit max-w-full break-words rounded-sm text-sm underline-offset-4 hover:text-primary hover:underline [overflow-wrap:anywhere]" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
           <span>{words(run.trigger)}{duration && ` · ${duration}`}</span>
