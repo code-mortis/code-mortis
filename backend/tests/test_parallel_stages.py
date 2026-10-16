@@ -9,11 +9,21 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
 from test_pr_summary import CONTEXT, RESULT, completed_run, overview_api  # noqa: F401
-from test_review_flow import COMMENT, new_run
+from test_review_flow import COMMENT, new_run, remote
 from test_verification import RESULT as FIXED
 from test_verification import scenario as verification_scenario  # noqa: F401
 
-from code_mortis import assessment, jobs, ocr, pipeline, pr_summary, reviews, runner_client, verification
+from code_mortis import (
+    assessment,
+    github,
+    jobs,
+    ocr,
+    pipeline,
+    pr_summary,
+    reviews,
+    runner_client,
+    verification,
+)
 from code_mortis.db import now, transaction
 from code_mortis.models import (
     Connection,
@@ -74,6 +84,49 @@ def test_malformed_report_summary_preserves_analysis(verification_scenario, monk
             assert not known and budget == 0
             row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
             assert row.status == "skipped" and "Token usage is unavailable" in row.error
+
+
+@pytest.mark.parametrize("summary_started", [False, True])
+@pytest.mark.parametrize("saved_status", [None, "completed", "partial", "failed", "skipped"])
+def test_expired_pipeline_preserves_timeout_and_saved_analysis(seed, github_stub, monkeypatch, saved_status, summary_started):
+    identity = new_run(assessed=True, overview=True, parallel=True)
+    monkeypatch.setattr(github, "request", lambda *a, **k: remote())
+    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Expired runs must not start inference"))
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.started_at = now() - timedelta(seconds=run.config["settings"]["timeout_seconds"] + 1)
+        if summary_started:
+            pipeline.update(run, "summary", "running", execution="summary-claim", tokens=None)
+            db.add(Job(kind="summarize_review", payload={"run_id": identity}, status="running"))
+        if saved_status:
+            run.progress = {"analysis_saved": True, "analysis_status": saved_status}
+            run.report = ocr.file_limit_result(["src/retry.py"], 0)[1] if saved_status == "skipped" else {"summary": {"total_tokens": 100}}
+            if saved_status in {"completed", "partial"}:
+                db.add(ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT))
+    reviews.perform_review(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.status == "running" and run.failure_reason == "timeout"
+        assert "configured time limit" in run.error
+        for name, stage in run.stages.items():
+            if name == "summary" and summary_started:
+                assert stage["status"] == "running" and stage["execution"] == "summary-claim"
+            else:
+                assert stage["status"] in pipeline.TERMINAL and "configured time limit" in stage["error"]
+        for row in db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)):
+            assert row.status == "skipped" and "configured time limit" in row.error
+    pipeline.finalize(identity)
+    if summary_started:
+        with transaction() as db:
+            run = db.get(ReviewRun, identity)
+            assert run.status == "running" and not run.progress.get("pipeline_finalized")
+            pipeline.update(run, "summary", "completed", tokens=20)
+        pipeline.finalize(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.status == (saved_status or "failed") and run.progress["pipeline_finalized"]
+        publish = db.scalar(select(Job.id).where(Job.kind == "publish", Job.payload["run_id"].as_string() == identity))
+        assert bool(publish) == (saved_status in {"completed", "partial", "skipped"})
 
 
 @pytest.mark.parametrize("observed_again", [False, True])

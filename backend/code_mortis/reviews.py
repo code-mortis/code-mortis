@@ -404,10 +404,13 @@ def perform_review(run_id: str, claim: str | None = None):
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         remaining = int(allowance - (now() - started_at).total_seconds()) if allowance is not None else None
         if remaining is not None and remaining <= 0:
+            message = "The review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review."
+            if pipeline.enabled(run):
+                run.failure_reason, run.error = "timeout", message
             verification.skip_pending(db, run, "Fix verification was skipped because the review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review.")
-            if not complete_saved_review(db, run):
+            if not complete_saved_review(db, run, message):
                 run.status, run.finished_at = "failed", now()
-                run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review."
+                run.publication, run.failure_reason, run.error = "not_applicable", "timeout", message
             return
         run.progress = {**run.progress, "analysis_started": True, "phase": "analysis"}
         parallel_stages = pipeline.enabled(run) and not retry
