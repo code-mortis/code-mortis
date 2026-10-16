@@ -1053,6 +1053,16 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
 test("summary allowance is separate and keeps unlimited preferences", async ({ page }, info) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=limits");
+  for (const [group, labels] of [
+    ["Review execution", ["Maximum files", "Timeout (seconds)", "Concurrency"]],
+    ["Token budgets", ["OCR token budget", "Assessment token budget", "Verification token budget"]],
+    ["PR summary", ["Summary timeout (seconds)", "Summary token budget"]],
+    ["OCR rules", ["OCR rules JSON"]],
+  ] as const) {
+    const section = page.getByRole("region", { name: group, exact: true });
+    await expect(section.getByRole("heading", { name: group, level: 3, exact: true })).toBeVisible();
+    for (const label of labels) await expect(section.getByLabel(label, { exact: true })).toBeVisible();
+  }
   await expect(page.getByLabel("Summary token budget", { exact: true })).toHaveValue("60000");
   await expect(page.getByLabel("Summary timeout (seconds)", { exact: true })).toHaveValue("180");
   await expect(page.getByText(/Adds input and output token usage beyond the review budget/)).toBeVisible();

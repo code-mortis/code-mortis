@@ -368,103 +368,117 @@ export function RepositorySettings({
               <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Limits & rules</h2>
               <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize OCR rules.</p>
             </div>
-            <div className="grid gap-6 sm:grid-cols-2">
-              {([
+            {([
+              { key: "execution", title: "Review execution", fields: [
+                { key: "max_files", label: "Maximum files", min: 1, max: undefined,
+                  hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
                 { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
+              ] },
+              { key: "budgets", title: "Token budgets", fields: [
                 { key: "token_budget", label: "OCR token budget", min: 1000, max: 5000000,
                   hint: "Budget for OCR analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
                 { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000,
                   hint: "Independent budget for validating proposed findings, including correction attempts." },
                 { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000,
                   hint: "Independent budget for checking whether earlier findings were fixed." },
+              ] },
+              { key: "summary", title: "PR summary", fields: [
                 { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600,
                   hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
                 { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000,
                   hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
-                { key: "max_files", label: "Maximum files", min: 1, max: undefined,
-                  hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
-              ] as const).map(({ key, label, min, max, hint }) => (
-                <Field key={key} label={label} hint={hint}>
-                  {(id) => (
-                    <div className="space-y-2">
-                      <Input
-                        key={settings[key] === null ? "unlimited" : "limited"}
-                        id={id}
-                        type="number"
-                        min={min}
-                        max={max}
-                        required
-                        disabled={settings[key] === null}
-                        className="disabled:bg-muted disabled:opacity-100 disabled:shadow-none dark:disabled:bg-muted"
-                        defaultValue={settings[key] ?? ""}
-                        onChange={(e) => {
-                          const value = e.target.valueAsNumber;
-                          if (!Number.isFinite(value) || !e.target.validity.valid) return;
-                          limitedValues.current[key] = value;
-                          change(key, value);
-                        }}
-                      />
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                          aria-label={`Unlimited ${label.toLowerCase()}`}
-                          checked={settings[key] === null}
-                          onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
+              ] },
+            ] as const).map((group) => (
+              <section key={group.key} aria-labelledby={`${id}-${group.key}`} className="space-y-3">
+                <h3 id={`${id}-${group.key}`} className="text-base font-semibold">{group.title}</h3>
+                <div className="divide-y rounded-lg border bg-card">
+                  {group.fields.map(({ key, label, min, max, hint }) => (
+                    <div key={key} className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
+                      <div className="space-y-2">
+                        <label htmlFor={`${id}-${key}`} className="text-sm font-medium">{label}</label>
+                        <p id={`${id}-${key}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <Input
+                          key={settings[key] === null ? "unlimited" : "limited"}
+                          id={`${id}-${key}`}
+                          aria-describedby={`${id}-${key}-hint`}
+                          type="number"
+                          min={min}
+                          max={max}
+                          required
+                          disabled={settings[key] === null}
+                          className="disabled:bg-muted disabled:opacity-100 disabled:shadow-none dark:disabled:bg-muted"
+                          defaultValue={settings[key] ?? ""}
+                          onChange={(e) => {
+                            const value = e.target.valueAsNumber;
+                            if (!Number.isFinite(value) || !e.target.validity.valid) return;
+                            limitedValues.current[key] = value;
+                            change(key, value);
+                          }}
                         />
-                        Unlimited
-                      </label>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                            aria-label={`Unlimited ${label.toLowerCase()}`}
+                            checked={settings[key] === null}
+                            onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
+                          />
+                          Unlimited
+                        </label>
+                      </div>
                     </div>
-                  )}
-                </Field>
-              ))}
-              <Field
-                label="Concurrency"
-                hint={
-                  personal
-                    ? "Personal subscriptions run one review at a time."
-                    : "Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
-                }
-              >
-                {(id) => (
-                  <Input
-                    key={personal ? "personal" : "api"}
-                    id={id}
-                    type="number"
-                    min={1}
-                    max={8}
-                    required
-                    disabled={personal}
-                    defaultValue={personal ? 1 : settings.concurrency}
-                    onChange={(event) => {
-                      const value = event.target.valueAsNumber;
-                      if (!Number.isFinite(value) || !event.target.validity.valid) return;
-                      change("concurrency", value);
-                    }}
-                  />
-                )}
-              </Field>
-            </div>
-            <Field
-              label="OCR rules JSON"
-              hint={<>Optional rule-file object. Empty uses rules from the trusted base revision.{" "}
+                  ))}
+                  {group.key === "execution" && <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
+                    <div className="space-y-2">
+                      <label htmlFor={`${id}-concurrency`} className="text-sm font-medium">Concurrency</label>
+                      <p id={`${id}-concurrency-hint`} className="text-xs leading-relaxed text-muted-foreground">{personal
+                        ? "Personal subscriptions run one review at a time."
+                        : "Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
+                      }</p>
+                    </div>
+                    <Input
+                      key={personal ? "personal" : "api"}
+                      id={`${id}-concurrency`}
+                      aria-describedby={`${id}-concurrency-hint`}
+                      type="number"
+                      min={1}
+                      max={8}
+                      required
+                      disabled={personal}
+                      defaultValue={personal ? 1 : settings.concurrency}
+                      onChange={(event) => {
+                        const value = event.target.valueAsNumber;
+                        if (!Number.isFinite(value) || !event.target.validity.valid) return;
+                        change("concurrency", value);
+                      }}
+                    />
+                  </div>}
+                </div>
+              </section>
+            ))}
+            <section aria-labelledby={`${id}-rules`} className="space-y-3">
+              <h3 id={`${id}-rules`} className="text-base font-semibold">OCR rules</h3>
+              <div className="space-y-4 rounded-lg border bg-card p-5">
+                <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
+                  Optional rule-file object. Empty uses rules from the trusted base revision.
+                </p>
+                <Textarea
+                  aria-label="OCR rules JSON"
+                  aria-describedby={`${id}-rules-hint`}
+                  rows={6}
+                  className="min-h-40 max-h-96 resize-y font-mono text-xs"
+                  value={rules}
+                  onChange={(e) => setRules(e.target.value)}
+                />
                 <Button asChild variant="link" className="h-auto p-0 text-xs underline">
                   <a href="https://github.com/alibaba/open-code-review/blob/main/pages/src/content/docs/en/review-rules.md"
                     target="_blank" rel="noreferrer">Rule file documentation<ArrowUpRight aria-hidden="true" className="size-3" /></a>
                 </Button>
-              </>}
-            >
-              {(id) => (
-                <Textarea
-                  id={id}
-                  rows={6}
-                  className="font-mono text-xs"
-                  value={rules}
-                  onChange={(e) => setRules(e.target.value)}
-                />
-              )}
-            </Field>
+              </div>
+            </section>
           </section>
           <footer className="mt-8 space-y-3 py-5">
             <ErrorNotice error={connections.error} />
