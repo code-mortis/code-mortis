@@ -1163,14 +1163,17 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   await mock(page, { canWrite: false, run: {
     status: "completed", publication: "no_new_comments", publication_error: null,
     check_status: "completed", check_conclusion: "success", check_pending: false, check_error: null,
+    stages: { ocr: { status: "completed", tokens: 10 }, assessment: { status: "completed", tokens: 5 }, verification: { status: "skipped", tokens: 0 } },
     summary: { status: "failed", tokens: null, limited_context: false, error: "Summary generation was interrupted." },
   } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
   const summary = publication.getByRole("button", { name: "PR summary details: Failed", exact: true });
+  const stages = publication.getByRole("button", { name: "Review stage details", exact: true });
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
     [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
+    [stages, "View stage details."],
     [summary, "View summary details."],
   ] as const;
   for (const [trigger, text] of tooltips) {
@@ -1186,6 +1189,12 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
   }
+  await stages.press("Enter");
+  const stageDetails = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(stageDetails.getByText("OCR", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(stageDetails).not.toBeVisible();
+  await expect(stages).toBeFocused();
   await summary.press("Enter");
   const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();

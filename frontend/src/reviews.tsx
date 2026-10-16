@@ -976,7 +976,12 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
           {run.stages?.ocr && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Review stages</span>
             <Popover>
-              <PopoverTrigger asChild><button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.status} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button></PopoverTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild><PopoverTrigger asChild>
+                  <button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.status} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button>
+                </PopoverTrigger></TooltipTrigger>
+                <TooltipContent sideOffset={6}>View stage details.</TooltipContent>
+              </Tooltip>
               <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
                 {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
                   const stage = run.stages?.[key];
@@ -1084,7 +1089,6 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               <dt className="text-xs capitalize text-muted-foreground">{name}</dt>
               <dd className="text-sm tabular-nums">{value}</dd>
             </div>)}</dl>
-            {!!assessment.pending && <p role="status" className="mt-2 text-sm text-muted-foreground">{assessment.pending} candidates awaiting assessment.</p>}
             <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setCandidateSeed(item); showSheet("candidate", item.id); }} />
           </> : <div className="mt-4"><Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty></div>}
         </section>
