@@ -28,6 +28,10 @@ const repo = {
     background: "",
     timeout_seconds: 900,
     token_budget: 200000,
+    assessment_token_budget: 200000,
+    verification_token_budget: 200000,
+    summary_diagram_enabled: false,
+    ai_fix_prompts_enabled: false,
     summary_token_budget: 60000,
     summary_timeout_seconds: 180,
     max_files: 40,
@@ -1031,14 +1035,14 @@ test("repository configuration keeps drafts across sections and restores filtere
 test("summary allowance is separate and keeps unlimited preferences", async ({ page }, info) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=limits");
-  await expect(page.getByLabel("Summary token allowance", { exact: true })).toHaveValue("60000");
+  await expect(page.getByLabel("Summary token budget", { exact: true })).toHaveValue("60000");
   await expect(page.getByLabel("Summary timeout (seconds)", { exact: true })).toHaveValue("180");
   await expect(page.getByText(/Adds input and output token usage beyond the review budget/)).toBeVisible();
-  await page.getByLabel("Summary token allowance", { exact: true }).fill("45000");
-  await page.getByLabel("Unlimited summary token allowance", { exact: true }).check();
-  await expect(page.getByLabel("Summary token allowance", { exact: true })).toBeDisabled();
-  await page.getByLabel("Unlimited summary token allowance", { exact: true }).uncheck();
-  await expect(page.getByLabel("Summary token allowance", { exact: true })).toHaveValue("45000");
+  await page.getByLabel("Summary token budget", { exact: true }).fill("45000");
+  await page.getByLabel("Unlimited summary token budget", { exact: true }).check();
+  await expect(page.getByLabel("Summary token budget", { exact: true })).toBeDisabled();
+  await page.getByLabel("Unlimited summary token budget", { exact: true }).uncheck();
+  await expect(page.getByLabel("Summary token budget", { exact: true })).toHaveValue("45000");
   await page.getByLabel("Summary timeout (seconds)", { exact: true }).fill("240");
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-settings-${info.project.name}.png`, fullPage: true });
@@ -1046,6 +1050,47 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     settings: { summary_token_budget: 45000, summary_timeout_seconds: 240, token_budget: 200000, timeout_seconds: 900 },
   });
+});
+
+test("stage budgets and optional overview content save independently", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings?tab=reviews");
+  for (const name of ["Diagram", "Prompt to fix with AI"]) {
+    const toggle = page.getByRole("switch", { name, exact: true });
+    await expect(toggle).not.toBeChecked();
+    await toggle.check();
+  }
+  await repositorySection(page, "Limits & rules");
+  await page.getByLabel("OCR token budget", { exact: true }).fill("11000");
+  await page.getByLabel("Assessment token budget", { exact: true }).fill("22000");
+  await page.getByLabel("Unlimited verification token budget", { exact: true }).check();
+  await page.getByLabel("Summary token budget", { exact: true }).fill("33000");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    settings: { token_budget: 11000, assessment_token_budget: 22000, verification_token_budget: null,
+      summary_token_budget: 33000, summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
+  });
+});
+
+test("parallel stage details preserve an open popover while the run refreshes", async ({ page }, info) => {
+  await mock(page, { run: {
+    status: "running", publication: "pending", publication_error: null,
+    stages: {
+      ocr: { status: "running", tokens: null },
+      assessment: { status: "pending", tokens: 0 },
+      verification: { status: "completed", tokens: 1200 },
+      summary: { status: "completed", tokens: 300 },
+    },
+    summary: { status: "completed", tokens: 300, limited_context: false },
+  } });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details).toContainText("Usage unknown");
+  await page.waitForTimeout(5500);
+  await expect(details).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `/tmp/parallel-stage-details-${info.project.name}.png`, fullPage: true });
 });
 
 test("PR overview keeps details in the status row and retries synchronization without starting a review", async ({ page }, info) => {
@@ -2821,7 +2866,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "token budget" || change === "timeout") {
         await repositorySection(page, "Limits & rules");
-        await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Token budget", { exact: true })
+        await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "OCR token budget", { exact: true })
           .fill(change === "timeout" ? "1200" : "450000");
       }
       background.background = "Stale generated context";
@@ -2992,10 +3037,10 @@ for (const unlimited of [false, true]) {
   await repositorySection(page, "Project context");
     await repositorySection(page, "Limits & rules");
     if (unlimited) {
-      await page.getByLabel("Unlimited token budget", { exact: true }).check();
+      await page.getByLabel("Unlimited ocr token budget", { exact: true }).check();
       await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
     } else {
-      await page.getByLabel("Token budget", { exact: true }).fill("450000");
+      await page.getByLabel("OCR token budget", { exact: true }).fill("450000");
       await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
     }
     await repositorySection(page, "Project context");
@@ -3046,10 +3091,10 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Limits & rules");
   const time = page.getByLabel("Timeout (seconds)", { exact: true });
-  const tokens = page.getByLabel("Token budget", { exact: true });
+  const tokens = page.getByLabel("OCR token budget", { exact: true });
   const files = page.getByLabel("Maximum files", { exact: true });
   const unlimitedTime = page.getByRole("checkbox", { name: "Unlimited timeout (seconds)", exact: true });
-  const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited token budget", exact: true });
+  const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited ocr token budget", exact: true });
   const unlimitedFiles = page.getByRole("checkbox", { name: "Unlimited maximum files", exact: true });
   await expect(time).toHaveValue("900");
   await expect(tokens).toHaveValue("200000");
@@ -3127,8 +3172,8 @@ test("personal review limits save and reopen the shared unlimited token budget",
   await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "My ChatGPT");
   await repositorySection(page, "Limits & rules");
   await expect(page.getByLabel("Native context budget (bytes)", { exact: true })).toHaveCount(0);
-  const budget = page.getByLabel("Token budget", { exact: true });
-  const unlimited = page.getByRole("checkbox", { name: "Unlimited token budget", exact: true });
+  const budget = page.getByLabel("OCR token budget", { exact: true });
+  const unlimited = page.getByRole("checkbox", { name: "Unlimited ocr token budget", exact: true });
   await expect(budget).toHaveValue("200000");
   await page.getByRole("checkbox", { name: "Unlimited timeout (seconds)" }).check();
   await page.getByRole("checkbox", { name: "Unlimited maximum files" }).check();
@@ -3228,7 +3273,7 @@ test("current finding header waits for current evidence instead of showing the s
 });
 
 for (const field of [
-  { label: "Token budget", key: "token_budget", personal: true, valid: "6000", excessive: "5000001" },
+  { label: "OCR token budget", key: "token_budget", personal: true, valid: "6000", excessive: "5000001" },
   { label: "Concurrency", key: "concurrency", personal: false, valid: "4", excessive: "9" },
 ] as const) {
   test(`repository ${field.label} keeps invalid drafts out of saved settings`, async ({ page }) => {

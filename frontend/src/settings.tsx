@@ -153,6 +153,8 @@ export function RepositorySettings({
   const limitedValues = useRef({
     timeout_seconds: repo.settings.timeout_seconds ?? 900,
     token_budget: repo.settings.token_budget ?? 200000,
+    assessment_token_budget: repo.settings.assessment_token_budget ?? 200000,
+    verification_token_budget: repo.settings.verification_token_budget ?? 200000,
     summary_timeout_seconds: repo.settings.summary_timeout_seconds ?? 180,
     summary_token_budget: repo.settings.summary_token_budget ?? 60000,
     max_files: repo.settings.max_files ?? 40,
@@ -252,10 +254,20 @@ export function RepositorySettings({
               <div className="flex items-start justify-between gap-4 p-5">
                 <div className="space-y-2">
                   <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
-                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the remaining review allowance; uncertain findings stay open.</p>
+                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the verification budget; uncertain findings stay open.</p>
                 </div>
                 <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} disabled={!settings.automatic} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
               </div>
+              {([
+                ["summary_diagram_enabled", "Diagram", "Include a collapsed diagram in the PR overview, generated with the summary."],
+                ["ai_fix_prompts_enabled", "Prompt to fix with AI", "Include fix prompts in the PR overview and new finding comments."],
+              ] as const).map(([key, label, hint]) => <div key={key} className="flex items-start justify-between gap-4 p-5">
+                <div className="space-y-2">
+                  <label htmlFor={`${id}-${key}`} className="text-sm font-medium">{label}</label>
+                  <p id={`${id}-${key}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+                </div>
+                <Switch id={`${id}-${key}`} aria-describedby={`${id}-${key}-hint`} checked={settings[key] ?? false} onCheckedChange={(value) => change(key, value)} className="mt-0.5 shrink-0" />
+              </div>)}
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Language">
@@ -360,11 +372,15 @@ export function RepositorySettings({
               {([
                 { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
-                { key: "token_budget", label: "Token budget", min: 1000, max: 5000000,
-                  hint: "Applies to reviews and background generation. Unlimited removes the token budget. Provider and account limits still apply." },
+                { key: "token_budget", label: "OCR token budget", min: 1000, max: 5000000,
+                  hint: "Budget for OCR analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
+                { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000,
+                  hint: "Independent budget for validating proposed findings, including correction attempts." },
+                { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000,
+                  hint: "Independent budget for checking whether earlier findings were fixed." },
                 { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600,
                   hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
-                { key: "summary_token_budget", label: "Summary token allowance", min: 1000, max: 5000000,
+                { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000,
                   hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
                 { key: "max_files", label: "Maximum files", min: 1, max: undefined,
                   hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },

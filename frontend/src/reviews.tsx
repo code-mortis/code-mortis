@@ -957,17 +957,34 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
             </Tooltip>
           </div>
-          {assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
+          {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
             <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessment.incomplete ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessment.incomplete ? "partial" : "running"} label={assessment.incomplete ? "Partial" : "Pending"} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessment.incomplete ? "Some candidates could not be fully assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
-          {typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
+          {!run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Fix verification</span>
             <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
+          </div>}
+          {run.stages?.ocr && <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Review stages</span>
+            <Popover>
+              <PopoverTrigger asChild><button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.status} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button></PopoverTrigger>
+              <PopoverContent align="start" aria-label="Review stage details" className="w-80 max-w-[calc(100vw-2rem)] space-y-4 text-xs">
+                {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
+                  const stage = run.stages?.[key];
+                  if (!stage) return null;
+                  return <div key={key} className="space-y-2">
+                    <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={stage.status} /></div>
+                    <p className="text-muted-foreground">{stage.tokens == null ? "Usage unknown" : `${stage.tokens.toLocaleString()} tokens`}</p>
+                    <ErrorNotice error={stage.error} />
+                  </div>;
+                })}
+              </PopoverContent>
+            </Popover>
           </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
@@ -995,6 +1012,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                 {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
                 <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview published" : "Not published yet"}</p>
                 <ErrorNotice error={run.summary.error} />
+                {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting for the personal connection.</p>}
+                {run.summary.diagram_warning && <p className="text-muted-foreground">{run.summary.diagram_warning}</p>}
                 <ErrorNotice error={pr.summary_error} />
                 {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
                 {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}

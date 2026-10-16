@@ -22,6 +22,7 @@ from . import (
     inbox,
     installations,
     model_discovery,
+    pipeline,
     pr_summary,
     resolved_list,
     runner_client,
@@ -622,6 +623,8 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     candidate.context, candidate.usage = {}, {}
     run.progress = {**run.progress, "assessment_retry": {"candidate_id": candidate.id, "actor_id": user.id}}
     run.status, run.error, run.blocked_reason = "queued", None, None
+    if pipeline.enabled(run):
+        pipeline.update(run, "assessment", "pending", started_at=None, finished_at=None, error=None, execution=None)
     enqueue(db, "review", {"run_id": run.id})
     assessment.record_summary(db, run)
     return CandidateOut.model_validate(candidate)

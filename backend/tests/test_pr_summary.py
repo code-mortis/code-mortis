@@ -437,6 +437,7 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
     identity = ready_run()
     with transaction() as db:
         run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "settings": {**run.config["settings"], "ai_fix_prompts_enabled": True}}
         candidate = ReviewCandidate(run_id=identity, position=0, snapshot={**COMMENT, "suggestion_code": "REJECTED_SUGGESTION"},
                                     status="completed", result={"verdict": "confirmed"})
         db.add(candidate)
@@ -461,6 +462,7 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
     newer = ready_run()
     with transaction() as db:
         run, pr = db.get(ReviewRun, newer), db.get(PullRequest, "pr")
+        run.config = {**run.config, "settings": {**run.config["settings"], "ai_fix_prompts_enabled": True}}
         body = pr_summary.render(db, pr, run)
         assert "earlier finding; not observed" in body and "REJECTED_SUGGESTION" not in body
         assert "<details>\n<summary>Open findings (1)</summary>\n\n- **" in body

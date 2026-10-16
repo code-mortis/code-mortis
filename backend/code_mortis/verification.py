@@ -459,6 +459,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
 
 
 def record_summary(db, run):
+    from . import pipeline
+
     rows = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == run.id)))
     summary = {"selected": len(rows), "completed": 0, "fixed": 0, "still_present": 0,
                "uncertain": 0, "skipped": 0, "failed": 0, "resolved": 0, "pending": 0, "sync_failed": 0}
@@ -473,38 +475,56 @@ def record_summary(db, run):
             summary["sync_failed"] += 1
     if run.progress.get("verification") != summary:
         run.progress = {**run.progress, "verification": summary}
+    if pipeline.enabled(run) and run.stages.get("verification"):
+        pipeline.update(run, "verification", run.stages["verification"]["status"],
+                        tokens=pipeline.usage([row.usage.get("tokens", 0 if not row.usage else None) for row in rows]))
 
 
 def finish(db, row, *, result=None, status="completed", error=None, usage=None):
-    from .reviews import enqueue
+    from . import pipeline
 
     if result is None and not error:
         error = "Verification did not complete."
-    finding = db.scalar(select(Finding).where(Finding.id == row.finding_id).with_for_update())
     row.status, row.result, row.error, row.finished_at = status, result, error, now()
     row.verdict = result["verdict"] if result else "uncertain"
     if usage is not None:
         row.usage = usage
     run = db.get(ReviewRun, row.run_id)
+    if not pipeline.enabled(run):
+        apply_resolution(db, row)
+    db.add(Activity(finding_id=row.finding_id, action="verification_" + row.verdict,
+                    actor="Code Mortis", source="verification",
+                    reason=f"Commit {row.head_sha}: {error or result['explanation']}"[:10000]))
+    db.flush()
+    record_summary(db, run)
+
+
+def apply_resolution(db, row):
+    from . import pipeline
+    from .reviews import enqueue
+
+    if row.verdict != "fixed" or row.resolution in {"pending", "resolved"}:
+        return
+    run = db.get(ReviewRun, row.run_id)
+    finding = db.scalar(select(Finding).where(Finding.id == row.finding_id).with_for_update())
     repo = db.get(Repository, db.get(PullRequest, run.pr_id).repository_id)
+    observed = pipeline.enabled(run) and (finding.last_seen_run_id == run.id or db.scalar(
+        select(Occurrence.id).join(ReviewRun).where(Occurrence.finding_id == finding.id,
+                                                  ReviewRun.head_sha == run.head_sha).limit(1)))
     if (
-        row.verdict == "fixed" and status == "completed" and enabled(run, repo)
+        row.status == "completed" and enabled(run, repo)
         and not run.cancel_requested and finding.status == "open" and not finding.desired_status
         and finding.sync_version == row.finding_version and row.thread_snapshot
         and not row.thread_snapshot.get("isResolved", True)
+        and (not pipeline.enabled(run) or (run.status in {"completed", "partial"} and not observed))
     ):
         payload = {"finding_id": finding.id, "version": finding.sync_version, "verification_id": row.id}
         finding.desired_status, finding.sync_error, finding.sync_intent = "resolved", None, payload
         row.resolution = "pending"
         enqueue(db, "resolve", payload)
-    elif row.verdict == "fixed":
+    else:
         row.resolution = "skipped"
-        row.error = "The finding was not resolved on GitHub: its status changed, automatic resolution was disabled, or its original Code Mortis discussion could not be confirmed. Check the finding and repository settings."
-    db.add(Activity(finding_id=finding.id, action="verification_" + row.verdict,
-                    actor="Code Mortis", source="verification",
-                    reason=f"Commit {row.head_sha}: {error or result['explanation']}"[:10000]))
-    db.flush()
-    record_summary(db, run)
+        row.error = "The finding was not resolved on GitHub: assessment observed it again, the review did not complete, its status changed, or automatic resolution could not be authorized. Check the finding and repository settings."
 
 
 def skip_pending(db, run, reason):
@@ -527,6 +547,7 @@ def limit_error(options, budget, remaining, usage_known):
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
+    from . import pipeline
     from .reviews import authorize_connection, review_stopped
 
     with transaction() as db:
@@ -534,11 +555,14 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         ids = list(db.scalars(select(FindingVerification.id).where(
             FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
         ).order_by(FindingVerification.created_at, FindingVerification.id)))
-        options = run.config["settings"]
+        separate = pipeline.enabled(run)
+        options = dict(run.config["settings"])
+        if separate:
+            options["token_budget"] = options["verification_token_budget"]
         deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     for identity in ids:
         def stopped():
-            if review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline):
+            if review_stopped(run_id, claim, stage="verification" if separate else None) or (deadline is not None and now().timestamp() >= deadline):
                 return True
             with transaction() as db:
                 current = db.get(ReviewRun, run_id)
@@ -547,7 +571,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
 
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-            if run.progress.get("execution") != claim:
+            if (not pipeline.owns(run, "verification", claim) if separate else run.progress.get("execution") != claim):
                 return
             row = db.get(FindingVerification, identity)
             if row.status not in {"queued", "running"}:
@@ -568,15 +592,18 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             summary = (run.report or {}).get("summary", {})
             used_tokens = summary.get("total_tokens")
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
-            prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
+            if not separate:
+                prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
             usage_known = True
             budget = options["token_budget"]
             if budget is not None:
-                tokens = [used_tokens, *(u.get("tokens", 0 if not u else None) for u in prior_usage)]
+                tokens = [u.get("tokens", 0 if not u else None) for u in prior_usage]
+                if not separate:
+                    tokens.insert(0, used_tokens)
                 usage_known = all(type(value) is int and value >= 0 for value in tokens)
                 budget = budget - sum(tokens) if usage_known else 0
             if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
-                or run.progress.get("analysis_status") not in {"completed", "partial"}):
+                or (not separate and run.progress.get("analysis_status") not in {"completed", "partial"})):
                 reason = limit_error(options, budget, remaining, usage_known)
                 finish(db, row, status="skipped", error=(reason or "The initial review did not complete.") + " Fix verification skipped.")
                 continue
@@ -607,10 +634,11 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             with transaction() as db:
                 current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                 saved = db.scalar(select(FindingVerification).where(FindingVerification.id == identity).with_for_update())
-                if current.progress.get("execution") != claim or current.cancel_requested or saved.status != "running":
+                if (not pipeline.owns(current, "verification", claim) if separate else current.progress.get("execution") != claim) or current.cancel_requested or saved.status != "running":
                     return
                 saved.context = context
-                saved.usage = usage = {"tokens": budget}
+                saved.usage = usage = {"tokens": None, "reserved_tokens": budget} if separate else {"tokens": budget}
+                record_summary(db, current)
             if connection["kind"] == "api":
                 raw, usage = api_verify(repo_path, env, connection, credentials, context, budget, remaining, stopped)
             else:
@@ -638,7 +666,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             row = db.get(FindingVerification, identity)
-            if run.progress.get("execution") != claim or row.status != "running":
+            if (not pipeline.owns(run, "verification", claim) if separate else run.progress.get("execution") != claim) or row.status != "running":
                 return
             finish(db, row, result=result, status=outcome, error=error, usage=usage)
 

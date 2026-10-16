@@ -1168,6 +1168,22 @@ export interface components {
             /** Auth Message */
             auth_message: string | null;
         };
+        /** DiagramEdge */
+        DiagramEdge: {
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+        };
+        /** DiagramNode */
+        DiagramNode: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Paths */
+            paths: string[];
+        };
         /** FindingAction */
         FindingAction: {
             /**
@@ -1600,6 +1616,16 @@ export interface components {
              */
             token_budget: number | null;
             /**
+             * Assessment Token Budget
+             * @default 200000
+             */
+            assessment_token_budget: number | null;
+            /**
+             * Verification Token Budget
+             * @default 200000
+             */
+            verification_token_budget: number | null;
+            /**
              * Summary Token Budget
              * @default 60000
              */
@@ -1609,6 +1635,16 @@ export interface components {
              * @default 180
              */
             summary_timeout_seconds: number | null;
+            /**
+             * Summary Diagram Enabled
+             * @default false
+             */
+            summary_diagram_enabled: boolean;
+            /**
+             * Ai Fix Prompts Enabled
+             * @default false
+             */
+            ai_fix_prompts_enabled: boolean;
             /**
              * Automatic
              * @default true
@@ -1794,6 +1830,10 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             summary?: components["schemas"]["SummaryState"];
+            /** Stages */
+            stages?: {
+                [key: string]: components["schemas"]["StageState"];
+            };
             /** Engine */
             engine: string;
             /** Connection Id */
@@ -1841,10 +1881,39 @@ export interface components {
              */
             page_size: number;
         };
+        /** StageState */
+        StageState: {
+            /**
+             * Status
+             * @default pending
+             * @enum {string}
+             */
+            status: "pending" | "waiting" | "running" | "completed" | "partial" | "failed" | "skipped" | "cancelled";
+            /** Execution */
+            execution?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens: number | null;
+            /** Error */
+            error?: string | null;
+        };
         /** StartRunInput */
         StartRunInput: {
             /** Connection Id */
             connection_id?: string | null;
+        };
+        /** SummaryDiagram */
+        SummaryDiagram: {
+            /** Nodes */
+            nodes: components["schemas"]["DiagramNode"][];
+            /** Edges */
+            edges: components["schemas"]["DiagramEdge"][];
         };
         /** SummaryGroup */
         SummaryGroup: {
@@ -1861,6 +1930,7 @@ export interface components {
             narrative: string;
             /** Groups */
             groups: components["schemas"]["SummaryGroup"][];
+            diagram?: components["schemas"]["SummaryDiagram"] | null;
         };
         /** SummaryState */
         SummaryState: {
@@ -1882,6 +1952,12 @@ export interface components {
             limited_context: boolean;
             /** Error */
             error?: string | null;
+            /** Diagram Warning */
+            diagram_warning?: string | null;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
         };
         /** UserOut */
         UserOut: {

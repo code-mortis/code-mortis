@@ -73,6 +73,9 @@ def scenario(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote(HEAD))
     with transaction() as db:
         run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
+        # Historical runs retain the shared-budget, sequential verification contract.
+        run.config = {key: value for key, value in run.config.items() if key != "pipeline_version"}
+        run.stages = {}
         db.flush()
         run_id = run.id
     calls = []

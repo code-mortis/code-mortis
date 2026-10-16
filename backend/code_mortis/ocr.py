@@ -377,6 +377,7 @@ def review(
     checkpoint: dict | None = None,
     saved_review: tuple | None = None,
     after_review: Callable | None = None,
+    before_analysis: Callable | None = None,
 ) -> tuple[str, dict, list[dict]]:
     deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
     cancelled = stopped
@@ -448,6 +449,7 @@ def review(
                 stopped,
                 progress,
                 checkpoint or {},
+                before_analysis=before_analysis,
             ))
         args = [
             settings().ocr_binary,
@@ -500,6 +502,8 @@ def review(
                 limited = file_limit_result(paths, review_settings["max_files"])
                 if limited and isinstance(preview.get("excluded_files"), list):
                     limited[1]["excluded_files"] = preview["excluded_files"]
+            if before_analysis:
+                before_analysis(limited)
             if limited is None:
                 code, output, _ = command(
                     args, repo, env, timeout=None, stopped=stopped

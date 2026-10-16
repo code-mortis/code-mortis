@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import assessment, github, ocr, pr_summary, runner_client, verification
+from . import assessment, github, ocr, pipeline, pr_summary, runner_client, verification
 from .checks import queue_check_changes as queue_check_changes
 from .config import settings
 from .db import now, transaction, uid
@@ -96,7 +96,7 @@ def create_run(
     if ignore_file_limit:
         options["max_files"] = None
     config = {"connection": connection_snapshot(connection), "settings": options,
-              "assessment_policy": assessment.POLICY_VERSION}
+              "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2}
     if options["model"]:
         config["connection"]["model"] = options["model"]
     if not config["connection"]["model"].strip():
@@ -139,6 +139,7 @@ def create_run(
         engine="ocr" if connection.kind == "api" else connection.kind,
         progress={"comment_requests": {request_key: True}} if request_key else {},
         summary={"status": "pending", "tokens": 0},
+        stages={stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES},
     )
     db.add(run)
     enqueue(db, "review", {"run_id": run.id})
@@ -281,12 +282,14 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     return pr
 
 
-def review_stopped(run_id: str, claim: str | None = None) -> bool:
+def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool:
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
             return True
-        if claim and run.progress.get("execution") != claim:
+        if claim and (not pipeline.owns(run, stage, claim) if stage else run.progress.get("execution") != claim):
+            return True
+        if stage and run.stages.get(stage, {}).get("status") != "running":
             return True
         if claim and ":" in claim:
             job_id, attempt = claim.rsplit(":", 1)
@@ -321,7 +324,7 @@ def perform_review(run_id: str, claim: str | None = None):
             prior_job = db.get(Job, job_id)
             if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
                 return
-        if run.summary.get("status") == "running":
+        if not pipeline.enabled(run) and run.summary.get("status") == "running":
             pr_summary.interrupt(run)
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
@@ -390,9 +393,12 @@ def perform_review(run_id: str, claim: str | None = None):
             saved_review = (run.progress["analysis_status"], run.report, [])
         if connection.kind == "api" and not saved_review and run.progress.get("analysis_started"):
             # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
-            run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
             run.failure_reason, run.error = "worker_stopped", "The review worker stopped before saving token usage. The remaining budget cannot be verified, so this run cannot resume. Start a new review."
-            verification.skip_pending(db, run, run.error)
+            if pipeline.enabled(run):
+                complete_saved_review(db, run, run.error)
+            else:
+                run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
+                verification.skip_pending(db, run, run.error)
             return
         allowance = run.config["settings"]["timeout_seconds"]
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
@@ -404,6 +410,11 @@ def perform_review(run_id: str, claim: str | None = None):
                 run.publication, run.failure_reason, run.error = "not_applicable", "timeout", "The review reached its configured time limit. Increase Timeout or reduce the review scope, then start a new review."
             return
         run.progress = {**run.progress, "analysis_started": True, "phase": "analysis"}
+        parallel_stages = pipeline.enabled(run) and not retry
+        if parallel_stages:
+            pipeline.start(db, run, claim)
+        elif pipeline.enabled(run) and retry:
+            pipeline.update(run, "assessment", "running", execution=claim, started_at=now().isoformat())
         args = (
             repo.full_name,
             pr.number,
@@ -424,6 +435,16 @@ def perform_review(run_id: str, claim: str | None = None):
 
         def after_review(result, repo_path, env, fetch_env):
             save_analysis(run_id, claim, *result)
+            if parallel_stages:
+                with transaction() as db:
+                    current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                    if current.progress.get("execution") != claim or current.cancel_requested:
+                        return
+                    pipeline.update(current, "ocr", result[0], tokens=result[1].get("summary", {}).get("total_tokens"))
+                    pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
+                progress({"phase": "assessment"})
+                assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
+                return
             if result[0] == "skipped":
                 with transaction() as db:
                     current = db.get(ReviewRun, run_id)
@@ -438,6 +459,15 @@ def perform_review(run_id: str, claim: str | None = None):
             progress({"phase": "summary"})
             pr_summary.generate(run_id, repo_path, env, args[4], credentials, claim)
 
+        def before_analysis(limited):
+            if not parallel_stages:
+                return
+            with transaction() as db:
+                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                if current.progress.get("execution") == claim and not current.cancel_requested:
+                    current.progress = {**current.progress, "file_limit_checked": True, "file_limit_exceeded": limited is not None}
+                    pipeline.enqueue_stages(db, current)
+
         status, report, comments = ocr.review(
             *args,
             stopped=lambda: review_stopped(run_id, claim),
@@ -446,6 +476,7 @@ def perform_review(run_id: str, claim: str | None = None):
             checkpoint=checkpoint,
             saved_review=saved_review,
             after_review=after_review,
+            before_analysis=before_analysis,
         )
     except ocr.ReviewStopped:
         with transaction() as db:
@@ -463,15 +494,28 @@ def perform_review(run_id: str, claim: str | None = None):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if run.progress.get("execution") != claim or run.cancel_requested or run.status in {"cancelled", "superseded"}:
             return
+        if parallel_stages:
+            pipeline.review_done(db, run)
+            return
         run.status = status
         if not retry:
             run.finished_at = now()
         complete_saved_review(db, run)
 
 
-def complete_saved_review(db, run, interruption=None):
+def complete_saved_review(db, run, interruption=None, *, finalizing=False):
     """A failed verification phase must not discard completed new-finding analysis."""
     status = run.progress.get("analysis_status")
+    if pipeline.enabled(run) and run.progress.get("assessment_retry"):
+        pipeline.assessment_done(db, run, interruption)
+    if pipeline.enabled(run) and not finalizing and not run.progress.get("assessment_retry"):
+        pipeline.review_done(db, run, interruption)
+        for kind, stage in pipeline.KINDS.items():
+            if run.stages.get(stage, {}).get("status") == "pending" and not db.scalar(select(Job.id).where(
+                Job.kind == kind, Job.payload["run_id"].as_string() == run.id,
+            ).limit(1)):
+                pipeline.fail_stage(db, run, stage, interruption or "The review could not start.")
+        return True
     if not run.progress.get("analysis_saved") or not can_publish(run, status) or run.cancel_requested:
         return False
     if interruption:
@@ -559,11 +603,11 @@ def marker(kind: str, identity: str) -> str:
     return f"<!-- code-mortis:{kind}:{identity} -->"
 
 
-def comment_body(finding_id: str, snapshot: dict, *, with_prompt=False) -> str:
+def comment_body(finding_id: str, snapshot: dict, *, with_prompt=False, sanitize=False) -> str:
     severity = snapshot["severity"]
     icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}[severity]
     body = f"**{icon} {severity.title()} · {snapshot['category']}**\n\n{snapshot['content']}"
-    if with_prompt:
+    if with_prompt or sanitize:
         body = f"**{icon} {severity.title()} · {pr_summary.text(snapshot['category'])}**\n\n{pr_summary.text(snapshot['content'])}"
     suffix = "\n\n" + marker("finding", finding_id)
     if with_prompt:
@@ -582,7 +626,7 @@ def comment_body(finding_id: str, snapshot: dict, *, with_prompt=False) -> str:
             code = suggestion
             path = PurePosixPath(snapshot["path"])
             language = "dockerfile" if path.name.lower() == "dockerfile" else CODE_LANGUAGES.get(path.suffix.lower(), "text")
-        if with_prompt:
+        if with_prompt or sanitize:
             code = code.replace("<!-- code-mortis:", "&lt;!-- code-mortis:")
         fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", code)), default=0) + 1)
         section = f"\n\n**Suggested change**\n\n{fence}{language}\n{code}\n{fence}"
@@ -742,12 +786,13 @@ def assessed_publication_plan(db, run, *, append=False):
             save_batch()
         if occurrence.inline_line:
             comments.append({"path": occurrence.snapshot["path"], "line": occurrence.inline_line,
-                             "side": "RIGHT", "body": comment_body(finding.id, snapshot, with_prompt=bool(run.summary))})
+                             "side": "RIGHT", "body": comment_body(finding.id, snapshot, with_prompt=run.config["settings"].get("ai_fix_prompts_enabled", False), sanitize=bool(run.summary))})
         else:
             entry = f"- `{occurrence.snapshot['path']}`: {occurrence.snapshot['content'][:1200]}\n"
             if run.summary:
                 entry = f"- {pr_summary.text(snapshot['path'])}: {pr_summary.text(snapshot['content'][:1200])}\n"
-                entry += pr_summary.fix_section([snapshot], budget=12000) + "\n"
+                if run.config["settings"].get("ai_fix_prompts_enabled", False):
+                    entry += pr_summary.fix_section([snapshot], budget=12000) + "\n"
             unanchored.append(entry + marker("finding", finding.id))
         identities.append(finding.id)
     save_batch()

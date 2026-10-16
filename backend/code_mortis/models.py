@@ -169,6 +169,7 @@ class ReviewRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    stages: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     publication_error: Mapped[str | None] = mapped_column(Text)
     review_ids: Mapped[list[int]] = mapped_column(JSON, default=list)

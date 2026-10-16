@@ -45,7 +45,7 @@ def validate_result(data, path, line_count, patch):
     return comments
 
 
-def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint):
+def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint, *, before_analysis=None):
     ocr.check_version(repo, env)
     deadline = time.monotonic() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     args = ["--repo", str(repo), "--from", base, "--to", head, "--format", "json"]
@@ -82,6 +82,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
     selected = preview.get("reviewable_files")
     paths = ocr.preview_paths(selected, preview.get("reviewable_count"))
     limited = ocr.file_limit_result(paths, options.get("max_files"))
+    if before_analysis:
+        before_analysis(limited)
     if limited:
         if isinstance(preview.get("excluded_files"), list):
             limited[1]["excluded_files"] = preview["excluded_files"]

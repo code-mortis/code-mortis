@@ -242,6 +242,8 @@ def test_manual_assessment_retry_can_resume_an_automatic_run_without_an_automati
         db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
         db.flush()
         run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
+        run.config = {key: value for key, value in run.config.items() if key != "pipeline_version"}
+        run.stages = {}
         db.flush()
         identity = run.id
     pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
