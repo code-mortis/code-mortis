@@ -1086,11 +1086,41 @@ test("parallel stage details preserve an open popover while the run refreshes", 
   await page.goto("/runs/run");
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  await expect(details).toContainText("Usage unknown");
+  await expect(details).toContainText("Token usage pending");
   await page.waitForTimeout(5500);
   await expect(details).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/parallel-stage-details-${info.project.name}.png`, fullPage: true });
+});
+
+test("verification failure explains the saved budget and collapses technical diagnostics", async ({ page }, info) => {
+  const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
+    + JSON.stringify({ exit_code: 0, status: "completed_with_warnings", summary: { total_tokens: 0, budget_exceeded: true },
+      warnings: [{ message: "stopped in batch #0: used 0 tokens + next-file estimate exceeds budget 200000", type: "token_budget_reached" }],
+      result_error: "The AI did not return exactly one final assessment.", diagnostics: "Saved diagnostics. ".repeat(300) });
+  await mock(page, { run: { status: "cancelled", publication: "not_applicable", publication_error: null, stages: {
+    ocr: { status: "cancelled", tokens: null }, assessment: { status: "cancelled", tokens: 0 },
+    verification: { status: "failed", tokens: 0, error }, summary: { status: "completed", tokens: 300 },
+  } } });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  const alert = details.getByRole("alert");
+  await expect(alert).toContainText("Verification token limit reached");
+  await expect(alert).toContainText("stopped before contacting the AI");
+  await expect(alert).toContainText("saved limit of 200,000 tokens");
+  await expect(alert).toContainText("Start a new review to use current settings.");
+  await expect(alert).not.toContainText("exit_code");
+  const raw = details.getByRole("region", { name: "Verification technical details", includeHidden: true });
+  await expect(raw).toBeHidden();
+  await noOverflow(page);
+  await page.screenshot({ path: `/tmp/verification-error-${info.project.name}.png`, fullPage: true });
+  const disclosure = details.locator("summary", { hasText: "Technical details" });
+  await disclosure.focus();
+  await disclosure.press("Enter");
+  await expect(raw).toBeVisible();
+  expect(await raw.textContent()).toBe(error);
+  await noOverflow(page);
 });
 
 test("PR overview keeps details in the status row and retries synchronization without starting a review", async ({ page }, info) => {
@@ -1158,7 +1188,7 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   }
   await summary.press("Enter");
   const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
-  await expect(details.getByText("Usage unknown", { exact: true })).toBeVisible();
+  await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
   await expect(details.getByRole("alert").filter({ hasText: "Summary generation was interrupted." })).toBeVisible();
   await expect(details.getByRole("button", { name: /Retry (summary generation|GitHub sync)/ })).toHaveCount(0);
 });
@@ -1195,7 +1225,7 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   for (const pending of [true, false, true, false]) {
     overview.summary_pending = pending;
     await page.clock.runFor(5500);
-    await expect(details.getByText(pending ? "GitHub: Updating overview…" : "GitHub: Overview published")).toBeVisible();
+    await expect(details.getByText(pending ? "GitHub: Updating overview…" : "GitHub: Overview available")).toBeVisible();
     expect(await original!.evaluate((element) => element.isConnected)).toBe(true);
     expect(await details.boundingBox()).toEqual(bounds);
     expect(await focused!.evaluate((element) => element === document.activeElement)).toBe(true);
@@ -2215,10 +2245,9 @@ for (const publication of ["failed", "partially_published"]) {
   test(`running review preserves context when publication is ${publication}`, async ({ page }) => {
     await mock(page, { run: { status: "running", publication, progress: {}, finished_at: null } });
     await page.goto("/runs/run");
-    const outcome = page.getByRole("region", { name: "Review outcome" });
-    const suffix = publication === "failed" ? "Publication failed." : "Some comments published.";
-    await expect(outcome.getByRole("status")).toHaveText(`The review is in progress. ${suffix}`);
-    await expect(outcome).toContainText("This page updates automatically as results are saved. Retry GitHub publication");
+    await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).locator(":scope > p")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Review run running", exact: true })).toBeVisible();
   });
 }
@@ -2232,7 +2261,7 @@ test("partial review and publication retry remain distinct", async ({
   await expect(page.locator("main header")).toContainText("· 1m 30s");
   await expect(
     page.getByRole("region", { name: "Review outcome" }),
-  ).toContainText("Coverage is incomplete.");
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
@@ -3349,19 +3378,22 @@ for (const [publication, label] of [
     await page.goto("/pulls/pr");
     await page.getByRole("tab", { name: /Run history/ }).click();
     await expect(page.getByRole("link", { name: new RegExp(`GitHub: ${label}`) })).toBeVisible();
-    await page.getByRole("link", { name: "View run details", exact: true }).click();
     const outcome = page.getByRole("region", { name: "Review outcome" });
     await expect(outcome).toContainText("41 reviewable files exceed the limit of 40. No files were reviewed.");
     await expect(outcome).toContainText("post the command shown in the GitHub skip notice");
     await expect(outcome).not.toContainText("@codemortis");
     await expect(outcome).toContainText("Personal connections remain owner-only.");
+    if (publication === "failed" || publication === "partially_published") {
+      await expect(outcome).toContainText("send the saved file-limit notice without running AI analysis");
+      await expect(outcome).not.toContainText("send saved results");
+    }
+    await page.getByRole("link", { name: "View run details", exact: true }).click();
+    await expect(outcome).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).locator(":scope > p")).toHaveCount(0);
     await expect(page.getByText(label, { exact: true })).toBeVisible();
     await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
     const retry = page.getByRole("button", { name: "Retry GitHub publication" });
     if (publication === "failed" || publication === "partially_published") {
-      await expect(outcome).toContainText("send the saved file-limit notice without running AI analysis");
-      await expect(outcome).not.toContainText("send saved results");
-      await expect(page.getByText("Retry publication to send the saved file-limit notice without running AI analysis.", { exact: true })).toBeVisible();
       await expect(page.getByText("Some comments published", { exact: true })).toHaveCount(0);
       await retry.click();
       expect(requests).toEqual([{ path: "/runs/run/publish", method: "POST", body: null, csrf: "csrf-from-session" }]);
@@ -3386,11 +3418,13 @@ for (const [name, coverage, settings] of [
       ...limitedRun, publication: "failed", config: { ...run.config, settings },
       report: { manifest: { schema_version: "code-mortis.file-limit/v1", coverage } },
     } });
-    await page.goto("/runs/run");
+    await page.goto("/pulls/pr");
     const outcome = page.getByRole("region", { name: "Review outcome" });
     await expect(outcome).toContainText("This review was skipped. No specific reason was saved. Publication failed.");
     await expect(outcome).toContainText("Inspect the coverage report and repository settings before starting a new review.");
     await expect(outcome).not.toContainText("skip notice");
+    await outcome.getByRole("link", { name: "View run details" }).click();
+    await expect(outcome).toHaveCount(0);
     await expect(page.getByText("Publication failed", { exact: true })).toBeVisible();
     await expect(page.getByText("Skip notice publication failed", { exact: true })).toHaveCount(0);
     await noOverflow(page);
@@ -3407,12 +3441,13 @@ test("oversized review explains its outcome and links to editable limits through
   await page.getByRole("tab", { name: /Run history/ }).click();
   await expect(page.getByRole("link", { name: /GitHub: No comments published/ })).toContainText(reason);
   await page.getByRole("link", { name: "View run details", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: reason })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
   await expect(page.getByText("No comments published", { exact: true })).toBeVisible();
   await expect(page.getByText("not applicable", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/file-limit-skipped-${info.project.name}.png`, fullPage: true });
+  await page.goto("/pulls/pr");
   await page.getByRole("link", { name: "Adjust review settings" }).click();
   const settings = page.getByRole("form", { name: "Repository configuration" });
   await expect(settings).toBeVisible();
@@ -4098,11 +4133,12 @@ for (const status of ["running", "completed"]) {
 
 test("viewers receive an administrator next step without settings or retry actions", async ({ page }) => {
   await mock(page, { run: limitedRun, role: "member", canWrite: false });
-  await page.goto("/runs/run");
+  await page.goto("/pulls/pr");
   const outcome = page.getByRole("region", { name: "Review outcome" });
   await expect(outcome).toContainText("Ask your administrator to adjust the repository settings.");
   await expect(outcome.getByRole("link", { name: "Adjust review settings" })).toHaveCount(0);
-  await expect(outcome.getByRole("link", { name: "View pull request", exact: true })).toHaveAttribute("href", "/pulls/pr");
+  await outcome.getByRole("link", { name: "View run details", exact: true }).click();
+  await expect(outcome).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume review|Retry GitHub publication/ })).toHaveCount(0);
 });
 
@@ -4194,10 +4230,19 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
 for (const example of feedbackCases) {
   test(`review feedback: ${example.name}`, async ({ page }) => {
     await mock(page, { run: { publication: "not_applicable", publication_error: null, ...example.state } });
-    await page.goto("/runs/run");
+    await page.goto("/pulls/pr");
     const outcome = page.getByRole("region", { name: "Review outcome" });
     await expect(outcome).toContainText(example.summary);
     await expect(outcome).toContainText(example.nextStep);
+    if (example.state.status === "blocked") {
+      await expect(outcome.getByRole("link", { name: "Manage AI connections" })).toHaveAttribute("href", "/settings?tab=connections");
+    }
+    await outcome.getByRole("link", { name: "View run details", exact: true }).click();
+    await expect(outcome).toHaveCount(0);
+    const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+    await expect(publication.locator(":scope > p")).toHaveCount(0);
+    await publication.getByText("No comments published", { exact: true }).hover();
+    await expect(page.getByText(/No review comments were published for this run/)).toHaveCount(0);
     if (example.fileReason) {
       await page.getByRole("tab", { name: "Coverage", exact: true }).click();
       const files = page.getByRole("region", { name: "Files not reviewed", exact: true });
@@ -4205,7 +4250,6 @@ for (const example of feedbackCases) {
     }
     if (example.state.status === "blocked") {
       await expect(page.getByRole("button", { name: "Resume review" })).toHaveCount(example.state.owner_id === 7 ? 1 : 0);
-      await expect(outcome.getByRole("link", { name: "Manage AI connections" })).toHaveAttribute("href", "/settings?tab=connections");
     }
     await noOverflow(page);
   });
@@ -5013,7 +5057,7 @@ test("run omits verification summary and orders assessment before coverage", asy
 });
 
 
-test("automatic resolution is opt-in and requires automatic reviews", async ({ page }, info) => {
+test("automatic resolution is opt-in and available for manual reviews", async ({ page }, info) => {
   const requests = await mock(page);
   await page.goto("/repositories");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
@@ -5021,8 +5065,7 @@ test("automatic resolution is opt-in and requires automatic reviews", async ({ p
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
   await expect(resolution).not.toBeChecked();
   await automatic.uncheck();
-  await expect(resolution).toBeDisabled();
-  await automatic.check();
+  await expect(resolution).toBeEnabled();
   await resolution.check();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/auto-resolution-setting-${info.project.name}.png`, fullPage: true });
@@ -6350,7 +6393,7 @@ test("error messages identify invalid JSON without exposing draft secrets", asyn
 test("review feedback shows recorded usage and the configured token limit", async ({ page }) => {
   await mock(page, { run: { status: "partial", config: { settings: { token_budget: 5000000 } },
     report: { summary: { budget_exceeded: true, total_tokens: 5232697 } } } });
-  await page.goto("/runs/run");
+  await page.goto("/pulls/pr");
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("5,232,697 / 5,000,000 tokens used.");
 });
 

@@ -101,7 +101,7 @@ def latest_run(db, pr_id):
 
 
 def ready_to_sync(run):
-    return bool(run and run.status in {"completed", "partial", "skipped"} and not run.cancel_requested
+    return bool(run and run.status != "superseded"
                 and run.summary.get("status") == "completed" and run.summary.get("result"))
 
 
@@ -470,7 +470,8 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
 
 
 def render(db, pr, run):
-    parts = [f"## Code Mortis: {run.status.replace('_', ' ').capitalize()}"]
+    parts = ["## Code Mortis"]
+    reviewing = run.status in {"queued", "running", "blocked"}
     if run.summary.get("result"):
         result = run.summary["result"]
         parts.extend(["### Summary", text(result["narrative"])])
@@ -503,7 +504,9 @@ def render(db, pr, run):
             continue
         occurrence, source = observed
         url = finding.github_url or f"{settings().public_url}/pulls/{pr.id}?finding={finding.id}"
-        note = "" if occurrence.run_id == run.id else " (earlier finding; not observed in this review)"
+        note = "" if occurrence.run_id == run.id else (
+            " (earlier finding; review in progress)" if reviewing else " (earlier finding; not observed in this review)"
+        )
         if finding.desired_status:
             note += " (status synchronization pending)"
         rows.append(f"- **{finding.severity.title()}** [{text(finding.path)}]({url}): {text(occurrence.snapshot['content'][:350])}{note}")
@@ -527,6 +530,10 @@ def render(db, pr, run):
             details.append(f"- {text(item.get('path', ''))}: {text(item.get('reason', 'Not completed'))}")
     else:
         details.append("Detailed review coverage is not available yet. Completeness cannot be confirmed.")
+    if reviewing:
+        details.insert(0, "Detailed review is still in progress. Findings and coverage are not final.")
+    elif run.status in {"cancelled", "failed"}:
+        details.insert(0, f"Detailed review was {run.status}. Findings and coverage are incomplete.")
     assessment = run.progress.get("assessment")
     if assessment:
         details.append(f"Assessment: {assessment['new_findings']} new validated finding(s), {assessment['withheld_candidates']} withheld candidate(s)."
@@ -559,7 +566,7 @@ def sync(pr_id):
         if not ready_to_sync(run):
             return
         repo = db.get(Repository, pr.repository_id)
-        if not repo.active or not db.get(Installation, repo.installation_id).active:
+        if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The PR overview cannot be updated because GitHub installation access was removed.")
         token = github.installation_token(db, repo.installation_id)
         expected = f"<!-- code-mortis:pr-summary:{pr.id} -->"
@@ -580,7 +587,9 @@ def sync(pr_id):
         if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
                    for sha in (remote.get("head", {}).get("sha"), remote.get("base", {}).get("sha"))):
             raise ValueError("GitHub returned an invalid PR revision. Refresh the pull request before retrying synchronization.")
-        if (run.head_sha, run.base_sha) != (remote["head"]["sha"], remote["base"]["sha"]):
+        db.refresh(run)
+        if (not ready_to_sync(run) or latest_run(db, pr.id).id != run.id or remote["state"] != "open"
+            or (run.head_sha, run.base_sha) != (remote["head"]["sha"], remote["base"]["sha"])):
             return
         body = render(db, pr, run)
         if existing is None:

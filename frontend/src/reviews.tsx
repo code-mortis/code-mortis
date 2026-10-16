@@ -89,32 +89,27 @@ import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { candidateOutcomes, findingSeverities, findingStatuses } from "./lib/review-filters";
 
-function RunFeedback({ run, repositoryId, admin, canWrite, detail = false }: {
-  run: Run; repositoryId: number; admin: boolean; canWrite: boolean; detail?: boolean;
+function RunFeedback({ run, repositoryId, admin }: {
+  run: Run; repositoryId: number; admin: boolean;
 }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
   const feedback = runFeedback(run);
-  if (!feedback.needsAttention && (!detail || run.status !== "queued")) return null;
+  if (!feedback.needsAttention) return null;
   return (
-    <section aria-label="Review outcome" className={detail ? "mb-4 space-y-2 text-sm" : "mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm"}>
+    <section aria-label="Review outcome" className="mb-6 space-y-3 rounded-lg border bg-card p-5 text-sm">
       <p role="status" className="font-medium break-words">{feedback.summary}</p>
       <p className="text-muted-foreground break-words">
         {feedback.destination === "repository" && !admin ? "Ask your administrator to adjust the repository settings. " : ""}
         {feedback.nextStep}
       </p>
       <div className="flex flex-wrap gap-3">
-        {!detail && <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>View run details</Link>}
+        <Link className="underline underline-offset-4" to={`/runs/${run.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>View run details</Link>
         {feedback.destination === "repository" && admin && (
           <Link className="underline underline-offset-4" to={`/repositories/${repositoryId}/settings?tab=limits`}>Adjust review settings</Link>
         )}
         {feedback.destination === "connections" && <Link className="underline underline-offset-4" to="/settings?tab=connections">Manage AI connections</Link>}
-        {detail && feedback.needsAttention && (
-          <Link className="underline underline-offset-4" to={`/pulls/${run.pr_id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>
-            {canWrite && ["failed", "partial", "skipped", "cancelled"].includes(run.status) ? "Open pull request to run a new review" : "View pull request"}
-          </Link>
-        )}
       </div>
     </section>
   );
@@ -387,7 +382,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </section>
     </header>
     <ErrorNotice error={action.error || query.error} />
-    {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} canWrite={can_write} />}
+    {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4">
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
@@ -576,7 +571,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
             <p className="text-sm text-muted-foreground">
               Automatic resolution: {words(item.resolution)}
             </p>
-            <ErrorNotice error={item.error} />
+            {item.error && <InferenceError error={item.error} stage="verification" />}
           </section>
         ))}
         <h3 className="text-sm font-semibold">Activity</h3>
@@ -757,9 +752,12 @@ function AssessmentList({ runId, running, onOpen }: {
   </div>;
 }
 
-function AssessmentError({ error, withheld }: { error: string; withheld: boolean }) {
+function InferenceError({ error, withheld = false, stage = "assessment" }: {
+  error: string; withheld?: boolean; stage?: "assessment" | "verification" | "review";
+}) {
   const [copying, setCopying] = useState(false);
-  const feedback = assessmentFeedback(error);
+  const feedback = assessmentFeedback(error, stage);
+  const name = stage[0].toUpperCase() + stage.slice(1);
   return <div className="space-y-3">
     <ErrorNotice title={feedback.title} error={`${feedback.message}${withheld ? " This candidate was withheld from publication." : ""}`} />
     {feedback.citation && <p className="break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">{feedback.citation}</p>}
@@ -770,12 +768,12 @@ function AssessmentError({ error, withheld }: { error: string; withheld: boolean
           setCopying(true);
           try {
             await navigator.clipboard.writeText(error);
-            toast.success("Assessment details copied");
+            toast.success(`${name} details copied`);
           } catch {
             toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
           } finally { setCopying(false); }
         }}>{copying ? <LoaderCircle aria-hidden="true" className="motion-safe:animate-spin" /> : <Copy aria-hidden="true" />}{copying ? "Copying…" : "Copy details"}</Button>
-        <pre role="region" aria-label="Assessment technical details" tabIndex={0} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{error}</pre>
+        <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{error}</pre>
       </div>
     </details>
   </div>;
@@ -817,7 +815,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
       </TabsList></div>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="assessment-scroll">
         <TabsContent value="assessment" className="space-y-6">
-          {candidate.error && <AssessmentError error={candidate.error} withheld={!candidate.finding_id} />}
+          {candidate.error && <InferenceError error={candidate.error} withheld={!candidate.finding_id} />}
           <ErrorNotice error={retry.error} />
           {result ? <>
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
@@ -828,7 +826,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
             <summary className="cursor-pointer font-medium">Previous attempts ({candidate.attempts.length})</summary>
             {candidate.attempts.map((attempt, index) => <section key={index} className="space-y-3 border-t pt-4">
               <h3 className="text-sm font-semibold">Attempt {index + 1}{attempt.finished_at && <span className="ml-2 text-xs font-normal text-muted-foreground">{date(attempt.finished_at)}</span>}</h3>
-              {attempt.error && <AssessmentError error={attempt.error} withheld />}
+              {attempt.error && <InferenceError error={attempt.error} withheld />}
               {typeof attempt.usage.tokens === "number" && <p className="text-xs text-muted-foreground">{attempt.usage.tokens.toLocaleString()} tokens used or reserved.</p>}
               {typeof attempt.usage.context_bytes === "number" && <p className="text-xs text-muted-foreground">{attempt.usage.context_bytes.toLocaleString()} context bytes used.</p>}
             </section>)}
@@ -866,6 +864,12 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} />;
 }
 
+function tokenUsage(tokens: number | null | undefined, status: string) {
+  if (tokens != null) return `${tokens.toLocaleString()} tokens`;
+  return ["pending", "queued", "running", "waiting", "blocked"].includes(status)
+    ? "Token usage pending" : "Token usage unavailable";
+}
+
 const checkDescriptions: Record<string, string> = {
   queued: "Waiting for the review to start.",
   in_progress: "Review, publication, or fix synchronization is still in progress.",
@@ -874,13 +878,13 @@ const checkDescriptions: Record<string, string> = {
   neutral: "The review completed, but assessment or fix verification is incomplete.",
   failure: "The review failed, coverage is incomplete, or comments could not be fully published.",
   cancelled: "The review was cancelled or no longer applies to this pull request.",
-  skipped: "The review was skipped. Inspect the run outcome for the reason.",
+  skipped: "The review was skipped. Inspect coverage for the reason.",
   timed_out: "The review exceeded its time limit.",
   action_required: "The review or GitHub synchronization needs attention.",
 };
 
 function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
-  const { run, pull_request: pr, repository, occurrences, resolved_count = 0, assessment, can_write } = detail;
+  const { run, pull_request: pr, occurrences, resolved_count = 0, assessment, can_write } = detail;
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
@@ -953,9 +957,9 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
+            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
-            </Tooltip>
+            </Tooltip>}
           </div>
           {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
@@ -973,27 +977,18 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <span className="text-muted-foreground">Review stages</span>
             <Popover>
               <PopoverTrigger asChild><button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.status} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button></PopoverTrigger>
-              <PopoverContent align="start" aria-label="Review stage details" className="w-80 max-w-[calc(100vw-2rem)] space-y-4 text-xs">
+              <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
                 {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
                   const stage = run.stages?.[key];
                   if (!stage) return null;
                   return <div key={key} className="space-y-2">
                     <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={stage.status} /></div>
-                    <p className="text-muted-foreground">{stage.tokens == null ? "Usage unknown" : `${stage.tokens.toLocaleString()} tokens`}</p>
-                    <ErrorNotice error={stage.error} />
+                    <p className="text-muted-foreground">{tokenUsage(stage.tokens, stage.status)}</p>
+                    {stage.error && <InferenceError error={stage.error} stage={key === "ocr" ? "review" : key} />}
                   </div>;
                 })}
               </PopoverContent>
             </Popover>
-          </div>}
-          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">GitHub check</span>
-            {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
-              {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
-                <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
-              </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
-            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
-              : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
           </div>}
           {run.summary && run.summary.status !== "not_applicable" && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">PR summary</span>
@@ -1008,9 +1003,9 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               </Tooltip>
               <PopoverContent align="start" aria-label="PR summary details" className="w-80 max-w-[calc(100vw-2rem)] space-y-3 text-xs">
                 <div className="flex items-center justify-between gap-2"><span className="font-medium">PR summary</span><Status value={run.summary.status} /></div>
-                <p className="text-muted-foreground">{run.summary.tokens === null ? "Usage unknown" : `${(run.summary.tokens ?? 0).toLocaleString()} tokens`}</p>
+                <p className="text-muted-foreground">{tokenUsage(run.summary.tokens, run.summary.status)}</p>
                 {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
-                <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview published" : "Not published yet"}</p>
+                <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview available" : "Not published yet"}</p>
                 <ErrorNotice error={run.summary.error} />
                 {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting for the personal connection.</p>}
                 {run.summary.diagram_warning && <p className="text-muted-foreground">{run.summary.diagram_warning}</p>}
@@ -1020,14 +1015,21 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               </PopoverContent>
             </Popover>
           </div>}
+          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">GitHub check</span>
+            {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
+              {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
+                <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
+              </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
+            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
+              : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
+          </div>}
         </div>
-        {feedback.publicationDetail && !["published", "no_new_comments"].includes(run.publication) && <p className="leading-relaxed text-muted-foreground">{feedback.publicationDetail}</p>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
     </header>
     <ErrorNotice error={action.error || error} />
-    <RunFeedback run={run} repositoryId={repository.id} admin={user.role === "admin"} canWrite={can_write} detail />
     <ErrorNotice error={run.error} />
     {(active(run.status) || run.status === "blocked") && typeof run.progress?.selected === "number" && <p role="status" className="mb-4 text-sm text-muted-foreground">
       {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.

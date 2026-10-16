@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import checks, github, jobs, ocr, reviews, runner_client, verification
+from code_mortis import checks, github, jobs, ocr, pipeline, reviews, runner_client, verification
 from code_mortis.db import now, transaction
 from code_mortis.github import threads as github_threads
 from code_mortis.models import (
@@ -124,6 +124,91 @@ def saved():
 def perform(scenario):
     reviews.perform_review(scenario["run"])
     return saved()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+def test_manual_reviews_verify_and_resolve_without_automatic_review_grant(scenario, monkeypatch, automatic, kind):
+    with transaction() as db:
+        repo, run = db.get(Repository, 22), db.get(ReviewRun, scenario["run"])
+        repo.settings = {"automatic": automatic, "auto_resolve": True}
+        run.trigger, run.actor_id = "manual", 7
+        if kind != "api":
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            run.owner_id = 7
+            run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: (copy.deepcopy(RESULT), {"tokens": 50}))
+    row, finding, run = perform(scenario)
+    assert row.status == "completed" and row.resolution == "pending"
+    reviews.synchronize_finding(finding.sync_intent)
+    row, finding, _ = saved()
+    assert finding.status == "resolved" and row.resolution == "resolved"
+    assert scenario["mutations"] == [True]
+
+
+@pytest.mark.parametrize("previous_status", ["failed", "skipped", "completed", "running"])
+def test_new_manual_run_retries_unsuccessful_verification_with_current_settings(scenario, monkeypatch, previous_status):
+    with transaction() as db:
+        old, repo = db.get(ReviewRun, scenario["run"]), db.get(Repository, 22)
+        verification.prepare(db, old, repo, "token")
+        db.flush()
+        previous = db.scalar(select(FindingVerification))
+        previous.status, previous.error, previous.usage = previous_status, "Previous attempt", {"tokens": 19}
+        previous_id = previous.id
+        old.status = "completed"
+        repo.settings = {"automatic": False, "auto_resolve": True, "verification_token_budget": None,
+                         "timeout_seconds": None, "language": "Spanish", "model": "current-model"}
+        run = reviews.create_run(db, db.get(PullRequest, "pr"), repo, "manual", db.get(User, 7))
+        db.flush()
+        identity = run.id
+        verification.prepare(db, run, repo, "token")
+        verification.prepare(db, run, repo, "token")
+        db.flush()
+        attempts = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == identity)))
+        assert len(attempts) == (1 if previous_status in {"failed", "skipped"} else 0)
+        run.status, run.started_at = "running", now()
+        pipeline.enqueue_stages(db, run)
+        job = db.scalar(select(Job).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == identity))
+        job_id = job.id if job else None
+    calls = []
+
+    def verify(*args):
+        calls.append((args[2]["model"], args[5], args[6]))
+        return copy.deepcopy(RESULT), {"tokens": 50}
+
+    monkeypatch.setattr(verification, "api_verify", verify)
+    if job_id:
+        jobs.execute_job.run(job_id)
+        jobs.execute_job.run(job_id)
+    assert calls == ([("current-model", None, None)] if job_id else [])
+    with transaction() as db:
+        previous = db.get(FindingVerification, previous_id)
+        assert (previous.status, previous.error, previous.usage) == (previous_status, "Previous attempt", {"tokens": 19})
+        run = db.get(ReviewRun, identity)
+        assert run.config["settings"]["language"] == "Spanish"
+        if job_id:
+            attempt = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
+            assert attempt.status == "completed" and attempt.usage["tokens"] == 50
+            assert run.stages["verification"]["status"] == "completed"
+
+
+def test_retry_migration_preserves_previous_attempt(scenario):
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        verification.prepare(db, run, db.get(Repository, 22), "token")
+        db.flush()
+        row = db.scalar(select(FindingVerification))
+        row.status, row.error, row.usage = "failed", "Original failure", {"tokens": None, "reserved_tokens": 200000}
+        identity = row.id
+    config = Config("alembic.ini")
+    command.downgrade(config, "20261017_parallel_stages")
+    command.upgrade(config, "head")
+    with transaction() as db:
+        row = db.get(FindingVerification, identity)
+        assert row.status == "failed" and row.error == "Original failure"
+        assert row.usage == {"tokens": None, "reserved_tokens": 200000}
+        assert db.scalar(select(func.count()).select_from(Occurrence)) == 1
 
 
 @pytest.mark.parametrize("verdict", ["fixed", "still_present", "uncertain"])

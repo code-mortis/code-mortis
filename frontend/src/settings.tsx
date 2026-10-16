@@ -254,9 +254,9 @@ export function RepositorySettings({
               <div className="flex items-start justify-between gap-4 p-5">
                 <div className="space-y-2">
                   <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
-                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Requires Automatic reviews and GitHub App Contents: Read and write, approved on the installation. Uses the verification budget; uncertain findings stay open.</p>
+                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Verifies earlier findings in manual and automatic reviews. Requires GitHub App Contents: Read and write. Uses the verification budget; uncertain findings stay open.</p>
                 </div>
-                <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} disabled={!settings.automatic} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
+                <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
               </div>
               {([
                 ["summary_diagram_enabled", "Diagram", "Include a collapsed diagram in the PR overview, generated with the summary."],

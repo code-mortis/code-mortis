@@ -139,9 +139,9 @@ def test_overview_keeps_previous_summary_until_latest_revision_is_ready(seed, ov
         db.get(ReviewRun, old).publication = "published"
     pr_summary.sync("pr")
     assert stored[0] == original and len(writes) == 1
-    for status, summary_status in [("running", "pending"), ("running", "running"), ("running", "completed"),
+    for status, summary_status in [("running", "pending"), ("running", "running"),
                                    ("completed", "failed"), ("blocked", "failed"), ("failed", "failed"),
-                                   ("cancelled", "completed"), ("superseded", "completed")]:
+                                   ("cancelled", "failed"), ("superseded", "completed")]:
         with transaction() as db:
             run = db.get(ReviewRun, newest)
             run.status = status
@@ -150,7 +150,7 @@ def test_overview_keeps_previous_summary_until_latest_revision_is_ready(seed, ov
         pr_summary.sync("pr")
         assert stored[0] == original and len(writes) == 1
     with transaction() as db:
-        db.get(ReviewRun, newest).status = "completed"
+        db.get(ReviewRun, newest).status = "running"
     pr_summary.sync("pr")
     assert [method for method, _ in writes] == ["POST", "PATCH"]
     assert "Replacement summary" in stored[0]["body"] and newest in stored[0]["body"]
@@ -169,6 +169,46 @@ def test_no_overview_is_created_before_first_summary_completes(seed, overview_ap
             db.get(ReviewRun, identity).summary = {"status": status}
         pr_summary.sync("pr")
     assert stored == [] and writes == []
+
+
+def test_independent_summary_preserves_findings_prompts_and_diagram(seed, overview_api):
+    stored, writes, _ = overview_api
+    old = completed_run()
+    diagram = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
+    with transaction() as db:
+        run = db.get(ReviewRun, old)
+        run.summary = {**run.summary, "settings": {"summary_diagram_enabled": True, "ai_fix_prompts_enabled": True},
+                       "result": {**RESULT, "diagram": diagram}}
+        db.add(Finding(id="previous", pr_id="pr", fingerprint="previous", path=COMMENT["path"],
+                       content=COMMENT["content"], severity="high", start_line=1, end_line=1, last_seen_run_id=old))
+        db.flush()
+        db.add(Occurrence(finding_id="previous", run_id=old, snapshot=COMMENT))
+    pr_summary.sync("pr")
+    previous = stored[0]["body"]
+    assert "<summary>Diagram</summary>" in previous and "Prompt to fix with AI" in previous
+    latest = new_run(assessed=True, overview=True, parallel=True)
+    for status in ["pending", "running", "failed"]:
+        with transaction() as db:
+            run = db.get(ReviewRun, latest)
+            run.status, run.summary = "running", {"status": status}
+        pr_summary.sync("pr")
+        assert stored[0]["body"] == previous
+    with transaction() as db:
+        run = db.get(ReviewRun, latest)
+        run.summary = {"status": "completed", "settings": {"summary_diagram_enabled": True, "ai_fix_prompts_enabled": True},
+                       "result": {**RESULT, "narrative": "New summary ready before OCR.", "diagram": diagram}}
+        assert run.stages["ocr"]["status"] == "pending"
+    pr_summary.sync("pr")
+    for status in ["running", "completed", "cancelled"]:
+        with transaction() as db:
+            run = db.get(ReviewRun, latest)
+            run.status, run.cancel_requested = status, status == "cancelled"
+        pr_summary.sync("pr")
+        body = stored[0]["body"]
+        assert "New summary ready before OCR" in body and latest in body
+        assert "<summary>Diagram</summary>" in body and "Prompt to fix with AI" in body
+        assert "Open findings (1)" in body and COMMENT["content"].replace(".", "\\.") in body
+    assert len(stored) == 1 and len(writes) == 4
 
 
 def test_marker_recovery_requires_bot_ownership(seed, overview_api):
@@ -332,7 +372,8 @@ def test_lifecycle_coverage_is_separate_from_summary(seed, status):
         run.summary = {"status": "completed", "tokens": 20, "result": RESULT}
         run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
         body = pr_summary.render(db, pr, run)
-        assert status.capitalize() in body
+        assert body.startswith("## Code Mortis\n")
+        assert ("Detailed review is still in progress" in body) == (status in {"queued", "running", "blocked"})
         assert "Review target commit:" not in body and "Reviewed commit:" not in body and "Current phase:" not in body
         assert "Selected: 2. Completed: 0." in body
         assert "coverage is incomplete" in body and "No open validated findings" in body
@@ -462,6 +503,7 @@ def test_validated_snapshots_prompts_history_and_resolution(seed):
     newer = ready_run()
     with transaction() as db:
         run, pr = db.get(ReviewRun, newer), db.get(PullRequest, "pr")
+        run.status = "completed"
         run.config = {**run.config, "settings": {**run.config["settings"], "ai_fix_prompts_enabled": True}}
         body = pr_summary.render(db, pr, run)
         assert "earlier finding; not observed" in body and "REJECTED_SUGGESTION" not in body
@@ -534,7 +576,7 @@ def test_only_completed_summaries_enqueue_updates_without_locking_pr_behind_run(
                 assert not db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
                 run.summary = {"status": "completed", "result": RESULT}
                 db.flush()
-                assert not db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+                assert db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
                 run.status = "completed"
                 db.flush()
                 assert len(list(db.scalars(select(Job).where(Job.kind == "sync_summary")))) == 1

@@ -227,7 +227,7 @@ def test_migration_copies_limits_and_preserves_historical_runs(seed, budget):
 
 
 @pytest.mark.parametrize("outcome", ["completed", "partial", "file_limit", "summary_failed"])
-def test_finalization_preserves_previous_overview_until_ready(seed, overview_api, outcome):  # noqa: F811
+def test_summary_publishes_before_finalization_and_refreshes_coverage(seed, overview_api, outcome):  # noqa: F811
     stored, writes, _ = overview_api
     completed_run()
     pr_summary.sync("pr")
@@ -247,11 +247,11 @@ def test_finalization_preserves_previous_overview_until_ready(seed, overview_api
             run.summary = {"status": "failed", "tokens": None, "error": "Interrupted"}
             pipeline.update(run, "summary", "failed", tokens=None)
     pr_summary.sync("pr")
-    assert len(writes) == 1
+    assert len(writes) == (1 if outcome == "summary_failed" else 2)
     pipeline.finalize(identity)
     pr_summary.sync("pr")
     pr_summary.sync("pr")
-    assert len(stored) == 1 and len(writes) == (1 if outcome == "summary_failed" else 2)
+    assert len(stored) == 1 and len(writes) == (1 if outcome == "summary_failed" else 3)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.status == status

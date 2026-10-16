@@ -265,7 +265,7 @@ class Activity(Base):
 
 class FindingVerification(Base):
     __tablename__ = "finding_verifications"
-    __table_args__ = (UniqueConstraint("finding_id", "head_sha"),)
+    __table_args__ = (UniqueConstraint("finding_id", "run_id", name="uq_verification_finding_run"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     finding_id: Mapped[str] = mapped_column(ForeignKey("findings.id"), index=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id"), index=True)

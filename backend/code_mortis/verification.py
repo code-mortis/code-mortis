@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from . import github, ocr, runner_client
 from .db import now, transaction, uid
@@ -17,6 +17,7 @@ from .models import (
     Finding,
     FindingVerification,
     Installation,
+    Membership,
     Occurrence,
     PullRequest,
     Repository,
@@ -44,8 +45,9 @@ INSTRUCTIONS = (
 
 def enabled(run, repo):
     return (
-        run.trigger == "automatic" and run.config["settings"].get("auto_resolve", False)
-        and repo.enabled and repo.active and repo.settings.get("automatic", True)
+        run.config["settings"].get("auto_resolve", False)
+        and repo.enabled and repo.active
+        and (run.trigger == "manual" or run.trigger == "automatic" and repo.settings.get("automatic", True))
         and repo.settings.get("auto_resolve", False) and repo.connection_id == run.connection_id
     )
 
@@ -92,7 +94,8 @@ def prepare(db, run, repo, token):
         Finding.pr_id == pr.id, Finding.status == "open", Finding.desired_status.is_(None)
     ).order_by(Finding.id).with_for_update()):
         if db.scalar(select(FindingVerification.id).where(
-            FindingVerification.finding_id == finding.id, FindingVerification.head_sha == run.head_sha
+            FindingVerification.finding_id == finding.id, FindingVerification.head_sha == run.head_sha,
+            or_(FindingVerification.run_id == run.id, FindingVerification.status.not_in(["failed", "skipped"])),
         )):
             continue
         occurrence = db.scalar(select(Occurrence).join(ReviewRun).where(
@@ -611,7 +614,12 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             try:
                 if not current_connection or any(connection[key] != getattr(current_connection, key) for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
                     raise ValueError("The selected connection changed during this run.")
-                authorize_connection(db, current_connection, repo, "automatic")
+                actor = db.get(User, run.actor_id) if run.actor_id else None
+                if run.trigger == "manual":
+                    if not actor or not actor.enabled or not db.get(Membership, actor.id):
+                        raise ValueError("The requesting user no longer has access.")
+                    github.authorize_repo(db, actor, repo.full_name, write=True)
+                authorize_connection(db, current_connection, repo, run.trigger, actor)
                 if current_connection.kind != "api" and current_connection.auth_status != "connected":
                     raise runner_client.RunnerBlocked("authentication")
             except (ValueError, github.GitHubError) as exc:
@@ -752,6 +760,9 @@ def resolution_authorized(db, run, repo):
     from .reviews import authorize_connection
 
     connection = db.get(Connection, run.connection_id)
+    actor = db.get(User, run.actor_id) if run.actor_id else None
+    if run.trigger == "manual" and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
+        return False
     if (not enabled(run, repo) or run.cancel_requested or not connection
         or not db.get(Installation, repo.installation_id).active
         or run.status not in {"completed", "partial"}
@@ -760,7 +771,7 @@ def resolution_authorized(db, run, repo):
         or connection.kind != "api" and connection.auth_status != "connected"):
         return False
     try:
-        authorize_connection(db, connection, repo, "automatic", check_repository=False)
+        authorize_connection(db, connection, repo, run.trigger, actor, check_repository=False)
     except ValueError:
         return False
     except github.GitHubError as exc:
@@ -834,7 +845,8 @@ def synchronize(payload):
         base_sha, head_sha = run.base_sha, row.head_sha
         installation_id = repo.installation_id
         app_jwt = github.app_token(db)
-        owner = db.get(User, run.owner_id) if run.owner_id is not None else None
+        owner_id = run.actor_id if run.trigger == "manual" else run.owner_id
+        owner = db.get(User, owner_id) if owner_id is not None else None
 
     # Evidence and the fenced attempt are durable before network I/O. Never hold finding locks
     # while waiting for GitHub; revalidate local changes after these reads, before the write.
