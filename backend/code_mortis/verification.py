@@ -592,8 +592,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 or finding.desired_status or finding.sync_version != row.finding_version):
                 finish(db, row, status="skipped", error="Fix verification was skipped because the pull request or finding changed, or automatic resolution was disabled. Check the latest finding status and repository settings.")
                 continue
-            summary = (run.report or {}).get("summary", {})
-            used_tokens = summary.get("total_tokens")
+            used_tokens = ocr.report_tokens(run.report)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
             if not separate:
                 prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))

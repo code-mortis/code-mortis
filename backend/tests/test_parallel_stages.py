@@ -45,6 +45,37 @@ def stub_summary_context(monkeypatch):
     monkeypatch.setattr(verification, "filter_context", lambda _repo, _env, paths, *a: paths)
 
 
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("summary", [None, "unknown", [100], 100])
+def test_malformed_report_summary_preserves_analysis(verification_scenario, monkeypatch, parallel, summary):  # noqa: F811
+    identity = verification_scenario["run"]
+    if parallel:
+        enable_parallel(identity)
+
+    def engine(*args, **kwargs):
+        result = ("completed", {"summary": summary}, [])
+        kwargs["before_analysis"](None)
+        kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
+        return result
+
+    monkeypatch.setattr(ocr, "review", engine)
+    monkeypatch.setattr(pr_summary, "generate", lambda *a: None)
+    reviews.perform_review(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.progress["analysis_saved"] and run.progress["analysis_status"] == "completed"
+        budget, known = assessment.remaining_budget(db, run)
+        if parallel:
+            assert run.stages["ocr"]["status"] == "completed" and run.stages["ocr"]["tokens"] is None
+            assert run.stages["assessment"]["status"] == "completed"
+            assert known and budget == run.config["settings"]["assessment_token_budget"]
+        else:
+            assert run.status == "completed"
+            assert not known and budget == 0
+            row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
+            assert row.status == "skipped" and "Token usage is unavailable" in row.error
+
+
 @pytest.mark.parametrize("observed_again", [False, True])
 def test_three_workers_overlap_and_join_without_early_resolution(verification_scenario, monkeypatch, observed_again):  # noqa: F811
     identity = verification_scenario["run"]

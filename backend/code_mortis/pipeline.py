@@ -82,7 +82,7 @@ def enqueue_stages(db, run):
 
 def review_done(db, run, error=None):
     status = run.progress.get("analysis_status", "failed")
-    update(run, "ocr", status, tokens=(run.report or {}).get("summary", {}).get("total_tokens"), error=error)
+    update(run, "ocr", status, tokens=ocr.report_tokens(run.report), error=error)
     assessment_done(db, run, error)
     enqueue_finalizer(db, run)
 

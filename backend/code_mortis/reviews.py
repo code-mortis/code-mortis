@@ -440,7 +440,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     if current.progress.get("execution") != claim or current.cancel_requested:
                         return
-                    pipeline.update(current, "ocr", result[0], tokens=result[1].get("summary", {}).get("total_tokens"))
+                    pipeline.update(current, "ocr", result[0], tokens=ocr.report_tokens(result[1]))
                     pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
                 progress({"phase": "assessment"})
                 assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)

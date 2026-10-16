@@ -418,7 +418,7 @@ def remaining_budget(db, run):
     budget = options["assessment_token_budget"] if separate else options["token_budget"]
     values = [item.get("tokens", 0 if not item else None) for item in used]
     if not separate:
-        values.insert(0, (run.report or {}).get("summary", {}).get("total_tokens"))
+        values.insert(0, ocr.report_tokens(run.report))
     known = all(type(value) is int and value >= 0 for value in values)
     return (None if budget is None else budget - sum(values) if known else 0), known
 

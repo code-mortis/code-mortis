@@ -299,6 +299,11 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
     return ("completed" if state == "complete" else state), report, comments
 
 
+def report_tokens(report: dict | None):
+    summary = (report or {}).get("summary")
+    return summary.get("total_tokens") if isinstance(summary, dict) else None
+
+
 def fingerprint(comment: dict) -> str:
     def text(value):
         return " ".join(value.split()).casefold()
