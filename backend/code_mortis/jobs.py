@@ -6,6 +6,7 @@ import sentry_sdk
 from celery import Celery
 from celery.signals import worker_process_init
 from redis import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, or_, select
 
 from . import (
@@ -410,8 +411,12 @@ def job_queue(kind, payload=None):
 @celery.task(name="mortis.dispatch")
 def dispatch():
     # A slow historical sync must not fill the broker with copies of unclaimed jobs.
-    with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as broker:
-        sync_capacity = max(0, 100 - broker.llen("sync"))
+    try:
+        with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as broker:
+            sync_capacity = max(0, 100 - broker.llen("sync"))
+    except RedisError as error:
+        sync_capacity = 0
+        log.warning("sync_queue_length_failed error_type=%s", type(error).__name__)
     with transaction() as db:
         # An expired lease means the process disappeared; completed external writes are reconciled on retry.
         for job in db.scalars(

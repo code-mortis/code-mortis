@@ -3,6 +3,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import func, select
 from test_review_flow import remote
 
@@ -41,6 +44,27 @@ def test_dispatch_caps_sync_messages_to_available_broker_space(seed, monkeypatch
     monkeypatch.setattr(jobs.Redis, "from_url", lambda *a, **k: nullcontext(SimpleNamespace(llen=lambda _: 99)))
     jobs.dispatch()
     assert len(sent) == 1 and sent[0]["queue"] == "sync"
+
+
+@pytest.mark.parametrize("error", [RedisConnectionError, RedisTimeoutError, ResponseError])
+def test_dispatch_keeps_events_moving_when_sync_queue_length_fails(seed, monkeypatch, error):
+    with transaction() as db:
+        sync = reviews.enqueue(db, "sync_pr", {"repository_id": 22, "number": 1}).id
+        webhook = reviews.enqueue(db, "webhook", {"event": "pull_request"}).id
+        live_sync = reviews.enqueue(db, "sync_pr", {"repository_id": 22, "number": 2, "sender_type": "User"}).id
+
+    def fail_length(queue):
+        raise error("Queue length unavailable")
+
+    sent = []
+    monkeypatch.setattr(jobs.execute_job, "apply_async", lambda **kwargs: sent.append(kwargs))
+    monkeypatch.setattr(jobs.Redis, "from_url", lambda *a, **k: nullcontext(SimpleNamespace(llen=fail_length)))
+    jobs.dispatch()
+    assert {call["args"][0] for call in sent} == {webhook, live_sync}
+    assert all(call["queue"] == "events" for call in sent)
+    with transaction() as db:
+        assert db.get(Job, sync).dispatched_at is None
+        assert all(db.get(Job, identity).dispatched_at for identity in [webhook, live_sync])
 
 
 @pytest.mark.parametrize("pending_state", ["queued", "running"])
