@@ -986,7 +986,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     .map((value) => [value, occurrences.filter(({ snapshot }) => snapshot.category === value).length]));
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
-    {pr.ignored && <p role="status" className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm">This pull request is ignored. <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
+    {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <header className="mb-6 min-w-0">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-4">

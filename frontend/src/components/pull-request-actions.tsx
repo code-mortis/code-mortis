@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ClipboardCheck, ExternalLink, EyeOff, GitPullRequest, MoreHorizontal, Play, RefreshCw, RotateCcw, Settings2, Square } from "lucide-react";
 import { toast } from "sonner";
 import { useAction, useApi, type Run, type Schema } from "../api";
@@ -26,7 +26,6 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, ign
   const cache = useQueryClient();
   const action = useAction();
   const navigate = useNavigate();
-  const location = useLocation();
   const data = detail.error ? undefined : detail.data;
   const pr = data?.pull_request;
   useEffect(() => {
@@ -103,7 +102,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, ign
       {pr?.latest_run && <DropdownMenuItem asChild><Link to={`/runs/${pr.latest_run.id}`} state={state}><ClipboardCheck aria-hidden="true" />View latest review</Link></DropdownMenuItem>}
       <DropdownMenuItem asChild><Link to={`/pulls/${id}`} state={state}><GitPullRequest aria-hidden="true" />View pull request</Link></DropdownMenuItem>
       {pr && <DropdownMenuItem asChild><a href={pr.url} target="_blank" rel="noreferrer"><ExternalLink aria-hidden="true" />Open on GitHub</a></DropdownMenuItem>}
-      {admin && <DropdownMenuItem asChild><Link to={`/repositories/${repositoryId}/settings${state.repository ? location.search : ""}`} state={state}><Settings2 aria-hidden="true" />Repository settings</Link></DropdownMenuItem>}
+      {admin && <DropdownMenuItem asChild><Link to={`/repositories/${repositoryId}/settings`} state={state}><Settings2 aria-hidden="true" />Repository settings</Link></DropdownMenuItem>}
       {data?.can_write && <>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={action.isPending} onSelect={() => setConfirming(true)}>

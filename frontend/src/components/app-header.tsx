@@ -38,7 +38,9 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     const search = new URLSearchParams(params);
     search.delete("tab");
     const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
-    crumbs.push({ label: repository?.full_name || "Repositories", to: repositoryPath + (search.size ? `?${search}` : "") });
+    const returnPath = repositorySettingsRoute && repositoryReturn?.split("?")[0] === repositoryPath
+      ? repositoryReturn : repositoryPath + (search.size ? `?${search}` : "");
+    crumbs.push({ label: repository?.full_name || "Repositories", to: returnPath });
     if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path + route.search });
   } else if (detailPath) {
     if (detail.data && !detail.error) {

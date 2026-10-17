@@ -6,7 +6,8 @@ async function mockPullActions(page: Page, options: { write?: boolean; admin?: b
   const repo = {
     id: 22, installation_id: 10, full_name: "acme/project", private: false, active: true,
     enabled: !options.paused, connection_id: "connection", open_prs: 2, has_running_review: true,
-    settings: { automatic: true, include_bot_prs: false, language: "English", max_files: 40 },
+    settings: { automatic: true, include_bot_prs: false, language: "English", max_files: 40, effort: "medium",
+      model: "", exclusions: "", background: "", token_budget: 200000, timeout_seconds: 900 },
   };
   function pull(id: string) {
     return {
@@ -86,9 +87,10 @@ for (const surface of ["/", "/repositories/22"]) {
   test(`PR menus load on demand and start with the default connection on ${surface}`, async ({ page }, info) => {
     const { calls, controls } = await mockPullActions(page);
     controls.latestRun = true;
-    await page.goto(surface === "/" ? surface : `${surface}?q=provider&state=all`);
+    await page.goto(`${surface}?q=provider&state=all`);
     const trigger = page.getByRole("button", { name: "Actions for #42: Validate provider responses" });
     await expect(trigger).toBeVisible();
+    const returnUrl = page.url();
     expect(calls.filter((call) => call.path === "/pulls/start")).toHaveLength(0);
     await trigger.focus();
     await page.keyboard.press("Enter");
@@ -118,8 +120,16 @@ for (const surface of ["/", "/repositories/22"]) {
     await expect(page).not.toHaveURL(/\/runs\//);
     await trigger.click();
     await page.getByRole("menuitem", { name: "Repository settings", exact: true }).click();
-    await expect(page).toHaveURL(/\/repositories\/22\/settings/);
-    if (surface !== "/") expect(new URL(page.url()).searchParams.get("q")).toBe("provider");
+    await expect(page).toHaveURL(/\/repositories\/22\/settings$/);
+    await page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name: "Project context", exact: true }).click();
+    await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=context$/);
+    const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
+    if (surface === "/") await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
+    else if (info.project.name === "mobile") {
+      await page.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
+      await page.getByRole("menuitem", { name: "acme/project", exact: true }).click();
+    } else await breadcrumb.getByRole("link", { name: "acme/project", exact: true }).click();
+    await expect(page).toHaveURL(returnUrl);
   });
 
   test(`PR menus stop all reviews, ignore, undo, and restore on ${surface}`, async ({ page }, info) => {

@@ -507,6 +507,24 @@ async function repositorySection(page: Page, name: string) {
   await expect(link).toHaveAttribute("aria-current", "page");
 }
 
+test("ignored run status keeps restoration navigation outside the live region", async ({ page }, info) => {
+  await mock(page, { overview: { ignored: true } });
+  await mockPullDetail(page, () => ({ pull_request: { ...pr, ignored: true }, repository: repo, runs: [run], findings: [], can_write: true }));
+  await page.goto("/runs/run");
+  const status = page.getByRole("status").filter({ hasText: "This pull request is ignored." });
+  await expect(status).toHaveText("This pull request is ignored.");
+  await expect(status.getByRole("link")).toHaveCount(0);
+  const restore = page.getByRole("link", { name: "Open the pull request", exact: true });
+  await expect(restore).toHaveAttribute("href", "/pulls/pr");
+  await restore.focus();
+  await expect(restore).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/pr-ignored-run-${info.project.name}.png` });
+  await restore.press("Enter");
+  await expect(page).toHaveURL(/\/pulls\/pr$/);
+  await expect(page.getByRole("region", { name: "Ignored pull request" })).toBeVisible();
+});
+
 test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
   await mock(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
