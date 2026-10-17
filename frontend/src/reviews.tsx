@@ -675,8 +675,8 @@ function CandidateStatus({ candidate, inCard = false }: { candidate: Schema["Can
   </Tooltip>;
 }
 
-function ResolvedList({ runId, running, onOpen }: {
-  runId: string; running: boolean; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
+function ResolvedList({ runId, running, resolvedCount, onOpen }: {
+  runId: string; running: boolean; resolvedCount: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
 }) {
   const filters = useReviewFilters("resolved");
   const { params, canonical } = filters;
@@ -688,7 +688,11 @@ function ResolvedList({ runId, running, onOpen }: {
     queryFn: ({ pageParam, signal }) => api<Schema["ResolvedPage"]>(`/runs/${runId}/resolved?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
-    refetchInterval: (query) => running && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    refetchInterval: (query) => {
+      const pages = query.state.data?.pages;
+      const behind = pages && pages[0].registered_total !== resolvedCount;
+      return !query.state.error && (behind || (running && (pages?.length ?? 0) <= 1)) ? 5000 : false;
+    },
     retry: false,
   });
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
@@ -1149,7 +1153,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsContent>
       <TabsContent value="resolved" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings automatically resolved by this run after fix verification and GitHub confirmation. Open a finding to inspect its current status and verification history.</p>
-        <ResolvedList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
+        <ResolvedList runId={run.id} running={active(run.status)} resolvedCount={resolved_count} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />

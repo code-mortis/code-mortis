@@ -2074,18 +2074,78 @@ test("run resolved tab preserves verification history and a finding's current st
   expect(requests).toEqual([]);
 });
 
-test("run resolved tab waits for GitHub confirmation and updates its count", async ({ page }) => {
+for (const status of ["running", "completed"] as const) {
+test(`run resolved tab catches late confirmations after opening a ${status} review`, async ({ page }) => {
+  await page.clock.install();
   const resolved: Schema["FindingOut"][] = [];
-  await mock(page, { resolved, occurrences: [], run: { status: "running", progress: { verification: { pending: 1, resolved: 0, selected: 1 } } } });
+  const verification = { pending: 2, resolved: 0, selected: 2 };
+  const currentRun: Partial<Run> = { status, progress: { verification } };
+  const mutations = await mock(page, { resolved, occurrences: [], run: currentRun });
+  let reads = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/runs/run/resolved") reads++;
+  });
   await page.goto("/runs/run?tab=resolved");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("heading", { name: "No confirmed resolutions yet", exact: true })).toBeVisible();
   await expect(page.getByText("Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved.")).toBeVisible();
+  currentRun.status = "completed";
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("heading", { name: "No findings resolved by this run", exact: true })).toBeVisible();
+  const cards = page.getByRole("region", { name: "Findings resolved by this run", exact: true }).locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(0);
   resolved.push({ ...finding, status: "resolved", sync_intent: null });
-  await page.reload();
+  verification.pending = 1;
+  verification.resolved = 1;
+  await page.clock.runFor(5500);
   await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("button")).toContainText("Resolved");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(1);
+  resolved.push({ ...finding, id: "last-resolution", status: "resolved", sync_intent: null });
+  verification.pending = 0;
+  verification.resolved = 2;
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("tab", { name: "Resolved 2", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(2);
+  const settledReads = reads;
+  await page.clock.runFor(11000);
+  expect(reads).toBe(settledReads);
+  expect(mutations).toEqual([]);
   await noOverflow(page);
+});
+}
+
+test("late resolutions refresh loaded pages without resetting resolved filters", async ({ page }) => {
+  await page.clock.install();
+  const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${index}`,
+    path: `src/sync-${index}.ts`, status: "resolved", sync_intent: null }));
+  const mutations = await mock(page, { resolved, run: { status: "completed" } });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/resolved") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run?tab=resolved&resolved_q=sync&resolved_severity=high");
+  const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  resolved.push({ ...finding, id: "new-resolution", path: "src/sync-new.ts", created_at: "2026-10-06T13:20:00Z", status: "resolved", sync_intent: null });
+  resolved.push({ ...finding, id: "unmatched-resolution", path: "src/other.ts", severity: "low", status: "resolved", sync_intent: null });
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("tab", { name: "Resolved 25", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(20);
+  await expect(cards.first()).toContainText("src/sync-new.ts");
+  await expect(list.getByRole("status")).toHaveText("20 of 24 shown");
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("sync");
+  expect(requests.slice(-2).map((params) => params.get("page"))).toEqual(["1", "2"]);
+  expect(requests.every((params) => params.get("q") === "sync" && params.get("severity") === "high")).toBe(true);
+  const settledReads = requests.length;
+  await page.clock.runFor(11000);
+  expect(requests).toHaveLength(settledReads);
+  expect(mutations).toEqual([]);
 });
 
 test("resolved findings use independent backend filters and reset pagination", async ({ page }, info) => {
