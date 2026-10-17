@@ -370,13 +370,16 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
     assert len(native_ids) == len(set(native_ids))
 
 
-@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "unknown", "three_passes", "repeat_citation"])
+@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "missing", "unknown", "three_passes", "repeat_citation"])
 def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, stop):
     calls = []
     tick = now()
     monkeypatch.setattr(verification, "now", lambda: tick)
     monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if stop == "excluded" else set(paths))
-    monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
+    if stop == "missing":
+        monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    else:
+        monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
     if stop == "budget":
         with transaction() as db:
             run = db.get(ReviewRun, scenario["run"])
@@ -407,10 +410,12 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
     assert len(calls) == (3 if stop == "three_passes" else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
     assert row.usage == {"tokens": calls[0] if stop == "unknown" else 25 * len(calls)}
-    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "unknown", "repeat_citation"} else "skipped")
+    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "missing", "unknown", "repeat_citation"} else "skipped")
+    if stop == "missing":
+        assert "helper1.py" in row.error and HEAD in row.error
 
 
-@pytest.mark.parametrize("bad", ["excluded", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
+@pytest.mark.parametrize("bad", ["excluded", "missing", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
 def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
     context = copy.deepcopy(CONTEXT)
     if bad == "file_limit":
@@ -422,11 +427,15 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
         commands.append(args)
         assert args[1] == HEAD if args[0] == "ls-tree" else args[1] == HEAD + ":" + path
         if args[0] == "ls-tree":
+            if bad == "missing":
+                return ""
             return f"{'120000' if bad == 'symlink' else '100644'} blob {'a' * 40}\thelper.py"
         return "\x00binary" if bad == "binary" else "x" * 1_500_001
     monkeypatch.setattr(ocr, "git", git)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         verification.expand_context(tmp_path, {}, context, [{"revision": "current", "path": path}], {}, lambda: False)
+    if bad in {"missing", "symlink"}:
+        assert path in str(error.value) and HEAD in str(error.value)
     if bad in {"excluded", "traversal", "already_loaded", "file_limit"}:
         assert not commands
 

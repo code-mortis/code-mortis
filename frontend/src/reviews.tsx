@@ -783,28 +783,32 @@ function AssessmentList({ runId, running, onOpen }: {
 function InferenceError({ error, withheld = false, stage = "assessment" }: {
   error: string; withheld?: boolean; stage?: "assessment" | "verification" | "review";
 }) {
-  const [copying, setCopying] = useState(false);
   const feedback = assessmentFeedback(error, stage);
   const name = stage[0].toUpperCase() + stage.slice(1);
   return <div className="space-y-3">
     <ErrorNotice title={feedback.title} error={`${feedback.message}${withheld ? " This candidate was withheld from publication." : ""}`} />
     {feedback.citation && <p className="break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">{feedback.citation}</p>}
-    <details className="group text-sm">
-      <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
-      <div className="mt-3 space-y-3">
-        <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={copying} onClick={async () => {
-          setCopying(true);
-          try {
-            await navigator.clipboard.writeText(error);
-            toast.success(`${name} details copied`);
-          } catch {
-            toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
-          } finally { setCopying(false); }
-        }}>{copying ? <LoaderCircle aria-hidden="true" className="motion-safe:animate-spin" /> : <Copy aria-hidden="true" />}{copying ? "Copying…" : "Copy details"}</Button>
-        <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{error}</pre>
-      </div>
-    </details>
+    <TechnicalDetails error={error} name={name} />
   </div>;
+}
+
+function TechnicalDetails({ error, name }: { error: string; name: string }) {
+  const [copying, setCopying] = useState(false);
+  return <details className="group text-xs text-muted-foreground">
+    <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" /></summary>
+    <div className="group/diagnostics relative mt-3">
+      <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="min-h-14 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 pr-14 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:pr-12 [overflow-wrap:anywhere]">{error}</pre>
+      <Button variant="ghost" size="icon" aria-label="Copy details" title="Copy details" className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/diagnostics:opacity-100 group-focus-within/diagnostics:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" disabled={copying} onClick={async () => {
+        setCopying(true);
+        try {
+          await navigator.clipboard.writeText(error);
+          toast.success(`${name} details copied`);
+        } catch {
+          toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
+        } finally { setCopying(false); }
+      }}>{copying ? <LoaderCircle aria-hidden="true" className="size-3.5 motion-safe:animate-spin" /> : <Copy aria-hidden="true" className="size-3.5" />}</Button>
+    </div>
+  </details>;
 }
 
 function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
@@ -959,6 +963,19 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const assessmentStatus = run.status === "running" && (assessment?.pending ?? 0) > 0
     && (!savedAssessmentStatus || savedAssessmentStatus === "partial")
     ? "running" : savedAssessmentStatus ?? (assessment?.incomplete ? "partial" : "pending");
+  const stageStatuses: string[] = [
+    run.stages?.ocr?.status ?? "skipped",
+    run.stages?.assessment ? assessmentStatus : "skipped",
+    run.stages?.verification?.status ?? "skipped",
+  ];
+  const reviewStagesStatus = ["running", "waiting", "pending"].find((status) => stageStatuses.includes(status))
+    ?? (stageStatuses.every((status) => status === "skipped") ? "skipped"
+      : stageStatuses.includes("failed") && !stageStatuses.some((status) => status === "completed" || status === "partial") ? "failed"
+      : stageStatuses.every((status) => status === "cancelled" || status === "skipped") ? "cancelled"
+      : stageStatuses.some((status) => ["partial", "failed", "cancelled"].includes(status)) ? "partial"
+      : "completed");
+  const summaryDiagnostics = [run.summary?.error || run.stages?.summary?.error, run.summary?.diagram_warning, pr.summary_error]
+    .filter(Boolean).join("\n\n");
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const term = search.trim().toLowerCase();
@@ -1011,7 +1028,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
             <Popover>
               <Tooltip>
                 <TooltipTrigger asChild><PopoverTrigger asChild>
-                  <button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.status} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button>
+                  <button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={reviewStagesStatus} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button>
                 </PopoverTrigger></TooltipTrigger>
                 <TooltipContent sideOffset={6}>View stage details.</TooltipContent>
               </Tooltip>
@@ -1023,7 +1040,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                   return <div key={key} className="space-y-2">
                     <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
                     <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
-                    {stage.error && <InferenceError error={stage.error} stage={key === "ocr" ? "review" : key} />}
+                    {stage.error && <TechnicalDetails error={stage.error} name={name} />}
                   </div>;
                 })}
               </PopoverContent>
@@ -1040,15 +1057,13 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                 </PopoverTrigger></TooltipTrigger>
                 <TooltipContent sideOffset={6}>View summary details.</TooltipContent>
               </Tooltip>
-              <PopoverContent align="start" aria-label="PR summary details" className="w-80 max-w-[calc(100vw-2rem)] space-y-3 text-xs">
+              <PopoverContent align="start" aria-label="PR summary details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto text-xs">
                 <div className="flex items-center justify-between gap-2"><span className="font-medium">PR summary</span><Status value={run.summary.status} /></div>
                 <p className="text-muted-foreground">{tokenUsage(run.summary.tokens, run.summary.status)}</p>
                 {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
                 <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview available" : "Not published yet"}</p>
-                <ErrorNotice error={run.summary.error || run.stages?.summary?.error} />
                 {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
-                {run.summary.diagram_warning && <p className="text-muted-foreground">{run.summary.diagram_warning}</p>}
-                <ErrorNotice error={pr.summary_error} />
+                {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
                 {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
                 {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
               </PopoverContent>

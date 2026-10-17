@@ -203,7 +203,7 @@ def read_source(repo, env, sha, path, stopped):
     ocr.ReviewComment.relative_path(path)
     entry = ocr.git(repo, env, "ls-tree", sha, "--", path, stopped=stopped)
     if not re.match(r"^100(?:644|755) blob [0-9a-f]{40}\t", entry):
-        raise ValueError("A source file needed to verify this finding is missing or is not a regular file. Check the original and current code manually.")
+        raise ValueError(f"The source file {path!r} is missing or is not a regular file in commit {sha}. Check the original and current code manually.")
     source = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
     if "\x00" in source or "\ufffd" in source:
         raise ValueError("A file needed to verify this finding is binary or is not readable as text. Check it manually.")

@@ -1043,6 +1043,8 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
     await page.getByRole("button", { name: "PR summary details: Pending", exact: true }).click();
     const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
     await expect(details).toContainText("Waiting to generate the summary.");
+    await expect(details.getByRole("alert")).toHaveCount(0);
+    await details.locator("summary", { hasText: "Technical details" }).click();
     await expect(details).toContainText(reason);
     await expect(details).not.toContainText("Waiting for the personal connection.");
     await noOverflow(page);
@@ -1099,6 +1101,43 @@ test("stage budgets and optional overview content save independently", async ({ 
       summary_token_budget: 33000, summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
   });
 });
+
+for (const [ocr, assessment, verification, expected] of [
+  ["completed", "completed", "completed", "Completed"],
+  ["completed", "completed", "failed", "Partial"],
+  ["completed", "partial", "skipped", "Partial"],
+  ["failed", "failed", "failed", "Failed"],
+  ["failed", "skipped", "skipped", "Failed"],
+  ["failed", "cancelled", "skipped", "Failed"],
+  ["completed", "completed", "skipped", "Completed"],
+  ["skipped", "skipped", "skipped", "Skipped"],
+  ["completed", "running", "failed", "Running"],
+  ["completed", "pending", "failed", "Pending"],
+  ["completed", "waiting", "failed", "Waiting"],
+  ["cancelled", "cancelled", "skipped", "Cancelled"],
+  ["completed", "cancelled", "skipped", "Partial"],
+] as const) {
+  test(`review stage summary is ${expected} for ${ocr}/${assessment}/${verification}`, async ({ page }, info) => {
+    await mock(page, { run: {
+      status: "completed", stages: {
+        ocr: { status: ocr, tokens: 100 }, assessment: { status: assessment, tokens: 20 },
+        verification: { status: verification, tokens: 10 }, summary: { status: "failed", tokens: 0 },
+      },
+      summary: { status: "failed", tokens: 0, limited_context: false },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("OCR", { exact: true }).locator("..")).toContainText(ocr);
+    await expect(details.getByText("Fix verification", { exact: true }).locator("..")).toContainText(verification);
+    await noOverflow(page);
+    if (expected === "Partial" && verification === "failed" || expected === "Failed" && assessment === "failed") {
+      await page.screenshot({ path: `/private/tmp/review-stages-${expected.toLowerCase()}-${info.project.name}.png` });
+    }
+  });
+}
 
 test("parallel stage details preserve an open popover while the run refreshes", async ({ page }, info) => {
   await mock(page, { run: {
@@ -1160,35 +1199,58 @@ for (const withStages of [true, false]) {
   });
 }
 
-test("verification failure explains the saved budget and collapses technical diagnostics", async ({ page }, info) => {
+for (const [key, name] of [["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const) {
+test(`${name} stage failure keeps only collapsed technical details`, async ({ page }, info) => {
   const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
     + JSON.stringify({ exit_code: 0, status: "completed_with_warnings", summary: { total_tokens: 0, budget_exceeded: true },
       warnings: [{ message: "stopped in batch #0: used 0 tokens + next-file estimate exceeds budget 200000", type: "token_budget_reached" }],
       result_error: "The AI did not return exactly one final assessment.", diagnostics: "Saved diagnostics. ".repeat(300) });
   await mock(page, { run: { status: "cancelled", publication: "not_applicable", publication_error: null, stages: {
     ocr: { status: "cancelled", tokens: null }, assessment: { status: "cancelled", tokens: 0 },
-    verification: { status: "failed", tokens: 0, error }, summary: { status: "completed", tokens: 300 },
+    verification: { status: "cancelled", tokens: 0 }, summary: { status: "completed", tokens: 300 },
+    [key]: { status: "failed", tokens: 0, error },
   } } });
   await page.goto("/runs/run");
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  const alert = details.getByRole("alert");
-  await expect(alert).toContainText("Verification token limit reached");
-  await expect(alert).toContainText("stopped before contacting the AI");
-  await expect(alert).toContainText("saved limit of 200,000 tokens");
-  await expect(alert).toContainText("Start a new review to use current settings.");
-  await expect(alert).not.toContainText("exit_code");
-  const raw = details.getByRole("region", { name: "Verification technical details", includeHidden: true });
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  const raw = details.getByRole("region", { name: `${name} technical details`, includeHidden: true });
   await expect(raw).toBeHidden();
   await noOverflow(page);
-  await page.screenshot({ path: `/tmp/verification-error-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: `/private/tmp/stage-${key}-technical-details-${info.project.name}.png` });
   const disclosure = details.locator("summary", { hasText: "Technical details" });
+  await expect(disclosure).toHaveCSS("font-size", "12px");
   await disclosure.focus();
   await disclosure.press("Enter");
   await expect(raw).toBeVisible();
   expect(await raw.textContent()).toBe(error);
+  const copy = details.getByRole("button", { name: "Copy details", exact: true });
+  if (info.project.name === "desktop") {
+    await page.mouse.move(0, 0);
+    await expect(copy).toHaveCSS("opacity", "0");
+    await raw.hover();
+    await expect(copy).toHaveCSS("opacity", "1");
+    await page.mouse.move(0, 0);
+    await raw.focus();
+  }
+  await expect(copy).toHaveCSS("opacity", "1");
+  const textBounds = await raw.boundingBox();
+  const copyBounds = await copy.boundingBox();
+  expect(copyBounds!.x).toBeGreaterThanOrEqual(textBounds!.x);
+  expect(copyBounds!.y).toBeGreaterThanOrEqual(textBounds!.y);
+  expect(copyBounds!.x + copyBounds!.width).toBeLessThanOrEqual(textBounds!.x + textBounds!.width);
+  expect(copyBounds!.y + copyBounds!.height).toBeLessThanOrEqual(textBounds!.y + textBounds!.height);
+  await page.screenshot({ path: `/private/tmp/stage-${key}-technical-details-expanded-${info.project.name}.png` });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value: string) => { document.body.dataset.copiedStage = value; },
+    } });
+  });
+  await copy.click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied-stage", error);
   await noOverflow(page);
 });
+}
 
 test("PR overview keeps details in the status row and retries synchronization without starting a review", async ({ page }, info) => {
   const requests = await mock(page, {
@@ -1215,7 +1277,10 @@ test("PR overview keeps details in the status row and retries synchronization wi
   await expect(details.getByText("1,234 tokens", { exact: true })).toBeVisible();
   await expect(details.getByRole("link", { name: "View PR overview" })).toHaveAttribute("href", /#issuecomment-10$/);
   await expect(details.getByText("GitHub: Update failed")).toBeVisible();
-  await expect(details.getByRole("alert").filter({ hasText: "GitHub rate limit reached." })).toBeVisible();
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  await expect(details.getByRole("region", { name: "Summary technical details", includeHidden: true })).toBeHidden();
+  await details.locator("summary", { hasText: "Technical details" }).click();
+  await expect(details.getByRole("region", { name: "Summary technical details" })).toHaveText("GitHub rate limit reached.");
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-details-${info.project.name}.png`, fullPage: true });
   await expect(details.getByRole("button", { name: "Retry summary generation" })).toHaveCount(0);
@@ -1265,8 +1330,39 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   await summary.press("Enter");
   const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
-  await expect(details.getByRole("alert").filter({ hasText: "Summary generation was interrupted." })).toBeVisible();
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  await details.locator("summary", { hasText: "Technical details" }).click();
+  await expect(details.getByRole("region", { name: "Summary technical details" })).toHaveText("Summary generation was interrupted.");
   await expect(details.getByRole("button", { name: /Retry (summary generation|GitHub sync)/ })).toHaveCount(0);
+});
+
+test("PR summary errors and warnings stay in copyable technical details", async ({ page }, info) => {
+  const errors = ["Summary generation failed: " + "diagnostic ".repeat(500), "Diagram validation failed.", "GitHub synchronization failed."];
+  await mock(page, { run: { status: "completed", summary: {
+    status: "failed", tokens: 100, limited_context: false, error: errors[0], diagram_warning: errors[1],
+  } }, overview: { summary_error: errors[2] } });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: "PR summary details: Sync failed", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  const raw = details.getByRole("region", { name: "Summary technical details", includeHidden: true });
+  await expect(raw).toBeHidden();
+  await page.screenshot({ path: `/private/tmp/summary-technical-details-${info.project.name}.png` });
+  const disclosure = details.locator("summary", { hasText: "Technical details" });
+  await expect(disclosure).toHaveCSS("font-size", "12px");
+  await disclosure.focus();
+  await disclosure.press("Enter");
+  await expect(raw).toBeVisible();
+  expect(await raw.textContent()).toBe(errors.join("\n\n"));
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value: string) => { document.body.dataset.copiedSummary = value; },
+    } });
+  });
+  await details.getByRole("button", { name: "Copy details", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied-summary", errors.join("\n\n"));
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/summary-technical-details-expanded-${info.project.name}.png` });
 });
 
 test("failed PR summary retries generation separately and removes recovery after success", async ({ page }) => {
