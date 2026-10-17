@@ -1,14 +1,18 @@
 import json
+import logging
 import time
 from collections import OrderedDict
 from datetime import timedelta
 from hashlib import sha256
+from math import ceil
 from threading import Lock
 
 import httpx
 import jwt
 from authlib.integrations.httpx_client import OAuth2Client
 from authlib.oauth2 import OAuth2Error
+from redis import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +22,7 @@ from .models import AppConfig, Installation, Repository, User
 from .security import clean_text, seal, unseal
 
 API = "https://api.github.com"
+logger = logging.getLogger(__name__)
 _get_cache: OrderedDict[tuple[bytes, str], tuple[str, bytes]] = OrderedDict()
 _get_cache_lock = Lock()
 
@@ -29,7 +34,8 @@ def visible_repositories(db: Session, user: User) -> list[Repository]:
         try:
             visible.update(
                 repo["id"] for repo in pages(
-                    f"/user/installations/{installation.id}/repositories", token, "repositories"
+                    f"/user/installations/{installation.id}/repositories", token, "repositories",
+                    permission_user_id=user.id,
                 )
             )
         except GitHubError as exc:
@@ -84,7 +90,7 @@ def request(method: str, path: str, token: str, **kwargs):
             ):
                 break
         time.sleep(1)
-    # Revalidate with GitHub on every read; never serve cached permissions on an error.
+    # Conditional responses still require GitHub validation; errors never reuse the body.
     if response.status_code == 304 and cached:
         return json.loads(cached[1])
     if cache_key:
@@ -92,6 +98,10 @@ def request(method: str, path: str, token: str, **kwargs):
             _get_cache.pop(cache_key, None)
     if response.status_code >= 300:
         retry = response.headers.get("retry-after", "0")
+        retry_after = int(retry) if retry.isdigit() else 0
+        reset = response.headers.get("x-ratelimit-reset", "")
+        if response.headers.get("x-ratelimit-remaining") == "0" and reset.isdigit():
+            retry_after = max(retry_after, ceil(int(reset) - time.time()))
         message = {
             401: "GitHub authorization expired. Sign in again.",
             403: "GitHub denied this request. Check repository and GitHub App permissions; if you recently sent many requests, wait and try again.",
@@ -99,7 +109,7 @@ def request(method: str, path: str, token: str, **kwargs):
             422: "GitHub could not accept this request. Refresh the PR and retry.",
             429: "GitHub rate limit reached. Wait for the limit to reset, then retry if the operation has not completed.",
         }.get(response.status_code, f"GitHub could not complete the request (HTTP {response.status_code}). Try again shortly; if it keeps failing, ask the administrator to check GitHub access.")
-        raise GitHubError(response.status_code, message, int(retry) if retry.isdigit() else 0)
+        raise GitHubError(response.status_code, message, retry_after)
     result = response.json() if response.content else None
     if cache_key and response.status_code == 200 and response.headers.get("etag") and len(response.content) <= 1024 * 1024:
         with _get_cache_lock:
@@ -109,11 +119,83 @@ def request(method: str, path: str, token: str, **kwargs):
     return result
 
 
-def pages(path: str, token: str, key: str | None = None):
+def _permission_cache_key(user_id: int, path: str, token: str) -> str:
+    config = settings()
+    deployment = sha256(f"{config.public_url}\0{config.encryption_key}".encode()).hexdigest()
+    identity = sha256(f"{user_id}\0{token}\0{path}".encode()).hexdigest()
+    return f"code-mortis:github-permissions:v1:{deployment}:{identity}"
+
+
+def _cached_permission(cache: Redis, key: str, fresh: bool):
+    try:
+        entry = json.loads(cache.get(key) or "null")
+        if not isinstance(entry, dict):
+            return None
+        if "error" in entry:
+            status, message, retry_at = entry["error"]
+            retry_after = max(0, ceil(retry_at - time.time()))
+            if not fresh or retry_after:
+                raise GitHubError(status, message, retry_after)
+        elif not fresh and isinstance(entry.get("data"), dict):
+            return entry["data"]
+    except (ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def permission_request(user_id: int, path: str, token: str, *, fresh: bool = False) -> dict:
+    key = _permission_cache_key(user_id, path, token)
+    try:
+        with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as cache:
+            cached = _cached_permission(cache, key, fresh)
+            if cached is not None:
+                return cached
+            lock = cache.lock(key + ":lock", timeout=120, blocking_timeout=2)
+            if not lock.acquire():
+                raise GitHubError(503, "GitHub permissions are being refreshed. Try again shortly.", 2)
+            try:
+                cached = _cached_permission(cache, key, fresh)
+                if cached is not None:
+                    return cached
+                error = None
+                try:
+                    result = request("GET", path, token)
+                    entry, ttl = {"data": result}, 5
+                except GitHubError as exc:
+                    error = exc
+                    entry = {"error": [exc.status, str(exc), time.time() + exc.retry_after]}
+                    ttl = max(5, exc.retry_after)
+                try:
+                    # Publish only while owning the lease, so a late response cannot restore revoked access.
+                    stored = cache.eval("""
+                        if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end
+                        redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
+                        return 1
+                    """, 2, lock.name, key, lock.local.token, json.dumps(entry), ttl)
+                    if not stored:
+                        raise GitHubError(503, "GitHub permission refresh expired. Try again shortly.", 2)
+                except RedisError:
+                    logger.warning("Could not cache the fresh GitHub permission result")
+                if error:
+                    raise error
+                return result
+            finally:
+                try:
+                    lock.release()
+                except RedisError:
+                    logger.warning("Could not release the GitHub permission refresh lock")
+    except RedisError:
+        logger.warning("GitHub permission cache unavailable; checking GitHub directly")
+        return request("GET", path, token)
+
+
+def pages(path: str, token: str, key: str | None = None, *, permission_user_id: int | None = None):
     separator = "&" if "?" in path else "?"
     result = []
     for page in range(1, 101):
-        data = request("GET", f"{path}{separator}per_page=100&page={page}", token)
+        page_path = f"{path}{separator}per_page=100&page={page}"
+        data = (request("GET", page_path, token) if permission_user_id is None
+                else permission_request(permission_user_id, page_path, token))
         rows = data[key] if key else data
         result.extend(rows)
         if len(rows) < 100:
@@ -232,7 +314,7 @@ def user_token(db: Session, user: User) -> str:
 
 
 def authorize_repo(db: Session, user: User, full_name: str, write: bool = False) -> dict:
-    result = request("GET", f"/repos/{full_name}", user_token(db, user))
+    result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write)
     permissions = result.get("permissions", {})
     if not permissions.get("pull") or (write and not permissions.get("push")):
         raise GitHubError(

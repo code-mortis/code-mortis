@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from code_mortis import github
+from code_mortis.models import User
 
 
 @pytest.fixture(autouse=True)
@@ -64,10 +65,11 @@ def test_conditional_get_still_rejects_revoked_write_permission(monkeypatch):
     ])
     monkeypatch.setattr(github.httpx, "request", request)
     monkeypatch.setattr(github, "user_token", lambda *_: "user-token")
-    github.authorize_repo(None, None, "team/project", write=True)
-    github.authorize_repo(None, None, "team/project", write=True)
+    user = User(id=7)
+    github.authorize_repo(None, user, "team/project", write=True)
+    github.authorize_repo(None, user, "team/project", write=True)
     with pytest.raises(github.GitHubError, match="requires repository write access"):
-        github.authorize_repo(None, None, "team/project", write=True)
+        github.authorize_repo(None, user, "team/project", write=True)
     assert request.call_count == 3
 
 

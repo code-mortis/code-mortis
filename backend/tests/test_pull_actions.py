@@ -85,7 +85,7 @@ def test_cancel_all_reviews_preserves_history(seed, github_stub, client):
 
 
 def test_ignore_filters_counts_and_restoration_preserve_findings(seed, github_stub, client, monkeypatch):
-    monkeypatch.setattr(github, "pages", lambda *a: [{"id": 22}])
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [{"id": 22}])
     with transaction() as db:
         pr = db.get(PullRequest, "pr")
         pr.author = "hidden-author"
