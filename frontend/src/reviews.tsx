@@ -1098,14 +1098,13 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </p>}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
-        <TabsTrigger value="findings">Findings</TabsTrigger>
+        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
         <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
         <TabsTrigger value="details" className="col-span-2 sm:col-span-1">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        {!!occurrences.length && <p className="mb-2 text-sm font-medium">{Array.from(findingCounts, ([name, count]) => `${count} ${name}${count === 1 ? "" : "s"}`).join(" · ")}</p>}
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
         <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
           filters={[
@@ -1121,11 +1120,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
         {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
-            state={<span className="flex flex-col items-start gap-1.5">
-              {item.current_status ? <Status value={item.current_status} label={`${runFindingLabel(item)}${item.is_new !== false ? ` · ${label(item.current_status)}` : ""}`} />
-                : <span className="text-xs font-medium">{runFindingLabel(item)}</span>}
-              <span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>
-            </span>}
+            state={<Status value={item.current_status ?? "unknown"} />}
             onClick={(event) => { findingTrigger.current = event.currentTarget; showSheet("finding", item.finding_id); }} />)}
         </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
           <p>{occurrences.length ? "Try another search, result, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>

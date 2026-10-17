@@ -513,6 +513,39 @@ def test_duplicate_stage_job_and_lost_completion_preserve_saved_summary(seed, mo
         assert run.stages["summary"]["tokens"] == 45
 
 
+@pytest.mark.parametrize("historical", [False, True])
+def test_verification_stage_preserves_skip_reason_for_resolved_finding(verification_scenario, client, historical):  # noqa: F811
+    identity = verification_scenario["run"]
+    enable_parallel(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status, run.started_at = "running", now()
+        run.progress = {"file_limit_checked": True}
+        verification.prepare(db, run, db.get(Repository, 22), "token")
+        pipeline.start(db, run, "main")
+        job_id = db.scalar(select(Job.id).where(Job.kind == "verify_fixes"))
+        db.get(Finding, verification_scenario["finding"]).status = "resolved"
+
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
+        stage = db.get(ReviewRun, identity).stages["verification"]
+        assert row.status == stage["status"] == "skipped"
+        assert "pull request or finding changed" in row.error
+        assert stage["error"] == row.error
+        assert stage["tokens"] == 0
+        reason = row.error
+        if historical:
+            run = db.get(ReviewRun, identity)
+            run.stages = {**run.stages, "verification": {**stage, "error": None}}
+    response = client.get(f"/api/v1/runs/{identity}")
+    assert response.status_code == 200
+    assert response.json()["run"]["stages"]["verification"]["error"] == reason
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).stages["verification"]["error"] == (None if historical else reason)
+    assert "verify" not in verification_scenario["calls"]
+
+
 def test_verification_keeps_unknown_usage_separate_from_its_reservation(verification_scenario, monkeypatch):  # noqa: F811
     identity = verification_scenario["run"]
     enable_parallel(identity)
@@ -534,4 +567,5 @@ def test_verification_keeps_unknown_usage_separate_from_its_reservation(verifica
         assert row.usage == {"tokens": None, "reserved_tokens": 4321}
         run = db.get(ReviewRun, identity)
         assert run.stages["verification"]["tokens"] is None
+        assert run.stages["verification"]["error"] == row.error
         assert run.stages["ocr"]["status"] == "running" and run.summary["status"] == "pending"

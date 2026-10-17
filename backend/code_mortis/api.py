@@ -597,13 +597,19 @@ def run_detail(run_id: str, db: DB, user: USER):
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr, repo, remote = pr_access(db, user, run.pr_id)
+    output = RunOut.model_validate(run)
+    if (stage := output.stages.get("verification")) and stage.status == "skipped" and not stage.error:
+        stage.error = db.scalar(select(FindingVerification.error).where(
+            FindingVerification.run_id == run.id, FindingVerification.status == "skipped",
+            FindingVerification.error.is_not(None), FindingVerification.error != "",
+        ).order_by(FindingVerification.created_at, FindingVerification.id).limit(1))
     resolved_count, resolved_revision = resolved_list.metadata(db, run)
     new_findings = dict(db.execute(select(
         ReviewCandidate.finding_id, func.bool_or(ReviewCandidate.is_new),
     ).where(ReviewCandidate.run_id == run.id, ReviewCandidate.finding_id.is_not(None))
         .group_by(ReviewCandidate.finding_id)).all())
     return RunDetail(
-        run=RunOut.model_validate(run),
+        run=output,
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),

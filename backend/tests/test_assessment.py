@@ -383,7 +383,7 @@ def test_unsupported_candidates_never_become_findings(pipeline, decision):
         assert counts.rejected_candidates == int(rejected)
         assert counts.withheld_candidates == int(not rejected)
         assert run.publication == "no_new_comments"
-        assert checks.check_payload(run, 0)["conclusion"] == ("success" if decision == {"verdict": "rejected"} else "neutral")
+        assert checks.check_payload(run, 0)["conclusion"] == "success"
     assert pipeline["reviews"] == []
 
 
@@ -416,7 +416,11 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
         "incomplete": 2, "published_comments": 0,
     }
     with transaction() as db:
-        payload = checks.check_payload(db.get(ReviewRun, identity), 3)
+        run = db.get(ReviewRun, identity)
+        run.status, run.publication = "completed", "published"
+        payload = checks.check_payload(run, 3)
+        assert (payload["status"], payload["conclusion"]) == ("completed", "success")
+        assert payload["output"]["title"] == "Review complete: 3 new validated findings"
         assert "Not supported candidates: 5. Withheld candidates: 2." in payload["output"]["summary"]
 
 

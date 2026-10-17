@@ -190,8 +190,10 @@ def perform(payload):
         else:
             rows = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == run_id)))
             outcome = "failed" if any(row.status == "failed" for row in rows) else "skipped" if all(row.status == "skipped" for row in rows) else "completed"
+            error = next((row.error for row in rows if row.status == "failed" and row.error), None)
+            error = error or next((row.error for row in rows if row.status == "skipped" and row.error), None)
             update(run, stage, outcome, tokens=usage([row.usage.get("tokens", 0 if not row.usage else None) for row in rows]),
-                   error=next((row.error for row in rows if row.status == "failed"), None))
+                   error=error)
         enqueue_finalizer(db, run)
 
 

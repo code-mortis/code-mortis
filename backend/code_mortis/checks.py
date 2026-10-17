@@ -125,8 +125,6 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         )
         if status == "completed" and conclusion == "success":
             title = f"Review complete: {assessment['new_findings']} new validated findings"
-            if assessment["incomplete"] or assessment["pending"]:
-                conclusion, title = "neutral", "Review complete; candidate assessment incomplete"
     if verification.get("selected"):
         lines.append(
             f"Fix verification: {verification.get('completed', 0)} of {verification['selected']} completed; "
