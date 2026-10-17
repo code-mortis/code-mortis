@@ -166,6 +166,37 @@ for (const surface of ["/", "/repositories/22"]) {
   });
 }
 
+for (const id of ["start", "running"]) {
+  test(`PR menus keep cached ${id} actions visible while refetching`, async ({ page }) => {
+    await mockPullActions(page);
+    let finish!: () => void;
+    let pending = new Promise<void>((resolve) => { finish = resolve; });
+    await page.route(`**/api/v1/pulls/${id}`, async (route) => {
+      await pending;
+      await route.fallback();
+    });
+    await page.goto("/");
+    const trigger = page.getByRole("button", { name: id === "start" ? /Actions for #42:/ : /Actions for #43:/ });
+    await trigger.click();
+    await expect(page.getByRole("menu").getByRole("status")).toHaveText("Loading review actions…");
+    await expect(page.getByRole("menuitem", { name: "Ignore pull request" })).toHaveCount(0);
+    finish();
+    const reviewAction = page.getByRole("menuitem", { name: id === "start" ? "Start review" : "Stop review", exact: true });
+    await expect(reviewAction).toBeEnabled();
+    pending = new Promise<void>((resolve) => { finish = resolve; });
+    await reviewAction.click();
+    await expect(page.getByText(id === "start" ? "Review started" : "Reviews stopped", { exact: true })).toBeVisible();
+    const refetch = page.waitForRequest(`**/api/v1/pulls/${id}`);
+    await trigger.click();
+    await refetch;
+    await expect(reviewAction).toBeEnabled();
+    await expect(page.getByRole("menuitem", { name: "Ignore pull request" })).toBeEnabled();
+    await expect(page.getByText("Loading review actions…", { exact: true })).toHaveCount(0);
+    finish();
+    await expect(page.getByRole("menuitem", { name: "Start review", exact: true })).toBeEnabled();
+  });
+}
+
 test("PR menus handle read-only permissions, stale authorization, and request failures", async ({ page }) => {
   const { controls } = await mockPullActions(page, { write: false, admin: false });
   await page.goto("/");
@@ -200,6 +231,12 @@ test("ignored PR details confirm restore and keep review controls disabled", asy
   await page.goto("/pulls/start");
   await expect(page.getByRole("region", { name: "Ignored pull request" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
+  const reason = "Reviews are stopped while this pull request is ignored. Restore it to run reviews.";
+  await expect(page.getByText(reason, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run review", exact: true })).toHaveAccessibleDescription(reason);
+  await expect(page.getByRole("combobox", { name: "Review connection" })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Review connection" })).toHaveAccessibleDescription(reason);
+  await page.screenshot({ path: `/private/tmp/pr-ignored-detail-${info.project.name}.png` });
   await expect(page.getByText("Restore this pull request before reviewing it.", { exact: true })).toHaveCount(0);
   const trigger = page.getByRole("region", { name: "Ignored pull request" }).getByRole("button", { name: "Restore pull request", exact: true });
   await trigger.click();
@@ -221,6 +258,8 @@ test("ignored PR details confirm restore and keep review controls disabled", asy
   await expect(page.getByRole("region", { name: "Ignored pull request" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "#42 Validate provider responses", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
+  await expect(page.getByText(reason, { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run review", exact: true })).not.toHaveAttribute("aria-describedby");
 });
 
 test("PR visibility confirmation cannot close or submit twice while saving", async ({ page }) => {

@@ -26,8 +26,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, sta
   const location = useLocation();
   const data = detail.error ? undefined : detail.data;
   const pr = data?.pull_request;
-  const startUnavailable = !data ? "Loading review actions…"
-    : pr?.ignored ? null
+  const startUnavailable = !data || pr?.ignored ? null
     : pr?.state !== "open" ? "Reviews can only run on open pull requests."
     : !data.repository.enabled ? "Reviews are paused for this repository."
     : !data.repository.connection_id ? "Choose a default connection in repository settings." : null;
@@ -80,12 +79,12 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, sta
     <DropdownMenuContent side={side} align="end" collisionPadding={16} className="w-64 max-w-[calc(100vw-2rem)] [&_[role=menuitem]]:min-h-11 sm:[&_[role=menuitem]]:min-h-8" onCloseAutoFocus={(event) => {
       if (confirming) event.preventDefault();
     }}>
-      {detail.isFetching && <p role="status" className="px-2 py-2 text-xs text-muted-foreground">Loading review actions…</p>}
+      {detail.isLoading && <p role="status" className="px-2 py-2 text-xs text-muted-foreground">Loading review actions…</p>}
       {detail.error && <>
         <p role="alert" className="px-2 py-2 text-xs text-destructive">{detail.error.message}</p>
         <DropdownMenuItem onSelect={(event) => { event.preventDefault(); void detail.refetch(); }}><RefreshCw aria-hidden="true" />Retry actions</DropdownMenuItem>
       </>}
-      {data && !detail.isFetching && (data.can_write ? <>
+      {data && (data.can_write ? <>
         {!data.has_active_run && <>
           <DropdownMenuItem disabled={action.isPending || pr?.ignored || !!startUnavailable} onSelect={() => { void review(false); }}><Play aria-hidden="true" />Start review</DropdownMenuItem>
           {startUnavailable && <p className="px-2 pb-2 text-xs text-muted-foreground">{startUnavailable}</p>}
@@ -97,7 +96,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, sta
       <DropdownMenuItem asChild><Link to={`/pulls/${id}`} state={state}><GitPullRequest aria-hidden="true" />View pull request</Link></DropdownMenuItem>
       {pr && <DropdownMenuItem asChild><a href={pr.url} target="_blank" rel="noreferrer"><ExternalLink aria-hidden="true" />Open on GitHub</a></DropdownMenuItem>}
       {admin && <DropdownMenuItem asChild><Link to={`/repositories/${repositoryId}/settings${state.repository ? location.search : ""}`} state={state}><Settings2 aria-hidden="true" />Repository settings</Link></DropdownMenuItem>}
-      {data?.can_write && !detail.isFetching && <>
+      {data?.can_write && <>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={action.isPending} onSelect={() => setConfirming(true)}>
           {pr?.ignored ? <RotateCcw aria-hidden="true" /> : <EyeOff aria-hidden="true" />}{pr?.ignored ? "Restore pull request" : "Ignore pull request"}
