@@ -4627,6 +4627,28 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
   },
 ];
 
+for (const publication of ["not_applicable", "failed"] as const) {
+  for (const path of ["/", "/repositories/22"]) {
+    test(`cancelled review rows omit cancellation explanation on ${path} with ${publication}`, async ({ page }, info) => {
+      const currentRun = { ...run, status: "cancelled", publication };
+      await mock(page, { run: currentRun });
+      await page.route("**/api/v1/pulls?**", (route) => {
+        const data = repositoryPage([{ ...pr, latest_run: currentRun }], new URLSearchParams("state=all"));
+        return route.fulfill({ json: { ...data, groups: [{ ...data.groups[0], group: "all" }] } });
+      });
+      await page.goto(path);
+      const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
+      await expect(row.getByText("cancelled", { exact: true })).toBeVisible();
+      await expect(row).not.toContainText("This review was cancelled before it finished.");
+      if (publication === "failed") await expect(row).toContainText("Publication failed");
+      await noOverflow(page);
+      if (publication === "not_applicable") {
+        await page.screenshot({ path: `/private/tmp/mortis-cancelled-row-${path === "/" ? "inbox" : "repository"}-${info.project.name}.png`, fullPage: true });
+      }
+    });
+  }
+}
+
 for (const example of feedbackCases) {
   test(`review feedback: ${example.name}`, async ({ page }) => {
     await mock(page, { run: { publication: "not_applicable", publication_error: null, ...example.state } });

@@ -83,9 +83,13 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
             <PullRequestListHeading dateLabel="Updated" />
             {items.map((pr) => {
               const feedback = pr.latest_run ? runFeedback(pr.latest_run) : null;
+              let summary = feedback?.needsAttention ? feedback.summary : undefined;
+              if (pr.latest_run?.status === "cancelled") {
+                summary = ["failed", "partially_published"].includes(pr.latest_run.publication) ? feedback?.publicationLabel : undefined;
+              }
               return <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
                 state={{ repository: `${location.pathname}${location.search}` }}
-                feedback={feedback?.needsAttention ? feedback.summary : undefined}
+                feedback={summary}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
                 status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />;
             })}
