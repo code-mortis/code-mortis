@@ -1,12 +1,13 @@
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from .models import ReviewCandidate
-from .schemas import LIST_PAGE_SIZE, CandidateFilters, CandidateOut, CandidatePage
+from .models import ReviewCandidate, ReviewRun
+from .schemas import CandidateFilters, CandidateOut, CandidatePage
 
 
-def list_candidates(db: Session, run_id: str, filters: CandidateFilters) -> CandidatePage:
-    scope = ReviewCandidate.run_id == run_id
+def list_candidates(db: Session, run: ReviewRun, filters: CandidateFilters) -> CandidatePage:
+    revision = run.progress.get("assessment_revision", 0)
+    scope = ReviewCandidate.run_id == run.id
     outcome = case(
         (ReviewCandidate.finding_id.is_not(None) & ReviewCandidate.is_new, "new"),
         (ReviewCandidate.finding_id.is_not(None), "repeated"),
@@ -38,13 +39,14 @@ def list_candidates(db: Session, run_id: str, filters: CandidateFilters) -> Cand
             for key in ["content", "path", "category"]
         ]))
     total = db.scalar(select(func.count()).select_from(ReviewCandidate).where(*conditions))
-    page = min(filters.page, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
+    size = filters.page_size
+    page = min(filters.page, max(1, (total + size - 1) // size))
     items = db.scalars(select(ReviewCandidate).where(*conditions).order_by(
         ReviewCandidate.position, ReviewCandidate.id,
-    ).offset((page - 1) * LIST_PAGE_SIZE).limit(LIST_PAGE_SIZE))
+    ).offset((page - 1) * size).limit(size))
     return CandidatePage(
         items=[CandidateOut.model_validate(item) for item in items], total=total,
         registered_total=sum(counts.values()), outcome_counts=counts, severity_counts=severity_counts,
         category_counts=category_counts,
-        page=page, has_more=page * LIST_PAGE_SIZE < total,
+        revision=revision, page=page, page_size=size, has_more=page * size < total,
     )

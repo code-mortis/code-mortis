@@ -294,7 +294,8 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     if created_at is not None:
         pr.created_at = created_at
     db.flush()
-    for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))):
+    for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))
+                          .order_by(ReviewRun.id).with_for_update().execution_options(populate_existing=True)):
         if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":
             run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
             run.finished_at = now()
@@ -583,7 +584,7 @@ def save_analysis(run_id, claim, status, report, comments):
             for position, comment in enumerate(comments):
                 db.add(ReviewCandidate(run_id=run.id, position=position, snapshot=comment))
             db.flush()
-            assessment.record_summary(db, run)
+            assessment.record_summary(db, run, advance_revision=True)
             return
         seen = set()
         for comment in comments:

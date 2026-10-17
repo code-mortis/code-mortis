@@ -243,6 +243,24 @@ def test_assessment_stage_totals_match_retry_budget(seed, location, saved_usage,
         assert run.stages["assessment"]["status"] == "completed"
 
 
+def test_starting_candidate_preserves_pending_totals_and_updates_usage(seed, monkeypatch):
+    identity = new_run(assessed=True, parallel=True)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        row = ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT, status="queued")
+        db.add(row)
+        db.flush()
+        assessment.record_summary(db, run)
+        previous = run.progress["assessment"]
+        monkeypatch.setattr(assessment, "summary", lambda *args: pytest.fail("Pending totals have not changed"))
+        row.status, row.usage = "running", {"tokens": None, "reserved_tokens": 1000}
+        assessment.record_summary(db, run, advance_revision=True, totals_unchanged=True)
+        assert run.progress["assessment"] == previous
+        assert previous["pending"] == 1
+        assert run.progress["assessment_revision"] == 1
+        assert run.stages["assessment"]["tokens"] is None
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_diagram_validation_is_independent_and_rendering_is_safe(invalid):
     diagram = copy.deepcopy(DIAGRAM)

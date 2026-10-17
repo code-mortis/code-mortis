@@ -252,6 +252,10 @@ class ReviewCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    @property
+    def progress_phase(self):
+        return "validating" if self.status == "running" and self.usage.get("response_received") else None
+
 
 class Activity(Base):
     __tablename__ = "activities"

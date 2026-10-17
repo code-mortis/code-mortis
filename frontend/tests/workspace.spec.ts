@@ -212,6 +212,10 @@ function runPage(runs: Run[], params: URLSearchParams): Schema["RunPage"] {
   return { items: runs.slice((page - 1) * 10, page * 10), total: runs.length, page, has_more: page * 10 < runs.length, page_size: 10 };
 }
 
+function fixtureRevision(value: unknown) {
+  return Array.from(JSON.stringify(value)).reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 0);
+}
+
 function candidateOutcome(candidate: Schema["CandidateOut"]) {
   return candidate.finding_id ? candidate.is_new ? "new" : "repeated" : candidate.result?.verdict === "rejected" ? "rejected" : ["queued", "running"].includes(candidate.status) ? "pending" : "withheld";
 }
@@ -222,9 +226,10 @@ function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchPa
     && (!params.has("severity") || params.getAll("severity").includes(String(candidate.snapshot.severity)))
     && (!params.has("category") || params.getAll("category").includes(String(candidate.snapshot.category)))
     && (!query || [candidate.snapshot.path, candidate.snapshot.content, candidate.snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(query))));
-  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
-  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: candidates.length,
-    page, has_more: page * 10 < matches.length, page_size: 10,
+  const size = Number(params.get("page_size") ?? 10);
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / size)));
+  return { revision: fixtureRevision(candidates), items: matches.slice((page - 1) * size, page * size), total: matches.length, registered_total: candidates.length,
+    page, has_more: page * size < matches.length, page_size: size,
     outcome_counts: Object.fromEntries(["new", "repeated", "rejected", "withheld", "pending"].map((outcome) => [outcome, candidates.filter((candidate) => candidateOutcome(candidate) === outcome).length])),
     severity_counts: Object.fromEntries(["critical", "high", "medium", "low"].map((severity) => [severity, candidates.filter((candidate) => candidate.snapshot.severity === severity).length])),
     category_counts: Object.fromEntries([...new Set(candidates.map((candidate) => String(candidate.snapshot.category ?? "")).filter(Boolean))].map((category) => [category, candidates.filter((candidate) => candidate.snapshot.category === category).length])),
@@ -237,9 +242,10 @@ function resolvedPage(findings: Schema["FindingOut"][], params: URLSearchParams)
     && (!params.has("category") || params.getAll("category").includes(finding.category))
     && (!q || [finding.path, finding.content, finding.category].some((value) => value.toLowerCase().includes(q))))
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
-  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
-  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: findings.length,
-    page, has_more: page * 10 < matches.length, page_size: 10,
+  const size = Number(params.get("page_size") ?? 10);
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / size)));
+  return { revision: String(fixtureRevision(findings)), items: matches.slice((page - 1) * size, page * size), total: matches.length, registered_total: findings.length,
+    page, has_more: page * size < matches.length, page_size: size,
     severity_counts: Object.fromEntries(findingSeverities.map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length])),
     category_counts: Object.fromEntries([...new Set(findings.map((finding) => finding.category))].map((category) => [category, findings.filter((finding) => finding.category === category).length])),
   };
@@ -380,11 +386,13 @@ async function mock(
         ]),
         assessment: options.assessment ?? null,
         resolved_count: options.resolved?.length ?? 0,
+        resolved_revision: String(fixtureRevision(options.resolved ?? [])),
+        assessment_revision: fixtureRevision(options.candidates ?? []),
         can_write: options.canWrite !== false,
       };
     else if (path === "/runs/run/resolved") data = resolvedPage(options.resolved ?? [], new URL(request.url()).searchParams);
     else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
-    else if (path.startsWith("/runs/run/candidates/")) data = options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1));
+    else if (path.startsWith("/runs/run/candidates/")) data = { ...options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1)), revision: fixtureRevision(options.candidates ?? []) };
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
       data = {
         source: "provider", status: "ready", message: null,
@@ -2140,7 +2148,8 @@ test("late resolutions refresh loaded pages without resetting resolved filters",
   await expect(cards.first()).toContainText("src/sync-new.ts");
   await expect(list.getByRole("status")).toHaveText("20 of 24 shown");
   await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("sync");
-  expect(requests.slice(-2).map((params) => params.get("page"))).toEqual(["1", "2"]);
+  expect(requests.at(-1)?.get("page_size")).toBe("20");
+  expect(requests).toHaveLength(3);
   expect(requests.every((params) => params.get("q") === "sync" && params.get("severity") === "high")).toBe(true);
   const settledReads = requests.length;
   await page.clock.runFor(11000);
@@ -2180,7 +2189,7 @@ test("resolved findings use independent backend filters and reset pagination", a
   await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
   await expect(cards).toHaveCount(20);
   await expect(list.getByRole("status")).toHaveText("20 of 23 shown");
-  expect(requests.at(-1)?.get("page")).toBe("2");
+  expect(requests.at(-1)?.get("page_size")).toBe("20");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Low/ }).click();
@@ -2200,7 +2209,7 @@ test("resolved findings use independent backend filters and reset pagination", a
 });
 
 for (const status of ["running", "completed"] as const) {
-  test(`resolved findings polling respects ${status} run state`, async ({ page }) => {
+  test(`resolved findings avoid unchanged requests for a ${status} run`, async ({ page }) => {
     await page.clock.install();
     await mock(page, { run: { status }, resolved: [] });
     let reads = 0;
@@ -2211,8 +2220,7 @@ for (const status of ["running", "completed"] as const) {
     await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("heading")).toBeVisible();
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.clock.runFor(15000);
-    if (status === "running") await expect.poll(() => reads).toBeGreaterThan(1);
-    else expect(reads).toBe(1);
+    expect(reads).toBe(1);
   });
 }
 
@@ -2222,7 +2230,7 @@ test("resolved pages preserve loaded cards on failure and hide them on access de
   let failure = 500;
   await page.route("**/api/v1/runs/run/resolved?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
-    return failure && Number(params.get("page")) > 1 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
+    return failure && Number(params.get("page_size")) > 10 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
       : route.fulfill({ json: resolvedPage(resolved, params) });
   });
   await page.goto("/runs/run?tab=resolved");
@@ -4125,7 +4133,11 @@ test("assessment search keeps its debounce deadline when polling updates the lis
   await expect(page.getByRole("region", { name: "Candidate assessment", exact: true }).getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
   await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "assessment");
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  candidates[0].progress_phase = "validating";
+  const parentPoll = page.waitForResponse((response) => response.url().endsWith("/api/v1/runs/run"));
   await page.clock.runFor(6000);
+  await (await parentPoll).finished();
+  await page.clock.runFor(50);
   await expect.poll(() => reads).toBe(2);
   await page.getByLabel("Search assessments", { exact: true }).fill("Refreshed");
   await page.clock.runFor(150);
@@ -4376,6 +4388,7 @@ for (const status of [401, 403, 404]) {
     const sheet = page.getByRole("dialog", { name: "Finding details" });
     await expect(sheet).toContainText(finding.content);
     denied = true;
+    candidate.progress_phase = "validating";
     await page.clock.fastForward(5000);
     await expect(sheet.getByRole("alert")).toContainText("Candidate unavailable");
     await expect(sheet).toContainText(finding.content);
@@ -4417,7 +4430,7 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await list.getByRole("button", { name: "Load more assessments" }).click();
   await expect(cards).toHaveCount(20);
   await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
-  expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+  expect(requests.some((params) => params.get("page_size") === "20")).toBe(true);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
   await page.getByLabel("Search type options", { exact: true }).fill("custom");
@@ -5440,7 +5453,7 @@ test("run omits verification summary and orders assessment before coverage", asy
   } } } });
   await page.goto("/runs/run");
   await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
-  await expect(page.getByRole("tablist").getByRole("tab")).toHaveText(["Findings 1", "Resolved 0", "Assessment", "Coverage", "Details"]);
+  await expect(page.getByRole("tablist").getByRole("tab")).toHaveText(["Findings", "Resolved 0", /^Assessment\s*$/, "Coverage", "Details"]);
   await noOverflow(page);
 });
 
@@ -8304,4 +8317,357 @@ test("repository configuration defaults bot imports off and saves explicit opt-i
   await page.screenshot({ path: `/private/tmp/bot-pr-setting-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { include_bot_prs: true } });
+});
+
+function auditCandidate(index=0): Schema["CandidateOut"] {
+  return { id:`audit-${index}`,snapshot:{path:`src/audit-${index}.ts`,content:`Audit proposal ${index}`,severity:"high",category:"bug"},status:"running",result:null,finding_id:null,is_new:false,error:null,retryable:false };
+}
+function auditSummary(count=1): Schema["AssessmentSummary"] {
+  return {candidates:count,new_findings:0,repeated_observations:0,rejected_candidates:0,withheld_candidates:0,pending:count,incomplete:0,published_comments:0};
+}
+function finish(candidate: Schema["CandidateOut"]) {
+  candidate.status="completed";
+  candidate.result={verdict:"rejected",relationship:"new",finding_id:null,explanation:"Finished assessment evidence",cause:"",trigger:"",consequence:"",history_explanation:"",contradicts_prior:false,changed_conditions:"",suggestion_supported:false,evidence:[]};
+}
+async function ticks(page: Page,count=3) {
+  for(let i=0;i<count;i++) { const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run")); await page.clock.fastForward(5000); await (await response).finished(); }
+}
+
+test("live refresh updates all loaded assessment cards with the summary",async({page})=>{
+  await page.clock.install();
+  const candidates=Array.from({length:11},(_,i)=>auditCandidate(i));
+  const assessment=auditSummary(11);
+  const writes=await mock(page,{candidates,assessment,run:{status:"running",finished_at:null}});
+  let reads=0;
+  await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=assessment");
+  const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
+  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(10);
+  await list.getByRole("button",{name:"Load more assessments"}).click();
+  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(11);
+  const before=reads;
+  candidates.forEach(finish);assessment.pending=0;assessment.rejected_candidates=11;
+  await ticks(page);
+  expect(reads).toBe(before + 1);
+  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(11);
+  await expect(list.locator("dl div").filter({hasText:"not supported"})).toContainText("11");
+  expect(writes).toEqual([]);
+});
+
+test("live refresh catches final assessment statuses after parent completion",async({page})=>{
+  await page.clock.install();
+  const candidate=auditCandidate();const assessment=auditSummary();
+  const state:Partial<Run>={status:"running",finished_at:null};
+  const writes=await mock(page,{candidates:[candidate],assessment,run:state});
+  let reads=0;await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run");await expect(page.locator("main h1")).toContainText("running");
+  await page.clock.fastForward(2000);
+  await page.getByRole("tab",{name:/Assessment/}).click();
+  const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
+  await expect(list.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  const before=reads;
+  finish(candidate);assessment.pending=0;assessment.rejected_candidates=1;state.status="completed";
+  const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run"));
+  await page.clock.fastForward(3100);await (await response).finished();
+  await expect(page.locator("main h1")).toContainText("completed");
+  await ticks(page);
+  expect(reads).toBe(before + 1);
+  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(1);
+  expect(writes).toEqual([]);
+});
+
+test("live refresh recovers the open assessment drawer from a transient error",async({page})=>{
+  await page.clock.install();const candidate=auditCandidate();
+  await mock(page,{candidates:[candidate],assessment:auditSummary(),run:{status:"running"}});
+  let reads=0;let fail=true;
+  await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary audit outage"}}):r.fallback();});
+  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:/Audit proposal 0/}).click();
+  const sheet=page.getByRole("dialog",{name:"Assessment details"});
+  await expect(sheet.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  await ticks(page,2);await expect(sheet.getByRole("alert")).toContainText("Temporary audit outage");
+  fail=false;finish(candidate);const before=reads;await ticks(page);
+  expect(reads).toBeGreaterThan(before);
+  await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+});
+
+test("live refresh checks the backend when opening a stale terminal assessment",async({page})=>{
+  await page.clock.install();const candidates=Array.from({length:11},(_,i)=>auditCandidate(i));
+  candidates[0].status="failed";candidates[0].error="Old failure";candidates[0].retryable=true;
+  const assessment=auditSummary(11);
+  await mock(page,{candidates,assessment,run:{status:"running"}});
+  let reads=0;await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:"Load more assessments"}).click();
+  await expect(page.locator("[data-slot=finding-card]")).toHaveCount(11);
+  finish(candidates[0]);candidates[0].error=null;candidates[0].retryable=false;
+  await page.getByRole("button",{name:/Audit proposal 0/}).click();
+  const sheet=page.getByRole("dialog",{name:"Assessment details"});
+  await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+  await ticks(page,4);
+  expect(reads).toBe(1);await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+});
+
+test("live refresh updates Resolved current status when its total stays unchanged",async({page})=>{
+  await page.clock.install();const resolved=[{...structuredClone(finding),status:"resolved"}];
+  await mock(page,{resolved,run:{status:"completed"}});
+  let reads=0;await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=resolved");
+  const list=page.getByRole("region",{name:"Findings resolved by this run"});
+  await expect(list.getByText("Resolved",{exact:true})).toHaveCount(1);
+  resolved[0].status="open";const before=reads;await ticks(page);
+  expect(reads).toBe(before + 1);await expect(list.getByText("Currently open",{exact:true})).toHaveCount(1);
+  await expect(list.getByText("Resolved",{exact:true})).toHaveCount(0);
+});
+
+test("live refresh recovers Resolved from an error after completion",async({page})=>{
+  await page.clock.install();const resolved:Schema["FindingOut"][]=[];
+  await mock(page,{resolved,run:{status:"completed"}});
+  let reads=0;let fail=true;
+  await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary resolved outage"}}):r.fallback();});
+  await page.goto("/runs/run?tab=resolved");await expect(page.getByRole("alert").filter({hasText:"Temporary resolved outage"})).toBeVisible();
+  fail=false;resolved.push({...structuredClone(finding),status:"resolved"});const before=reads;await ticks(page);
+  await expect(page.getByRole("tab",{name:"Resolved 1",exact:true})).toBeVisible();
+  expect(reads).toBe(before + 1);await expect(page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]")).toHaveCount(1);
+});
+
+test("live refresh: late resolutions update two loaded pages after completion",async({page})=>{
+  await page.clock.install();const resolved=Array.from({length:11},(_,i)=>({...structuredClone(finding),id:`resolved-${i}`,status:"resolved",content:`Resolved item ${i}`}));
+  await mock(page,{resolved,run:{status:"completed"}});
+  await page.goto("/runs/run?tab=resolved");await page.getByRole("button",{name:"Load more resolved findings"}).click();
+  const cards=page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]");await expect(cards).toHaveCount(11);
+  resolved.push({...structuredClone(finding),id:"new-resolution",status:"resolved",content:"Late confirmation"});
+  await ticks(page);await expect(cards).toHaveCount(12);await expect(page.getByRole("button",{name:/Late confirmation/})).toBeVisible();
+});
+
+for(const tab of ["findings","coverage","details"]) {
+  test(`live refresh: ${tab} follows parent updates without reload or switching tabs`,async({page})=>{
+    await page.clock.install();
+    const state:Partial<Run>={status:"running",finished_at:null,report:structuredClone(run.report),publication:"pending",publication_error:null,check_error:null};
+    const occurrences=[{finding_id:"finding",snapshot:finding,inline_line:46,is_new:false,current_status:"open"}];
+    await mock(page,{run:state,occurrences});
+    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1")).toContainText("running");
+    state.status="completed";state.finished_at="2026-10-05T13:21:30Z";state.publication="published";state.check_status="completed";state.check_conclusion="success";
+    occurrences[0].current_status="resolved";
+    (state.report as any).manifest.coverage.completed.push({path:"src/late.ts"});
+    await ticks(page,1);await expect(page.locator("main h1")).toContainText("completed");
+    if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"})).toContainText("Resolved repeat");
+    if(tab==="coverage") await expect(page.getByRole("region",{name:"Coverage",exact:true})).toContainText("src/late.ts");
+    if(tab==="details") await expect(page.getByRole("region",{name:"Execution",exact:true})).not.toContainText("Not finished");
+    await expect(page.getByRole("region",{name:"GitHub publication"})).toContainText("Published");
+    await expect(page.getByRole("link",{name:"View check on GitHub: Success"})).toBeVisible();
+  });
+}
+
+test("live refresh: open stage popover follows parent stage updates",async({page})=>{
+  await page.clock.install();const stage=(status:string)=>({status,tokens:null,error:null});
+  const state:any={status:"running",stages:{ocr:stage("completed"),assessment:stage("running"),verification:stage("running")}};
+  await mock(page,{run:state});await page.goto("/runs/run");await page.getByRole("button",{name:"Review stage details",exact:true}).click();
+  const popup=page.getByRole("dialog",{name:"Review stage details",exact:true});
+  await expect(popup.getByText("running",{exact:true})).toHaveCount(2);
+  state.stages.assessment.status="completed";state.stages.verification.status="completed";state.stages.verification.tokens=321;
+  await ticks(page,1);await expect(popup.getByText("completed",{exact:true})).toHaveCount(3);await expect(popup).toContainText("321 tokens");
+});
+
+test("live refresh: open PR summary popover follows generation and sync updates",async({page})=>{
+  await page.clock.install();const state:any={status:"running",summary:{status:"running",tokens:null,error:null}};const overview:any={summary_pending:true};
+  await mock(page,{run:state,overview});await page.goto("/runs/run");await page.getByRole("button",{name:"PR summary details: Running",exact:true}).click();
+  const popup=page.getByRole("dialog",{name:"PR summary details",exact:true});await expect(popup).toContainText("Updating overview");
+  state.summary.status="completed";state.summary.tokens=123;overview.summary_pending=false;overview.summary_url="https://github.com/acme/payments/pull/148";
+  await ticks(page,1);await expect(popup).toContainText("Overview available");await expect(popup).toContainText("123 tokens");
+});
+
+test("live refresh: open finding drawer follows status and verification changes",async({page})=>{
+  await page.clock.install();await mock(page);
+  const current=structuredClone(finding);const verifications:any[]=[];const activities:any[]=[];
+  await page.route("**/api/v1/findings/finding",r=>r.fulfill({json:{finding:current,verifications,activities}}));
+  await page.goto("/runs/run?finding=finding&finding_tab=activity");const sheet=page.getByRole("dialog",{name:"Finding details"});await expect(sheet).toContainText("No activity recorded");
+  current.status="resolved";activities.push({id:"audit",action:"resolved",actor:"Code Mortis",source:"verification",reason:"Automatic audit confirmation",created_at:at});
+  await ticks(page,1);await expect(sheet).toContainText("Automatic audit confirmation");await expect(sheet.getByText("Resolved",{exact:true}).first()).toBeVisible();
+});
+
+for (const count of [10, 50, 100]) {
+  test(`live refresh batches ${count} assessments and stays idle without changes`, async ({ page }, info) => {
+    await page.clock.install();
+    const candidates = Array.from({ length: count }, (_, index) => auditCandidate(index));
+    const writes = await mock(page, { candidates, assessment: auditSummary(count), run: { status: "running" } });
+    const requests: URL[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url);
+    });
+    await page.goto("/runs/run?tab=assessment");
+    const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+    const cards = list.locator("[data-slot=finding-card]");
+    await expect(cards).toHaveCount(10);
+    for (let loaded = 20; loaded <= count; loaded += 10) {
+      await list.getByRole("button", { name: "Load more assessments" }).click();
+      await expect(cards).toHaveCount(loaded);
+    }
+    const initial = requests.length;
+    await ticks(page);
+    expect(requests).toHaveLength(initial);
+    candidates.at(-1)!.progress_phase = "validating";
+    await ticks(page, 1);
+    await expect(cards.last()).toContainText("Response received; validating");
+    expect(requests).toHaveLength(initial + 1);
+    expect(requests.at(-1)!.searchParams.get("page_size")).toBe(String(count));
+    const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));
+    await cards.last().click();
+    await (await openResponse).finished();
+    const sheet = page.getByRole("dialog", { name: "Assessment details" });
+    await expect(sheet).toContainText("Response received; validating against");
+    await noOverflow(page);
+    if (count === 10) await page.screenshot({ path: `/private/tmp/mortis-refresh-${info.project.name}.png`, fullPage: true });
+    finish(candidates.at(-1)!);
+    candidates.at(-1)!.progress_phase = null;
+    await ticks(page, 1);
+    await expect(sheet).toContainText("Finished assessment evidence");
+    expect(requests).toHaveLength(initial + 2);
+    await ticks(page);
+    expect(requests).toHaveLength(initial + 2);
+    expect(writes).toEqual([]);
+  });
+}
+
+test("live refresh respects Retry-After and recovers after completion without manual retry", async ({ page }) => {
+  await page.clock.install();
+  const resolved = [{ ...structuredClone(finding), status: "resolved", sync_intent: null }];
+  await mock(page, { resolved, run: { status: "completed" } });
+  let reads = 0;
+  await page.route("**/api/v1/runs/run/resolved?**", (route) => {
+    reads++;
+    return reads === 1 ? route.fulfill({ status: 503, headers: { "Retry-After": "12" }, json: { detail: "Temporary outage" } }) : route.fallback();
+  });
+  await page.goto("/runs/run?tab=resolved");
+  await expect(page.getByRole("alert").filter({ hasText: "Temporary outage" })).toBeVisible();
+  await ticks(page, 2);
+  expect(reads).toBe(1);
+  await ticks(page, 1);
+  await expect(page.getByRole("region", { name: "Findings resolved by this run" }).locator("[data-slot=finding-card]")).toHaveCount(1);
+  expect(reads).toBe(2);
+  await ticks(page, 3);
+  expect(reads).toBe(2);
+});
+
+test("live refresh discards a late assessment response after filters change", async ({ page }) => {
+  await page.clock.install();
+  const candidates = Array.from({ length: 11 }, (_, index) => auditCandidate(index));
+  await mock(page, { candidates, assessment: auditSummary(11), run: { status: "running" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get("page_size") === "20" && !params.has("q")) {
+      held = true;
+      const old = candidatePage(candidates, params);
+      await pending;
+      await route.fulfill({ json: old }).catch(() => null);
+    } else await route.fallback();
+  });
+  await page.goto("/runs/run?tab=assessment");
+  await page.getByRole("button", { name: "Load more assessments" }).click();
+  await expect.poll(() => held).toBe(true);
+  await page.getByLabel("Search assessments", { exact: true }).fill("proposal 10");
+  await page.clock.fastForward(400);
+  const cards = page.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 10");
+  release();
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 10");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("proposal 10");
+});
+
+test("live refresh backs off temporary failures to thirty seconds and then recovers", async ({ page }) => {
+  await page.clock.install();
+  await mock(page, { resolved: [{ ...finding, status: "resolved" }], run: { status: "completed" } });
+  const times: number[] = [];
+  await page.route("**/api/v1/runs/run/resolved?**", async (route) => {
+    times.push(await page.evaluate(() => Date.now()));
+    if (times.length === 3) return route.abort("failed");
+    if (times.length <= 5) return route.fulfill({ status: times.length === 1 ? 429 : 503, json: { detail: "Temporary outage" } });
+    return route.fallback();
+  });
+  await page.goto("/runs/run?tab=resolved");
+  await expect(page.getByRole("alert").filter({ hasText: "Temporary outage" })).toBeVisible();
+  for (let cycle = 0; cycle < 24; cycle++) {
+    await ticks(page, 1);
+    await page.clock.runFor(50);
+  }
+  await expect(page.getByRole("region", { name: "Findings resolved by this run" }).locator("[data-slot=finding-card]")).toHaveCount(1);
+  expect(times).toHaveLength(6);
+  for (let index = 1; index < times.length; index++) {
+    const delay = Math.min(5000 * 2 ** (index - 1), 30000);
+    expect(times[index] - times[index - 1]).toBeGreaterThanOrEqual(delay);
+    expect(times[index] - times[index - 1]).toBeLessThan(delay + 5500);
+  }
+});
+
+test("live refresh discards a late drawer response after opening another candidate", async ({ page }) => {
+  await page.clock.install();
+  const candidates = [auditCandidate(0), auditCandidate(1)];
+  await mock(page, { candidates, assessment: auditSummary(2), run: { status: "running" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  await page.route("**/api/v1/runs/run/candidates/audit-0", async (route) => {
+    held = true;
+    await pending;
+    await route.fulfill({ json: { ...candidates[0], revision: 0 } }).catch(() => null);
+  });
+  await page.goto("/runs/run?tab=assessment");
+  await page.getByRole("button", { name: /Audit proposal 0/ }).click();
+  await expect.poll(() => held).toBe(true);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).first().click();
+  await page.getByRole("button", { name: /Audit proposal 1/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Audit proposal 1");
+  release();
+  await ticks(page, 1);
+  await expect(sheet).toContainText("Audit proposal 1");
+  await expect(sheet).not.toContainText("Audit proposal 0");
+});
+
+test("live refresh coalesces in-flight changes and updates filtered rows after completion", async ({ page }) => {
+  await page.clock.install();
+  const candidates = Array.from({ length: 20 }, (_, index) => auditCandidate(index));
+  const state: Partial<Run> = { status: "running" };
+  await mock(page, { candidates, assessment: auditSummary(20), run: state });
+  let reads = 0;
+  let hold = false;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    reads++;
+    const data = candidatePage(candidates, new URL(route.request().url()).searchParams);
+    if (hold) { hold = false; await pending; }
+    await route.fulfill({ json: data });
+  });
+  await page.goto("/runs/run?tab=assessment&assessment_outcome=pending");
+  const cards = page.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(20);
+  await page.getByLabel("Search assessments", { exact: true }).focus();
+  const before = reads;
+  hold = true;
+  finish(candidates[0]);
+  await ticks(page, 1);
+  await expect.poll(() => reads).toBe(before + 1);
+  candidates.forEach(finish);
+  state.status = "completed";
+  await ticks(page, 2);
+  expect(reads).toBe(before + 1);
+  release();
+  await expect(cards).toHaveCount(19);
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(0);
+  expect(reads).toBe(before + 2);
+  candidates[1] = auditCandidate(1);
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 1");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toBeFocused();
+  await expect(page).toHaveURL(/assessment_outcome=pending/);
 });

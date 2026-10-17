@@ -1499,3 +1499,46 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
         if failure == "expand":
             assert rows[0].context["sources"]["current"]["helper.py"] == "dependency = 1\n"
     assert counts == {"file_0.py": 1 if failure in {"excluded", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
+
+
+def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch):
+    from time import monotonic, sleep
+
+    pipeline["comments"] = independent_comments(2)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    identity = new_run(assessed=True)
+    started, release = Event(), Event()
+
+    def api(*args, **kwargs):
+        context = args[4]
+        if context["finding"]["path"] == "file_1.py":
+            started.set()
+            assert release.wait(10)
+        return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
+
+    monkeypatch.setattr(verification, "api_verify", api)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(reviews.perform_review, identity)
+        try:
+            assert started.wait(10)
+            deadline = monotonic() + 5
+            while monotonic() < deadline:
+                with transaction() as db:
+                    rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
+                    if rows[0].progress_phase == "validating":
+                        assert all(row.status == "running" and row.result is None and row.finding_id is None for row in rows)
+                        assert rows[0].usage["tokens"] is None
+                        assert db.get(ReviewRun, identity).progress["assessment_revision"] >= 3
+                        assert db.scalar(select(func.count()).select_from(Finding)) == 0
+                        break
+                sleep(0.01)
+            else:
+                pytest.fail("The completed response was not exposed before its peer finished")
+            assert pipeline["reviews"] == []
+        finally:
+            release.set()
+        future.result(timeout=10)
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)))
+        assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)

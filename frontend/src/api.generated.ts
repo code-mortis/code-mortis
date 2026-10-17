@@ -1067,6 +1067,38 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
         };
+        /** CandidateDetail */
+        CandidateDetail: {
+            /** Id */
+            id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            result: components["schemas"]["AssessmentResult"] | null;
+            /** Finding Id */
+            finding_id: string | null;
+            /** Is New */
+            is_new: boolean;
+            /** Error */
+            error: string | null;
+            /** Attempts */
+            attempts?: components["schemas"]["CandidateAttemptOut"][];
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /** Progress Phase */
+            progress_phase?: "validating" | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+        };
         /** CandidateOut */
         CandidateOut: {
             /** Id */
@@ -1091,9 +1123,16 @@ export interface components {
              * @default false
              */
             retryable: boolean;
+            /** Progress Phase */
+            progress_phase?: "validating" | null;
         };
         /** CandidatePage */
         CandidatePage: {
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Items */
             items: components["schemas"]["CandidateOut"][];
             /** Total */
@@ -1802,6 +1841,11 @@ export interface components {
         };
         /** ResolvedPage */
         ResolvedPage: {
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
             /** Items */
             items: components["schemas"]["FindingOut"][];
             /** Total */
@@ -1838,6 +1882,16 @@ export interface components {
              * @default 0
              */
             resolved_count: number;
+            /**
+             * Assessment Revision
+             * @default 0
+             */
+            assessment_revision: number;
+            /**
+             * Resolved Revision
+             * @default
+             */
+            resolved_revision: string;
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
@@ -2792,6 +2846,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
                 page?: number;
+                page_size?: number;
             };
             header?: never;
             path: {
@@ -2829,6 +2884,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
                 page?: number;
+                page_size?: number;
             };
             header?: never;
             path: {
@@ -2876,7 +2932,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CandidateOut"];
+                    "application/json": components["schemas"]["CandidateDetail"];
                 };
             };
             /** @description Validation Error */

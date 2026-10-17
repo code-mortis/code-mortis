@@ -1,6 +1,7 @@
 import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useRunResource } from "./hooks/use-run-resource";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
@@ -656,6 +657,7 @@ function getCandidateFeedback(candidate: Schema["CandidateOut"]) {
   if (candidate.finding_id && candidate.is_new) return { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding." };
   if (candidate.finding_id) return { label: "Repeated observation", description: "Matches an existing finding from review history." };
   if (candidate.result?.verdict === "rejected") return { label: "Not supported", description: "The evidence did not support this proposed issue." };
+  if (candidate.progress_phase === "validating") return { label: "Response received; validating", description: "Processing finished. Final validation must finish before a finding can be accepted." };
   if (active(candidate.status)) return { label: "Awaiting assessment", description: "Queued or being checked against evidence." };
   return { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." };
 }
@@ -675,35 +677,24 @@ function CandidateStatus({ candidate, inCard = false }: { candidate: Schema["Can
   </Tooltip>;
 }
 
-function ResolvedList({ runId, running, resolvedCount, onOpen }: {
-  runId: string; running: boolean; resolvedCount: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
+function ResolvedList({ runId, running, revision, tick, onOpen }: {
+  runId: string; running: boolean; revision: string; tick: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
 }) {
   const filters = useReviewFilters("resolved");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, version: 0 });
-  if (list.filters !== canonical) setList({ filters: canonical, version: list.version + 1 });
+  const [list, setList] = useState({ filters: canonical, size: 10 });
+  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const query = useInfiniteQuery<Schema["ResolvedPage"], ApiError>({
-    queryKey: ["run-resolved", runId, canonical, list.version],
-    queryFn: ({ pageParam, signal }) => api<Schema["ResolvedPage"]>(`/runs/${runId}/resolved?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
-    refetchInterval: (query) => {
-      const pages = query.state.data?.pages;
-      const behind = pages && pages[0].registered_total !== resolvedCount;
-      return !query.state.error && (behind || (running && (pages?.length ?? 0) <= 1)) ? 5000 : false;
-    },
-    retry: false,
-  });
+  const query = useRunResource<Schema["ResolvedPage"]>(
+    `/runs/${runId}/resolved?${params}&page=1&page_size=${list.size}`, revision, tick,
+    { scope: `${runId}/resolved?${canonical}` },
+  );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  const first = query.data?.pages[0];
-  const last = query.data?.pages.at(-1);
-  const seen = new Set<string>();
-  const findings = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((finding) => {
-    if (seen.has(finding.id)) return false;
-    seen.add(finding.id);
-    return true;
-  });
+  const first = query.data;
+  const last = query.data;
+  const more = !!last?.has_more && list.size < 100;
+  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
+  const findings = query.data?.items ?? [];
   return <div className="space-y-4">
     <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
@@ -714,15 +705,15 @@ function ResolvedList({ runId, running, resolvedCount, onOpen }: {
     </FilterBar>
     <ErrorNotice error={query.error} />
     <section aria-label="Findings resolved by this run" className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
-      {query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
+      {!last && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
         state={<Status value={item.status} label={item.status === "resolved" ? "Resolved" : `Currently ${words(item.status)}`} />}
         onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No resolved findings match these filters" : running ? "No confirmed resolutions yet" : "No findings resolved by this run"}>
         <p>{first?.registered_total ? "Try another search, severity, or type." : "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
       </Empty>}
-      {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
-          {query.isFetchingNextPage && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
+      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+        {more ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
+          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
         </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry resolved findings</Button>
           : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining resolved findings.</p> : null}
         {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{findings.length} of {last.total} shown</span>}
@@ -731,31 +722,24 @@ function ResolvedList({ runId, running, resolvedCount, onOpen }: {
   </div>;
 }
 
-function AssessmentList({ runId, running, onOpen }: {
-  runId: string; running: boolean; onOpen: (candidate: Schema["CandidateOut"], trigger: HTMLButtonElement) => void;
+function AssessmentList({ runId, running, revision, tick, onOpen }: {
+  runId: string; running: boolean; revision: number; tick: number; onOpen: (candidate: Schema["CandidateOut"], trigger: HTMLButtonElement) => void;
 }) {
   const filters = useReviewFilters("assessment");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, version: 0 });
-  if (list.filters !== canonical) setList({ filters: canonical, version: list.version + 1 });
+  const [list, setList] = useState({ filters: canonical, size: 10 });
+  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const query = useInfiniteQuery<Schema["CandidatePage"], ApiError>({
-    queryKey: ["run-candidates", runId, canonical, list.version],
-    queryFn: ({ pageParam, signal }) => api<Schema["CandidatePage"]>(`/runs/${runId}/candidates?${params}&page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last, pages) => last.has_more && pages.length < INBOX_MAX_PAGES ? last.page + 1 : undefined,
-    refetchInterval: (query) => running && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
-    retry: false,
-  });
-  if (query.error && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  const first = query.data?.pages[0];
-  const last = query.data?.pages.at(-1);
-  const seen = new Set<string>();
-  const candidates = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((candidate) => {
-    if (seen.has(candidate.id)) return false;
-    seen.add(candidate.id);
-    return true;
-  });
+  const query = useRunResource<Schema["CandidatePage"]>(
+    `/runs/${runId}/candidates?${params}&page=1&page_size=${list.size}`, revision, tick,
+    { scope: `${runId}/candidates?${canonical}` },
+  );
+  if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
+  const first = query.data;
+  const last = query.data;
+  const more = !!last?.has_more && list.size < 100;
+  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
+  const candidates = query.data?.items ?? [];
   return <div className="mt-6 space-y-4">
     <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
@@ -767,15 +751,15 @@ function AssessmentList({ runId, running, onOpen }: {
     </FilterBar>
     <ErrorNotice error={query.error} />
     <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
-      {query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
+      {!last && query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
         state={<CandidateStatus candidate={item} inCard />}
         onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No assessments match these filters" : "No candidates to assess"}>
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
-      {(query.hasNextPage || (query.data?.pages.length ?? 0) > 1 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
-          {query.isFetchingNextPage && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
+      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+        {more ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
+          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
         </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
           : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
         {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
@@ -857,7 +841,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Changed conditions</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.changed_conditions || "No changed conditions were recorded."}</p></section>
-          </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
+          </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{candidate.progress_phase === "validating" ? "Response received; validating against the current pull request and finding history." : active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
           {!!candidate.attempts?.length && <details className="space-y-4 text-sm">
             <summary className="cursor-pointer font-medium">Previous attempts ({candidate.attempts.length})</summary>
             {candidate.attempts.map((attempt, index) => <section key={index} className="space-y-3 border-t pt-4">
@@ -897,7 +881,7 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
-  return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} />;
+  return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} tick={query.dataUpdatedAt} />;
 }
 
 function tokenUsage(tokens: number | null | undefined, status: string) {
@@ -934,8 +918,8 @@ function runFindingLabel(item: Schema["OccurrenceOut"]) {
   return runFindingOutcomes[runFindingOutcome(item)];
 }
 
-function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
-  const { run, pull_request: pr, occurrences, resolved_count = 0, assessment, can_write } = detail;
+function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
+  const { run, pull_request: pr, occurrences, resolved_count = 0, assessment_revision = 0, resolved_revision = "", assessment, can_write } = detail;
   const findingCounts = new Map<string, number>();
   for (const item of occurrences) {
     const name = runFindingLabel(item).toLowerCase();
@@ -967,13 +951,10 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     for (const key of ["finding", "finding_tab", "candidate", "assessment_tab"]) next.delete(key);
     setParams(next, { state: location.state });
   }
-  const candidateQuery = useQuery<Schema["CandidateOut"], ApiError>({
-    queryKey: ["run-candidate", run.id, candidateId],
-    queryFn: ({ signal }) => api<Schema["CandidateOut"]>(`/runs/${run.id}/candidates/${encodeURIComponent(candidateId!)}`, "GET", undefined, undefined, signal),
-    enabled: !!candidateId, initialData: candidateSeed?.id === candidateId ? candidateSeed : undefined,
-    refetchInterval: (query) => candidateId && !query.state.error && active(query.state.data?.status ?? "") ? 5000 : false,
-    retry: false,
-  });
+  const candidateQuery = useRunResource<Schema["CandidateDetail"]>(
+    `/runs/${run.id}/candidates/${encodeURIComponent(candidateId ?? "")}`, assessment_revision, tick,
+    { enabled: !!candidateId, placeholder: candidateSeed?.id === candidateId ? { ...candidateSeed, revision: assessment_revision } : undefined },
+  );
   const candidateDenied = candidateId && candidateQuery.error && [401, 403, 404].includes(candidateQuery.error.status);
   const candidate = candidateDenied ? undefined : candidateQuery.data;
   const searchInput = useRef<HTMLInputElement>(null);
@@ -1153,7 +1134,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
       </TabsContent>
       <TabsContent value="resolved" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings automatically resolved by this run after fix verification and GitHub confirmation. Open a finding to inspect its current status and verification history.</p>
-        <ResolvedList runId={run.id} running={active(run.status)} resolvedCount={resolved_count} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
+        <ResolvedList runId={run.id} running={active(run.status)} revision={resolved_revision} tick={tick} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />
@@ -1172,7 +1153,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
               <dt className="text-xs capitalize text-muted-foreground">{name}</dt>
               <dd className="text-sm tabular-nums">{value}</dd>
             </div>)}</dl>
-            <AssessmentList runId={run.id} running={active(run.status)} onOpen={(item, trigger) => { findingTrigger.current = trigger; setCandidateSeed(item); showSheet("candidate", item.id); }} />
+            <AssessmentList runId={run.id} running={active(run.status)} revision={assessment_revision} tick={tick} onOpen={(item, trigger) => { findingTrigger.current = trigger; setCandidateSeed(item); showSheet("candidate", item.id); }} />
           </> : <div className="mt-4"><Empty title={active(run.status) ? "Assessment pending" : "Assessment was not recorded"}>{active(run.status) ? "Candidates appear after the initial review finishes." : "This run predates candidate assessment. Its findings have not been assessed by this policy."}</Empty></div>}
         </section>
       </TabsContent>

@@ -14,6 +14,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public retryAt = 0,
   ) {
     super(message);
   }
@@ -41,6 +42,9 @@ export async function api<T>(
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
+    const retryAfter = response.headers.get("Retry-After");
+    const retryAt = retryAfter == null ? 0 : /^\d+(?:\.\d+)?$/.test(retryAfter.trim())
+      ? Date.now() + Number(retryAfter) * 1000 : Date.parse(retryAfter) || 0;
     const messages: Record<number, string> = {
       401: "Your session has expired. Sign in with GitHub again.",
       403: "You do not have access to this action. Ask the administrator to check your permissions.",
@@ -58,6 +62,7 @@ export async function api<T>(
       typeof data?.detail === "string" && data.detail.trim()
         ? data.detail
         : messages[response.status] ?? "Code Mortis could not complete this request. Try again. If it keeps failing, ask the administrator to check the server logs.",
+      retryAt,
     );
   }
   return data as T;

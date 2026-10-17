@@ -65,6 +65,7 @@ from .schemas import (
     ActivityOut,
     BackgroundInput,
     BackgroundJobOut,
+    CandidateDetail,
     CandidateFilters,
     CandidateOut,
     CandidatePage,
@@ -596,6 +597,7 @@ def run_detail(run_id: str, db: DB, user: USER):
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr, repo, remote = pr_access(db, user, run.pr_id)
+    resolved_count, resolved_revision = resolved_list.metadata(db, run)
     new_findings = dict(db.execute(select(
         ReviewCandidate.finding_id, func.bool_or(ReviewCandidate.is_new),
     ).where(ReviewCandidate.run_id == run.id, ReviewCandidate.finding_id.is_not(None))
@@ -612,7 +614,8 @@ def run_detail(run_id: str, db: DB, user: USER):
             for item, status in db.execute(select(Occurrence, Finding.status)
                 .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id))
         ],
-        resolved_count=db.scalar(select(func.count()).select_from(Finding).where(resolved_list.scope(run))),
+        resolved_count=resolved_count, resolved_revision=resolved_revision,
+        assessment_revision=run.progress.get("assessment_revision", 0),
         can_write=remote.get("permissions", {}).get("push", False),
     )
 
@@ -632,19 +635,20 @@ def run_candidates(run_id: str, db: DB, user: USER, filters: Annotated[Candidate
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id)
-    return candidate_list.list_candidates(db, run.id, filters)
+    return candidate_list.list_candidates(db, run, filters)
 
 
-@router.get("/runs/{run_id}/candidates/{candidate_id}", response_model=CandidateOut)
+@router.get("/runs/{run_id}/candidates/{candidate_id}", response_model=CandidateDetail)
 def candidate_detail(run_id: str, candidate_id: str, db: DB, user: USER):
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id)
+    revision = run.progress.get("assessment_revision", 0)
     candidate = db.get(ReviewCandidate, candidate_id)
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")
-    return CandidateOut.model_validate(candidate)
+    return CandidateDetail.model_validate(candidate).model_copy(update={"revision": revision})
 
 
 @router.post("/runs/{run_id}/candidates/{candidate_id}/retry", response_model=CandidateOut, status_code=202)
@@ -699,7 +703,7 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     if pipeline.enabled(run):
         pipeline.update(run, "assessment", "pending", started_at=None, finished_at=None, error=None, execution=None)
     enqueue(db, "review", {"run_id": run.id})
-    assessment.record_summary(db, run)
+    assessment.record_summary(db, run, advance_revision=True)
     return CandidateOut.model_validate(candidate)
 
 

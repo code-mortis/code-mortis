@@ -513,11 +513,16 @@ class CandidateOut(ORMModel):
     error: str | None
     attempts: list[CandidateAttemptOut] = Field(default_factory=list)
     retryable: bool = False
+    progress_phase: Literal["validating"] | None = None
 
     @model_validator(mode="after")
     def technical_failure(self):
         self.retryable = self.status == "failed" and self.result is None and self.finding_id is None
         return self
+
+
+class CandidateDetail(CandidateOut):
+    revision: int = 0
 
 
 class AssessmentSummary(StrictModel):
@@ -537,6 +542,8 @@ class RunDetail(BaseModel):
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
     resolved_count: int = 0
+    assessment_revision: int = 0
+    resolved_revision: str = ""
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -561,9 +568,11 @@ class CandidateFilters(StrictModel):
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
+    page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
 
 
 class CandidatePage(BaseModel):
+    revision: int = 0
     items: list[CandidateOut]
     total: int
     registered_total: int
@@ -580,9 +589,11 @@ class ResolvedFilters(StrictModel):
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
+    page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
 
 
 class ResolvedPage(BaseModel):
+    revision: str = ""
     items: list[FindingOut]
     total: int
     registered_total: int

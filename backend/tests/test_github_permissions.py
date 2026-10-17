@@ -193,7 +193,7 @@ def _process_read(path):
             return github.permission_request(7, path, TOKEN)
 
 
-@pytest.mark.parametrize("sessions", [1, 10])
+@pytest.mark.parametrize("sessions", [1, 5, 20])
 def test_processes_share_permission_requests(cache, sessions):
     with ProcessPoolExecutor(max_workers=sessions, mp_context=multiprocessing.get_context("spawn")) as pool:
         assert list(pool.map(_process_read, [PATH] * sessions)) == [ALLOWED] * sessions

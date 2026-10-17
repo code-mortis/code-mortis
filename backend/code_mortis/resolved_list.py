@@ -1,8 +1,9 @@
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, cast, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
 from .models import Finding, FindingVerification, ReviewRun
-from .schemas import LIST_PAGE_SIZE, FindingOut, ResolvedFilters, ResolvedPage
+from .schemas import FindingOut, ResolvedFilters, ResolvedPage
 
 
 def scope(run: ReviewRun):
@@ -11,9 +12,16 @@ def scope(run: ReviewRun):
     )))
 
 
+def metadata(db: Session, run: ReviewRun):
+    stamp = cast(func.json_build_array(Finding.id, Finding.status, Finding.sync_version, Finding.updated_at), String)
+    return db.execute(select(
+        func.count(), func.md5(func.coalesce(func.string_agg(stamp, aggregate_order_by(literal(","), Finding.id)), "")),
+    ).select_from(Finding).where(scope(run))).one()
+
+
 def list_resolved(db: Session, run: ReviewRun, filters: ResolvedFilters) -> ResolvedPage:
     resolved = scope(run)
-    registered_total = db.scalar(select(func.count()).select_from(Finding).where(resolved))
+    registered_total, revision = metadata(db, run)
     severity_counts = dict.fromkeys(["critical", "high", "medium", "low"], 0)
     severity_counts.update(dict(db.execute(
         select(Finding.severity, func.count()).where(resolved).group_by(Finding.severity)
@@ -32,12 +40,13 @@ def list_resolved(db: Session, run: ReviewRun, filters: ResolvedFilters) -> Reso
             for column in [Finding.content, Finding.path, Finding.category]
         ]))
     total = db.scalar(select(func.count()).select_from(Finding).where(*conditions))
-    page = min(filters.page, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
+    size = filters.page_size
+    page = min(filters.page, max(1, (total + size - 1) // size))
     items = db.scalars(select(Finding).where(*conditions).order_by(
         Finding.created_at.desc(), Finding.id.desc(),
-    ).offset((page - 1) * LIST_PAGE_SIZE).limit(LIST_PAGE_SIZE))
+    ).offset((page - 1) * size).limit(size))
     return ResolvedPage(
         items=[FindingOut.model_validate(item) for item in items], total=total,
         registered_total=registered_total, severity_counts=severity_counts, category_counts=category_counts,
-        page=page, has_more=page * LIST_PAGE_SIZE < total,
+        revision=revision, page=page, page_size=size, has_more=page * size < total,
     )

@@ -163,10 +163,12 @@ def summary(db, run):
     return result
 
 
-def record_summary(db, run):
+def record_summary(db, run, *, advance_revision=False, totals_unchanged=False):
     from . import pipeline
 
-    value = summary(db, run)
+    value = None if totals_unchanged and "assessment" in run.progress else summary(db, run)
+    if advance_revision:
+        run.progress = {**run.progress, "assessment_revision": run.progress.get("assessment_revision", 0) + 1}
     if value is not None:
         run.progress = {**run.progress, "assessment": value.model_dump()}
     if pipeline.enabled(run) and run.stages.get("assessment"):
@@ -177,12 +179,14 @@ def record_summary(db, run):
 
 
 def withhold_pending(db, run, reason):
+    changed = False
     for row in db.scalars(select(ReviewCandidate).where(
         ReviewCandidate.run_id == run.id, ReviewCandidate.status.in_(["queued", "running"]),
     )):
         row.status, row.error, row.finished_at = "skipped", reason, now()
+        changed = True
     db.flush()
-    record_summary(db, run)
+    record_summary(db, run, advance_revision=changed)
 
 
 def history(db, run, *, lock=False):
@@ -477,7 +481,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     interrupted = True
             if interrupted:
                 db.flush()
-                record_summary(db, run)
+                record_summary(db, run, advance_revision=True)
             rows = [row for row in rows if row.status == "queued"]
             if not rows:
                 return None
@@ -544,7 +548,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             raise ValueError(reason + " Assessment stopped.")
                         usage = ({"tokens": None, "reserved_tokens": budget} if run.config.get("pipeline_version") == 2 else {"tokens": budget})
                     row.status, row.context, row.usage = "running", request_context, usage
-                    record_summary(db, current)
+                    # Queued and running both count as pending; only usage and the UI revision change.
+                    record_summary(db, current, advance_revision=True, totals_unchanged=True)
                 if result is None:
                     try:
                         if connection["kind"] == "api":
@@ -646,7 +651,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 if result:
                     accept(db, run, row, row.result)
             db.flush()
-            record_summary(db, run)
+            record_summary(db, run, advance_revision=True)
             return True
 
     configuration = (ocr.configuration(connection, credentials, {}, stopped, session_per_task=True)
@@ -695,6 +700,14 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         results[futures[future]] = future.result()
                         if results[futures[future]] is None:
                             stop_workers.set()
+                        elif len(results) < len(futures) and results[futures[future]][1] is not None:
+                            with transaction() as db:
+                                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                                if current.progress.get("execution") == claim and not current.cancel_requested and current.status == "running":
+                                    row = db.get(ReviewCandidate, futures[future])
+                                    if row.status == "running":
+                                        row.usage = {**row.usage, "response_received": True}
+                                        current.progress = {**current.progress, "assessment_revision": current.progress.get("assessment_revision", 0) + 1}
                     outcomes = [results[row.id] for row in batch]
                 else:
                     outcomes = [assess(batch[0], run, previous, history_key, budget, usage_known)]
