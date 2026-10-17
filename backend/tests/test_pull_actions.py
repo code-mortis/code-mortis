@@ -150,6 +150,26 @@ def test_ignore_blocks_retries_publication_and_stale_run_creation(seed, github_s
         assert db.get(ReviewRun, identity).cancel_requested
 
 
+def test_publication_retry_refreshes_cancellation_before_lock(seed, github_stub, client, monkeypatch):
+    identity = new_run()
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        review.status, review.publication = "completed", "failed"
+    original_access = api.review_pr_access
+
+    def cancel_before_lock(*args):
+        with transaction() as db:
+            db.get(ReviewRun, identity).cancel_requested = True
+        return original_access(*args)
+
+    monkeypatch.setattr(api, "review_pr_access", cancel_before_lock)
+    response = client.post(f"/api/v1/runs/{identity}/publish")
+    assert response.status_code == 409, response.text
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).publication == "failed"
+        assert not db.scalar(select(Job).where(Job.kind == "publish"))
+
+
 def test_ignored_pr_still_syncs_metadata_without_reviewing(seed, github_stub, client, monkeypatch):
     assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
     data = remote("c" * 40)

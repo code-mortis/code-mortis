@@ -731,7 +731,8 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     if not run:
         raise HTTPException(404, "Review run not found.")
     review_pr_access(db, user, run.pr_id)
-    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                    .execution_options(populate_existing=True))
     if run.cancel_requested or not can_publish(run) or run.publication not in {"failed", "partially_published"}:
         raise HTTPException(409, "There are no failed GitHub comments to resend for this review. Refresh the page to see its current status.")
     run.publication, run.publication_error = "pending", None
