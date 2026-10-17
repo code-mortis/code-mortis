@@ -422,6 +422,10 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
         assert (payload["status"], payload["conclusion"]) == ("completed", "success")
         assert payload["output"]["title"] == "Review complete: 3 new validated findings"
         assert "Not supported candidates: 5. Withheld candidates: 2." in payload["output"]["summary"]
+        run.progress = {**run.progress, "verification": {"uncertain": 1}}
+        payload = checks.check_payload(run, 3)
+        assert payload["conclusion"] == "neutral"
+        assert payload["output"]["title"] == "Review complete"
 
 
 def test_bad_suggestion_is_preserved_as_input_but_not_published(pipeline):

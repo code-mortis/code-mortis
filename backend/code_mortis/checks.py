@@ -111,7 +111,7 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
     elif status == "completed" and conclusion == "success" and (
         verification.get("failed") or verification.get("skipped") or verification.get("uncertain")
     ):
-        conclusion, title = "neutral", "Review complete; some findings could not be verified"
+        conclusion, title = "neutral", "Review complete"
 
     lines = [f"Reviewed commit: `{run.head_sha}`", f"Findings: {findings}"]
     assessment = run.progress.get("assessment")
