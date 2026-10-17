@@ -246,6 +246,8 @@ def rerequest(db: Session, body: dict, delivery_id: str):
         body.get("installation") or {}
     ).get("id"):
         raise ValueError("GitHub Re-run does not match this repository installation.")
+    if pr.ignored:
+        raise ValueError("Restore this pull request before reviewing it.")
     if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
         raise ValueError("Enable the repository and installation before requesting another review.")
     actor = db.get(User, (body.get("sender") or {}).get("id"))

@@ -24,12 +24,13 @@ export function InboxFilters({ params, data, onChange, onSearch, repository = fa
     else if (key === "author") choices = [...new Map(data?.authors.map((a) => [a.toLowerCase(), { value: a.toLowerCase(), name: `@${a}` }])).values()];
     else if (key === "state") choices = states.map((value) => ({ value, name: label(value), count: data?.state_counts[value] }));
     else if (key === "review") choices = reviews.map((value) => ({ value, name: label(value) }));
+    else if (key === "visibility") choices = [{ value: "visible", name: "Visible" }, { value: "ignored", name: "Ignored" }, { value: "all", name: "All" }];
     else choices = [{ value: "open", name: "Has open findings" }, { value: "none", name: "No open findings" }];
     for (const value of values) if (!choices.some((choice) => choice.value === value)) choices.push({ value, name: key === "repo" ? `Repository ${value}` : key === "author" ? `@${value}` : label(value) });
     return {
       key, label: properties[key], values, choices,
-      active: values.length > 0 && !(key === "state" && values.length === states.length),
-      single: key === "findings", required: key === "state",
+      active: values.length > 0 && !(key === "state" && values.length === states.length) && !(key === "visibility" && values[0] === "visible"),
+      single: key === "findings" || key === "visibility", required: key === "state" || key === "visibility",
       searchPlaceholder: key === "repo" ? "Find a repository…" : key === "author" ? "Find an author…" : undefined,
       hint: key === "state" ? "Running reviews stay visible in every PR state." : undefined,
       clearLabel: key === "state" ? "Include all states" : undefined,

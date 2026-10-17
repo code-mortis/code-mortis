@@ -861,3 +861,19 @@ def test_worker_recovery_does_not_repeat_interrupted_summary(seed, generation, m
         run = db.get(ReviewRun, identity)
         assert run.status == "completed" and run.publication == "pending"
         assert run.summary["status"] == "failed" and run.summary["tokens"] is None
+
+
+def test_ignore_during_summary_reads_prevents_publication(seed, overview_api, monkeypatch, client):
+    _, writes, _ = overview_api
+    completed_run()
+    original = github.request
+
+    def request(method, path, *args, **kwargs):
+        response = original(method, path, *args, **kwargs)
+        if method == "GET" and "/pulls/" in path:
+            assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+        return response
+
+    monkeypatch.setattr(github, "request", request)
+    pr_summary.sync("pr")
+    assert not writes

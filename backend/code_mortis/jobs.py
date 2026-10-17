@@ -106,13 +106,19 @@ def sync_repositories(installation_id: int):
         )), "GitHub App access to this repository was removed.")
 
 
-def sync_pr(repository_id: int, number: int, automatic: bool = True):
+def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type: str | None = None):
     with transaction() as db:
         repo = db.get(Repository, repository_id)
         if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
             return
         token = github.installation_token(db, repo.installation_id)
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
+        bot = data["user"].get("type") == "Bot"
+        include_bots = repo.settings.get("include_bot_prs", False)
+        if bot and not include_bots and not db.scalar(select(PullRequest.id).where(
+            PullRequest.repository_id == repo.id, PullRequest.number == number,
+        )):
+            return
         pr = upsert_pr(db, repo, data)
         reconcile_threads(db, pr, repo, token)
         if pr.summary_comment_id or pr_summary.latest_run(db, pr.id):
@@ -125,7 +131,9 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True):
             and pr.state == "open"
             and not pr.draft
             and not pr.fork
-            and data["user"].get("type") == "User"
+            and not pr.ignored
+            and (data["user"].get("type") == "User" or (bot and include_bots))
+            and (sender_type != "Bot" or bot)
         ):
             connection = db.get(Connection, repo.connection_id)
             if connection and connection.kind != "api":
@@ -198,9 +206,12 @@ def process_webhook(payload: dict):
                 event == "pull_request"
                 and body.get("action") in {"opened", "reopened", "ready_for_review", "synchronize"}
                 and isinstance(sender, dict)
-                and sender.get("type") == "User"
+                and (sender.get("type") == "User" or (
+                    sender.get("type") == "Bot" and repo.settings.get("include_bot_prs", False)
+                ))
             )
-            enqueue(db, "sync_pr", {"repository_id": repo.id, "number": pr["number"], "automatic": automatic})
+            enqueue(db, "sync_pr", {"repository_id": repo.id, "number": pr["number"], "automatic": automatic,
+                                     "sender_type": sender.get("type") if isinstance(sender, dict) else None})
 
 
 def execute(kind: str, payload: dict):

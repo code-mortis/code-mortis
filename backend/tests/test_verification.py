@@ -1592,3 +1592,19 @@ def test_permission_revocation_keeps_saved_verdict_retryable(scenario, monkeypat
     reviews.synchronize_finding(intent)
     assert saved()[1].status == "resolved" and scenario["mutations"] == [True]
     assert scenario["calls"] == ["review", "verify"]
+
+
+def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario, client):
+    row, finding, run = perform(scenario)
+    assert row.resolution == "pending"
+    intent = finding.sync_intent
+    with transaction() as db:
+        current = db.get(ReviewRun, run.id)
+        current.publication, current.summary = "published", {}
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
+    reviews.synchronize_finding(intent)
+    row, finding, run = saved()
+    assert run.cancel_requested
+    assert row.resolution == "superseded" and finding.status == "open" and not finding.desired_status
+    assert scenario["mutations"] == []

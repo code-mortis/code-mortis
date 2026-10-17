@@ -12,7 +12,7 @@ const rows: Pull[] = titles.map((title, i) => ({
   review_status: ["running", "queued", "failed", "not_reviewed", "completed", "completed", "completed", "completed"][i],
   has_running_review: i === 0,
   run_id: i === 3 ? null : `run-${i}`, publication: "published", publication_error: null,
-  created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, fork: false, head_ref: "feature", open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
+  created_at: at, updated_at: "2026-10-09T12:00:00Z", draft: false, ignored: false, fork: false, head_ref: "feature", open_findings: [2, 0, 1, 0, 3, 0, 0, 0][i],
 }));
 const closed: Pull = { ...rows[0], id: "closed", title: "Abandoned change", state: "closed", review_status: "cancelled", has_running_review: false };
 
@@ -104,7 +104,7 @@ test("Filters menu enables conditions, restores them from the URL, and returns f
   await expect(page.getByRole("button", { name: /^Edit / })).toHaveCount(0);
   await filters.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("menuitem")).toHaveText(["Repository", "PR state", "Review status", "Author", "Open findings"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Repository", "PR state", "Review status", "Author", "Open findings", "Visibility"]);
   await page.getByRole("menuitem", { name: "Repository", exact: true }).press("Enter");
   await expect(page.getByRole("textbox", { name: "Search repository options" })).toBeFocused();
   await page.keyboard.press("Escape");
@@ -134,7 +134,7 @@ test("Filters menu enables conditions, restores them from the URL, and returns f
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toHaveCount(0);
   await page.goBack();
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toBeVisible();
-  await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open");
+  await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open&visibility=all");
   await filters.click();
   await expect(page.getByText("All filters are in use.")).toBeVisible();
   await noOverflow(page);
@@ -151,7 +151,7 @@ test("inbox defaults to open and explicit filters survive reload and history", a
   await expect(page.getByRole("region", { name: "Merged", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Closed", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
-  await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("time")).toHaveAttribute("datetime", at);
+  await expect(page.getByRole("link", { name: /Bound model discovery/ }).locator("xpath=ancestor::*[@data-pull-row]").locator("time")).toHaveAttribute("datetime", at);
   await openStateFilter(page);
   await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   for (const state of ["Merged", "Closed"]) await expect(page.getByRole("checkbox", { name: new RegExp(`^${state}`) })).not.toBeChecked();
@@ -433,7 +433,7 @@ test("merged running reviews stay visible once and respect state filters after f
   const list = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(list.getByRole("link")).toHaveCount(6);
   controls.state = "merged";
-  await expect(list.getByRole("link", { name: /Bound model discovery/ })).toContainText("merged", { timeout: 10000 });
+  await expect(list.getByRole("link", { name: /Bound model discovery/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("merged", { timeout: 10000 });
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toHaveCount(1);
   controls.complete = true;
   await expect(list.getByRole("link")).toHaveCount(5, { timeout: 10000 });
@@ -463,7 +463,7 @@ test("an empty open inbox offers all history and preserves that choice on reload
 
 test("shared combined filters and a search with no matches", async ({ page }) => {
   const { requests } = await mockInbox(page);
-  await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open");
+  await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open&visibility=all");
   await expect(page.getByRole("status").first()).toHaveText("1 pull request · 1 repository");
   if (test.info().project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAccessibleDescription("6 open pull requests");
@@ -487,7 +487,7 @@ test("long titles and filter values wrap within the viewport", async ({ page }) 
   });
   await page.goto("/?repo=22");
   await expect(page.getByRole("link", { name: /PreservePreserve/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: /PreservePreserve/ })).toContainText("Pending sync");
+  await expect(page.getByRole("link", { name: /PreservePreserve/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("Pending sync");
   await noOverflow(page);
   await page.getByRole("button", { name: /Edit Repository/ }).click();
   await expect(page.getByRole("checkbox", { name: /organization/ })).toBeVisible();
@@ -542,7 +542,7 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
   const list = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(list.locator('[data-slot=badge]').filter({ hasText: /^open$/ })).toHaveCount(6);
-  await expect(list.getByRole("link", { name: /Add repository context/ }).getByText("completed", { exact: true })).toBeVisible();
+  await expect(list.getByRole("link", { name: /Add repository context/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("completed", { exact: true })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   if (info.project.name === "mobile") {
     const search = await page.getByRole("textbox", { name: "Search pull requests", exact: true }).boundingBox();

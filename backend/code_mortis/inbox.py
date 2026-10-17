@@ -7,6 +7,7 @@ from .schemas import LIST_PAGE_SIZE, InboxFilters, InboxOut, InboxPage, InboxPul
 
 def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters) -> InboxOut:
     permitted = [repo.id for repo in repositories]
+    visibility = [] if filters.visibility == "all" else [PullRequest.ignored.is_(filters.visibility == "ignored")]
     current = and_(ReviewRun.head_sha == PullRequest.head_sha, ReviewRun.base_sha == PullRequest.base_sha)
     runs = select(
         ReviewRun.pr_id, ReviewRun.id.label("run_id"), ReviewRun.status,
@@ -45,14 +46,14 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     base = select(
         PullRequest.id, PullRequest.repository_id, Repository.full_name.label("repository_name"),
         PullRequest.number, PullRequest.title, PullRequest.author, PullRequest.state,
-        PullRequest.draft, PullRequest.fork, PullRequest.head_ref, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
+        PullRequest.draft, PullRequest.ignored, PullRequest.fork, PullRequest.head_ref, PullRequest.created_at, PullRequest.updated_at, review_status.label("review_status"),
         has_running_review.label("has_running_review"),
         runs.c.run_id, runs.c.publication, runs.c.publication_error,
         func.coalesce(findings.c.open_findings, 0).label("open_findings"), group.label("group"),
     ).join(Repository, Repository.id == PullRequest.repository_id).outerjoin(
         runs, and_(runs.c.pr_id == PullRequest.id, runs.c.rank == 1)
     ).outerjoin(findings, findings.c.pr_id == PullRequest.id).where(
-        PullRequest.repository_id.in_(permitted)
+        PullRequest.repository_id.in_(permitted), *visibility,
     ).cte("inbox_base")
     conditions = []
     if filters.repo:
@@ -110,7 +111,7 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
             group=name, items=[InboxPullOut.model_validate(row) for row in items],
             total=total, page=page, has_more=page * LIST_PAGE_SIZE < total,
         ))
-    registered = select(PullRequest).where(PullRequest.repository_id.in_(permitted)).subquery()
+    registered = select(PullRequest).where(PullRequest.repository_id.in_(permitted), *visibility).subquery()
     return InboxOut(
         groups=pages, total=sum(totals.values()),
         repository_count=db.scalar(select(func.count(func.distinct(filtered.c.repository_id)))),

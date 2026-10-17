@@ -138,6 +138,7 @@ class PullRequest(Base):
     url: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(20), default="open")
     draft: Mapped[bool] = mapped_column(Boolean, default=False)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     fork: Mapped[bool] = mapped_column(Boolean, default=False)
     head_sha: Mapped[str] = mapped_column(String(40))
     base_sha: Mapped[str] = mapped_column(String(40))

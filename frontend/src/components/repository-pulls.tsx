@@ -12,7 +12,7 @@ import { Button } from "./ui/button";
 
 const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
 
-export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
+export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number; admin: boolean }) {
   const [raw, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -60,11 +60,11 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;
   const sections = rows?.groups.filter((group) => group.total > 0) ?? [];
-  const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings"].some((key) => params.has(key));
+  const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings", "visibility"].some((key) => params.has(key));
 
   return <section aria-labelledby="repository-pulls-heading">
     <div className="mb-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-      <h2 id="repository-pulls-heading" className="text-xl font-semibold tracking-tight">Pull requests</h2>
+      <h2 data-pull-list-focus tabIndex={-1} id="repository-pulls-heading" className="text-xl font-semibold tracking-tight">Pull requests</h2>
       <span role="status" className="text-xs tabular-nums text-muted-foreground">{rows ? <>{filtered ? `${rows.total} of ${rows.registered_total}` : rows.total}<span className="sr-only"> pull {rows.total === 1 ? "request" : "requests"}</span></> : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</span>
     </div>
     <div className="mb-4"><InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} /></div>
@@ -83,7 +83,7 @@ export function RepositoryPulls({ repositoryId }: { repositoryId: number }) {
             <PullRequestListHeading dateLabel="Updated" />
             {items.map((pr) => {
               const feedback = pr.latest_run ? runFeedback(pr.latest_run) : null;
-              return <PullRequestRow key={pr.id} id={pr.id} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
+              return <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
                 state={{ repository: `${location.pathname}${location.search}` }}
                 feedback={feedback?.needsAttention ? feedback.summary : undefined}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}

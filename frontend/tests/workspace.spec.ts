@@ -915,17 +915,17 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
-  await expect(page.getByRole("link", { name: /Add retry handling/ }).getByText("open", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("open", { exact: true })).toBeVisible();
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/\?state=all$/);
   await expect(count).toHaveText("14 pull requests");
   await expect(merged.getByRole("link")).toHaveCount(10);
-  await expect(merged.getByRole("link").first().getByText("merged", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("closed", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("Draft", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
+  await expect(merged.getByRole("link").first().locator("xpath=ancestor::*[@data-pull-row]").getByText("merged", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("closed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Draft", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
   await expect(merged.getByRole("link")).toHaveCount(12);
   await expect(page).toHaveURL(/merged_pages=2/);
@@ -934,7 +934,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(count).toHaveText("14 pull requests");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings", "Visibility"]);
   await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
   await page.getByRole("checkbox", { name: "Completed", exact: true }).click();
   await page.keyboard.press("Escape");
@@ -1565,8 +1565,8 @@ test("repository outdated reviews remain distinct from running reviews and page 
   ];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22?review=outdated");
-  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(/outdated/i);
-  await expect(page.getByRole("link", { name: /Still running/ })).toContainText("A review is still running");
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(/outdated/i);
+  await expect(page.getByRole("link", { name: /Still running/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("A review is still running");
   await page.goto("/repositories/22?state=closed&review=running");
   await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
@@ -3512,7 +3512,7 @@ test("oversized review explains its outcome and links to editable limits through
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
   await page.goto("/repositories");
-  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(reason);
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(reason);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
   await page.getByRole("tab", { name: /Run history/ }).click();
@@ -7984,3 +7984,14 @@ for (const kind of ["repository", "findings"] as const) {
     await expect(rows).toHaveCount(0);
   });
 }
+
+test("repository configuration defaults bot imports off and saves explicit opt-in", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings");
+  const bots = page.getByRole("switch", { name: "Include bot pull requests", exact: true });
+  await expect(bots).not.toBeChecked();
+  await bots.check();
+  await page.screenshot({ path: `/private/tmp/bot-pr-setting-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { include_bot_prs: true } });
+});

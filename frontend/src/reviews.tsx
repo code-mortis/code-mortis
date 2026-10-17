@@ -189,7 +189,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     {!requested && !available?.length && <Empty title="Connect your first repository">
       {admin ? <>Install your GitHub App, then connect the installation in <Link className="underline" to="/settings?tab=github">settings</Link>.</> : "Ask your administrator to connect a repository you can access on GitHub."}
     </Empty>}
-    {selected && <RepositoryPulls key={selected.id} repositoryId={selected.id} />}
+    {selected && <RepositoryPulls key={selected.id} repositoryId={selected.id} admin={admin} />}
     {admin && <div className="mt-6 text-xs text-muted-foreground"><Link className="rounded-sm underline underline-offset-4 hover:text-foreground" to="/settings?tab=github">{available?.length ? "Manage repositories" : "Connect repository"}</Link></div>}
   </>;
 }
@@ -293,6 +293,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const repositoryReturn = getRepositoryReturn(location.state);
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
+  const ignoreAction = useAction();
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
   const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
@@ -336,6 +337,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
+    : pr.ignored ? "Restore this pull request before reviewing it."
     : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
@@ -344,6 +346,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
     searchInput.current?.focus();
   }
   return <>
+    {pr.ignored && <section aria-label="Ignored pull request" className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/50 p-4 text-sm">
+      <div><p className="font-medium">This pull request is ignored</p><p className="mt-1 text-xs text-muted-foreground">Hidden from the default lists for everyone. Reviews stay stopped until restored.</p></div>
+      {can_write && <Button variant="outline" disabled={ignoreAction.isPending} onClick={() => ignoreAction.mutate({ path: `/pulls/${id}/ignore`, method: "PUT", body: { ignored: false } })}>Restore pull request</Button>}
+    </section>}
     <header className="mb-6 min-w-0">
       <div>
         <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
@@ -370,9 +376,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
             </div>
           </div>
           {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-            <SearchSelect aria-label="Review connection" disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
+            <SearchSelect aria-label="Review connection" disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
               options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
-            <Button disabled={action.isPending || running || pr.state !== "open" || !repository.enabled} onClick={async () => {
+            <Button disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} onClick={async () => {
               const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
               if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
             }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
@@ -381,7 +387,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
         {reviewUnavailable && <p className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
     </header>
-    <ErrorNotice error={action.error || query.error} />
+    <ErrorNotice error={action.error || ignoreAction.error || query.error} />
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4">
@@ -941,11 +947,12 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     .map((value) => [value, occurrences.filter(({ snapshot }) => snapshot.category === value).length]));
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
+    {pr.ignored && <p role="status" className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm">This pull request is ignored. <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <header className="mb-6 min-w-0">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
-          {can_write && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
+          {can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
@@ -1020,8 +1027,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
                 {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
                 {run.summary.diagram_warning && <p className="text-muted-foreground">{run.summary.diagram_warning}</p>}
                 <ErrorNotice error={pr.summary_error} />
-                {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
-                {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
+                {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+                {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
               </PopoverContent>
             </Popover>
           </div>}
@@ -1132,7 +1139,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         {candidateId && <ErrorNotice error={candidateQuery.error} />}
         {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
         {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
-          canRetry={can_write && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
+          canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>
     </Sheet>

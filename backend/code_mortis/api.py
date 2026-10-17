@@ -50,7 +50,16 @@ from .models import (
     User,
     WebhookDelivery,
 )
-from .reviews import can_publish, create_run, enqueue, request_finding_status, upsert_pr
+from .reviews import (
+    ACTIVE,
+    can_publish,
+    cancel_pr_reviews,
+    cancel_review,
+    create_run,
+    enqueue,
+    request_finding_status,
+    upsert_pr,
+)
 from .schemas import (
     LIST_PAGE_SIZE,
     ActivityOut,
@@ -66,6 +75,7 @@ from .schemas import (
     FindingFilters,
     FindingOut,
     FindingsOut,
+    IgnorePullInput,
     InboxFilters,
     InboxOut,
     InstallationOperation,
@@ -360,17 +370,26 @@ def pr_access(db: Session, user: User, pr_id: str, write=False):
     return pr, repo, remote
 
 
+def review_pr_access(db: Session, user: User, pr_id: str):
+    _, repo, remote = pr_access(db, user, pr_id, write=True)
+    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update()
+                   .execution_options(populate_existing=True))
+    if pr.ignored:
+        raise HTTPException(409, "Restore this pull request before reviewing it.")
+    return pr, repo, remote
+
+
 def repo_out(db: Session, repo: Repository) -> RepositoryOut:
     result = RepositoryOut.model_validate(repo)
     result.open_prs, result.has_running_review = db.execute(
         select(
             select(func.count())
             .select_from(PullRequest)
-            .where(PullRequest.repository_id == repo.id, PullRequest.state == "open")
+            .where(PullRequest.repository_id == repo.id, PullRequest.state == "open", PullRequest.ignored.is_(False))
             .scalar_subquery(),
             select(ReviewRun.id)
             .join(PullRequest, ReviewRun.pr_id == PullRequest.id)
-            .where(PullRequest.repository_id == repo.id, ReviewRun.status == "running")
+            .where(PullRequest.repository_id == repo.id, PullRequest.ignored.is_(False), ReviewRun.status == "running")
             .exists(),
         )
     ).one()
@@ -416,12 +435,13 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
                     403,
                     "The connection owner must authorize this repository and its automatic reviews first.",
                 )
+    importing_bots = body.settings.include_bot_prs and not repo.settings.get("include_bot_prs", False)
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,
         body.settings.model_dump(),
     )
-    if repo.enabled:
+    if repo.enabled or importing_bots:
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)
@@ -480,12 +500,48 @@ def pull_detail(pr_id: str, db: DB, user: USER):
         has_active_run=db.scalar(select(select(ReviewRun.id).where(
             ReviewRun.pr_id == pr.id, ReviewRun.status.in_(["queued", "running"]),
         ).exists())),
+        cancellable_run_count=db.scalar(select(func.count()).select_from(ReviewRun).where(
+            ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
+        )),
         latest_observed_run_id=db.scalar(
             select(ReviewRun.id).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(["completed", "partial"]))
             .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1)
         ),
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.put("/pulls/{pr_id}/ignore", response_model=PullRequestOut)
+def ignore_pull(pr_id: str, body: IgnorePullInput, db: DB, user: USER):
+    pr_access(db, user, pr_id, write=True)
+    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update()
+                   .execution_options(populate_existing=True))
+    pr.ignored = body.ignored
+    if body.ignored:
+        cancel_pr_reviews(db, pr)
+        pending_resolutions = set(db.scalars(select(FindingVerification.run_id).join(ReviewRun).where(
+            ReviewRun.pr_id == pr.id, FindingVerification.resolution.in_(["pending", "applying", "failed"]),
+        )))
+        # Suppress outstanding work on terminal runs too, including summary retries.
+        for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.id).with_for_update()):
+            if (run.publication in {"pending", "publishing", "failed", "partially_published"}
+                or run.summary.get("status") in {"pending", "running"} or run.id in pending_resolutions):
+                run.cancel_requested = True
+                if run.publication not in {"published", "no_new_comments"}:
+                    run.publication = "partially_published" if run.review_ids else "not_applicable"
+                pr_summary.interrupt(run)
+    db.flush()
+    return pr_out(db, pr)
+
+
+@router.post("/pulls/{pr_id}/cancel", response_model=list[RunOut])
+def cancel_pull_reviews(pr_id: str, db: DB, user: USER):
+    pr_access(db, user, pr_id, write=True)
+    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
+    runs = cancel_pr_reviews(db, pr)
+    if not runs:
+        raise HTTPException(409, "This pull request has no reviews left to stop.")
+    return [RunOut.model_validate(run) for run in runs]
 
 
 @router.get("/pulls/{pr_id}/runs", response_model=RunPage)
@@ -512,7 +568,7 @@ def pull_findings(pr_id: str, db: DB, user: USER, filters: Annotated[FindingFilt
 
 @router.post("/pulls/{pr_id}/runs", response_model=RunOut, status_code=202)
 def start_run(pr_id: str, db: DB, user: USER, body: StartRunInput | None = None):
-    pr, repo, _ = pr_access(db, user, pr_id, write=True)
+    pr, repo, _ = review_pr_access(db, user, pr_id)
     token = github.installation_token(db, repo.installation_id)
     data = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
     pr = upsert_pr(db, repo, data)
@@ -580,8 +636,7 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
-    pr, repo, _ = pr_access(db, user, run.pr_id, write=True)
-    db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
+    pr, repo, _ = review_pr_access(db, user, run.pr_id)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                     .execution_options(populate_existing=True))
     candidate = db.get(ReviewCandidate, candidate_id)
@@ -636,26 +691,23 @@ def cancel_run(run_id: str, db: DB, user: USER):
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id, write=True)
-    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                    .execution_options(populate_existing=True))
     if run.status not in {"queued", "running", "blocked"}:
         raise HTTPException(409, "This review is no longer running.")
-    run.cancel_requested, run.status, run.publication, run.finished_at = (
-        True,
-        "cancelled",
-        "not_applicable",
-        now(),
-    )
-    verification.skip_pending(db, run, "The run was cancelled.")
-    assessment.withhold_pending(db, run, "The run was cancelled.")
+    cancel_review(db, run)
     return RunOut.model_validate(run)
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunOut, status_code=202)
 def retry_review(run_id: str, db: DB, user: USER):
-    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
-    pr, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    pr, repo, _ = review_pr_access(db, user, run.pr_id)
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                    .execution_options(populate_existing=True))
     if run.status != "blocked":
         raise HTTPException(
             409, "Start a new review to retry a terminal run; only blocked reviews can resume."
@@ -678,9 +730,9 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
-    pr_access(db, user, run.pr_id, write=True)
+    review_pr_access(db, user, run.pr_id)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-    if not can_publish(run) or run.publication not in {"failed", "partially_published"}:
+    if run.cancel_requested or not can_publish(run) or run.publication not in {"failed", "partially_published"}:
         raise HTTPException(409, "There are no failed GitHub comments to resend for this review. Refresh the page to see its current status.")
     run.publication, run.publication_error = "pending", None
     job = enqueue(db, "publish", {"run_id": run.id})
@@ -689,8 +741,7 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
 
 @router.post("/pulls/{pr_id}/summary", status_code=202)
 def retry_summary_sync(pr_id: str, db: DB, user: USER) -> dict:
-    pr_access(db, user, pr_id, write=True)
-    pr = db.scalar(select(PullRequest).where(PullRequest.id == pr_id).with_for_update())
+    pr, _, _ = review_pr_access(db, user, pr_id)
     if not pr_summary.latest_run(db, pr.id):
         raise HTTPException(409, "This pull request has no overview to synchronize. Start a new review first.")
     if not pr.summary_error:
@@ -705,7 +756,7 @@ def retry_summary_generation(run_id: str, db: DB, user: USER) -> dict:
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
-    _, repo, _ = pr_access(db, user, run.pr_id, write=True)
+    _, repo, _ = review_pr_access(db, user, run.pr_id)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
     db.refresh(repo)
     try:

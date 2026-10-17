@@ -118,6 +118,7 @@ class RepoSettings(RunLimits):
     summary_diagram_enabled: bool = False
     ai_fix_prompts_enabled: bool = False
     automatic: bool = True
+    include_bot_prs: bool = False
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
     effort: Literal["low", "medium", "high"] = "medium"
@@ -367,6 +368,10 @@ class RunOut(ORMModel):
     check_synced_at: datetime | None
 
 
+class IgnorePullInput(StrictModel):
+    ignored: bool
+
+
 class PullRequestOut(ORMModel):
     id: str
     repository_id: int
@@ -376,6 +381,7 @@ class PullRequestOut(ORMModel):
     url: str
     state: str
     draft: bool
+    ignored: bool = False
     fork: bool
     head_sha: str
     base_sha: str
@@ -461,6 +467,7 @@ class PRDetail(BaseModel):
     repository: RepositoryOut
     run_count: int
     has_active_run: bool
+    cancellable_run_count: int = 0
     latest_observed_run_id: str | None
     can_write: bool
 
@@ -592,6 +599,7 @@ InboxReview = Literal[
 
 
 class InboxFilters(StrictModel):
+    visibility: Literal["visible", "ignored", "all"] = "visible"
     q: str = Field(default="", max_length=256)
     repo: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=100)
     state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["open"], max_length=4)
@@ -615,6 +623,7 @@ class InboxPullOut(ORMModel):
     author: str
     state: str
     draft: bool
+    ignored: bool = False
     fork: bool = False
     head_ref: str = ""
     created_at: datetime | None

@@ -148,7 +148,7 @@ def perform(payload):
                 raise runner_client.RunnerBlocked("authentication")
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
-        if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+        if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ocr.ReviewStopped()
         actor_id, trigger = execution_identity(run)
         actor = db.get(User, actor_id) if actor_id else None
@@ -206,7 +206,7 @@ def finalize(run_id):
         repo = db.get(Repository, pr.repository_id)
         if (pr.head_sha, pr.base_sha) != (run.head_sha, run.base_sha) or pr.state != "open":
             run.status, run.cancel_requested, run.publication, run.finished_at = "superseded", True, "not_applicable", now()
-        elif not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
+        elif pr.ignored or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             run.status, run.cancel_requested, run.publication, run.finished_at = "cancelled", True, "not_applicable", now()
         if run.cancel_requested or run.status in {"cancelled", "superseded"}:
             for stage in STAGES:

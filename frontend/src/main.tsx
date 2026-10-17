@@ -257,7 +257,7 @@ function App() {
           <div className="mx-auto max-w-6xl">
             <ErrorNotice error={action.error} />
             <Routes>
-              <Route path="/" element={<Inbox />} />
+              <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
               <Route
                 path="/repositories/:repositoryId?"
                 element={<Repositories admin={session.data.role === "admin"} />}

@@ -568,12 +568,13 @@ def apply_resolution(db, row):
         return
     run = db.get(ReviewRun, row.run_id)
     finding = db.scalar(select(Finding).where(Finding.id == row.finding_id).with_for_update())
-    repo = db.get(Repository, db.get(PullRequest, run.pr_id).repository_id)
+    pr = db.get(PullRequest, run.pr_id)
+    repo = db.get(Repository, pr.repository_id)
     observed = pipeline.enabled(run) and (finding.last_seen_run_id == run.id or db.scalar(
         select(Occurrence.id).join(ReviewRun).where(Occurrence.finding_id == finding.id,
                                                   ReviewRun.head_sha == run.head_sha).limit(1)))
     if (
-        row.status == "completed" and enabled(run, repo)
+        row.status == "completed" and not pr.ignored and enabled(run, repo)
         and not run.cancel_requested and finding.status == "open" and not finding.desired_status
         and finding.sync_version == row.finding_version and row.thread_snapshot
         and not row.thread_snapshot.get("isResolved", True)
@@ -878,7 +879,7 @@ def resolution_authorized(db, run, repo):
     actor = db.get(User, run.actor_id) if run.actor_id else None
     if run.trigger == "manual" and (not actor or not actor.enabled or not db.get(Membership, actor.id)):
         return False
-    if (not enabled(run, repo) or run.cancel_requested or not connection
+    if (db.get(PullRequest, run.pr_id).ignored or not enabled(run, repo) or run.cancel_requested or not connection
         or not db.get(Installation, repo.installation_id).active
         or run.status not in {"completed", "partial"}
         or any(run.config["connection"][key] != getattr(connection, key)

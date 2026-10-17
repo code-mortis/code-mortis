@@ -1,7 +1,7 @@
 export const groups = ["active", "merged", "closed"] as const;
 export const states = ["open", "merged", "closed"];
 export const reviews = ["running", "queued", "blocked", "not_reviewed", "outdated", "completed", "partial", "failed", "skipped", "cancelled", "superseded"];
-export const properties = { repo: "Repository", state: "PR state", review: "Review status", author: "Author", findings: "Open findings" };
+export const properties = { repo: "Repository", state: "PR state", review: "Review status", author: "Author", findings: "Open findings", visibility: "Visibility" };
 export type Property = keyof typeof properties;
 export const orderings = { created_at: "Created", updated_at: "Updated", title: "Title", repository: "Repository", author: "Author" };
 export type OrderingField = keyof typeof orderings;
@@ -27,6 +27,7 @@ export function normalizeFilters(input: URLSearchParams, defaultState: "open" | 
     if (key === "review") values = reviews.filter((v) => values.includes(v));
     if (key === "author") values = values.map((v) => v.trim().replace(/^@+/, "").toLowerCase()).filter((v) => v.length > 0 && v.length <= MAX_AUTHOR_LENGTH);
     if (key === "findings") values = values.filter((v) => v === "open" || v === "none").slice(0, 1);
+    if (key === "visibility") values = values.filter((v) => v === "ignored" || v === "all").slice(0, 1);
     for (const value of [...new Set(values)].slice(0, MAX_FILTER_VALUES)) result.append(key, value);
   }
   const ordering = input.get("ordering");
@@ -41,6 +42,7 @@ export function normalizeFilters(input: URLSearchParams, defaultState: "open" | 
 // Accept raw state=all links as well as normalized filter params.
 export function selected(params: URLSearchParams, property: Property) {
   const values = params.getAll(property);
+  if (property === "visibility") return values.length ? values : ["visible"];
   if (property !== "state") return values;
   if (values.includes("all")) return [...states];
   if (values.length) return values;
