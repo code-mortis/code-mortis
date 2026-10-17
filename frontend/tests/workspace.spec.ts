@@ -1199,6 +1199,33 @@ for (const withStages of [true, false]) {
   });
 }
 
+test("stage copy buttons identify and copy their own diagnostics", async ({ page }, info) => {
+  await mock(page, { run: { status: "failed", publication: "not_applicable", publication_error: null, stages: {
+    ocr: { status: "failed", tokens: 0, error: "OCR transcript" },
+    assessment: { status: "failed", tokens: 0, error: "Assessment transcript" },
+    verification: { status: "failed", tokens: 0, error: "Verification transcript" },
+  } } });
+  await page.goto("/runs/run");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value: string) => { document.body.dataset.copiedStage = value; },
+    } });
+  });
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  for (const [name, transcript] of [["OCR", "OCR transcript"], ["Assessment", "Assessment transcript"], ["Fix verification", "Verification transcript"]]) {
+    const raw = page.getByRole("region", { name: `${name} technical details`, exact: true, includeHidden: true });
+    await details.locator("details", { has: raw }).locator("summary").click();
+    const copy = details.getByRole("button", { name: `Copy ${name} details`, exact: true });
+    await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("body")).toHaveAttribute("data-copied-stage", transcript);
+  }
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/pr26-stage-copy-labels-${info.project.name}.png` });
+});
+
 for (const [key, name] of [["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const) {
 test(`${name} stage failure keeps only collapsed technical details`, async ({ page }, info) => {
   const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
@@ -1224,7 +1251,8 @@ test(`${name} stage failure keeps only collapsed technical details`, async ({ pa
   await disclosure.press("Enter");
   await expect(raw).toBeVisible();
   expect(await raw.textContent()).toBe(error);
-  const copy = details.getByRole("button", { name: "Copy details", exact: true });
+  const copy = details.getByRole("button", { name: `Copy ${name} details`, exact: true });
+  await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
   if (info.project.name === "desktop") {
     await page.mouse.move(0, 0);
     await expect(copy).toHaveCSS("opacity", "0");
@@ -1359,7 +1387,7 @@ test("PR summary errors and warnings stay in copyable technical details", async 
       writeText: async (value: string) => { document.body.dataset.copiedSummary = value; },
     } });
   });
-  await details.getByRole("button", { name: "Copy details", exact: true }).click();
+  await details.getByRole("button", { name: "Copy Summary details", exact: true }).click();
   await expect(page.locator("body")).toHaveAttribute("data-copied-summary", errors.join("\n\n"));
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/summary-technical-details-expanded-${info.project.name}.png` });
@@ -4050,7 +4078,7 @@ for (const failure of assessmentErrors) {
         writeText: async (value: string) => { document.body.dataset.copiedAssessment = value; },
       } });
     });
-    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", failure.error);
     await expect(page.getByText("Assessment details copied", { exact: true })).toBeVisible();
     await page.evaluate(() => {
@@ -4058,7 +4086,7 @@ for (const failure of assessmentErrors) {
         writeText: async () => { throw new Error("Clipboard denied"); },
       } });
     });
-    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
     expect(await raw.textContent()).toBe(failure.error);
     await raw.focus();
