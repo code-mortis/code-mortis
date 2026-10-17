@@ -47,6 +47,6 @@ export function PullRequestRow({ id, number, repositoryId, admin, ignored, title
     <div className="min-w-0 space-y-1">{status}</div>
     <div><Badge variant="outline" className={findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{findings} unresolved<span className="sr-only"> findings</span></Badge></div>
     {timestamp ? <time dateTime={timestamp} title={date(timestamp)} className="text-xs tabular-nums text-muted-foreground">{formatter.format(new Date(timestamp))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
-    <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><PullRequestActions id={id} number={number} title={title} repositoryId={repositoryId} admin={admin} state={state} /></div>
+    <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><PullRequestActions id={id} number={number} title={title} repositoryId={repositoryId} admin={admin} ignored={ignored} state={state} /></div>
   </div>;
 }

@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ClipboardCheck, ExternalLink, EyeOff, GitPullRequest, MoreHorizontal, Play, RefreshCw, RotateCcw, Settings2, Square } from "lucide-react";
 import { toast } from "sonner";
@@ -7,12 +8,13 @@ import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
-export function PullRequestActions({ id, number, title, repositoryId, admin, state }: {
+export function PullRequestActions({ id, number, title, repositoryId, admin, ignored = false, state }: {
   id: string;
   number: number;
   title: string;
   repositoryId: number;
   admin: boolean;
+  ignored?: boolean;
   state: { inbox?: string; repository?: string };
 }) {
   const [open, setOpen] = useState(false);
@@ -21,11 +23,17 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, sta
   const trigger = useRef<HTMLButtonElement>(null);
   const movingFocus = useRef(false);
   const detail = useApi<Schema["PRDetail"]>(`/pulls/${id}`, false, open);
+  const cache = useQueryClient();
   const action = useAction();
   const navigate = useNavigate();
   const location = useLocation();
   const data = detail.error ? undefined : detail.data;
   const pr = data?.pull_request;
+  useEffect(() => {
+    if (!open || detail.isFetching || pr?.ignored === undefined || pr.ignored === ignored) return;
+    void cache.invalidateQueries({ queryKey: ["inbox"] });
+    void cache.invalidateQueries({ queryKey: ["repository-pulls", repositoryId] });
+  }, [open, detail.isFetching, pr?.ignored, ignored, repositoryId, cache]);
   const startUnavailable = !data || pr?.ignored ? null
     : pr?.state !== "open" ? "Reviews can only run on open pull requests."
     : !data.repository.enabled ? "Reviews are paused for this repository."

@@ -59,6 +59,30 @@ async function mockPullActions(page: Page, options: { write?: boolean; admin?: b
 }
 
 for (const surface of ["/", "/repositories/22"]) {
+  for (const ignored of [false, true]) {
+    test(`PR menus refresh stale ${ignored ? "ignored" : "visible"} rows on ${surface}`, async ({ page }) => {
+      const { controls } = await mockPullActions(page, { ignored });
+      await page.clock.install();
+      await page.goto(`${surface}?visibility=all`);
+      const trigger = page.getByRole("button", { name: "Actions for #42: Validate provider responses" });
+      const row = page.locator("[data-pull-row]", { has: page.locator('a[href="/pulls/start"]') });
+      await expect(trigger).toBeVisible();
+      await expect(row.getByText("Ignored", { exact: true })).toHaveCount(ignored ? 1 : 0);
+      await page.clock.pauseAt(new Date(Date.now() + 1000));
+      controls.ignored = !ignored;
+      await trigger.click();
+      await page.clock.runFor(100);
+      await expect(page.getByRole("menuitem", { name: ignored ? "Ignore pull request" : "Restore pull request", exact: true })).toBeVisible();
+      await expect.poll(async () => {
+        await page.clock.runFor(100);
+        return row.getByText("Ignored", { exact: true }).count();
+      }).toBe(ignored ? 0 : 1);
+      await page.clock.resume();
+      await page.keyboard.press("Escape");
+      await expect(trigger).toBeFocused();
+    });
+  }
+
   test(`PR menus load on demand and start with the default connection on ${surface}`, async ({ page }, info) => {
     const { calls, controls } = await mockPullActions(page);
     controls.latestRun = true;
