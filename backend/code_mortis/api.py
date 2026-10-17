@@ -585,14 +585,21 @@ def run_detail(run_id: str, db: DB, user: USER):
     if not run:
         raise HTTPException(404, "Review run not found.")
     pr, repo, remote = pr_access(db, user, run.pr_id)
+    new_findings = dict(db.execute(select(
+        ReviewCandidate.finding_id, func.bool_or(ReviewCandidate.is_new),
+    ).where(ReviewCandidate.run_id == run.id, ReviewCandidate.finding_id.is_not(None))
+        .group_by(ReviewCandidate.finding_id)).all())
     return RunDetail(
         run=RunOut.model_validate(run),
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),
         occurrences=[
-            OccurrenceOut.model_validate(item)
-            for item in db.scalars(select(Occurrence).where(Occurrence.run_id == run.id))
+            OccurrenceOut.model_validate(item).model_copy(update={
+                "is_new": new_findings.get(item.finding_id), "current_status": status,
+            })
+            for item, status in db.execute(select(Occurrence, Finding.status)
+                .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id))
         ],
         resolved_count=db.scalar(select(func.count()).select_from(Finding).where(resolved_list.scope(run))),
         can_write=remote.get("permissions", {}).get("push", False),

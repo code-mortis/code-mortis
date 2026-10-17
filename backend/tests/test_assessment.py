@@ -310,15 +310,20 @@ def test_rephrasing_and_multiple_candidates_reuse_one_finding(pipeline, client):
         assert assessment.summary(db, db.get(ReviewRun, first)).new_findings == 1
         assert assessment.summary(db, db.get(ReviewRun, first)).repeated_observations == 1
     assert len(pipeline["reviews"]) == 1
+    first_detail = client.get(f"/api/v1/runs/{first}").json()
+    assert len(first_detail["occurrences"]) == 1
+    assert first_detail["occurrences"][0]["is_new"] is True
     detail = client.get(f"/api/v1/runs/{second}").json()
     assert detail["assessment"]["repeated_observations"] == 1
+    assert detail["occurrences"][0]["is_new"] is False
+    assert detail["occurrences"][0]["current_status"] == "open"
     assert "candidates" not in detail
     assert client.get(f"/api/v1/runs/{second}/candidates").json()["items"][0]["finding_id"]
 
 
 @pytest.mark.parametrize("status", ["resolved", "dismissed"])
-def test_closed_finding_is_never_reopened_or_reposted(pipeline, status):
-    run_and_publish()
+def test_closed_finding_is_never_reopened_or_reposted(pipeline, client, status):
+    identity = run_and_publish()
     with transaction() as db:
         db.scalar(select(Finding)).status = status
     pipeline["comments"][0]["content"] = "Same retry loop problem, reworded."
@@ -327,6 +332,22 @@ def test_closed_finding_is_never_reopened_or_reposted(pipeline, status):
         assert db.scalar(select(Finding)).status == status
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
     assert len(pipeline["reviews"]) == 1
+    occurrence = client.get(f"/api/v1/runs/{identity}").json()["occurrences"][0]
+    assert occurrence["is_new"] is True
+    assert occurrence["current_status"] == status
+    with transaction() as db:
+        latest = db.scalar(select(ReviewRun).order_by(ReviewRun.created_at.desc()).limit(1)).id
+    repeated = client.get(f"/api/v1/runs/{latest}").json()["occurrences"][0]
+    assert repeated["is_new"] is False
+    assert repeated["current_status"] == status
+
+
+def test_legacy_run_occurrence_does_not_guess_new_or_repeat(pipeline, client):
+    identity = new_run()
+    reviews.perform_review(identity)
+    occurrence = client.get(f"/api/v1/runs/{identity}").json()["occurrences"][0]
+    assert occurrence["is_new"] is None
+    assert occurrence["current_status"] == "open"
 
 
 def test_distinct_defects_on_same_code_can_both_publish(pipeline):

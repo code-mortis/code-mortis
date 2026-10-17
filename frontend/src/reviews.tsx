@@ -88,7 +88,7 @@ import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
-import { candidateOutcomes, findingSeverities, findingStatuses } from "./lib/review-filters";
+import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -915,8 +915,28 @@ const checkDescriptions: Record<string, string> = {
   action_required: "The review or GitHub synchronization needs attention.",
 };
 
+function runFindingOutcome(item: Schema["OccurrenceOut"]): keyof typeof runFindingOutcomes {
+  if (item.is_new === true) return "new";
+  if (item.is_new !== false) return "recorded";
+  switch (item.current_status) {
+    case "open": return "open_repeat";
+    case "resolved": return "resolved_repeat";
+    case "dismissed": return "dismissed_repeat";
+    default: return "repeated";
+  }
+}
+
+function runFindingLabel(item: Schema["OccurrenceOut"]) {
+  return runFindingOutcomes[runFindingOutcome(item)];
+}
+
 function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null }) {
   const { run, pull_request: pr, occurrences, resolved_count = 0, assessment, can_write } = detail;
+  const findingCounts = new Map<string, number>();
+  for (const item of occurrences) {
+    const name = runFindingLabel(item).toLowerCase();
+    findingCounts.set(name, (findingCounts.get(name) ?? 0) + 1);
+  }
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
@@ -924,6 +944,7 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details"], "findings");
   const filters = useReviewFilters("run");
   const search = filters.params.get("q") ?? "";
+  const outcomes = filters.params.getAll("outcome");
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const findingId = params.get("finding");
@@ -979,7 +1000,8 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const term = search.trim().toLowerCase();
-  const filtered = occurrences.filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
+  const filtered = occurrences.filter((item) => !outcomes.length || outcomes.includes(runFindingOutcome(item)))
+    .filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
     && (!categories.length || categories.includes(String(snapshot.category)))
     && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
   const categoryCounts = Object.fromEntries([...new Set(occurrences.map(({ snapshot }) => String(snapshot.category ?? "")).filter(Boolean))]
@@ -1091,16 +1113,20 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
     </p>}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
-        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
+        <TabsTrigger value="findings">Findings</TabsTrigger>
         <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
         <TabsTrigger value="details" className="col-span-2 sm:col-span-1">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">These are the findings saved at this commit. Open a finding to inspect its original evidence and current resolution separately.</p>
+        {!!occurrences.length && <p className="mb-2 text-sm font-medium">{Array.from(findingCounts, ([name, count]) => `${count} ${name}${count === 1 ? "" : "s"}`).join(" · ")}</p>}
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
         <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
           filters={[
+            { key: "outcome", label: "Result", values: outcomes, choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
+              name: value === "repeated" ? "Repeats with unknown status" : value === "recorded" ? "Unclassified findings" : `${name}s`,
+              count: findingCounts.get(name.toLowerCase()) ?? 0 })) },
             { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
             { key: "category", label: "Type", values: categories, choices: findingTypeChoices(categoryCounts), searchPlaceholder: "Search types…" },
           ]}
@@ -1110,10 +1136,14 @@ function RunWorkspace({ detail, user, error }: { detail: Schema["RunDetail"]; us
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
         {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
-            state={<span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>}
+            state={<span className="flex flex-col items-start gap-1.5">
+              {item.current_status ? <Status value={item.current_status} label={`${runFindingLabel(item)}${item.is_new !== false ? ` · ${label(item.current_status)}` : ""}`} />
+                : <span className="text-xs font-medium">{runFindingLabel(item)}</span>}
+              <span className="text-xs text-muted-foreground">{item.inline_line ? "Inline comment" : "Summary comment"}</span>
+            </span>}
             onClick={(event) => { findingTrigger.current = event.currentTarget; showSheet("finding", item.finding_id); }} />)}
         </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
-          <p>{occurrences.length ? "Try another search, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
+          <p>{occurrences.length ? "Try another search, result, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
           {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
         </Empty>}
       </TabsContent>

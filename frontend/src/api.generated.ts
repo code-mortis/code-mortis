@@ -1584,6 +1584,10 @@ export interface components {
             };
             /** Inline Line */
             inline_line: number | null;
+            /** Is New */
+            is_new?: boolean | null;
+            /** Current Status */
+            current_status?: string | null;
         };
         /** PRDetail */
         PRDetail: {

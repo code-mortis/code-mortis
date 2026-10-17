@@ -476,6 +476,8 @@ class OccurrenceOut(ORMModel):
     finding_id: str
     snapshot: dict[str, Any]
     inline_line: int | None
+    is_new: bool | None = None
+    current_status: str | None = None
 
 
 class AssessmentResult(StrictModel):

@@ -50,3 +50,15 @@ test("resolved filters normalize and clear without changing findings or assessme
   expect(cleared.get("finding")).toBe("finding");
   expect(cleared.has("resolved_q")).toBe(false);
 });
+
+test("run finding results normalize without consuming assessment outcomes", () => {
+  const raw = new URLSearchParams("outcome=new&outcome=resolved_repeat&outcome=resolved_repeat&outcome=withheld&outcome=unknown&outcome=__proto__&assessment_outcome=withheld&assessment_outcome=resolved_repeat&tab=assessment&finding=one");
+  const run = normalizeReviewFilters(raw, "run");
+  expect(run.getAll("outcome")).toEqual(["new", "resolved_repeat"]);
+  expect(normalizeReviewFilters(raw, "assessment").getAll("outcome")).toEqual(["withheld"]);
+  const cleared = withReviewFilters(raw, new URLSearchParams(), "run");
+  expect(cleared.has("outcome")).toBe(false);
+  expect(cleared.get("assessment_outcome")).toBe("withheld");
+  expect(cleared.get("tab")).toBe("assessment");
+  expect(cleared.get("finding")).toBe("one");
+});

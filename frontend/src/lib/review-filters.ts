@@ -2,6 +2,14 @@ import { INBOX_QUERY_MAX_LENGTH } from "./inbox-filters";
 
 export const findingStatuses = ["open", "resolved", "dismissed"] as const;
 export const findingSeverities = ["critical", "high", "medium", "low"];
+export const runFindingOutcomes = {
+  new: "New finding",
+  open_repeat: "Open repeat",
+  resolved_repeat: "Resolved repeat",
+  dismissed_repeat: "Dismissed repeat",
+  repeated: "Repeated finding",
+  recorded: "Recorded finding",
+};
 export const candidateOutcomes = [
   { value: "new", name: "New validated finding" },
   { value: "repeated", name: "Repeated observation" },
@@ -13,7 +21,7 @@ export type ReviewFilterScope = "pull" | "run" | "assessment" | "resolved";
 export type ReviewFilterKey = "q" | "status" | "severity" | "category" | "outcome";
 export const reviewFilterKeys = {
   pull: ["q", "status", "severity", "category"],
-  run: ["q", "severity", "category"],
+  run: ["q", "outcome", "severity", "category"],
   assessment: ["q", "outcome", "severity", "category"],
   resolved: ["q", "severity", "category"],
 } as const;
@@ -32,7 +40,10 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
       if (!values.length) values = ["open", "resolved"];
     }
     if (key === "severity") values = values.filter((value) => findingSeverities.includes(value));
-    if (key === "outcome") values = values.filter((value) => candidateOutcomes.some((outcome) => outcome.value === value));
+    if (key === "outcome") {
+      const outcomes = scope === "run" ? Object.keys(runFindingOutcomes) : candidateOutcomes.map((outcome) => outcome.value);
+      values = values.filter((value) => outcomes.includes(value));
+    }
     if (key === "category") values = values.map((value) => value.trim()).filter((value) => value.length > 0 && value.length <= 50);
     for (const value of [...new Set(values)].slice(0, 100)) result.append(key, value);
   }
