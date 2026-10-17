@@ -498,12 +498,12 @@ def test_settings_saves_and_periodic_scans_refresh_without_an_extra_review(seed,
     jobs.schedule_reconciliation()
     with transaction() as db:
         scans = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "scan_repository"))]
-    assert len(scans) == 3
+    assert len(scans) == 2
     for payload in scans:
         jobs.execute("scan_repository", payload)
     with transaction() as db:
         syncs = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "sync_pr"))]
-    assert len(syncs) >= len(scans)
+    assert len(syncs) == 2
     for payload in syncs:
         jobs.execute("sync_pr", payload)
     with transaction() as db:

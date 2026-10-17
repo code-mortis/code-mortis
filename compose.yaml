@@ -103,7 +103,7 @@ services:
       redis: {condition: service_healthy}
   sync-worker:
     <<: *app
-    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, sync, --concurrency=1, --loglevel=INFO, --hostname=sync@%h]
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, "events,sync", --concurrency=1, --loglevel=INFO, --hostname=sync@%h]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}

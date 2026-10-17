@@ -300,7 +300,7 @@ def test_queue_routing_and_personal_connection_wait(verification_scenario):  # n
         assert db.get(ReviewRun, identity).stages["summary"]["status"] == "waiting"
     assert jobs.job_queue("verify_fixes") == "verification"
     assert jobs.job_queue("summarize_review") == jobs.job_queue("generate_summary") == "summaries"
-    assert jobs.job_queue("finalize_review") == "sync"
+    assert jobs.job_queue("finalize_review") == "events"
 
 
 def test_expired_summary_attempt_is_failed_without_new_inference(seed, monkeypatch):

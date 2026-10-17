@@ -5,7 +5,8 @@ from datetime import timedelta
 import sentry_sdk
 from celery import Celery
 from celery.signals import worker_process_init
-from sqlalchemy import or_, select
+from redis import Redis
+from sqlalchemy import and_, case, func, or_, select
 
 from . import (
     background,
@@ -66,7 +67,7 @@ celery.conf.update(
     accept_content=["json"],
     timezone="UTC",
     beat_schedule={
-        "dispatch": {"task": "mortis.dispatch", "schedule": 10.0, "options": {"queue": "sync"}},
+        "dispatch": {"task": "mortis.dispatch", "schedule": 10.0, "options": {"queue": "events"}},
         "reconcile": {"task": "mortis.reconcile", "schedule": 300.0, "options": {"queue": "sync"}},
     },
 )
@@ -159,7 +160,20 @@ def scan_repository(repository_id: int):
             )
         )
         for number in numbers:
-            enqueue(db, "sync_pr", {"repository_id": repo.id, "number": number})
+            enqueue_reconciliation(db, "sync_pr", {"repository_id": repo.id, "number": number})
+
+
+def enqueue_reconciliation(db, kind, payload):
+    conditions = [Job.kind == kind, Job.status.in_(["queued", "running"])]
+    conditions.extend(Job.payload[key].as_integer() == payload[key]
+                      for key in ("installation_id", "repository_id", "number") if key in payload)
+    if kind == "sync_pr":
+        conditions.extend([
+            Job.payload["sender_type"].as_string().is_(None),
+            func.coalesce(Job.payload["automatic"].as_boolean(), True) == payload.get("automatic", True),
+        ])
+    if not db.scalar(select(Job.id).where(*conditions).limit(1)):
+        enqueue(db, kind, payload)
 
 
 def process_webhook(payload: dict):
@@ -381,16 +395,23 @@ def execute_job(job_id: str):
     log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
 
 
-def job_queue(kind):
+def job_queue(kind, payload=None):
     if kind == "verify_fixes":
         return "verification"
     if kind in {"summarize_review", "generate_summary"}:
         return "summaries"
-    return "reviews" if kind in {"review", "test_connection", "generate_background"} else "sync"
+    if kind in {"review", "test_connection", "generate_background"}:
+        return "reviews"
+    if kind in {"sync_repositories", "scan_repository"} or (kind == "sync_pr" and not (payload or {}).get("sender_type")):
+        return "sync"
+    return "events"
 
 
 @celery.task(name="mortis.dispatch")
 def dispatch():
+    # A slow historical sync must not fill the broker with copies of unclaimed jobs.
+    with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as broker:
+        sync_capacity = max(0, 100 - broker.llen("sync"))
     with transaction() as db:
         # An expired lease means the process disappeared; completed external writes are reconciled on retry.
         for job in db.scalars(
@@ -451,17 +472,26 @@ def dispatch():
                     Job.available_at <= now(),
                     or_(Job.dispatched_at.is_(None), Job.dispatched_at < now() - timedelta(seconds=45)),
                 )
-                .order_by(Job.available_at)
+                .order_by(case(
+                    (or_(Job.kind == "webhook", and_(Job.kind == "sync_pr", Job.payload["sender_type"].as_string().is_not(None))), 0),
+                    (Job.kind.in_(["sync_repositories", "scan_repository", "sync_pr"]), 2),
+                    else_=1,
+                ), Job.available_at)
                 .limit(100)
                 .with_for_update(skip_locked=True)
             )
         )
         for job in candidates:
+            queue = job_queue(job.kind, job.payload)
+            if queue == "sync":
+                if not sync_capacity:
+                    continue
+                sync_capacity -= 1
             if job.kind == "generate_background" and now().timestamp() >= job.payload["expires_at"]:
                 job.status, job.error = "failed", "Background generation expired. Generate again to retry."
                 continue
             execute_job.apply_async(
-                args=[job.id], queue=job_queue(job.kind)
+                args=[job.id], queue=queue
             )
             job.dispatched_at = now()
 
@@ -482,11 +512,11 @@ def schedule_reconciliation():
         )):
             checks.enqueue_sync(db, run)
         for installation in db.scalars(select(Installation).where(Installation.archived.is_(False))):
-            enqueue(db, "sync_repositories", {"installation_id": installation.id})
+            enqueue_reconciliation(db, "sync_repositories", {"installation_id": installation.id})
         for repo in db.scalars(
             select(Repository).where(Repository.active.is_(True), Repository.enabled.is_(True))
         ):
-            enqueue(db, "scan_repository", {"repository_id": repo.id})
+            enqueue_reconciliation(db, "scan_repository", {"repository_id": repo.id})
         for finding in db.scalars(select(Finding).where(Finding.desired_status.is_not(None))):
             if finding.sync_intent and not db.scalar(select(Job.id).where(
                 Job.kind == "resolve", Job.status.in_(["queued", "running"]),
@@ -497,6 +527,6 @@ def schedule_reconciliation():
         for pr in db.scalars(select(PullRequest).where(or_(
             PullRequest.state != "open", PullRequest.created_at.is_(None),
         ))):
-            enqueue(
+            enqueue_reconciliation(
                 db, "sync_pr", {"repository_id": pr.repository_id, "number": pr.number, "automatic": False}
             )

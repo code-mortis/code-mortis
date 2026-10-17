@@ -49,6 +49,7 @@ import {
   type Schema,
 } from "./api";
 import { Button } from "./components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { Badge } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
@@ -294,6 +295,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
   const action = useAction<Run>();
   const ignoreAction = useAction();
+  const [restoring, setRestoring] = useState(false);
+  const restoreTrigger = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
   const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
@@ -337,7 +341,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
-    : pr.ignored ? "Restore this pull request before reviewing it."
+    : pr.ignored ? null
     : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
@@ -348,11 +352,29 @@ export function PullDetail({ admin }: { admin: boolean }) {
   return <>
     {pr.ignored && <section aria-label="Ignored pull request" className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/50 p-4 text-sm">
       <div><p className="font-medium">This pull request is ignored</p><p className="mt-1 text-xs text-muted-foreground">Hidden from the default lists for everyone. Reviews stay stopped until restored.</p></div>
-      {can_write && <Button variant="outline" disabled={ignoreAction.isPending} onClick={() => ignoreAction.mutate({ path: `/pulls/${id}/ignore`, method: "PUT", body: { ignored: false } })}>Restore pull request</Button>}
+      {can_write && <Button ref={restoreTrigger} variant="outline" disabled={ignoreAction.isPending} onClick={() => { ignoreAction.reset(); setRestoring(true); }}>Restore pull request</Button>}
     </section>}
+    <Dialog open={restoring} onOpenChange={(value) => { if (!ignoreAction.isPending) setRestoring(value); }}>
+      <DialogContent showCloseButton={!ignoreAction.isPending} className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        (ignoreAction.isSuccess ? heading.current : restoreTrigger.current)?.focus();
+      }}>
+        <DialogHeader>
+          <DialogTitle>Restore pull request #{pr.number}?</DialogTitle>
+          <DialogDescription>This makes the pull request visible for everyone and allows reviews again. Cancelled reviews will not resume.</DialogDescription>
+        </DialogHeader>
+        <ErrorNotice error={ignoreAction.error} />
+        <DialogFooter>
+          <Button variant="outline" disabled={ignoreAction.isPending} onClick={() => setRestoring(false)}>Cancel</Button>
+          <Button disabled={ignoreAction.isPending} onClick={() => ignoreAction.mutate({ path: `/pulls/${id}/ignore`, method: "PUT", body: { ignored: false } }, {
+            onSuccess: () => setRestoring(false),
+          })}>{ignoreAction.isPending ? "Restoring…" : "Restore pull request"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <header className="mb-6 min-w-0">
       <div>
-        <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
+        <h1 ref={heading} tabIndex={-1} className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
           <span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}
         </h1>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
@@ -387,7 +409,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
         {reviewUnavailable && <p className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
     </header>
-    <ErrorNotice error={action.error || ignoreAction.error || query.error} />
+    <ErrorNotice error={action.error || query.error} />
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4">
