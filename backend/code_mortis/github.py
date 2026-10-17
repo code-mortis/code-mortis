@@ -1,5 +1,9 @@
+import json
 import time
+from collections import OrderedDict
 from datetime import timedelta
+from hashlib import sha256
+from threading import Lock
 
 import httpx
 import jwt
@@ -14,6 +18,8 @@ from .models import AppConfig, Installation, Repository, User
 from .security import clean_text, seal, unseal
 
 API = "https://api.github.com"
+_get_cache: OrderedDict[tuple[bytes, str], tuple[str, bytes]] = OrderedDict()
+_get_cache_lock = Lock()
 
 
 def visible_repositories(db: Session, user: User) -> list[Repository]:
@@ -50,7 +56,17 @@ def request(method: str, path: str, token: str, **kwargs):
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    headers.update(kwargs.pop("headers", {}))
+    custom_headers = kwargs.pop("headers", {})
+    headers.update(custom_headers)
+    cache_key = (sha256(token.encode()).digest(), path) if method.upper() == "GET" and token and not kwargs and not custom_headers else None
+    cached = None
+    if cache_key:
+        with _get_cache_lock:
+            cached = _get_cache.get(cache_key)
+            if cached:
+                _get_cache.move_to_end(cache_key)
+        if cached:
+            headers["If-None-Match"] = cached[0]
     for attempt in range(2):
         retry_get = method.upper() == "GET" and attempt == 0
         try:
@@ -68,6 +84,12 @@ def request(method: str, path: str, token: str, **kwargs):
             ):
                 break
         time.sleep(1)
+    # Revalidate with GitHub on every read; never serve cached permissions on an error.
+    if response.status_code == 304 and cached:
+        return json.loads(cached[1])
+    if cache_key:
+        with _get_cache_lock:
+            _get_cache.pop(cache_key, None)
     if response.status_code >= 300:
         retry = response.headers.get("retry-after", "0")
         message = {
@@ -78,7 +100,13 @@ def request(method: str, path: str, token: str, **kwargs):
             429: "GitHub rate limit reached. Wait for the limit to reset, then retry if the operation has not completed.",
         }.get(response.status_code, f"GitHub could not complete the request (HTTP {response.status_code}). Try again shortly; if it keeps failing, ask the administrator to check GitHub access.")
         raise GitHubError(response.status_code, message, int(retry) if retry.isdigit() else 0)
-    return response.json() if response.content else None
+    result = response.json() if response.content else None
+    if cache_key and response.status_code == 200 and response.headers.get("etag") and len(response.content) <= 1024 * 1024:
+        with _get_cache_lock:
+            _get_cache[cache_key] = (response.headers["etag"], response.content)
+            if len(_get_cache) > 128:
+                _get_cache.popitem(last=False)
+    return result
 
 
 def pages(path: str, token: str, key: str | None = None):
