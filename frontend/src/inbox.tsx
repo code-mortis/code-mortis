@@ -19,7 +19,7 @@ async function fetchInbox(params: URLSearchParams, signal: AbortSignal): Promise
     { all: Number(params.get("all_pages") ?? 1) }, signal);
 }
 
-export function Inbox() {
+export function Inbox({ admin }: { admin: boolean }) {
   const [raw, setParams] = useSearchParams();
   const navigate = useNavigate();
   const params = normalizeFilters(raw, "open");
@@ -73,7 +73,7 @@ export function Inbox() {
   return <>
     <header className="mb-6">
       <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Inbox</h1>
+        <h1 data-pull-list-focus tabIndex={-1} className="text-2xl font-semibold tracking-tight sm:text-3xl">Inbox</h1>
         <span role="status" aria-live="polite" className="text-sm tabular-nums text-muted-foreground">{data ? <>{data.total}<span className="sr-only"> pull {data.total === 1 ? "request" : "requests"} · {data.repository_count} {data.repository_count === 1 ? "repository" : "repositories"}</span></> : query.error ? "Pull requests unavailable" : "Loading pull requests…"}{query.isPlaceholderData && <span className="sr-only"> · Updating pull requests…</span>}</span>
       </div>
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Pull requests across your repositories.</p>
@@ -87,7 +87,7 @@ export function Inbox() {
     </Empty>}
     {list && list.total > 0 && <section aria-label="Pull requests" aria-busy={query.isPlaceholderData} className="overflow-hidden rounded-lg border bg-card">
       <PullRequestListHeading />
-      {list.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
+      {list.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
         state={{ inbox: `${location.pathname}${location.search}` }}
         metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
         status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}

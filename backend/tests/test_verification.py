@@ -292,9 +292,44 @@ def test_partial_line_quotes_preserve_literal_text_and_source_location(quote, st
             verification.validate_result(data, CONTEXT)
 
 
+def test_citation_feedback_reports_all_mismatches_without_accepting_added_syntax():
+    path = "frontend/src/components/pull-request-actions.tsx"
+    sources = {
+        "original": "      {data && !detail.isFetching && (data.can_write ? <>",
+        "current": "      {data?.can_write && !detail.isFetching && <>",
+    }
+    context = {**CONTEXT, "sources": {revision: {path: source} for revision, source in sources.items()}}
+    data = {**RESULT, "verdict": "still_present", "evidence": [
+        {"revision": revision, "path": path, "start_line": 1, "end_line": 1, "quote": source + "}"}
+        for revision, source in sources.items()
+    ]}
+    with pytest.raises(verification.ResultValidationError) as caught:
+        verification.validate_result(data, context)
+    feedback = caught.value.feedback
+    assert feedback["field"] == "evidence[0]"
+    assert len(feedback["errors"]) == 2
+    for error in feedback["errors"]:
+        assert error["source_lines"] == sources[error["revision"]]
+        assert error["quote"] == error["source_lines"] + "}"
+    for item in data["evidence"]:
+        item["quote"] = sources[item["revision"]]
+    assert verification.validate_result(data, context)["verdict"] == "still_present"
+
+
+def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
+    data = copy.deepcopy(RESULT)
+    data["evidence"][0]["path"] = "unavailable.py"
+    data["evidence"][1]["end_line"] = 999
+    with pytest.raises(verification.ResultValidationError) as caught:
+        verification.validate_result(data, CONTEXT)
+    errors = caught.value.feedback["errors"]
+    assert [error["reason"] for error in errors] == ["unavailable source", "invalid source line range"]
+    assert all("source_lines" not in error for error in errors)
+
+
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct"])
+@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
     identity = scenario["run"]
     with transaction() as db:
@@ -323,7 +358,17 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         calls.append((copy.deepcopy(context), budget))
         raw = copy.deepcopy(RESULT)
         loaded = "helper.py" in context["sources"]["current"]
-        if sequence == "correct_request" and len(calls) == 1:
+        if sequence == "multiple_citations":
+            if len(calls) == 1:
+                raw["evidence"].append(copy.deepcopy(raw["evidence"][-1]))
+                for evidence in raw["evidence"]:
+                    evidence["quote"] += "}"
+            else:
+                errors = context["validation_feedback"]["errors"]
+                assert len(errors) == 3
+                for error in errors:
+                    assert error["source_lines"] == context["sources"][error["revision"]][error["path"]].splitlines()[0]
+        elif sequence == "correct_request" and len(calls) == 1:
             raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": 1,
                                     "end_line": 2, "quote": helper.strip()})
         elif not loaded:
@@ -362,21 +407,25 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
         assert row.status == "completed" and row.verdict == "fixed", row.error
         assert row.usage == {"tokens": 25 * len(calls)}
-        assert row.context["sources"]["current"]["helper.py"] == helper
+        if sequence != "multiple_citations":
+            assert row.context["sources"]["current"]["helper.py"] == helper
         assert "required_sources" not in row.result
-    assert len(calls) == (2 if sequence == "request" else 3)
-    assert reads == [(HEAD, "helper.py")]
+    assert len(calls) == (2 if sequence in {"request", "multiple_citations"} else 3)
+    assert reads == ([] if sequence == "multiple_citations" else [(HEAD, "helper.py")])
     assert [budget for _, budget in calls] == [calls[0][1] - 25 * index for index in range(len(calls))]
     assert len(native_ids) == len(set(native_ids))
 
 
-@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "unknown", "three_passes", "repeat_citation"])
+@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "missing", "unknown", "three_passes", "repeat_citation"])
 def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, stop):
     calls = []
     tick = now()
     monkeypatch.setattr(verification, "now", lambda: tick)
     monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if stop == "excluded" else set(paths))
-    monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
+    if stop == "missing":
+        monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    else:
+        monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
     if stop == "budget":
         with transaction() as db:
             run = db.get(ReviewRun, scenario["run"])
@@ -407,10 +456,12 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
     assert len(calls) == (3 if stop == "three_passes" else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
     assert row.usage == {"tokens": calls[0] if stop == "unknown" else 25 * len(calls)}
-    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "unknown", "repeat_citation"} else "skipped")
+    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "missing", "unknown", "repeat_citation"} else "skipped")
+    if stop == "missing":
+        assert "helper1.py" in row.error and HEAD in row.error
 
 
-@pytest.mark.parametrize("bad", ["excluded", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
+@pytest.mark.parametrize("bad", ["excluded", "missing", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
 def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
     context = copy.deepcopy(CONTEXT)
     if bad == "file_limit":
@@ -422,11 +473,15 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
         commands.append(args)
         assert args[1] == HEAD if args[0] == "ls-tree" else args[1] == HEAD + ":" + path
         if args[0] == "ls-tree":
+            if bad == "missing":
+                return ""
             return f"{'120000' if bad == 'symlink' else '100644'} blob {'a' * 40}\thelper.py"
         return "\x00binary" if bad == "binary" else "x" * 1_500_001
     monkeypatch.setattr(ocr, "git", git)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         verification.expand_context(tmp_path, {}, context, [{"revision": "current", "path": path}], {}, lambda: False)
+    if bad in {"missing", "symlink"}:
+        assert path in str(error.value) and HEAD in str(error.value)
     if bad in {"excluded", "traversal", "already_loaded", "file_limit"}:
         assert not commands
 
@@ -1592,3 +1647,19 @@ def test_permission_revocation_keeps_saved_verdict_retryable(scenario, monkeypat
     reviews.synchronize_finding(intent)
     assert saved()[1].status == "resolved" and scenario["mutations"] == [True]
     assert scenario["calls"] == ["review", "verify"]
+
+
+def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario, client):
+    row, finding, run = perform(scenario)
+    assert row.resolution == "pending"
+    intent = finding.sync_intent
+    with transaction() as db:
+        current = db.get(ReviewRun, run.id)
+        current.publication, current.summary = "published", {}
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
+    reviews.synchronize_finding(intent)
+    row, finding, run = saved()
+    assert not run.cancel_requested
+    assert row.resolution == "superseded" and finding.status == "open" and not finding.desired_status
+    assert scenario["mutations"] == []

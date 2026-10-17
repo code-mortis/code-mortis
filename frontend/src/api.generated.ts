@@ -259,6 +259,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/ignore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Ignore Pull */
+        put: operations["ignore_pull_api_v1_pulls__pr_id__ignore_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Pull Reviews */
+        post: operations["cancel_pull_reviews_api_v1_pulls__pr_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls/{pr_id}/runs": {
         parameters: {
             query?: never;
@@ -1033,6 +1067,38 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
         };
+        /** CandidateDetail */
+        CandidateDetail: {
+            /** Id */
+            id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            result: components["schemas"]["AssessmentResult"] | null;
+            /** Finding Id */
+            finding_id: string | null;
+            /** Is New */
+            is_new: boolean;
+            /** Error */
+            error: string | null;
+            /** Attempts */
+            attempts?: components["schemas"]["CandidateAttemptOut"][];
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /** Progress Phase */
+            progress_phase?: "validating" | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+        };
         /** CandidateOut */
         CandidateOut: {
             /** Id */
@@ -1057,9 +1123,16 @@ export interface components {
              * @default false
              */
             retryable: boolean;
+            /** Progress Phase */
+            progress_phase?: "validating" | null;
         };
         /** CandidatePage */
         CandidatePage: {
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Items */
             items: components["schemas"]["CandidateOut"][];
             /** Total */
@@ -1305,6 +1378,11 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** IgnorePullInput */
+        IgnorePullInput: {
+            /** Ignored */
+            ignored: boolean;
+        };
         /** InboxOut */
         InboxOut: {
             /** Groups */
@@ -1363,6 +1441,11 @@ export interface components {
             state: string;
             /** Draft */
             draft: boolean;
+            /**
+             * Ignored
+             * @default false
+             */
+            ignored: boolean;
             /**
              * Fork
              * @default false
@@ -1540,6 +1623,10 @@ export interface components {
             };
             /** Inline Line */
             inline_line: number | null;
+            /** Is New */
+            is_new?: boolean | null;
+            /** Current Status */
+            current_status?: string | null;
         };
         /** PRDetail */
         PRDetail: {
@@ -1549,6 +1636,11 @@ export interface components {
             run_count: number;
             /** Has Active Run */
             has_active_run: boolean;
+            /**
+             * Cancellable Run Count
+             * @default 0
+             */
+            cancellable_run_count: number;
             /** Latest Observed Run Id */
             latest_observed_run_id: string | null;
             /** Can Write */
@@ -1572,6 +1664,11 @@ export interface components {
             state: string;
             /** Draft */
             draft: boolean;
+            /**
+             * Ignored
+             * @default false
+             */
+            ignored: boolean;
             /** Fork */
             fork: boolean;
             /** Head Sha */
@@ -1650,6 +1747,11 @@ export interface components {
              * @default true
              */
             automatic: boolean;
+            /**
+             * Include Bot Prs
+             * @default false
+             */
+            include_bot_prs: boolean;
             /**
              * Auto Resolve
              * @default false
@@ -1739,6 +1841,11 @@ export interface components {
         };
         /** ResolvedPage */
         ResolvedPage: {
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
             /** Items */
             items: components["schemas"]["FindingOut"][];
             /** Total */
@@ -1775,6 +1882,16 @@ export interface components {
              * @default 0
              */
             resolved_count: number;
+            /**
+             * Assessment Revision
+             * @default 0
+             */
+            assessment_revision: number;
+            /**
+             * Resolved Revision
+             * @default
+             */
+            resolved_revision: string;
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
@@ -2376,6 +2493,7 @@ export interface operations {
     pull_requests_api_v1_repositories__repository_id__pulls_get: {
         parameters: {
             query?: {
+                visibility?: "visible" | "ignored" | "all";
                 q?: string;
                 repo?: number[];
                 state?: ("open" | "merged" | "closed" | "all")[];
@@ -2450,6 +2568,7 @@ export interface operations {
     pull_inbox_api_v1_pulls_get: {
         parameters: {
             query?: {
+                visibility?: "visible" | "ignored" | "all";
                 q?: string;
                 repo?: number[];
                 state?: ("open" | "merged" | "closed" | "all")[];
@@ -2504,6 +2623,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PRDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ignore_pull_api_v1_pulls__pr_id__ignore_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IgnorePullInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_pull_reviews_api_v1_pulls__pr_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"][];
                 };
             };
             /** @description Validation Error */
@@ -2661,6 +2846,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
                 page?: number;
+                page_size?: number;
             };
             header?: never;
             path: {
@@ -2698,6 +2884,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
                 page?: number;
+                page_size?: number;
             };
             header?: never;
             path: {
@@ -2745,7 +2932,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CandidateOut"];
+                    "application/json": components["schemas"]["CandidateDetail"];
                 };
             };
             /** @description Validation Error */

@@ -4,6 +4,105 @@ import httpx
 import pytest
 
 from code_mortis import github
+from code_mortis.models import User
+
+
+@pytest.fixture(autouse=True)
+def clear_conditional_responses():
+    github._get_cache.clear()
+    yield
+    github._get_cache.clear()
+
+
+def test_conditional_get_revalidates_and_does_not_share_mutated_results(monkeypatch):
+    request = Mock(side_effect=[
+        httpx.Response(200, headers={"ETag": '"first"'}, json={"permissions": {"push": True}}),
+        httpx.Response(304),
+        httpx.Response(200, headers={"ETag": '"second"'}, json={"permissions": {"push": False}}),
+        httpx.Response(304),
+    ])
+    monkeypatch.setattr(github.httpx, "request", request)
+    path = "/repos/team/project"
+    first = github.request("GET", path, "user-token")
+    first["permissions"]["push"] = False
+    assert github.request("GET", path, "user-token")["permissions"]["push"]
+    assert not github.request("GET", path, "user-token")["permissions"]["push"]
+    assert not github.request("GET", path, "user-token")["permissions"]["push"]
+    assert [call.kwargs["headers"].get("If-None-Match") for call in request.call_args_list] == [
+        None, '"first"', '"first"', '"second"',
+    ]
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+def test_conditional_get_never_falls_back_to_cached_access_on_error(monkeypatch, status):
+    request = Mock(side_effect=[
+        httpx.Response(200, headers={"ETag": '"access"'}, json={"permissions": {"pull": True}}),
+        httpx.Response(status, headers={"Retry-After": "60"}),
+        httpx.Response(200, json={"permissions": {"pull": False}}),
+    ])
+    monkeypatch.setattr(github.httpx, "request", request)
+    github.request("GET", "/repos/team/project", "user-token")
+    with pytest.raises(github.GitHubError) as caught:
+        github.request("GET", "/repos/team/project", "user-token")
+    assert caught.value.status == status
+    assert not github.request("GET", "/repos/team/project", "user-token")["permissions"]["pull"]
+    assert "If-None-Match" not in request.call_args.kwargs["headers"]
+
+
+def test_conditional_get_is_scoped_to_token_and_url(monkeypatch):
+    request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
+    monkeypatch.setattr(github.httpx, "request", request)
+    for path, token in [("/repos/team/a", "one"), ("/repos/team/a", "two"), ("/repos/team/b", "one")]:
+        github.request("GET", path, token)
+    assert all("If-None-Match" not in call.kwargs["headers"] for call in request.call_args_list)
+
+
+def test_conditional_get_still_rejects_revoked_write_permission(monkeypatch):
+    request = Mock(side_effect=[
+        httpx.Response(200, headers={"ETag": '"write"'}, json={"permissions": {"pull": True, "push": True}}),
+        httpx.Response(304),
+        httpx.Response(200, headers={"ETag": '"read"'}, json={"permissions": {"pull": True, "push": False}}),
+    ])
+    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github, "user_token", lambda *_: "user-token")
+    user = User(id=7)
+    github.authorize_repo(None, user, "team/project", write=True)
+    github.authorize_repo(None, user, "team/project", write=True)
+    with pytest.raises(github.GitHubError, match="requires repository write access"):
+        github.authorize_repo(None, user, "team/project", write=True)
+    assert request.call_count == 3
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, json={"id": 1}),
+    httpx.Response(200, headers={"ETag": '"large"'}, json={"body": "x" * 1024 * 1024}),
+])
+def test_conditional_get_skips_responses_without_etags_or_over_the_size_limit(monkeypatch, response):
+    request = Mock(return_value=response)
+    monkeypatch.setattr(github.httpx, "request", request)
+    for _ in range(2):
+        github.request("GET", "/repos/team/project", "user-token")
+    assert not github._get_cache
+    assert all("If-None-Match" not in call.kwargs["headers"] for call in request.call_args_list)
+
+
+@pytest.mark.parametrize("kwargs", [{"params": {"page": 2}}, {"headers": {"Accept": "custom"}}])
+def test_conditional_get_does_not_reuse_a_different_request_variant(monkeypatch, kwargs):
+    request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
+    monkeypatch.setattr(github.httpx, "request", request)
+    github.request("GET", "/repos/team/a", "token")
+    github.request("GET", "/repos/team/a", "token", **kwargs)
+    assert "If-None-Match" not in request.call_args.kwargs["headers"]
+
+
+def test_conditional_get_cache_is_bounded(monkeypatch):
+    request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
+    monkeypatch.setattr(github.httpx, "request", request)
+    for index in range(130):
+        github.request("GET", f"/repos/team/{index}", "token")
+    assert len(github._get_cache) == 128
+    github.request("GET", "/repos/team/0", "token")
+    assert "If-None-Match" not in request.call_args.kwargs["headers"]
 
 
 @pytest.mark.parametrize("method", ["GET", "get"])

@@ -12,7 +12,7 @@ from code_mortis.models import Finding, Installation, Job, PullRequest, Reposito
 
 @pytest.fixture
 def visible(seed, monkeypatch):
-    monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}])
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": 22}])
 
 
 def pull(db, identity, state="open", repo=22, author="owner", at=None):
@@ -143,7 +143,7 @@ def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, 
         db.flush()
         for identity in [23, 24, 25]:
             run(db, pull(db, f"private-{identity}", "merged", repo=identity, author="hidden"), "running")
-    monkeypatch.setattr(github, "pages", lambda *args: [{"id": n} for n in [22, 24, 25]])
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": n} for n in [22, 24, 25]])
     result = get(client)
     assert result["total"] == result["registered_total"] == 1
     assert result["authors"] == ["owner"]
@@ -153,10 +153,10 @@ def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, 
     assert repositories[0]["has_running_review"] is False
     assert get(client, "?repo=23")["total"] == 0
     assert get(client, "?author=hidden")["total"] == 0
-    monkeypatch.setattr(github, "pages", lambda *args: [])
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [])
     denied = get(client)
     assert denied["total"] == 0 and denied["authors"] == [] and denied["repositories"] == []
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise github.GitHubError(503, "GitHub unavailable")
     monkeypatch.setattr(github, "pages", unavailable)
     assert client.get("/api/v1/pulls").status_code == 502
@@ -247,7 +247,7 @@ def test_newest_pulls_across_repositories_and_pages(visible, client, monkeypatch
         unknown = pull(db, "unknown", "merged")
         unknown.created_at = None
         unknown.updated_at = at - timedelta(days=1) if ordering.startswith("-") else at + timedelta(days=1)
-    monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": 22}, {"id": 23}])
     first = get(client, f"?state=merged&ordering={ordering}")["groups"][0]
     second = get(client, f"?state=merged&ordering={ordering}&group=merged&page=2")["groups"][0]
     third = get(client, f"?state=merged&ordering={ordering}&group=merged&page=3")["groups"][0]
@@ -272,7 +272,7 @@ def test_text_ordering_keeps_review_priority_and_stable_ties(visible, client, mo
             pr = pull(db, identity, repo=repo, author=name)
             pr.title = name
             run(db, pr, status)
-    monkeypatch.setattr(github, "pages", lambda *args: [{"id": 22}, {"id": 23}])
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": 22}, {"id": 23}])
     result = get(client, f"?review=running&review=queued&review=failed&ordering={'-' if descending else ''}{field}")
     expected = ["zulu", "alpha-b", "alpha-a"] if descending else ["alpha-b", "alpha-a", "zulu"]
     assert [pr["id"] for pr in result["groups"][0]["items"]] == ["running", "queued", *expected]

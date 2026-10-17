@@ -107,6 +107,8 @@ def ready_to_sync(run):
 
 
 def enqueue_sync(db, pr):
+    if pr.ignored:
+        return
     if any(isinstance(item, Job) and item.kind == "sync_summary" and item.payload.get("pr_id") == pr.id
            for item in db.new):
         return
@@ -228,13 +230,15 @@ def retry_generation(db, run, repo, actor):
     from . import pipeline
     from .reviews import ACTIVE, authorize_connection, connection_snapshot, enqueue
 
+    pr = db.get(PullRequest, run.pr_id)
+    if pr.ignored:
+        raise ValueError("Restore this pull request before reviewing it.")
     if run.summary.get("status") == "pending":
         job = db.get(Job, run.progress.get("summary_retry"))
         if job and job.status in {"queued", "running"}:
             return job
     if run.summary.get("status") != "failed" or run.status in ACTIVE or run.cancel_requested:
         raise ValueError("Only a failed summary can be regenerated after the review finishes.")
-    pr = db.get(PullRequest, run.pr_id)
     if latest_run(db, pr.id).id != run.id or (run.head_sha, run.base_sha) != (pr.head_sha, pr.base_sha):
         raise ValueError("This is an earlier review. Open the latest review to retry its summary.")
     if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
@@ -263,7 +267,7 @@ def retry_stopped(db, run, job_id, claim):
     repo = db.get(Repository, pr.repository_id)
     actor = db.get(User, job.payload["actor_id"])
     return (run.progress.get("summary_retry") != job_id or run.cancel_requested
-            or latest_run(db, pr.id).id != run.id or pr.state != "open"
+            or pr.ignored or latest_run(db, pr.id).id != run.id or pr.state != "open"
             or (run.head_sha, run.base_sha) != (pr.head_sha, pr.base_sha)
             or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active
             or not actor or not actor.enabled or not db.get(Membership, actor.id))
@@ -397,8 +401,9 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
             if (retry_stopped(db, current, retry_job_id, claim) if retry_job_id else
                     (not pipeline.owns(current, stage, claim) if stage else current.progress.get("execution") != claim) or current.cancel_requested):
                 raise ocr.ReviewStopped()
-            repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
-            if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+            pr = db.get(PullRequest, current.pr_id)
+            repo = db.get(Repository, pr.repository_id)
+            if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
                 raise ocr.ReviewStopped()
             selected = db.get(Connection, connection["id"])
             if not selected or any(connection[key] != getattr(selected, key)
@@ -571,6 +576,8 @@ def sync(pr_id):
         if not ready_to_sync(run):
             return
         repo = db.get(Repository, pr.repository_id)
+        if pr.ignored:
+            return
         if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The PR overview cannot be updated because GitHub installation access was removed.")
         app_token = github.app_token(db)
@@ -597,6 +604,8 @@ def sync(pr_id):
         current = latest_run(db, pr.id)
         pr = db.get(PullRequest, pr.id)
         repo = db.get(Repository, pr.repository_id)
+        if pr.ignored:
+            return
         if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The PR overview cannot be updated because GitHub installation access was removed.")
         if (not ready_to_sync(current) or current.id != run.id or remote["state"] != "open" or pr.state != "open"

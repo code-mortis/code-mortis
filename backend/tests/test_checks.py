@@ -126,6 +126,31 @@ def test_publication_gates_success_and_does_not_rerun_analysis(seed, check_api, 
     assert "1 finding" in check_api[1][-1][1]["output"]["title"]
 
 
+@pytest.mark.parametrize("assessed", [False, True])
+def test_terminal_check_jobs_drain_without_advancing_assessment_revision(seed, check_api, assessed):
+    identity = new_run(assessed=assessed)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status, run.publication = "completed", "published"
+        run.progress = {"assessment_revision": 4}
+    # The first sync may persist its summary, requiring one final check update.
+    for _ in range(2):
+        with transaction() as db:
+            queued = list(db.scalars(select(Job.id).where(Job.kind == "sync_check", Job.status == "queued")))
+        for job_id in queued:
+            jobs.execute_job(job_id)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.progress["assessment_revision"] == 4
+        assert not run.check_pending
+        assert not db.scalar(select(Job.id).where(Job.kind == "sync_check", Job.status == "queued"))
+        run.progress = {**run.progress, "assessment_revision": 5}
+    with transaction() as db:
+        assert not db.get(ReviewRun, identity).check_pending
+        assert not db.scalar(select(Job.id).where(Job.kind == "sync_check", Job.status == "queued"))
+    assert len(check_api[1]) == 1
+
+
 def test_missing_permission_only_fails_check_and_reconciliation_recovers(seed, check_api, monkeypatch):
     run_id = new_run()
     token = github.installation_token

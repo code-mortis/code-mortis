@@ -253,6 +253,13 @@ export function RepositorySettings({
               </div>
               <div className="flex items-start justify-between gap-4 p-5">
                 <div className="space-y-2">
+                  <label htmlFor={`${id}-bots`} className="text-sm font-medium">Include bot pull requests</label>
+                  <p id={`${id}-bots-hint`} className="text-xs leading-relaxed text-muted-foreground">Import pull requests from bots such as Dependabot and apply your automatic review settings. Existing pull requests stay visible when this is off.</p>
+                </div>
+                <Switch id={`${id}-bots`} aria-describedby={`${id}-bots-hint`} checked={settings.include_bot_prs ?? false} onCheckedChange={(value) => change("include_bot_prs", value)} className="mt-0.5 shrink-0" />
+              </div>
+              <div className="flex items-start justify-between gap-4 p-5">
+                <div className="space-y-2">
                   <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
                   <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Verifies earlier findings in manual and automatic reviews. Requires GitHub App Contents: Read and write. Uses the verification budget; uncertain findings stay open.</p>
                 </div>

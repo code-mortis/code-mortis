@@ -138,6 +138,7 @@ class PullRequest(Base):
     url: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(20), default="open")
     draft: Mapped[bool] = mapped_column(Boolean, default=False)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     fork: Mapped[bool] = mapped_column(Boolean, default=False)
     head_sha: Mapped[str] = mapped_column(String(40))
     base_sha: Mapped[str] = mapped_column(String(40))
@@ -250,6 +251,10 @@ class ReviewCandidate(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def progress_phase(self):
+        return "validating" if self.status == "running" and self.usage.get("response_received") else None
 
 
 class Activity(Base):

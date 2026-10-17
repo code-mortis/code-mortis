@@ -59,9 +59,16 @@ def enqueue_sync(db: Session, run: ReviewRun):
 def queue_check_changes(db, _context, _instances):
     # One transaction hook covers API actions, subscription revocation and worker recovery alike.
     for run in list(db.new) + list(db.dirty):
-        if isinstance(run, ReviewRun) and (
-            run in db.new or any(inspect(run).attrs[name].history.has_changes() for name in WATCHED)
-        ):
+        if not isinstance(run, ReviewRun):
+            continue
+        attrs = inspect(run).attrs
+        previous = attrs.progress.history.deleted
+        # UI revisions do not change the GitHub check payload.
+        progress_changed = attrs.progress.history.has_changes() and (
+            {key: value for key, value in ((previous[0] or {}) if previous else {}).items() if key != "assessment_revision"}
+            != {key: value for key, value in (run.progress or {}).items() if key != "assessment_revision"}
+        )
+        if run in db.new or progress_changed or any(attrs[name].history.has_changes() for name in WATCHED - {"progress"}):
             if not run.id:
                 run.id = uid()
             enqueue_sync(db, run)
@@ -171,7 +178,7 @@ def sync_check(run_id: str):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run:
             return
-        assessment.record_summary(db, run)
+        assessment.record_summary(db, run, advance_revision=False)
         if run.progress.get("verification_prepared"):
             record_summary(db, run)
         if not run.check_enabled:
@@ -246,6 +253,8 @@ def rerequest(db: Session, body: dict, delivery_id: str):
         body.get("installation") or {}
     ).get("id"):
         raise ValueError("GitHub Re-run does not match this repository installation.")
+    if pr.ignored:
+        raise ValueError("Restore this pull request before reviewing it.")
     if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
         raise ValueError("Enable the repository and installation before requesting another review.")
     actor = db.get(User, (body.get("sender") or {}).get("id"))

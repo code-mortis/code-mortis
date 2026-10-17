@@ -267,7 +267,7 @@
   .settings-member-row { grid-template-columns: minmax(0, 1fr) minmax(0, 10rem) minmax(0, 2rem); }
 }
 @media (min-width: 768px) {
-  .inbox-row-grid { grid-template-columns: minmax(0, 1fr) 11rem 6.5rem 6rem 1rem; }
+  .inbox-row-grid { grid-template-columns: minmax(0, 1fr) 11rem 6.5rem 6rem 2rem; }
   .inbox-row-grid > :first-child { grid-column: auto; }
 }
 

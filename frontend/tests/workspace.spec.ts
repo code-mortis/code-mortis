@@ -212,6 +212,10 @@ function runPage(runs: Run[], params: URLSearchParams): Schema["RunPage"] {
   return { items: runs.slice((page - 1) * 10, page * 10), total: runs.length, page, has_more: page * 10 < runs.length, page_size: 10 };
 }
 
+function fixtureRevision(value: unknown) {
+  return Array.from(JSON.stringify(value)).reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 0);
+}
+
 function candidateOutcome(candidate: Schema["CandidateOut"]) {
   return candidate.finding_id ? candidate.is_new ? "new" : "repeated" : candidate.result?.verdict === "rejected" ? "rejected" : ["queued", "running"].includes(candidate.status) ? "pending" : "withheld";
 }
@@ -222,9 +226,10 @@ function candidatePage(candidates: Schema["CandidateOut"][], params: URLSearchPa
     && (!params.has("severity") || params.getAll("severity").includes(String(candidate.snapshot.severity)))
     && (!params.has("category") || params.getAll("category").includes(String(candidate.snapshot.category)))
     && (!query || [candidate.snapshot.path, candidate.snapshot.content, candidate.snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(query))));
-  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
-  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: candidates.length,
-    page, has_more: page * 10 < matches.length, page_size: 10,
+  const size = Number(params.get("page_size") ?? 10);
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / size)));
+  return { revision: fixtureRevision(candidates), items: matches.slice((page - 1) * size, page * size), total: matches.length, registered_total: candidates.length,
+    page, has_more: page * size < matches.length, page_size: size,
     outcome_counts: Object.fromEntries(["new", "repeated", "rejected", "withheld", "pending"].map((outcome) => [outcome, candidates.filter((candidate) => candidateOutcome(candidate) === outcome).length])),
     severity_counts: Object.fromEntries(["critical", "high", "medium", "low"].map((severity) => [severity, candidates.filter((candidate) => candidate.snapshot.severity === severity).length])),
     category_counts: Object.fromEntries([...new Set(candidates.map((candidate) => String(candidate.snapshot.category ?? "")).filter(Boolean))].map((category) => [category, candidates.filter((candidate) => candidate.snapshot.category === category).length])),
@@ -237,9 +242,10 @@ function resolvedPage(findings: Schema["FindingOut"][], params: URLSearchParams)
     && (!params.has("category") || params.getAll("category").includes(finding.category))
     && (!q || [finding.path, finding.content, finding.category].some((value) => value.toLowerCase().includes(q))))
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
-  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / 10)));
-  return { items: matches.slice((page - 1) * 10, page * 10), total: matches.length, registered_total: findings.length,
-    page, has_more: page * 10 < matches.length, page_size: 10,
+  const size = Number(params.get("page_size") ?? 10);
+  const page = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(matches.length / size)));
+  return { revision: String(fixtureRevision(findings)), items: matches.slice((page - 1) * size, page * size), total: matches.length, registered_total: findings.length,
+    page, has_more: page * size < matches.length, page_size: size,
     severity_counts: Object.fromEntries(findingSeverities.map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length])),
     category_counts: Object.fromEntries([...new Set(findings.map((finding) => finding.category))].map((category) => [category, findings.filter((finding) => finding.category === category).length])),
   };
@@ -380,11 +386,13 @@ async function mock(
         ]),
         assessment: options.assessment ?? null,
         resolved_count: options.resolved?.length ?? 0,
+        resolved_revision: String(fixtureRevision(options.resolved ?? [])),
+        assessment_revision: fixtureRevision(options.candidates ?? []),
         can_write: options.canWrite !== false,
       };
     else if (path === "/runs/run/resolved") data = resolvedPage(options.resolved ?? [], new URL(request.url()).searchParams);
     else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
-    else if (path.startsWith("/runs/run/candidates/")) data = options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1));
+    else if (path.startsWith("/runs/run/candidates/")) data = { ...options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1)), revision: fixtureRevision(options.candidates ?? []) };
     else if (path === "/connections/models" || /^\/connections\/[^/]+\/models$/.test(path))
       data = {
         source: "provider", status: "ready", message: null,
@@ -506,6 +514,24 @@ async function repositorySection(page: Page, name: string) {
   await link.click();
   await expect(link).toHaveAttribute("aria-current", "page");
 }
+
+test("ignored run status keeps restoration navigation outside the live region", async ({ page }, info) => {
+  await mock(page, { overview: { ignored: true } });
+  await mockPullDetail(page, () => ({ pull_request: { ...pr, ignored: true }, repository: repo, runs: [run], findings: [], can_write: true }));
+  await page.goto("/runs/run");
+  const status = page.getByRole("status").filter({ hasText: "This pull request is ignored." });
+  await expect(status).toHaveText("This pull request is ignored.");
+  await expect(status.getByRole("link")).toHaveCount(0);
+  const restore = page.getByRole("link", { name: "Open the pull request", exact: true });
+  await expect(restore).toHaveAttribute("href", "/pulls/pr");
+  await restore.focus();
+  await expect(restore).toBeFocused();
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/pr-ignored-run-${info.project.name}.png` });
+  await restore.press("Enter");
+  await expect(page).toHaveURL(/\/pulls\/pr$/);
+  await expect(page.getByRole("region", { name: "Ignored pull request" })).toBeVisible();
+});
 
 test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
   await mock(page);
@@ -915,17 +941,17 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
-  await expect(page.getByRole("link", { name: /Add retry handling/ }).getByText("open", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("open", { exact: true })).toBeVisible();
   await expect(merged).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Closed proposal/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove PR state filter" }).click();
   await expect(page).toHaveURL(/\?state=all$/);
   await expect(count).toHaveText("14 pull requests");
   await expect(merged.getByRole("link")).toHaveCount(10);
-  await expect(merged.getByRole("link").first().getByText("merged", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("closed", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ }).getByText("Draft", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Closed proposal/ })).toContainText("Fork · manual review");
+  await expect(merged.getByRole("link").first().locator("xpath=ancestor::*[@data-pull-row]").getByText("merged", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("closed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Draft", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("Fork · manual review");
   await merged.getByRole("button", { name: "Load more merged" }).click();
   await expect(merged.getByRole("link")).toHaveCount(12);
   await expect(page).toHaveURL(/merged_pages=2/);
@@ -934,7 +960,7 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(count).toHaveText("14 pull requests");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["PR state", "Review status", "Author", "Open findings", "Visibility"]);
   await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
   await page.getByRole("checkbox", { name: "Completed", exact: true }).click();
   await page.keyboard.press("Escape");
@@ -1043,6 +1069,8 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
     await page.getByRole("button", { name: "PR summary details: Pending", exact: true }).click();
     const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
     await expect(details).toContainText("Waiting to generate the summary.");
+    await expect(details.getByRole("alert")).toHaveCount(0);
+    await details.locator("summary", { hasText: "Technical details" }).click();
     await expect(details).toContainText(reason);
     await expect(details).not.toContainText("Waiting for the personal connection.");
     await noOverflow(page);
@@ -1099,6 +1127,43 @@ test("stage budgets and optional overview content save independently", async ({ 
       summary_token_budget: 33000, summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
   });
 });
+
+for (const [ocr, assessment, verification, expected] of [
+  ["completed", "completed", "completed", "Completed"],
+  ["completed", "completed", "failed", "Partial"],
+  ["completed", "partial", "skipped", "Partial"],
+  ["failed", "failed", "failed", "Failed"],
+  ["failed", "skipped", "skipped", "Failed"],
+  ["failed", "cancelled", "skipped", "Failed"],
+  ["completed", "completed", "skipped", "Completed"],
+  ["skipped", "skipped", "skipped", "Skipped"],
+  ["completed", "running", "failed", "Running"],
+  ["completed", "pending", "failed", "Pending"],
+  ["completed", "waiting", "failed", "Waiting"],
+  ["cancelled", "cancelled", "skipped", "Cancelled"],
+  ["completed", "cancelled", "skipped", "Partial"],
+] as const) {
+  test(`review stage summary is ${expected} for ${ocr}/${assessment}/${verification}`, async ({ page }, info) => {
+    await mock(page, { run: {
+      status: "completed", stages: {
+        ocr: { status: ocr, tokens: 100 }, assessment: { status: assessment, tokens: 20 },
+        verification: { status: verification, tokens: 10 }, summary: { status: "failed", tokens: 0 },
+      },
+      summary: { status: "failed", tokens: 0, limited_context: false },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("OCR", { exact: true }).locator("..")).toContainText(ocr);
+    await expect(details.getByText("Fix verification", { exact: true }).locator("..")).toContainText(verification);
+    await noOverflow(page);
+    if (expected === "Partial" && verification === "failed" || expected === "Failed" && assessment === "failed") {
+      await page.screenshot({ path: `/private/tmp/review-stages-${expected.toLowerCase()}-${info.project.name}.png` });
+    }
+  });
+}
 
 test("parallel stage details preserve an open popover while the run refreshes", async ({ page }, info) => {
   await mock(page, { run: {
@@ -1160,35 +1225,97 @@ for (const withStages of [true, false]) {
   });
 }
 
-test("verification failure explains the saved budget and collapses technical diagnostics", async ({ page }, info) => {
+test("stage copy buttons identify and copy their own diagnostics", async ({ page }, info) => {
+  await mock(page, { run: { status: "failed", publication: "not_applicable", publication_error: null, stages: {
+    ocr: { status: "failed", tokens: 0, error: "OCR transcript" },
+    assessment: { status: "failed", tokens: 0, error: "Assessment transcript" },
+    verification: { status: "failed", tokens: 0, error: "Verification transcript" },
+  } } });
+  await page.goto("/runs/run");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: (value: string) => new Promise<void>((resolve) => {
+        (window as Window & { finishCopy?: () => void }).finishCopy = () => {
+          document.body.dataset.copiedStage = value;
+          resolve();
+        };
+      }),
+    } });
+  });
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  for (const [name, transcript] of [["OCR", "OCR transcript"], ["Assessment", "Assessment transcript"], ["Fix verification", "Verification transcript"]]) {
+    const raw = page.getByRole("region", { name: `${name} technical details`, exact: true, includeHidden: true });
+    await details.locator("details", { has: raw }).locator("summary").click();
+    const copy = details.getByRole("button", { name: `Copy ${name} details`, exact: true });
+    await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    const copying = details.getByRole("button", { name: `Copying ${name} details`, exact: true });
+    await expect(copying).toBeDisabled();
+    await expect(copying).toHaveAttribute("title", `Copying ${name} details`);
+    await page.evaluate(() => (window as Window & { finishCopy?: () => void }).finishCopy!());
+    await expect(page.locator("body")).toHaveAttribute("data-copied-stage", transcript);
+    await expect(copy).toBeEnabled();
+    await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
+  }
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/pr26-stage-copy-labels-${info.project.name}.png` });
+});
+
+for (const [key, name] of [["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const) {
+test(`${name} stage failure keeps only collapsed technical details`, async ({ page }, info) => {
   const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
     + JSON.stringify({ exit_code: 0, status: "completed_with_warnings", summary: { total_tokens: 0, budget_exceeded: true },
       warnings: [{ message: "stopped in batch #0: used 0 tokens + next-file estimate exceeds budget 200000", type: "token_budget_reached" }],
       result_error: "The AI did not return exactly one final assessment.", diagnostics: "Saved diagnostics. ".repeat(300) });
   await mock(page, { run: { status: "cancelled", publication: "not_applicable", publication_error: null, stages: {
     ocr: { status: "cancelled", tokens: null }, assessment: { status: "cancelled", tokens: 0 },
-    verification: { status: "failed", tokens: 0, error }, summary: { status: "completed", tokens: 300 },
+    verification: { status: "cancelled", tokens: 0 }, summary: { status: "completed", tokens: 300 },
+    [key]: { status: "failed", tokens: 0, error },
   } } });
   await page.goto("/runs/run");
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  const alert = details.getByRole("alert");
-  await expect(alert).toContainText("Verification token limit reached");
-  await expect(alert).toContainText("stopped before contacting the AI");
-  await expect(alert).toContainText("saved limit of 200,000 tokens");
-  await expect(alert).toContainText("Start a new review to use current settings.");
-  await expect(alert).not.toContainText("exit_code");
-  const raw = details.getByRole("region", { name: "Verification technical details", includeHidden: true });
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  const raw = details.getByRole("region", { name: `${name} technical details`, includeHidden: true });
   await expect(raw).toBeHidden();
   await noOverflow(page);
-  await page.screenshot({ path: `/tmp/verification-error-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: `/private/tmp/stage-${key}-technical-details-${info.project.name}.png` });
   const disclosure = details.locator("summary", { hasText: "Technical details" });
+  await expect(disclosure).toHaveCSS("font-size", "12px");
   await disclosure.focus();
   await disclosure.press("Enter");
   await expect(raw).toBeVisible();
   expect(await raw.textContent()).toBe(error);
+  const copy = details.getByRole("button", { name: `Copy ${name} details`, exact: true });
+  await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
+  if (info.project.name === "desktop") {
+    await page.mouse.move(0, 0);
+    await expect(copy).toHaveCSS("opacity", "0");
+    await raw.hover();
+    await expect(copy).toHaveCSS("opacity", "1");
+    await page.mouse.move(0, 0);
+    await raw.focus();
+  }
+  await expect(copy).toHaveCSS("opacity", "1");
+  const textBounds = await raw.boundingBox();
+  const copyBounds = await copy.boundingBox();
+  expect(copyBounds!.x).toBeGreaterThanOrEqual(textBounds!.x);
+  expect(copyBounds!.y).toBeGreaterThanOrEqual(textBounds!.y);
+  expect(copyBounds!.x + copyBounds!.width).toBeLessThanOrEqual(textBounds!.x + textBounds!.width);
+  expect(copyBounds!.y + copyBounds!.height).toBeLessThanOrEqual(textBounds!.y + textBounds!.height);
+  await page.screenshot({ path: `/private/tmp/stage-${key}-technical-details-expanded-${info.project.name}.png` });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value: string) => { document.body.dataset.copiedStage = value; },
+    } });
+  });
+  await copy.click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied-stage", error);
   await noOverflow(page);
 });
+}
 
 test("PR overview keeps details in the status row and retries synchronization without starting a review", async ({ page }, info) => {
   const requests = await mock(page, {
@@ -1215,7 +1342,10 @@ test("PR overview keeps details in the status row and retries synchronization wi
   await expect(details.getByText("1,234 tokens", { exact: true })).toBeVisible();
   await expect(details.getByRole("link", { name: "View PR overview" })).toHaveAttribute("href", /#issuecomment-10$/);
   await expect(details.getByText("GitHub: Update failed")).toBeVisible();
-  await expect(details.getByRole("alert").filter({ hasText: "GitHub rate limit reached." })).toBeVisible();
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  await expect(details.getByRole("region", { name: "Summary technical details", includeHidden: true })).toBeHidden();
+  await details.locator("summary", { hasText: "Technical details" }).click();
+  await expect(details.getByRole("region", { name: "Summary technical details" })).toHaveText("GitHub rate limit reached.");
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-details-${info.project.name}.png`, fullPage: true });
   await expect(details.getByRole("button", { name: "Retry summary generation" })).toHaveCount(0);
@@ -1265,8 +1395,39 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   await summary.press("Enter");
   const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
-  await expect(details.getByRole("alert").filter({ hasText: "Summary generation was interrupted." })).toBeVisible();
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  await details.locator("summary", { hasText: "Technical details" }).click();
+  await expect(details.getByRole("region", { name: "Summary technical details" })).toHaveText("Summary generation was interrupted.");
   await expect(details.getByRole("button", { name: /Retry (summary generation|GitHub sync)/ })).toHaveCount(0);
+});
+
+test("PR summary errors and warnings stay in copyable technical details", async ({ page }, info) => {
+  const errors = ["Summary generation failed: " + "diagnostic ".repeat(500), "Diagram validation failed.", "GitHub synchronization failed."];
+  await mock(page, { run: { status: "completed", summary: {
+    status: "failed", tokens: 100, limited_context: false, error: errors[0], diagram_warning: errors[1],
+  } }, overview: { summary_error: errors[2] } });
+  await page.goto("/runs/run");
+  await page.getByRole("button", { name: "PR summary details: Sync failed", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  await expect(details.getByRole("alert")).toHaveCount(0);
+  const raw = details.getByRole("region", { name: "Summary technical details", includeHidden: true });
+  await expect(raw).toBeHidden();
+  await page.screenshot({ path: `/private/tmp/summary-technical-details-${info.project.name}.png` });
+  const disclosure = details.locator("summary", { hasText: "Technical details" });
+  await expect(disclosure).toHaveCSS("font-size", "12px");
+  await disclosure.focus();
+  await disclosure.press("Enter");
+  await expect(raw).toBeVisible();
+  expect(await raw.textContent()).toBe(errors.join("\n\n"));
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value: string) => { document.body.dataset.copiedSummary = value; },
+    } });
+  });
+  await details.getByRole("button", { name: "Copy Summary details", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied-summary", errors.join("\n\n"));
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/summary-technical-details-expanded-${info.project.name}.png` });
 });
 
 test("failed PR summary retries generation separately and removes recovery after success", async ({ page }) => {
@@ -1565,8 +1726,8 @@ test("repository outdated reviews remain distinct from running reviews and page 
   ];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22?review=outdated");
-  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(/outdated/i);
-  await expect(page.getByRole("link", { name: /Still running/ })).toContainText("A review is still running");
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(/outdated/i);
+  await expect(page.getByRole("link", { name: /Still running/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("A review is still running");
   await page.goto("/repositories/22?state=closed&review=running");
   await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
@@ -1921,18 +2082,79 @@ test("run resolved tab preserves verification history and a finding's current st
   expect(requests).toEqual([]);
 });
 
-test("run resolved tab waits for GitHub confirmation and updates its count", async ({ page }) => {
+for (const status of ["running", "completed"] as const) {
+test(`run resolved tab catches late confirmations after opening a ${status} review`, async ({ page }) => {
+  await page.clock.install();
   const resolved: Schema["FindingOut"][] = [];
-  await mock(page, { resolved, occurrences: [], run: { status: "running", progress: { verification: { pending: 1, resolved: 0, selected: 1 } } } });
+  const verification = { pending: 2, resolved: 0, selected: 2 };
+  const currentRun: Partial<Run> = { status, progress: { verification } };
+  const mutations = await mock(page, { resolved, occurrences: [], run: currentRun });
+  let reads = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/runs/run/resolved") reads++;
+  });
   await page.goto("/runs/run?tab=resolved");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("heading", { name: "No confirmed resolutions yet", exact: true })).toBeVisible();
   await expect(page.getByText("Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved.")).toBeVisible();
+  currentRun.status = "completed";
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("heading", { name: "No findings resolved by this run", exact: true })).toBeVisible();
+  const cards = page.getByRole("region", { name: "Findings resolved by this run", exact: true }).locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(0);
   resolved.push({ ...finding, status: "resolved", sync_intent: null });
-  await page.reload();
+  verification.pending = 1;
+  verification.resolved = 1;
+  await page.clock.runFor(5500);
   await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("button")).toContainText("Resolved");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(1);
+  resolved.push({ ...finding, id: "last-resolution", status: "resolved", sync_intent: null });
+  verification.pending = 0;
+  verification.resolved = 2;
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("tab", { name: "Resolved 2", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(2);
+  const settledReads = reads;
+  await page.clock.runFor(11000);
+  expect(reads).toBe(settledReads);
+  expect(mutations).toEqual([]);
   await noOverflow(page);
+});
+}
+
+test("late resolutions refresh loaded pages without resetting resolved filters", async ({ page }) => {
+  await page.clock.install();
+  const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${index}`,
+    path: `src/sync-${index}.ts`, status: "resolved", sync_intent: null }));
+  const mutations = await mock(page, { resolved, run: { status: "completed" } });
+  const requests: URLSearchParams[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/runs/run/resolved") requests.push(url.searchParams);
+  });
+  await page.goto("/runs/run?tab=resolved&resolved_q=sync&resolved_severity=high");
+  const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
+  const cards = list.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  resolved.push({ ...finding, id: "new-resolution", path: "src/sync-new.ts", created_at: "2026-10-06T13:20:00Z", status: "resolved", sync_intent: null });
+  resolved.push({ ...finding, id: "unmatched-resolution", path: "src/other.ts", severity: "low", status: "resolved", sync_intent: null });
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("tab", { name: "Resolved 25", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.clock.runFor(5500);
+  await expect(cards).toHaveCount(20);
+  await expect(cards.first()).toContainText("src/sync-new.ts");
+  await expect(list.getByRole("status")).toHaveText("20 of 24 shown");
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("sync");
+  expect(requests.at(-1)?.get("page_size")).toBe("20");
+  expect(requests).toHaveLength(3);
+  expect(requests.every((params) => params.get("q") === "sync" && params.get("severity") === "high")).toBe(true);
+  const settledReads = requests.length;
+  await page.clock.runFor(11000);
+  expect(requests).toHaveLength(settledReads);
+  expect(mutations).toEqual([]);
 });
 
 test("resolved findings use independent backend filters and reset pagination", async ({ page }, info) => {
@@ -1967,7 +2189,7 @@ test("resolved findings use independent backend filters and reset pagination", a
   await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
   await expect(cards).toHaveCount(20);
   await expect(list.getByRole("status")).toHaveText("20 of 23 shown");
-  expect(requests.at(-1)?.get("page")).toBe("2");
+  expect(requests.at(-1)?.get("page_size")).toBe("20");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Low/ }).click();
@@ -1987,7 +2209,7 @@ test("resolved findings use independent backend filters and reset pagination", a
 });
 
 for (const status of ["running", "completed"] as const) {
-  test(`resolved findings polling respects ${status} run state`, async ({ page }) => {
+  test(`resolved findings avoid unchanged requests for a ${status} run`, async ({ page }) => {
     await page.clock.install();
     await mock(page, { run: { status }, resolved: [] });
     let reads = 0;
@@ -1998,8 +2220,7 @@ for (const status of ["running", "completed"] as const) {
     await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("heading")).toBeVisible();
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.clock.runFor(15000);
-    if (status === "running") await expect.poll(() => reads).toBeGreaterThan(1);
-    else expect(reads).toBe(1);
+    expect(reads).toBe(1);
   });
 }
 
@@ -2009,7 +2230,7 @@ test("resolved pages preserve loaded cards on failure and hide them on access de
   let failure = 500;
   await page.route("**/api/v1/runs/run/resolved?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
-    return failure && Number(params.get("page")) > 1 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
+    return failure && Number(params.get("page_size")) > 10 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
       : route.fulfill({ json: resolvedPage(resolved, params) });
   });
   await page.goto("/runs/run?tab=resolved");
@@ -2101,6 +2322,101 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   expect(requests).toEqual([]);
 });
 
+test("run findings distinguish new findings from repeats and their current status", async ({ page }, info) => {
+  const occurrences = [
+    { finding_id: "new-1", snapshot: { ...finding, content: "First new finding" }, inline_line: 46, is_new: true, current_status: "open" },
+    { finding_id: "new-2", snapshot: { ...finding, content: "Second new finding" }, inline_line: 46, is_new: true, current_status: "open" },
+    { finding_id: "repeat", snapshot: { ...finding, content: "Earlier finding reported again" }, inline_line: 46, is_new: false, current_status: "resolved" },
+  ];
+  await mock(page, {
+    occurrences, finding: { status: "resolved" },
+    run: { status: "completed", publication: "published", publication_error: null, check_pending: false, check_error: null, check_status: "completed", check_conclusion: "success" },
+    assessment: { candidates: 3, new_findings: 2, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 2 },
+  });
+  await page.goto("/runs/run");
+  const summary = page.getByRole("tabpanel").locator("p").first();
+  const list = page.getByRole("region", { name: "Findings at this run", exact: true });
+  await expect(page.getByRole("tab", { name: "Findings", exact: true })).toBeVisible();
+  await expect(summary).toHaveText("2 new findings · 1 resolved repeat");
+  await expect(list.getByText("New finding · Open", { exact: true })).toHaveCount(2);
+  await expect(list.getByText("Resolved repeat", { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/run-findings-${info.project.name}.png`, fullPage: true });
+  await page.getByLabel("Search run findings").fill("Earlier");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(summary).toHaveText("2 new findings · 1 resolved repeat");
+  await list.getByRole("button").click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  for (const status of ["open", "dismissed"]) {
+    occurrences[2].current_status = status;
+    await page.goto("/runs/run");
+    await expect(summary).toHaveText(`2 new findings · 1 ${status} repeat`);
+    await expect(list.getByText("Resolved repeat", { exact: true })).toHaveCount(0);
+  }
+  occurrences[1].is_new = false;
+  occurrences[1].current_status = "dismissed";
+  await page.reload();
+  await expect(summary).toHaveText("1 new finding · 2 dismissed repeats");
+});
+
+test("run finding result filters combine with other filters and survive navigation", async ({ page }, info) => {
+  const occurrences = [
+    { finding_id: "new", snapshot: { ...finding, content: "New defect" }, inline_line: 46, is_new: true, current_status: "open" },
+    { finding_id: "open", snapshot: { ...finding, content: "Open repeated defect", severity: "medium" }, inline_line: 46, is_new: false, current_status: "open" },
+    { finding_id: "resolved", snapshot: { ...finding, content: "Resolved repeated defect" }, inline_line: 46, is_new: false, current_status: "resolved" },
+    { finding_id: "dismissed", snapshot: { ...finding, content: "Dismissed repeated defect" }, inline_line: 46, is_new: false, current_status: "dismissed" },
+    { finding_id: "legacy", snapshot: finding, inline_line: 46, is_new: null, current_status: "open" },
+    { finding_id: "unknown", snapshot: finding, inline_line: 46, is_new: false, current_status: null },
+  ];
+  await mock(page, { occurrences, assessment: { candidates: 0, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 0 } });
+  await page.goto("/runs/run?assessment_outcome=withheld&outcome=invalid");
+  const list = page.getByRole("region", { name: "Findings at this run", exact: true });
+  await expect(list.getByRole("button")).toHaveCount(6);
+  await expect(page).toHaveURL((url) => !url.searchParams.has("outcome"));
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Result", exact: true }).getByRole("checkbox")).toHaveCount(6);
+  await page.getByRole("checkbox", { name: /^Resolved repeats/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved repeats/ })).toBeChecked();
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/run-finding-filters-${info.project.name}.png`, fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Edit Result: Resolved repeats", exact: true })).toBeFocused();
+  await expect(page).toHaveURL((url) => url.searchParams.get("outcome") === "resolved_repeat" && url.searchParams.get("assessment_outcome") === "withheld");
+  await page.reload();
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("tab", { name: /^Assessment/ }).click();
+  await expect(page.getByRole("button", { name: "Edit Result: Withheld", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Findings", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Result: Resolved repeats", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^New findings/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^New findings/ })).toBeChecked();
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  await page.goBack();
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.goForward();
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await page.getByLabel("Search run findings").fill("New defect");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Medium/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Medium/ })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
+  await page.getByRole("tabpanel").getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(6);
+  await expect(page.getByLabel("Search run findings")).toHaveValue("");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("outcome") && !url.searchParams.has("severity") && url.searchParams.get("assessment_outcome") === "withheld");
+  for (const [value, name] of [["open_repeat", "Open repeated defect"], ["dismissed_repeat", "Dismissed repeated defect"], ["recorded", "Recorded finding"], ["repeated", "Repeated finding"]]) {
+    await page.goto(`/runs/run?outcome=${value}`);
+    await expect(list.getByRole("button")).toHaveCount(1);
+    await expect(list.getByRole("button")).toContainText(name);
+  }
+});
+
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
   const occurrences = Array.from({ length: 6 }, (_, index) => ({
     finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,
@@ -2125,7 +2441,8 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByRole("tooltip")).toHaveCount(0);
   await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
   await expect(page.getByText(/7 of 13 findings verified/)).not.toBeVisible();
-  if (info.project.name === "desktop") expect((await page.getByRole("tab", { name: "Findings 6" }).boundingBox())!.y).toBeLessThan(350);
+  await expect(page.getByText("6 recorded findings", { exact: true })).toBeVisible();
+  if (info.project.name === "desktop") expect((await page.getByRole("tab", { name: "Findings", exact: true }).boundingBox())!.y).toBeLessThan(350);
   await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveAttribute("href", "/pulls/pr");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
@@ -2139,7 +2456,7 @@ test("review run workspace filters saved findings and separates original evidenc
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: `../.impeccable/review/run-workspace-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
   }
-  await page.getByRole("tab", { name: "Findings 6" }).focus();
+  await page.getByRole("tab", { name: "Findings", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
@@ -2155,7 +2472,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByRole("tabpanel")).toContainText(run.head_sha);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/run-details-${info.project.name}.png`, fullPage: true, animations: "disabled" });
-  await page.getByRole("tab", { name: "Findings 6" }).click();
+  await page.getByRole("tab", { name: "Findings", exact: true }).click();
   await page.getByRole("textbox", { name: "Search run findings" }).fill("handler-6");
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search" }).click();
@@ -3512,7 +3829,7 @@ test("oversized review explains its outcome and links to editable limits through
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
   await page.goto("/repositories");
-  await expect(page.getByRole("link", { name: /Add retry handling/ })).toContainText(reason);
+  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(reason);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
   await page.getByRole("tab", { name: /Run history/ }).click();
@@ -3816,7 +4133,11 @@ test("assessment search keeps its debounce deadline when polling updates the lis
   await expect(page.getByRole("region", { name: "Candidate assessment", exact: true }).getByRole("button", { name: /retry loop has no upper bound/ })).toBeVisible();
   await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "assessment");
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  candidates[0].progress_phase = "validating";
+  const parentPoll = page.waitForResponse((response) => response.url().endsWith("/api/v1/runs/run"));
   await page.clock.runFor(6000);
+  await (await parentPoll).finished();
+  await page.clock.runFor(50);
   await expect.poll(() => reads).toBe(2);
   await page.getByLabel("Search assessments", { exact: true }).fill("Refreshed");
   await page.clock.runFor(150);
@@ -3954,7 +4275,7 @@ for (const failure of assessmentErrors) {
         writeText: async (value: string) => { document.body.dataset.copiedAssessment = value; },
       } });
     });
-    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", failure.error);
     await expect(page.getByText("Assessment details copied", { exact: true })).toBeVisible();
     await page.evaluate(() => {
@@ -3962,8 +4283,9 @@ for (const failure of assessmentErrors) {
         writeText: async () => { throw new Error("Clipboard denied"); },
       } });
     });
-    await sheet.getByRole("button", { name: "Copy details", exact: true }).click();
+    await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "Copy Assessment details", exact: true })).toBeEnabled();
     expect(await raw.textContent()).toBe(failure.error);
     await raw.focus();
     await expect(raw).toBeFocused();
@@ -4066,6 +4388,7 @@ for (const status of [401, 403, 404]) {
     const sheet = page.getByRole("dialog", { name: "Finding details" });
     await expect(sheet).toContainText(finding.content);
     denied = true;
+    candidate.progress_phase = "validating";
     await page.clock.fastForward(5000);
     await expect(sheet.getByRole("alert")).toContainText("Candidate unavailable");
     await expect(sheet).toContainText(finding.content);
@@ -4107,7 +4430,7 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await list.getByRole("button", { name: "Load more assessments" }).click();
   await expect(cards).toHaveCount(20);
   await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
-  expect(requests.some((params) => params.get("page") === "2")).toBe(true);
+  expect(requests.some((params) => params.get("page_size") === "20")).toBe(true);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
   await page.getByLabel("Search type options", { exact: true }).fill("custom");
@@ -4303,6 +4626,28 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
     nextStep: "Inspect the error and file results in the run details",
   },
 ];
+
+for (const publication of ["not_applicable", "failed"] as const) {
+  for (const path of ["/", "/repositories/22"]) {
+    test(`cancelled review rows omit cancellation explanation on ${path} with ${publication}`, async ({ page }, info) => {
+      const currentRun = { ...run, status: "cancelled", publication };
+      await mock(page, { run: currentRun });
+      await page.route("**/api/v1/pulls?**", (route) => {
+        const data = repositoryPage([{ ...pr, latest_run: currentRun }], new URLSearchParams("state=all"));
+        return route.fulfill({ json: { ...data, groups: [{ ...data.groups[0], group: "all" }] } });
+      });
+      await page.goto(path);
+      const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
+      await expect(row.getByText("cancelled", { exact: true })).toBeVisible();
+      await expect(row).not.toContainText("This review was cancelled before it finished.");
+      if (publication === "failed") await expect(row).toContainText("Publication failed");
+      await noOverflow(page);
+      if (publication === "not_applicable") {
+        await page.screenshot({ path: `/private/tmp/mortis-cancelled-row-${path === "/" ? "inbox" : "repository"}-${info.project.name}.png`, fullPage: true });
+      }
+    });
+  }
+}
 
 for (const example of feedbackCases) {
   test(`review feedback: ${example.name}`, async ({ page }) => {
@@ -5130,7 +5475,7 @@ test("run omits verification summary and orders assessment before coverage", asy
   } } } });
   await page.goto("/runs/run");
   await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
-  await expect(page.getByRole("tablist").getByRole("tab")).toHaveText(["Findings 1", "Resolved 0", "Assessment", "Coverage", "Details"]);
+  await expect(page.getByRole("tablist").getByRole("tab")).toHaveText(["Findings", "Resolved 0", /^Assessment\s*$/, "Coverage", "Details"]);
   await noOverflow(page);
 });
 
@@ -7982,5 +8327,443 @@ for (const kind of ["repository", "findings"] as const) {
     await group.getByRole("button", { name: /Load more/ }).click();
     await expect(page.getByRole("alert")).toContainText("Access denied");
     await expect(rows).toHaveCount(0);
+  });
+}
+
+test("repository configuration defaults bot imports off and saves explicit opt-in", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings");
+  const bots = page.getByRole("switch", { name: "Include bot pull requests", exact: true });
+  await expect(bots).not.toBeChecked();
+  await bots.check();
+  await page.screenshot({ path: `/private/tmp/bot-pr-setting-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ settings: { include_bot_prs: true } });
+});
+
+function auditCandidate(index=0): Schema["CandidateOut"] {
+  return { id:`audit-${index}`,snapshot:{path:`src/audit-${index}.ts`,content:`Audit proposal ${index}`,severity:"high",category:"bug"},status:"running",result:null,finding_id:null,is_new:false,error:null,retryable:false };
+}
+function auditSummary(count=1): Schema["AssessmentSummary"] {
+  return {candidates:count,new_findings:0,repeated_observations:0,rejected_candidates:0,withheld_candidates:0,pending:count,incomplete:0,published_comments:0};
+}
+function finish(candidate: Schema["CandidateOut"]) {
+  candidate.status="completed";
+  candidate.result={verdict:"rejected",relationship:"new",finding_id:null,explanation:"Finished assessment evidence",cause:"",trigger:"",consequence:"",history_explanation:"",contradicts_prior:false,changed_conditions:"",suggestion_supported:false,evidence:[]};
+}
+async function ticks(page: Page,count=3) {
+  for(let i=0;i<count;i++) { const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run")); await page.clock.fastForward(5000); await (await response).finished(); }
+}
+
+test("live refresh updates all loaded assessment cards with the summary",async({page})=>{
+  await page.clock.install();
+  const candidates=Array.from({length:11},(_,i)=>auditCandidate(i));
+  const assessment=auditSummary(11);
+  const writes=await mock(page,{candidates,assessment,run:{status:"running",finished_at:null}});
+  let reads=0;
+  await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=assessment");
+  const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
+  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(10);
+  await list.getByRole("button",{name:"Load more assessments"}).click();
+  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(11);
+  const before=reads;
+  candidates.forEach(finish);assessment.pending=0;assessment.rejected_candidates=11;
+  await ticks(page);
+  expect(reads).toBe(before + 1);
+  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(11);
+  await expect(list.locator("dl div").filter({hasText:"not supported"})).toContainText("11");
+  expect(writes).toEqual([]);
+});
+
+test("live refresh catches final assessment statuses after parent completion",async({page})=>{
+  await page.clock.install();
+  const candidate=auditCandidate();const assessment=auditSummary();
+  const state:Partial<Run>={status:"running",finished_at:null};
+  const writes=await mock(page,{candidates:[candidate],assessment,run:state});
+  let reads=0;await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run");await expect(page.locator("main h1")).toContainText("running");
+  await page.clock.fastForward(2000);
+  await page.getByRole("tab",{name:/Assessment/}).click();
+  const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
+  await expect(list.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  const before=reads;
+  finish(candidate);assessment.pending=0;assessment.rejected_candidates=1;state.status="completed";
+  const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run"));
+  await page.clock.fastForward(3100);await (await response).finished();
+  await expect(page.locator("main h1")).toContainText("completed");
+  await ticks(page);
+  expect(reads).toBe(before + 1);
+  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(1);
+  expect(writes).toEqual([]);
+});
+
+test("live refresh recovers the open assessment drawer from a transient error",async({page})=>{
+  await page.clock.install();const candidate=auditCandidate();
+  await mock(page,{candidates:[candidate],assessment:auditSummary(),run:{status:"running"}});
+  let reads=0;let fail=true;
+  await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary audit outage"}}):r.fallback();});
+  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:/Audit proposal 0/}).click();
+  const sheet=page.getByRole("dialog",{name:"Assessment details"});
+  await expect(sheet.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  await ticks(page,2);await expect(sheet.getByRole("alert")).toContainText("Temporary audit outage");
+  fail=false;finish(candidate);const before=reads;await ticks(page);
+  expect(reads).toBeGreaterThan(before);
+  await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+});
+
+test("live refresh checks the backend when opening a stale terminal assessment",async({page})=>{
+  await page.clock.install();const candidates=Array.from({length:11},(_,i)=>auditCandidate(i));
+  candidates[0].status="failed";candidates[0].error="Old failure";candidates[0].retryable=true;
+  const assessment=auditSummary(11);
+  await mock(page,{candidates,assessment,run:{status:"running"}});
+  let reads=0;await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:"Load more assessments"}).click();
+  await expect(page.locator("[data-slot=finding-card]")).toHaveCount(11);
+  finish(candidates[0]);candidates[0].error=null;candidates[0].retryable=false;
+  await page.getByRole("button",{name:/Audit proposal 0/}).click();
+  const sheet=page.getByRole("dialog",{name:"Assessment details"});
+  await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+  await ticks(page,4);
+  expect(reads).toBe(1);await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
+});
+
+test("live refresh updates Resolved current status when its total stays unchanged",async({page})=>{
+  await page.clock.install();const resolved=[{...structuredClone(finding),status:"resolved"}];
+  await mock(page,{resolved,run:{status:"completed"}});
+  let reads=0;await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=resolved");
+  const list=page.getByRole("region",{name:"Findings resolved by this run"});
+  await expect(list.getByText("Resolved",{exact:true})).toHaveCount(1);
+  resolved[0].status="open";const before=reads;await ticks(page);
+  expect(reads).toBe(before + 1);await expect(list.getByText("Currently open",{exact:true})).toHaveCount(1);
+  await expect(list.getByText("Resolved",{exact:true})).toHaveCount(0);
+});
+
+test("live refresh recovers Resolved from an error after completion",async({page})=>{
+  await page.clock.install();const resolved:Schema["FindingOut"][]=[];
+  await mock(page,{resolved,run:{status:"completed"}});
+  let reads=0;let fail=true;
+  await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary resolved outage"}}):r.fallback();});
+  await page.goto("/runs/run?tab=resolved");await expect(page.getByRole("alert").filter({hasText:"Temporary resolved outage"})).toBeVisible();
+  fail=false;resolved.push({...structuredClone(finding),status:"resolved"});const before=reads;await ticks(page);
+  await expect(page.getByRole("tab",{name:"Resolved 1",exact:true})).toBeVisible();
+  expect(reads).toBe(before + 1);await expect(page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]")).toHaveCount(1);
+});
+
+test("live refresh: late resolutions update two loaded pages after completion",async({page})=>{
+  await page.clock.install();const resolved=Array.from({length:11},(_,i)=>({...structuredClone(finding),id:`resolved-${i}`,status:"resolved",content:`Resolved item ${i}`}));
+  await mock(page,{resolved,run:{status:"completed"}});
+  await page.goto("/runs/run?tab=resolved");await page.getByRole("button",{name:"Load more resolved findings"}).click();
+  const cards=page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]");await expect(cards).toHaveCount(11);
+  resolved.push({...structuredClone(finding),id:"new-resolution",status:"resolved",content:"Late confirmation"});
+  await ticks(page);await expect(cards).toHaveCount(12);await expect(page.getByRole("button",{name:/Late confirmation/})).toBeVisible();
+});
+
+for(const tab of ["findings","coverage","details"]) {
+  test(`live refresh: ${tab} follows parent updates without reload or switching tabs`,async({page})=>{
+    await page.clock.install();
+    const state:Partial<Run>={status:"running",finished_at:null,report:structuredClone(run.report),publication:"pending",publication_error:null,check_error:null};
+    const occurrences=[{finding_id:"finding",snapshot:finding,inline_line:46,is_new:false,current_status:"open"}];
+    await mock(page,{run:state,occurrences});
+    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1")).toContainText("running");
+    state.status="completed";state.finished_at="2026-10-05T13:21:30Z";state.publication="published";state.check_status="completed";state.check_conclusion="success";
+    occurrences[0].current_status="resolved";
+    (state.report as any).manifest.coverage.completed.push({path:"src/late.ts"});
+    await ticks(page,1);await expect(page.locator("main h1")).toContainText("completed");
+    if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"})).toContainText("Resolved repeat");
+    if(tab==="coverage") await expect(page.getByRole("region",{name:"Coverage",exact:true})).toContainText("src/late.ts");
+    if(tab==="details") await expect(page.getByRole("region",{name:"Execution",exact:true})).not.toContainText("Not finished");
+    await expect(page.getByRole("region",{name:"GitHub publication"})).toContainText("Published");
+    await expect(page.getByRole("link",{name:"View check on GitHub: Success"})).toBeVisible();
+  });
+}
+
+test("live refresh: open stage popover follows parent stage updates",async({page})=>{
+  await page.clock.install();const stage=(status:string)=>({status,tokens:null,error:null});
+  const state:any={status:"running",stages:{ocr:stage("completed"),assessment:stage("running"),verification:stage("running")}};
+  await mock(page,{run:state});await page.goto("/runs/run");await page.getByRole("button",{name:"Review stage details",exact:true}).click();
+  const popup=page.getByRole("dialog",{name:"Review stage details",exact:true});
+  await expect(popup.getByText("running",{exact:true})).toHaveCount(2);
+  state.stages.assessment.status="completed";state.stages.verification.status="completed";state.stages.verification.tokens=321;
+  await ticks(page,1);await expect(popup.getByText("completed",{exact:true})).toHaveCount(3);await expect(popup).toContainText("321 tokens");
+});
+
+test("live refresh: open PR summary popover follows generation and sync updates",async({page})=>{
+  await page.clock.install();const state:any={status:"running",summary:{status:"running",tokens:null,error:null}};const overview:any={summary_pending:true};
+  await mock(page,{run:state,overview});await page.goto("/runs/run");await page.getByRole("button",{name:"PR summary details: Running",exact:true}).click();
+  const popup=page.getByRole("dialog",{name:"PR summary details",exact:true});await expect(popup).toContainText("Updating overview");
+  state.summary.status="completed";state.summary.tokens=123;overview.summary_pending=false;overview.summary_url="https://github.com/acme/payments/pull/148";
+  await ticks(page,1);await expect(popup).toContainText("Overview available");await expect(popup).toContainText("123 tokens");
+});
+
+test("live refresh: open finding drawer follows status and verification changes",async({page})=>{
+  await page.clock.install();await mock(page);
+  const current=structuredClone(finding);const verifications:any[]=[];const activities:any[]=[];
+  await page.route("**/api/v1/findings/finding",r=>r.fulfill({json:{finding:current,verifications,activities}}));
+  await page.goto("/runs/run?finding=finding&finding_tab=activity");const sheet=page.getByRole("dialog",{name:"Finding details"});await expect(sheet).toContainText("No activity recorded");
+  current.status="resolved";activities.push({id:"audit",action:"resolved",actor:"Code Mortis",source:"verification",reason:"Automatic audit confirmation",created_at:at});
+  await ticks(page,1);await expect(sheet).toContainText("Automatic audit confirmation");await expect(sheet.getByText("Resolved",{exact:true}).first()).toBeVisible();
+});
+
+for (const count of [10, 50, 100]) {
+  test(`live refresh batches ${count} assessments and stays idle without changes`, async ({ page }, info) => {
+    await page.clock.install();
+    const candidates = Array.from({ length: count }, (_, index) => auditCandidate(index));
+    const writes = await mock(page, { candidates, assessment: auditSummary(count), run: { status: "running" } });
+    const requests: URL[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/v1/runs/run/candidates") requests.push(url);
+    });
+    await page.goto("/runs/run?tab=assessment");
+    const list = page.getByRole("region", { name: "Candidate assessment", exact: true });
+    const cards = list.locator("[data-slot=finding-card]");
+    await expect(cards).toHaveCount(10);
+    for (let loaded = 20; loaded <= count; loaded += 10) {
+      await list.getByRole("button", { name: "Load more assessments" }).click();
+      await expect(cards).toHaveCount(loaded);
+    }
+    const initial = requests.length;
+    await ticks(page);
+    expect(requests).toHaveLength(initial);
+    candidates.at(-1)!.progress_phase = "validating";
+    await ticks(page, 1);
+    await expect(cards.last()).toContainText("Response received; validating");
+    expect(requests).toHaveLength(initial + 1);
+    expect(requests.at(-1)!.searchParams.get("page_size")).toBe(String(count));
+    const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));
+    await cards.last().click();
+    await (await openResponse).finished();
+    const sheet = page.getByRole("dialog", { name: "Assessment details" });
+    await expect(sheet).toContainText("Response received; validating against");
+    await noOverflow(page);
+    if (count === 10) await page.screenshot({ path: `/private/tmp/mortis-refresh-${info.project.name}.png`, fullPage: true });
+    finish(candidates.at(-1)!);
+    candidates.at(-1)!.progress_phase = null;
+    await ticks(page, 1);
+    await expect(sheet).toContainText("Finished assessment evidence");
+    expect(requests).toHaveLength(initial + 2);
+    await ticks(page);
+    expect(requests).toHaveLength(initial + 2);
+    expect(writes).toEqual([]);
+  });
+}
+
+test("live refresh respects Retry-After and recovers after completion without manual retry", async ({ page }) => {
+  await page.clock.install();
+  const resolved = [{ ...structuredClone(finding), status: "resolved", sync_intent: null }];
+  await mock(page, { resolved, run: { status: "completed" } });
+  let reads = 0;
+  await page.route("**/api/v1/runs/run/resolved?**", (route) => {
+    reads++;
+    return reads === 1 ? route.fulfill({ status: 503, headers: { "Retry-After": "12" }, json: { detail: "Temporary outage" } }) : route.fallback();
+  });
+  await page.goto("/runs/run?tab=resolved");
+  await expect(page.getByRole("alert").filter({ hasText: "Temporary outage" })).toBeVisible();
+  await ticks(page, 2);
+  expect(reads).toBe(1);
+  await ticks(page, 1);
+  await expect(page.getByRole("region", { name: "Findings resolved by this run" }).locator("[data-slot=finding-card]")).toHaveCount(1);
+  expect(reads).toBe(2);
+  await ticks(page, 3);
+  expect(reads).toBe(2);
+});
+
+test("live refresh discards a late assessment response after filters change", async ({ page }) => {
+  await page.clock.install();
+  const candidates = Array.from({ length: 11 }, (_, index) => auditCandidate(index));
+  await mock(page, { candidates, assessment: auditSummary(11), run: { status: "running" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get("page_size") === "20" && !params.has("q")) {
+      held = true;
+      const old = candidatePage(candidates, params);
+      await pending;
+      await route.fulfill({ json: old }).catch(() => null);
+    } else await route.fallback();
+  });
+  await page.goto("/runs/run?tab=assessment");
+  await page.getByRole("button", { name: "Load more assessments" }).click();
+  await expect.poll(() => held).toBe(true);
+  await page.getByLabel("Search assessments", { exact: true }).fill("proposal 10");
+  await page.clock.fastForward(400);
+  const cards = page.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 10");
+  release();
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 10");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toHaveValue("proposal 10");
+});
+
+test("live refresh backs off temporary failures to thirty seconds and then recovers", async ({ page }) => {
+  await page.clock.install();
+  await mock(page, { resolved: [{ ...finding, status: "resolved" }], run: { status: "completed" } });
+  const times: number[] = [];
+  await page.route("**/api/v1/runs/run/resolved?**", async (route) => {
+    times.push(await page.evaluate(() => Date.now()));
+    if (times.length === 3) return route.abort("failed");
+    if (times.length <= 5) return route.fulfill({ status: times.length === 1 ? 429 : 503, json: { detail: "Temporary outage" } });
+    return route.fallback();
+  });
+  await page.goto("/runs/run?tab=resolved");
+  await expect(page.getByRole("alert").filter({ hasText: "Temporary outage" })).toBeVisible();
+  for (let cycle = 0; cycle < 24; cycle++) {
+    await ticks(page, 1);
+    await page.clock.runFor(50);
+  }
+  await expect(page.getByRole("region", { name: "Findings resolved by this run" }).locator("[data-slot=finding-card]")).toHaveCount(1);
+  expect(times).toHaveLength(6);
+  for (let index = 1; index < times.length; index++) {
+    const delay = Math.min(5000 * 2 ** (index - 1), 30000);
+    expect(times[index] - times[index - 1]).toBeGreaterThanOrEqual(delay);
+    expect(times[index] - times[index - 1]).toBeLessThan(delay + 5500);
+  }
+});
+
+test("live refresh discards a late drawer response after opening another candidate", async ({ page }) => {
+  await page.clock.install();
+  const candidates = [auditCandidate(0), auditCandidate(1)];
+  await mock(page, { candidates, assessment: auditSummary(2), run: { status: "running" } });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  await page.route("**/api/v1/runs/run/candidates/audit-0", async (route) => {
+    held = true;
+    await pending;
+    await route.fulfill({ json: { ...candidates[0], revision: 0 } }).catch(() => null);
+  });
+  await page.goto("/runs/run?tab=assessment");
+  await page.getByRole("button", { name: /Audit proposal 0/ }).click();
+  await expect.poll(() => held).toBe(true);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).first().click();
+  await page.getByRole("button", { name: /Audit proposal 1/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Audit proposal 1");
+  release();
+  await ticks(page, 1);
+  await expect(sheet).toContainText("Audit proposal 1");
+  await expect(sheet).not.toContainText("Audit proposal 0");
+});
+
+test("live refresh coalesces in-flight changes and updates filtered rows after completion", async ({ page }) => {
+  await page.clock.install();
+  const candidates = Array.from({ length: 20 }, (_, index) => auditCandidate(index));
+  const state: Partial<Run> = { status: "running" };
+  await mock(page, { candidates, assessment: auditSummary(20), run: state });
+  let reads = 0;
+  let hold = false;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
+    reads++;
+    const data = candidatePage(candidates, new URL(route.request().url()).searchParams);
+    if (hold) { hold = false; await pending; }
+    await route.fulfill({ json: data });
+  });
+  await page.goto("/runs/run?tab=assessment&assessment_outcome=pending");
+  const cards = page.locator("[data-slot=finding-card]");
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("button", { name: "Load more assessments" }).click();
+  await expect(cards).toHaveCount(20);
+  await page.getByLabel("Search assessments", { exact: true }).focus();
+  const before = reads;
+  hold = true;
+  finish(candidates[0]);
+  await ticks(page, 1);
+  await expect.poll(() => reads).toBe(before + 1);
+  candidates.forEach(finish);
+  state.status = "completed";
+  await ticks(page, 2);
+  expect(reads).toBe(before + 1);
+  release();
+  await expect(cards).toHaveCount(19);
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(0);
+  expect(reads).toBe(before + 2);
+  candidates[1] = auditCandidate(1);
+  await ticks(page, 1);
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Audit proposal 1");
+  await expect(page.getByLabel("Search assessments", { exact: true })).toBeFocused();
+  await expect(page).toHaveURL(/assessment_outcome=pending/);
+});
+
+for (const resource of ["candidates", "resolved"] as const) {
+  test(`live refresh allows ${resource} pagination during a slow background refresh`, async ({ page }) => {
+    await page.clock.install();
+    const candidates = Array.from({ length: 21 }, (_, index) => auditCandidate(index));
+    const resolved = Array.from({ length: 21 }, (_, index) => ({ ...finding, id: `resolved-${index}`, status: "resolved", sync_version: 0 }));
+    await mock(page, { candidates, resolved, assessment: auditSummary(21), run: { status: "running" } });
+    const sizes: number[] = [];
+    let holdBackground = false;
+    let failNext = false;
+    let holdPage = true;
+    let releaseBackground!: () => void;
+    let releasePage!: () => void;
+    const background = new Promise<void>((resolve) => { releaseBackground = resolve; });
+    let nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
+    await page.route(`**/api/v1/runs/run/${resource}?**`, async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const size = Number(params.get("page_size"));
+      sizes.push(size);
+      const data = resource === "candidates" ? candidatePage(candidates, params) : resolvedPage(resolved, params);
+      if (failNext) {
+        failNext = false;
+        return route.fulfill({ status: 503, json: { detail: "Temporary list failure" } });
+      }
+      if (holdBackground && size === 10) {
+        holdBackground = false;
+        await background;
+      } else if (holdPage && size === 20) {
+        holdPage = false;
+        await nextPage;
+      }
+      await route.fulfill({ json: data }).catch(() => null);
+    });
+    const changeRevision = () => {
+      candidates[0].progress_phase = candidates[0].progress_phase ? null : "validating";
+      resolved[0].sync_version++;
+    };
+    await page.goto(`/runs/run?tab=${resource === "candidates" ? "assessment" : "resolved"}`);
+    const list = page.getByRole("region", { name: resource === "candidates" ? "Candidate assessment" : "Findings resolved by this run", exact: true });
+    const cards = list.locator("[data-slot=finding-card]");
+    const suffix = resource === "candidates" ? "assessments" : "resolved findings";
+    await expect(cards).toHaveCount(10);
+    holdBackground = true;
+    changeRevision();
+    await ticks(page, 1);
+    await expect.poll(() => sizes).toEqual([10, 10]);
+    const loadMore = list.getByRole("button", { name: `Load more ${suffix}` });
+    await expect(loadMore).toBeEnabled();
+    await loadMore.click();
+    await expect.poll(() => sizes).toEqual([10, 10, 20]);
+    await expect(list.getByRole("button", { name: `Loading… ${suffix}` })).toBeDisabled();
+    await expect(cards).toHaveCount(10);
+    releaseBackground();
+    releasePage();
+    await expect(cards).toHaveCount(20);
+
+    failNext = true;
+    changeRevision();
+    await ticks(page, 1);
+    const failure = page.getByRole("alert").filter({ hasText: "Temporary list failure" });
+    await expect(failure).toBeVisible();
+    nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
+    holdPage = true;
+    const retry = list.getByRole("button", { name: `Retry ${suffix}` });
+    await retry.click();
+    await expect.poll(() => sizes).toEqual([10, 10, 20, 20, 20]);
+    await expect(retry).toBeDisabled();
+    await expect(cards).toHaveCount(20);
+    releasePage();
+    await expect(loadMore).toBeEnabled();
+    await expect(failure).toHaveCount(0);
+    await expect(cards).toHaveCount(20);
   });
 }

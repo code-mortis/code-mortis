@@ -49,6 +49,24 @@ def enqueue(db: Session, kind: str, payload: dict) -> Job:
     return job
 
 
+def cancel_review(db: Session, run: ReviewRun):
+    run.cancel_requested, run.status, run.publication, run.finished_at = (
+        True, "cancelled", "partially_published" if run.review_ids else "not_applicable", now(),
+    )
+    verification.skip_pending(db, run, "The run was cancelled.")
+    assessment.withhold_pending(db, run, "The run was cancelled.")
+
+
+def cancel_pr_reviews(db: Session, pr: PullRequest) -> list[ReviewRun]:
+    # Callers hold the PR lock, matching run creation and publication.
+    runs = list(db.scalars(select(ReviewRun).where(
+        ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
+    ).order_by(ReviewRun.id).with_for_update().execution_options(populate_existing=True)))
+    for run in runs:
+        cancel_review(db, run)
+    return runs
+
+
 def connection_snapshot(connection: Connection) -> dict:
     return {
         "id": connection.id,
@@ -77,8 +95,11 @@ def create_run(
     request_key: str | None = None,
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
-    db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update())
+    db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update()
+              .execution_options(populate_existing=True))
     db.refresh(repo)
+    if pr.ignored:
+        raise ValueError("Restore this pull request before starting another review.")
     if request_key:
         prior = db.scalar(select(ReviewRun).where(
             ReviewRun.pr_id == pr.id,
@@ -273,7 +294,8 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     if created_at is not None:
         pr.created_at = created_at
     db.flush()
-    for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))):
+    for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))
+                          .order_by(ReviewRun.id).with_for_update().execution_options(populate_existing=True)):
         if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":
             run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
             run.finished_at = now()
@@ -300,7 +322,7 @@ def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool
                 job.lease_until = now() + timedelta(seconds=7200)
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
-        if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
+        if pr.ignored or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             run.cancel_requested = True
             return True
         if pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open":
@@ -329,7 +351,7 @@ def perform_review(run_id: str, claim: str | None = None):
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         installation = db.get(Installation, repo.installation_id)
-        if not repo.active or not repo.enabled or not installation.active:
+        if pr.ignored or not repo.active or not repo.enabled or not installation.active:
             raise ValueError("The repository or GitHub installation has been disabled.")
         actor_id, trigger = execution_identity(run)
         retry = run.progress.get("assessment_retry")
@@ -562,7 +584,7 @@ def save_analysis(run_id, claim, status, report, comments):
             for position, comment in enumerate(comments):
                 db.add(ReviewCandidate(run_id=run.id, position=position, snapshot=comment))
             db.flush()
-            assessment.record_summary(db, run)
+            assessment.record_summary(db, run, advance_revision=True)
             return
         seen = set()
         for comment in comments:
@@ -847,10 +869,13 @@ def publish_run(run_id: str):
         db.scalar(select(PullRequest).where(PullRequest.id == candidate.pr_id).with_for_update())
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                         .execution_options(populate_existing=True))
-        if not run or run.cancel_requested or not can_publish(run) or run.publication in {"published", "no_new_comments"}:
+        if (not run or run.cancel_requested or run.progress.get("publication_stopped")
+            or not can_publish(run) or run.publication in {"published", "no_new_comments"}):
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
+        if pr.ignored:
+            return
         if not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             raise ValueError("The GitHub installation is no longer active.")
         token = github.installation_token(db, repo.installation_id)
@@ -871,7 +896,9 @@ def publish_run(run_id: str):
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
-            if run.cancel_requested or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
+            if run.progress.get("publication_stopped"):
+                return
+            if pr.ignored or run.cancel_requested or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
                 run.publication = "partially_published" if run.review_ids else "not_applicable"
                 run.publication_error = "GitHub access was removed or publication was cancelled."
                 return
@@ -936,6 +963,8 @@ def publish_run(run_id: str):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
+        if run.progress.get("publication_stopped"):
+            return
         reconcile_threads(db, pr, repo, github.installation_token(db, repo.installation_id))
         run.publication, run.publication_error = "published", None
 

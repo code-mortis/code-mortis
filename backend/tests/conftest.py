@@ -5,6 +5,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from redis import Redis
 from sqlalchemy import text
 
 os.environ.setdefault(
@@ -20,6 +21,7 @@ os.environ["CM_SENTRY_DSN"] = ""
 os.environ["CM_SENTRY_FRONTEND_DSN"] = ""
 os.environ["CM_WEBHOOK_URL"] = "https://relay.example.com/github"
 
+from code_mortis.config import settings
 from code_mortis.db import Base, engine, now, transaction
 from code_mortis.main import app
 from code_mortis.models import (
@@ -49,6 +51,17 @@ def clean_database(database):
         connection.execute(
             text("TRUNCATE " + ", ".join(f'"{table}"' for table in Base.metadata.tables) + " CASCADE")
         )
+
+
+@pytest.fixture(autouse=True)
+def clean_permission_cache():
+    assert settings().redis_url == "redis://127.0.0.1:56389/0", "Use the isolated test Redis"
+    with Redis.from_url(settings().redis_url) as cache:
+        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
+            cache.delete(key)
+        yield
+        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
+            cache.delete(key)
 
 
 @pytest.fixture

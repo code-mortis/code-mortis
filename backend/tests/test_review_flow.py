@@ -19,6 +19,7 @@ from code_mortis.models import (
     Occurrence,
     PullRequest,
     Repository,
+    ReviewCandidate,
     ReviewRun,
     User,
 )
@@ -459,6 +460,24 @@ def test_runs_deduplicate_and_new_commits_supersede(seed):
         assert first.publication == "not_applicable" and second.id != first.id
 
 
+def test_supersession_refreshes_assessment_revision_before_withholding(seed):
+    identity = new_run(assessed=True)
+    with transaction() as db:
+        db.add(ReviewCandidate(id="candidate", run_id=identity, position=0, status="queued", snapshot={}))
+        db.get(ReviewRun, identity).progress = {"assessment_revision": 1}
+    with transaction() as db:
+        stale = db.get(ReviewRun, identity)
+        with transaction() as writer:
+            current = writer.get(ReviewRun, identity)
+            current.progress = {"assessment_revision": 2}
+            writer.get(ReviewCandidate, "candidate").status = "running"
+        assert stale.progress["assessment_revision"] == 1
+        reviews.upsert_pr(db, db.get(Repository, 22), remote("c" * 40))
+        assert stale.status == "superseded"
+        assert stale.progress["assessment_revision"] == 3
+        assert db.get(ReviewCandidate, "candidate").status == "skipped"
+
+
 @pytest.mark.parametrize("trigger", ["manual", "automatic"])
 @pytest.mark.parametrize("status", ["queued", "running", "blocked", "completed", "partial", "failed", "cancelled", "skipped"])
 def test_automatic_edits_reuse_any_existing_revision_attempt(seed, trigger, status):
@@ -498,12 +517,12 @@ def test_settings_saves_and_periodic_scans_refresh_without_an_extra_review(seed,
     jobs.schedule_reconciliation()
     with transaction() as db:
         scans = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "scan_repository"))]
-    assert len(scans) == 3
+    assert len(scans) == 2
     for payload in scans:
         jobs.execute("scan_repository", payload)
     with transaction() as db:
         syncs = [dict(job.payload) for job in db.scalars(select(Job).where(Job.kind == "sync_pr"))]
-    assert len(syncs) >= len(scans)
+    assert len(syncs) == 2
     for payload in syncs:
         jobs.execute("sync_pr", payload)
     with transaction() as db:

@@ -312,3 +312,70 @@ def test_page_requests_revalidate_github_access(seed, client, monkeypatch, path)
     monkeypatch.setattr(github, "authorize_repo", denied)
     response = client.get("/api/v1" + path, params={"page": 2})
     assert response.status_code == 403 and response.json() == {"detail": "Repository access revoked"}
+
+
+def test_run_resource_revisions_track_changes_without_count_changes(seed, github_stub, client):
+    from code_mortis import assessment
+
+    with transaction() as db:
+        current = run(db, db.get(PullRequest, "pr"), "running", "run")
+        current.config = {"assessment_policy": 1}
+        db.add(ReviewCandidate(id="candidate", run_id="run", position=0, snapshot={}, status="queued"))
+        finding = Finding(id="finding", pr_id="pr", fingerprint="f", status="resolved", path="a.py",
+                          content="Finding", start_line=1, end_line=1, last_seen_run_id="run")
+        db.add(finding)
+        db.flush()
+        db.add(Occurrence(id="occurrence", finding_id="finding", run_id="run", snapshot={}))
+        db.flush()
+        db.add(FindingVerification(finding_id="finding", run_id="run", occurrence_id="occurrence",
+                                  head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+        assessment.record_summary(db, current, advance_revision=True)
+    before = client.get("/api/v1/runs/run").json()
+    assert before["assessment_revision"] > 0
+    assert client.get("/api/v1/runs/run/candidates").json()["revision"] == before["assessment_revision"]
+    assert client.get("/api/v1/runs/run/candidates/candidate").json()["revision"] == before["assessment_revision"]
+    assert client.get("/api/v1/runs/run/resolved").json()["revision"] == before["resolved_revision"]
+    with transaction() as db:
+        current = db.get(ReviewRun, "run")
+        candidate = db.get(ReviewCandidate, "candidate")
+        candidate.status, candidate.usage = "running", {"tokens": None, "response_received": True}
+        assessment.record_summary(db, current, advance_revision=True)
+        db.get(Finding, "finding").status = "open"
+    after = client.get("/api/v1/runs/run").json()
+    assert before["assessment"] == after["assessment"]
+    assert before["resolved_count"] == after["resolved_count"] == 1
+    assert after["assessment_revision"] > before["assessment_revision"]
+    assert after["resolved_revision"] != before["resolved_revision"]
+    detail = client.get("/api/v1/runs/run/candidates/candidate").json()
+    assert detail["progress_phase"] == "validating" and detail["result"] is None
+    assert client.get("/api/v1/runs/run/candidates").json()["items"][0]["progress_phase"] == "validating"
+    with transaction() as db:
+        assessment.withhold_pending(db, db.get(ReviewRun, "run"), "Cancelled")
+    final = client.get("/api/v1/runs/run/candidates/candidate").json()
+    assert final["status"] == "skipped" and final["progress_phase"] is None
+    assert final["revision"] > detail["revision"]
+
+
+@pytest.mark.parametrize("size", [10, 50, 100])
+def test_run_lists_fetch_loaded_window_in_one_request(seed, github_stub, client, size):
+    with transaction() as db:
+        current = run(db, db.get(PullRequest, "pr"), "completed", "run")
+        for index in range(101):
+            identity = f"item-{index:03}"
+            db.add(ReviewCandidate(id=identity, run_id="run", position=index, snapshot={}))
+            db.add(Finding(id=identity, pr_id="pr", fingerprint=identity, status="resolved", path="a.py",
+                           content="Finding", start_line=1, end_line=1, last_seen_run_id="run"))
+            db.flush()
+            db.add(Occurrence(id=identity, finding_id=identity, run_id="run", snapshot={}))
+            db.flush()
+            db.add(FindingVerification(finding_id=identity, run_id="run", occurrence_id=identity,
+                                      head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+    for resource in ["candidates", "resolved"]:
+        path = f"/api/v1/runs/run/{resource}"
+        page = client.get(path, params={"page_size": size}).json()
+        assert len(page["items"]) == page["page_size"] == size
+        assert page["has_more"] and page["page"] == 1 and page["registered_total"] == 101
+        next_page = client.get(path, params={"page_size": size, "page": 2}).json()
+        assert not {item["id"] for item in page["items"]} & {item["id"] for item in next_page["items"]}
+        for invalid in [0, 9, 101, 100000]:
+            assert client.get(path, params={"page_size": invalid}).status_code == 422

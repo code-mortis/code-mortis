@@ -118,6 +118,7 @@ class RepoSettings(RunLimits):
     summary_diagram_enabled: bool = False
     ai_fix_prompts_enabled: bool = False
     automatic: bool = True
+    include_bot_prs: bool = False
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
     effort: Literal["low", "medium", "high"] = "medium"
@@ -367,6 +368,10 @@ class RunOut(ORMModel):
     check_synced_at: datetime | None
 
 
+class IgnorePullInput(StrictModel):
+    ignored: bool
+
+
 class PullRequestOut(ORMModel):
     id: str
     repository_id: int
@@ -376,6 +381,7 @@ class PullRequestOut(ORMModel):
     url: str
     state: str
     draft: bool
+    ignored: bool = False
     fork: bool
     head_sha: str
     base_sha: str
@@ -461,6 +467,7 @@ class PRDetail(BaseModel):
     repository: RepositoryOut
     run_count: int
     has_active_run: bool
+    cancellable_run_count: int = 0
     latest_observed_run_id: str | None
     can_write: bool
 
@@ -469,6 +476,8 @@ class OccurrenceOut(ORMModel):
     finding_id: str
     snapshot: dict[str, Any]
     inline_line: int | None
+    is_new: bool | None = None
+    current_status: str | None = None
 
 
 class AssessmentResult(StrictModel):
@@ -504,11 +513,16 @@ class CandidateOut(ORMModel):
     error: str | None
     attempts: list[CandidateAttemptOut] = Field(default_factory=list)
     retryable: bool = False
+    progress_phase: Literal["validating"] | None = None
 
     @model_validator(mode="after")
     def technical_failure(self):
         self.retryable = self.status == "failed" and self.result is None and self.finding_id is None
         return self
+
+
+class CandidateDetail(CandidateOut):
+    revision: int = 0
 
 
 class AssessmentSummary(StrictModel):
@@ -528,6 +542,8 @@ class RunDetail(BaseModel):
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
     resolved_count: int = 0
+    assessment_revision: int = 0
+    resolved_revision: str = ""
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -552,9 +568,11 @@ class CandidateFilters(StrictModel):
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
+    page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
 
 
 class CandidatePage(BaseModel):
+    revision: int = 0
     items: list[CandidateOut]
     total: int
     registered_total: int
@@ -571,9 +589,11 @@ class ResolvedFilters(StrictModel):
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
+    page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
 
 
 class ResolvedPage(BaseModel):
+    revision: str = ""
     items: list[FindingOut]
     total: int
     registered_total: int
@@ -592,6 +612,7 @@ InboxReview = Literal[
 
 
 class InboxFilters(StrictModel):
+    visibility: Literal["visible", "ignored", "all"] = "visible"
     q: str = Field(default="", max_length=256)
     repo: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=100)
     state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["open"], max_length=4)
@@ -615,6 +636,7 @@ class InboxPullOut(ORMModel):
     author: str
     state: str
     draft: bool
+    ignored: bool = False
     fork: bool = False
     head_ref: str = ""
     created_at: datetime | None

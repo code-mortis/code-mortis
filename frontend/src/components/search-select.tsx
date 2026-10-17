@@ -8,7 +8,7 @@ import { cn } from "../lib/utils";
 
 export function SearchSelect({
   id, value, onChange, options, placeholder = "Choose an option", disabled, required,
-  className, "aria-label": ariaLabel, allowCustom = false,
+  className, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, allowCustom = false,
 }: {
   id?: string;
   value: string;
@@ -19,6 +19,7 @@ export function SearchSelect({
   required?: boolean;
   className?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   allowCustom?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -70,7 +71,7 @@ export function SearchSelect({
       <Popover open={open && !disabled} onOpenChange={changeOpen}>
         <PopoverAnchor asChild>
           <div ref={anchor} className={cn("w-full min-w-0", className)}>
-            <ComboboxInput id={id} aria-label={ariaLabel} aria-expanded={open && !disabled} disabled={disabled}
+            <ComboboxInput id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} aria-expanded={open && !disabled} disabled={disabled}
               placeholder={placeholder} className="w-full bg-card dark:bg-card"
               onBlur={() => {
                 commitCustom();

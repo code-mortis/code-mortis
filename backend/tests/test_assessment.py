@@ -310,15 +310,20 @@ def test_rephrasing_and_multiple_candidates_reuse_one_finding(pipeline, client):
         assert assessment.summary(db, db.get(ReviewRun, first)).new_findings == 1
         assert assessment.summary(db, db.get(ReviewRun, first)).repeated_observations == 1
     assert len(pipeline["reviews"]) == 1
+    first_detail = client.get(f"/api/v1/runs/{first}").json()
+    assert len(first_detail["occurrences"]) == 1
+    assert first_detail["occurrences"][0]["is_new"] is True
     detail = client.get(f"/api/v1/runs/{second}").json()
     assert detail["assessment"]["repeated_observations"] == 1
+    assert detail["occurrences"][0]["is_new"] is False
+    assert detail["occurrences"][0]["current_status"] == "open"
     assert "candidates" not in detail
     assert client.get(f"/api/v1/runs/{second}/candidates").json()["items"][0]["finding_id"]
 
 
 @pytest.mark.parametrize("status", ["resolved", "dismissed"])
-def test_closed_finding_is_never_reopened_or_reposted(pipeline, status):
-    run_and_publish()
+def test_closed_finding_is_never_reopened_or_reposted(pipeline, client, status):
+    identity = run_and_publish()
     with transaction() as db:
         db.scalar(select(Finding)).status = status
     pipeline["comments"][0]["content"] = "Same retry loop problem, reworded."
@@ -327,6 +332,22 @@ def test_closed_finding_is_never_reopened_or_reposted(pipeline, status):
         assert db.scalar(select(Finding)).status == status
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
     assert len(pipeline["reviews"]) == 1
+    occurrence = client.get(f"/api/v1/runs/{identity}").json()["occurrences"][0]
+    assert occurrence["is_new"] is True
+    assert occurrence["current_status"] == status
+    with transaction() as db:
+        latest = db.scalar(select(ReviewRun).order_by(ReviewRun.created_at.desc()).limit(1)).id
+    repeated = client.get(f"/api/v1/runs/{latest}").json()["occurrences"][0]
+    assert repeated["is_new"] is False
+    assert repeated["current_status"] == status
+
+
+def test_legacy_run_occurrence_does_not_guess_new_or_repeat(pipeline, client):
+    identity = new_run()
+    reviews.perform_review(identity)
+    occurrence = client.get(f"/api/v1/runs/{identity}").json()["occurrences"][0]
+    assert occurrence["is_new"] is None
+    assert occurrence["current_status"] == "open"
 
 
 def test_distinct_defects_on_same_code_can_both_publish(pipeline):
@@ -1478,3 +1499,46 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
         if failure == "expand":
             assert rows[0].context["sources"]["current"]["helper.py"] == "dependency = 1\n"
     assert counts == {"file_0.py": 1 if failure in {"excluded", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
+
+
+def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch):
+    from time import monotonic, sleep
+
+    pipeline["comments"] = independent_comments(2)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+    identity = new_run(assessed=True)
+    started, release = Event(), Event()
+
+    def api(*args, **kwargs):
+        context = args[4]
+        if context["finding"]["path"] == "file_1.py":
+            started.set()
+            assert release.wait(10)
+        return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
+
+    monkeypatch.setattr(verification, "api_verify", api)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(reviews.perform_review, identity)
+        try:
+            assert started.wait(10)
+            deadline = monotonic() + 5
+            while monotonic() < deadline:
+                with transaction() as db:
+                    rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
+                    if rows[0].progress_phase == "validating":
+                        assert all(row.status == "running" and row.result is None and row.finding_id is None for row in rows)
+                        assert rows[0].usage["tokens"] is None
+                        assert db.get(ReviewRun, identity).progress["assessment_revision"] >= 3
+                        assert db.scalar(select(func.count()).select_from(Finding)) == 0
+                        break
+                sleep(0.01)
+            else:
+                pytest.fail("The completed response was not exposed before its peer finished")
+            assert pipeline["reviews"] == []
+        finally:
+            release.set()
+        future.result(timeout=10)
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)))
+        assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)
