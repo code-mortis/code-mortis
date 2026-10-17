@@ -1226,7 +1226,12 @@ test("stage copy buttons identify and copy their own diagnostics", async ({ page
   await page.goto("/runs/run");
   await page.evaluate(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
-      writeText: async (value: string) => { document.body.dataset.copiedStage = value; },
+      writeText: (value: string) => new Promise<void>((resolve) => {
+        (window as Window & { finishCopy?: () => void }).finishCopy = () => {
+          document.body.dataset.copiedStage = value;
+          resolve();
+        };
+      }),
     } });
   });
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
@@ -1238,7 +1243,13 @@ test("stage copy buttons identify and copy their own diagnostics", async ({ page
     await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
     await copy.focus();
     await page.keyboard.press("Enter");
+    const copying = details.getByRole("button", { name: `Copying ${name} details`, exact: true });
+    await expect(copying).toBeDisabled();
+    await expect(copying).toHaveAttribute("title", `Copying ${name} details`);
+    await page.evaluate(() => (window as Window & { finishCopy?: () => void }).finishCopy!());
     await expect(page.locator("body")).toHaveAttribute("data-copied-stage", transcript);
+    await expect(copy).toBeEnabled();
+    await expect(copy).toHaveAttribute("title", `Copy ${name} details`);
   }
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/pr26-stage-copy-labels-${info.project.name}.png` });
@@ -4202,6 +4213,7 @@ for (const failure of assessmentErrors) {
     });
     await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "Copy Assessment details", exact: true })).toBeEnabled();
     expect(await raw.textContent()).toBe(failure.error);
     await raw.focus();
     await expect(raw).toBeFocused();
