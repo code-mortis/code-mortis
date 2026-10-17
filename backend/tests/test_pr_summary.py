@@ -398,7 +398,7 @@ def test_summary_retry_rechecks_write_permission(seed, overview_api, client, mon
         assert not db.scalar(select(Job.id).where(Job.kind == "generate_summary"))
 
 
-@pytest.mark.parametrize("change", ["newer_run", "new_revision", "disabled", "interrupted"])
+@pytest.mark.parametrize("change", ["newer_run", "new_revision", "disabled", "interrupted", "ignored_and_restored"])
 def test_retry_summary_never_spends_after_invalidation(seed, overview_api, client, monkeypatch, change):
     identity = failed_summary()
     response = client.post(f"/api/v1/runs/{identity}/summary/retry")
@@ -406,6 +406,9 @@ def test_retry_summary_never_spends_after_invalidation(seed, overview_api, clien
     job_id = response.json()["job_id"]
     if change == "newer_run":
         ready_run()
+    elif change == "ignored_and_restored":
+        assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+        assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
     with transaction() as db:
         if change == "new_revision":
             db.get(PullRequest, "pr").head_sha = "f" * 40
@@ -426,7 +429,7 @@ def test_retry_summary_never_spends_after_invalidation(seed, overview_api, clien
         run = db.get(ReviewRun, identity)
         assert run.summary["status"] == "failed"
         assert run.status == "completed" and run.publication == "no_new_comments"
-        assert db.get(Job, job_id).status == "failed"
+        assert db.get(Job, job_id).status == ("done" if change == "ignored_and_restored" else "failed")
 
 
 def test_summary_preserves_sanitized_transport_failure_and_zero_usage(seed, generation, monkeypatch):

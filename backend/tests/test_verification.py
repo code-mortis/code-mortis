@@ -1660,6 +1660,6 @@ def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario,
     assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
     reviews.synchronize_finding(intent)
     row, finding, run = saved()
-    assert run.cancel_requested
+    assert not run.cancel_requested
     assert row.resolution == "superseded" and finding.status == "open" and not finding.desired_status
     assert scenario["mutations"] == []

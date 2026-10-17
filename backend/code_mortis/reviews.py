@@ -868,7 +868,8 @@ def publish_run(run_id: str):
         db.scalar(select(PullRequest).where(PullRequest.id == candidate.pr_id).with_for_update())
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                         .execution_options(populate_existing=True))
-        if not run or run.cancel_requested or not can_publish(run) or run.publication in {"published", "no_new_comments"}:
+        if (not run or run.cancel_requested or run.progress.get("publication_stopped")
+            or not can_publish(run) or run.publication in {"published", "no_new_comments"}):
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
@@ -894,6 +895,8 @@ def publish_run(run_id: str):
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
+            if run.progress.get("publication_stopped"):
+                return
             if pr.ignored or run.cancel_requested or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
                 run.publication = "partially_published" if run.review_ids else "not_applicable"
                 run.publication_error = "GitHub access was removed or publication was cancelled."
@@ -959,6 +962,8 @@ def publish_run(run_id: str):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
+        if run.progress.get("publication_stopped"):
+            return
         reconcile_threads(db, pr, repo, github.installation_token(db, repo.installation_id))
         run.publication, run.publication_error = "published", None
 

@@ -1,5 +1,6 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 from alembic import command
@@ -147,14 +148,17 @@ def test_ignore_blocks_retries_publication_and_stale_run_creation(seed, github_s
     assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
     reviews.publish_run(identity)
     with transaction() as db:
-        assert db.get(ReviewRun, identity).cancel_requested
+        review = db.get(ReviewRun, identity)
+        assert not review.cancel_requested and review.progress["publication_stopped"]
 
 
-def test_publication_retry_refreshes_cancellation_before_lock(seed, github_stub, client, monkeypatch):
-    identity = new_run()
+@pytest.mark.parametrize("suffix,kind", [("publish", "publish"), ("summary/retry", "generate_summary")])
+def test_retry_refreshes_cancellation_before_lock(seed, github_stub, client, monkeypatch, suffix, kind):
+    identity = new_run(overview=True)
     with transaction() as db:
         review = db.get(ReviewRun, identity)
         review.status, review.publication = "completed", "failed"
+        review.summary = {"status": "failed"}
     original_access = api.review_pr_access
 
     def cancel_before_lock(*args):
@@ -163,11 +167,102 @@ def test_publication_retry_refreshes_cancellation_before_lock(seed, github_stub,
         return original_access(*args)
 
     monkeypatch.setattr(api, "review_pr_access", cancel_before_lock)
-    response = client.post(f"/api/v1/runs/{identity}/publish")
+    response = client.post(f"/api/v1/runs/{identity}/{suffix}")
     assert response.status_code == 409, response.text
     with transaction() as db:
         assert db.get(ReviewRun, identity).publication == "failed"
-        assert not db.scalar(select(Job).where(Job.kind == "publish"))
+        assert not db.scalar(select(Job).where(Job.kind == kind))
+
+
+@pytest.mark.parametrize("status", ["completed", "partial"])
+@pytest.mark.parametrize("summary_status", ["failed", "pending", "running"])
+@pytest.mark.parametrize("publication,review_ids", [("failed", []), ("pending", []), ("publishing", []), ("partially_published", [123])])
+def test_restore_allows_explicit_retries_without_reviving_terminal_work(seed, github_stub, client, monkeypatch, status, summary_status, publication, review_ids):
+    identity = new_run(overview=True)
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        review.status, review.publication, review.review_ids = status, publication, review_ids
+        review.summary = {"status": summary_status, "error": "Interrupted", "tokens": 17}
+        review.progress = {"execution": "old-review", "summary_retry": "old-summary"}
+        review.stages = {"summary": {"status": summary_status, "execution": "old-stage"}}
+    for ignored in [True, True, False]:
+        assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": ignored}).status_code == 200
+        if ignored:
+            for suffix in ["publish", "summary/retry"]:
+                assert client.post(f"/api/v1/runs/{identity}/{suffix}").status_code == 409
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        assert review.status == status and not review.cancel_requested
+        assert review.publication == ("partially_published" if review_ids else "failed")
+        assert review.summary["status"] == "failed" and review.summary["tokens"] == 17
+        assert "summary_retry" not in review.progress and "execution" not in review.progress
+        assert review.stages["summary"].get("execution") is None
+    with monkeypatch.context() as stopped:
+        stopped.setattr(github, "request", lambda *a, **k: pytest.fail("Old publication must stay stopped"))
+        reviews.publish_run(identity)
+    assert client.post(f"/api/v1/runs/{identity}/publish").status_code == 202
+    with transaction() as db:
+        assert not db.get(ReviewRun, identity).progress.get("publication_stopped")
+    assert client.post(f"/api/v1/runs/{identity}/summary/retry").status_code == 202
+
+
+def test_restore_does_not_enable_retries_for_cancelled_review(seed, github_stub, client):
+    identity = new_run(overview=True)
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        review.status, review.publication, review.review_ids = "running", "partially_published", [123]
+        review.summary = {"status": "running"}
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+    assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
+    for suffix in ["retry", "publish", "summary/retry"]:
+        assert client.post(f"/api/v1/runs/{identity}/{suffix}").status_code == 409
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        assert review.status == "cancelled" and review.cancel_requested
+
+
+@pytest.mark.parametrize("interrupt_after", [1, 2, 3])
+def test_ignore_and_restore_stop_inflight_publication_until_explicit_retry(seed, github_stub, client, monkeypatch, interrupt_after):
+    identity = new_run()
+    plan = [{"event": "COMMENT", "body": reviews.marker("run", f"{identity}:{index}")} for index in range(2)]
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        review.status, review.publication, review.publication_plan = "completed", "pending", plan
+    posted, completed = [], 0
+
+    @contextmanager
+    def interrupt_between_transactions():
+        nonlocal completed
+        with transaction() as db:
+            yield db
+        completed += 1
+        if completed == interrupt_after:
+            assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": True}).status_code == 200
+            assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200
+
+    def request(method, path, token, **kwargs):
+        if method == "GET":
+            return remote()
+        posted.append({"id": len(posted) + 1, "body": kwargs["json"]["body"], "user": {"login": "mortis-test[bot]"}})
+        return posted[-1]
+
+    monkeypatch.setattr(reviews, "transaction", interrupt_between_transactions)
+    monkeypatch.setattr(reviews, "reconcile_threads", lambda *a: None)
+    monkeypatch.setattr(github, "pages", lambda *a: posted)
+    monkeypatch.setattr(github, "request", request)
+    reviews.publish_run(identity)
+    assert len(posted) == interrupt_after - 1
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        assert review.progress["publication_stopped"] and not review.cancel_requested
+        assert review.publication == ("partially_published" if posted else "failed")
+    assert client.post(f"/api/v1/runs/{identity}/publish").status_code == 202
+    reviews.publish_run(identity)
+    assert len(posted) == 2
+    with transaction() as db:
+        review = db.get(ReviewRun, identity)
+        assert review.publication == "published" and review.review_ids == [1, 2]
+        assert review.publication_plan == plan
 
 
 def test_ignored_pr_still_syncs_metadata_without_reviewing(seed, github_stub, client, monkeypatch):

@@ -523,13 +523,24 @@ def ignore_pull(pr_id: str, body: IgnorePullInput, db: DB, user: USER):
             ReviewRun.pr_id == pr.id, FindingVerification.resolution.in_(["pending", "applying", "failed"]),
         )))
         # Suppress outstanding work on terminal runs too, including summary retries.
-        for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.id).with_for_update()):
+        for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id).order_by(ReviewRun.id)
+                              .with_for_update().execution_options(populate_existing=True)):
             if (run.publication in {"pending", "publishing", "failed", "partially_published"}
                 or run.summary.get("status") in {"pending", "running"} or run.id in pending_resolutions):
-                run.cancel_requested = True
-                if run.publication not in {"published", "no_new_comments"}:
-                    run.publication = "partially_published" if run.review_ids else "not_applicable"
+                # Invalidate old work without cancelling a finished review's future explicit retries.
+                run.progress = {key: value for key, value in run.progress.items()
+                                if key not in {"execution", "summary_retry"}}
+                run.progress = {**run.progress, "publication_stopped": True}
+                if "summary" in run.stages:
+                    run.stages = {**run.stages, "summary": {**run.stages["summary"], "execution": None}}
+                if not run.cancel_requested and can_publish(run) and run.publication in {"pending", "publishing", "failed", "partially_published"}:
+                    run.publication = "partially_published" if run.review_ids else "failed"
                 pr_summary.interrupt(run)
+        for finding in db.scalars(select(Finding).where(
+            Finding.pr_id == pr.id, Finding.desired_status.is_not(None),
+            Finding.sync_intent["verification_id"].as_string().is_not(None),
+        ).order_by(Finding.id).with_for_update().execution_options(populate_existing=True)):
+            verification.invalidate(db, finding, "Automatic resolution was stopped because the pull request was ignored.")
     db.flush()
     return pr_out(db, pr)
 
@@ -743,6 +754,7 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
     if run.cancel_requested or not can_publish(run) or run.publication not in {"failed", "partially_published"}:
         raise HTTPException(409, "There are no failed GitHub comments to resend for this review. Refresh the page to see its current status.")
     run.publication, run.publication_error = "pending", None
+    run.progress = {key: value for key, value in run.progress.items() if key != "publication_stopped"}
     job = enqueue(db, "publish", {"run_id": run.id})
     return {"job_id": job.id}
 
@@ -765,7 +777,8 @@ def retry_summary_generation(run_id: str, db: DB, user: USER) -> dict:
     if not run:
         raise HTTPException(404, "Review run not found.")
     _, repo, _ = review_pr_access(db, user, run.pr_id)
-    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
+                    .execution_options(populate_existing=True))
     db.refresh(repo)
     try:
         job = pr_summary.retry_generation(db, run, repo, user)
