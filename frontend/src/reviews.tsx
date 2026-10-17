@@ -712,7 +712,7 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
       </Empty>}
       {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
+        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
           {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
         </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry resolved findings</Button>
           : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining resolved findings.</p> : null}
@@ -758,7 +758,7 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
       {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
+        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
           {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
         </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
           : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}

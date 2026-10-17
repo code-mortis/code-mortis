@@ -8671,3 +8671,77 @@ test("live refresh coalesces in-flight changes and updates filtered rows after c
   await expect(page.getByLabel("Search assessments", { exact: true })).toBeFocused();
   await expect(page).toHaveURL(/assessment_outcome=pending/);
 });
+
+for (const resource of ["candidates", "resolved"] as const) {
+  test(`live refresh allows ${resource} pagination during a slow background refresh`, async ({ page }) => {
+    await page.clock.install();
+    const candidates = Array.from({ length: 21 }, (_, index) => auditCandidate(index));
+    const resolved = Array.from({ length: 21 }, (_, index) => ({ ...finding, id: `resolved-${index}`, status: "resolved", sync_version: 0 }));
+    await mock(page, { candidates, resolved, assessment: auditSummary(21), run: { status: "running" } });
+    const sizes: number[] = [];
+    let holdBackground = false;
+    let failNext = false;
+    let holdPage = true;
+    let releaseBackground!: () => void;
+    let releasePage!: () => void;
+    const background = new Promise<void>((resolve) => { releaseBackground = resolve; });
+    let nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
+    await page.route(`**/api/v1/runs/run/${resource}?**`, async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const size = Number(params.get("page_size"));
+      sizes.push(size);
+      const data = resource === "candidates" ? candidatePage(candidates, params) : resolvedPage(resolved, params);
+      if (failNext) {
+        failNext = false;
+        return route.fulfill({ status: 503, json: { detail: "Temporary list failure" } });
+      }
+      if (holdBackground && size === 10) {
+        holdBackground = false;
+        await background;
+      } else if (holdPage && size === 20) {
+        holdPage = false;
+        await nextPage;
+      }
+      await route.fulfill({ json: data }).catch(() => null);
+    });
+    const changeRevision = () => {
+      candidates[0].progress_phase = candidates[0].progress_phase ? null : "validating";
+      resolved[0].sync_version++;
+    };
+    await page.goto(`/runs/run?tab=${resource === "candidates" ? "assessment" : "resolved"}`);
+    const list = page.getByRole("region", { name: resource === "candidates" ? "Candidate assessment" : "Findings resolved by this run", exact: true });
+    const cards = list.locator("[data-slot=finding-card]");
+    const suffix = resource === "candidates" ? "assessments" : "resolved findings";
+    await expect(cards).toHaveCount(10);
+    holdBackground = true;
+    changeRevision();
+    await ticks(page, 1);
+    await expect.poll(() => sizes).toEqual([10, 10]);
+    const loadMore = list.getByRole("button", { name: `Load more ${suffix}` });
+    await expect(loadMore).toBeEnabled();
+    await loadMore.click();
+    await expect.poll(() => sizes).toEqual([10, 10, 20]);
+    await expect(list.getByRole("button", { name: `Loading… ${suffix}` })).toBeDisabled();
+    await expect(cards).toHaveCount(10);
+    releaseBackground();
+    releasePage();
+    await expect(cards).toHaveCount(20);
+
+    failNext = true;
+    changeRevision();
+    await ticks(page, 1);
+    const failure = page.getByRole("alert").filter({ hasText: "Temporary list failure" });
+    await expect(failure).toBeVisible();
+    nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
+    holdPage = true;
+    const retry = list.getByRole("button", { name: `Retry ${suffix}` });
+    await retry.click();
+    await expect.poll(() => sizes).toEqual([10, 10, 20, 20, 20]);
+    await expect(retry).toBeDisabled();
+    await expect(cards).toHaveCount(20);
+    releasePage();
+    await expect(loadMore).toBeEnabled();
+    await expect(failure).toHaveCount(0);
+    await expect(cards).toHaveCount(20);
+  });
+}
