@@ -105,6 +105,7 @@ class AnalyticsReviews(StrictModel):
     scope: AnalyticsScope
     runs: int
     reviewed_prs: int
+    mean_duration_seconds: float | None
     median_duration_seconds: float | None
     duration_samples: int
     outcomes: list[AnalyticsCount]

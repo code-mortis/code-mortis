@@ -13,13 +13,13 @@ export function calendarDate(value: string | null) {
 }
 
 export function analyticsRange(params: URLSearchParams, today = new Date()) {
-  const period = analyticsPeriods.includes(params.get("period") ?? "") ? params.get("period")! : "30";
+  const period = analyticsPeriods.includes(params.get("period") ?? "") ? params.get("period")! : "custom";
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
   const start = new Date(end);
   start.setDate(start.getDate() - (period === "7" ? 7 : period === "90" ? 90 : 30));
   if (period === "custom") {
-    const from = calendarDate(params.get("start"));
-    const to = calendarDate(params.get("end"));
+    const from = calendarDate(params.get("start") ?? localDate(start));
+    const to = calendarDate(params.get("end") ?? localDate(today));
     if (!from || !to || from > to) return { period, error: "Choose a valid start and end date, with the start on or before the end." } as const;
     start.setTime(from.getTime());
     end.setTime(to.getTime());

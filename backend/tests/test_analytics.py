@@ -276,3 +276,16 @@ def test_review_coverage_assessments_and_duration(client):
     assert result["coverage_missing_runs"] == 1
     assert result["assessment_missing_runs"] == 1
     assert [row["count"] for row in result["assessments"]] == [1] * 5
+
+
+@pytest.mark.parametrize(("durations", "expected"), [([], None), ([0], 0), ([60, 120, 360], 180)])
+def test_mean_review_duration_uses_only_valid_finished_samples(client, durations, expected):
+    with transaction() as db:
+        for index, seconds in enumerate(durations):
+            run(db, str(index), finished_at=AT + timedelta(seconds=seconds))
+        run(db, "untimed", started_at=None, finished_at=None)
+        run(db, "negative", finished_at=AT - timedelta(seconds=1))
+        run(db, "active", status="running")
+    result = get(client, "reviews")
+    assert result["mean_duration_seconds"] == expected
+    assert result["duration_samples"] == len(durations)

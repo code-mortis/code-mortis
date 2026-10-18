@@ -13,7 +13,7 @@ const trend = Array.from({ length: 30 }, (_, index) => ({ date: `2026-09-${Strin
 const overview: Schema["AnalyticsOverview"] = { scope, reviewed_prs: 24, findings: 31, resolved: 19, usage: total, trend, severities, categories,
   repositories: [{ id: 22, name: "acme/code-mortis", reviewed_prs: 16, findings: 21, resolved: 14 }, { id: 23, name: "acme/noodle", reviewed_prs: 8, findings: 10, resolved: 5 }] };
 const findings: Schema["AnalyticsFindings"] = { scope, total: 31, unfiltered_total: 31, category_options: categories.map((row) => row.key), severities, categories, statuses: [{ key: "open", count: 10 }, { key: "resolved", count: 19 }, { key: "dismissed", count: 2 }], trend };
-const reviews: Schema["AnalyticsReviews"] = { scope, runs: 28, reviewed_prs: 24, median_duration_seconds: 125, duration_samples: 26,
+const reviews: Schema["AnalyticsReviews"] = { scope, runs: 28, reviewed_prs: 24, mean_duration_seconds: 180, median_duration_seconds: 125, duration_samples: 26,
   outcomes: [{ key: "completed", count: 20 }, { key: "partial", count: 4 }, { key: "failed", count: 2 }, { key: "running", count: 2 }],
   coverage: [{ key: "selected", count: 143 }, { key: "completed", count: 110 }, { key: "reused", count: 20 }, { key: "failed", count: 8 }, { key: "waived", count: 5 }], coverage_missing_runs: 2,
   assessments: [{ key: "new", count: 31 }, { key: "repeated", count: 12 }, { key: "rejected", count: 8 }, { key: "withheld", count: 3 }, { key: "pending", count: 2 }], assessment_missing_runs: 1,
@@ -54,7 +54,29 @@ test("date presets and custom ranges preserve local calendar boundaries", () => 
   expect(analyticsRange(new URLSearchParams("period=custom&start=2026-02-30&end=2026-03-02"), today).error).toBeTruthy();
   expect(analyticsRange(new URLSearchParams("period=custom&start=2026-10-19&end=2026-10-18"), today).error).toBeTruthy();
   expect(analyticsRange(new URLSearchParams("period=all"), today).query?.get("from_at")).toBeNull();
-  expect(analyticsRange(new URLSearchParams("period=invalid"), today).period).toBe("30");
+  const defaults = analyticsRange(new URLSearchParams(), today);
+  expect(defaults.period).toBe("custom");
+  expect(defaults.start).toBe("2026-09-19");
+  expect(defaults.end).toBe("2026-10-18");
+  expect(analyticsRange(new URLSearchParams("period=invalid"), today)).toEqual(defaults);
+});
+
+test("custom dates default to the last 30 days on each new visit", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
+  const requests = await mock(page);
+  await page.goto("/analytics");
+  await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Custom dates");
+  await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 19, 2026");
+  await expect(page.getByRole("button", { name: "Through", exact: true })).toHaveAccessibleDescription("Oct 18, 2026");
+  await expect(page).toHaveURL(/period=custom&start=2026-09-19&end=2026-10-18/);
+  await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
+  expect(requests.at(-1)?.searchParams.get("from_at")).toContain("2026-09-19");
+  expect(requests.at(-1)?.searchParams.get("to_at")).toContain("2026-10-19");
+  await page.clock.setFixedTime(new Date("2026-10-19T12:00:00Z"));
+  await page.reload();
+  await expect(page).toHaveURL(/start=2026-09-19&end=2026-10-18/);
+  await page.goto("/analytics");
+  await expect(page).toHaveURL(/period=custom&start=2026-09-20&end=2026-10-19/);
 });
 
 test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
@@ -73,12 +95,14 @@ test("overview loads only its endpoint and charts offer data tables", async ({ p
 test("repository and period selection survive tabs, reload and browser back", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/analytics");
-  await page.getByRole("button", { name: "Repositories: All", exact: true }).click();
-  await page.getByRole("textbox", { name: "Search repositories" }).fill("noodle");
+  await page.getByRole("group", { name: "Analytics filters", exact: true }).getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Repository", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search repository options" }).fill("noodle");
   await page.getByRole("checkbox", { name: "acme/noodle" }).click();
   await expect(page.getByRole("checkbox", { name: "acme/noodle" })).toBeChecked();
   await page.keyboard.press("Escape");
-  await page.getByLabel("Date range", { exact: true }).selectOption("90");
+  await page.getByRole("combobox", { name: "Date range", exact: true }).fill("90");
+  await page.getByRole("option", { name: "Last 90 days", exact: true }).click();
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Usage by model", exact: true })).toBeVisible();
   await expect(page).toHaveURL(/repo=23/);
@@ -91,24 +115,47 @@ test("repository and period selection survive tabs, reload and browser back", as
 });
 
 test("severity controls open a filtered Findings tab and filters clear", async ({ page }) => {
-  const requests = await mock(page);
+  const requests = await mock(page, (view, params) => view === "findings" && params.has("severity") ? {
+    ...findings, total: 3, statuses: [{ key: "open", count: 1 }, { key: "resolved", count: 2 }, { key: "dismissed", count: 0 }],
+  } : undefined);
   await page.goto("/analytics");
   await page.getByRole("button", { name: "Critical: 3 findings", exact: true }).click();
   await expect(page).toHaveURL(/tab=findings/);
   await expect(page).toHaveURL(/severity=critical/);
-  await expect(page.getByText("31 of 31 findings match")).toBeVisible();
+  await expect(page.locator("#analytics-panel dl > div > dd:first-of-type")).toHaveText(["3", "1", "2", "0"]);
   expect(requests.at(-1)?.searchParams.get("severity")).toBe("critical");
+  await expect(page.getByRole("button", { name: "Edit Severity: Critical", exact: true })).toBeVisible();
+  const filters = page.getByRole("group", { name: "Finding filters", exact: true });
+  await filters.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Category", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search category options", exact: true }).fill("performance");
+  await page.getByRole("checkbox", { name: "Performance", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Performance", exact: true })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/category=performance/);
+  await page.getByRole("button", { name: "Remove Category filter", exact: true }).click();
+  await expect(page).not.toHaveURL(/category=/);
+  await expect(filters.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Clear finding filters", exact: true }).click();
   await expect(page).not.toHaveURL(/severity=/);
+  await expect(page.locator("#analytics-panel dl > div > dd:first-of-type")).toHaveText(["31", "10", "19", "2"]);
 });
 
 test("custom dates validate before requesting and keyboard switches tabs", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   const requests = await mock(page);
   await page.goto("/analytics?period=custom&start=2026-02-30&end=bad");
   await expect(page.getByRole("alert")).toContainText("Choose a valid");
   expect(requests).toHaveLength(0);
-  await page.getByLabel("From", { exact: true }).fill("2026-10-01");
-  await page.getByLabel("Through", { exact: true }).fill("2026-10-18");
+  await page.getByRole("button", { name: "From", exact: true }).click();
+  await page.getByRole("button", { name: /October 1st, 2026/ }).click();
+  await expect(page.getByRole("button", { name: "From", exact: true })).toBeFocused();
+  expect(requests).toHaveLength(0);
+  await page.getByRole("button", { name: "Through", exact: true }).press("Enter");
+  await expect(page.getByRole("button", { name: /October 19th, 2026/ })).toBeDisabled();
+  await page.getByRole("button", { name: /October 18th, 2026/ }).press("Enter");
+  await expect(page.getByRole("button", { name: "Through", exact: true })).toBeFocused();
+  await expect(page).toHaveURL(/start=2026-10-01&end=2026-10-18/);
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Overview", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
@@ -127,15 +174,46 @@ test("permission loss hides cached analytics and offers recovery", async ({ page
   await expect(page.getByRole("button", { name: "Retry analytics", exact: true })).toBeVisible();
 });
 
+test("date controls align, wrap and show themed calendar popovers", async ({ page }, info) => {
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1581, height: 938 });
+  await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
+  await mock(page);
+  await page.goto("/analytics?period=custom&start=2026-09-19&end=2026-10-18");
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const mode of ["light", "dark"]) {
+    await page.evaluate((mode) => localStorage.setItem("theme", mode), mode);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
+    await expect(page.getByText("Review impact and model usage across your repositories.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 19, 2026");
+    if (info.project.name === "desktop") {
+      const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
+      const from = await page.getByRole("button", { name: "From", exact: true }).boundingBox();
+      expect(Math.abs(refresh!.y - from!.y)).toBeLessThan(1);
+    }
+    await page.screenshot({ path: `../.impeccable/review/analytics-filters-${info.project.name}-${mode}.png`, animations: "disabled" });
+    await page.getByRole("button", { name: "From", exact: true }).click();
+    const calendar = page.getByRole("dialog", { name: "From date", exact: true });
+    await expect(calendar.getByRole("button", { name: /September 19th, 2026, selected/ })).toBeFocused();
+    const bounds = await calendar.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `../.impeccable/review/analytics-calendar-${info.project.name}-${mode}.png`, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "From", exact: true })).toBeFocused();
+  }
+});
+
 test("empty activity, filtered findings and unknown tokens remain distinct", async ({ page }) => {
-  await mock(page, (view) => view === "overview" ? { ...overview, reviewed_prs: 0, findings: 0, trend: [] } : view === "findings" ? { ...findings, total: 0 } : view === "usage" ? { ...usage, total: { ...total, tokens: null, mean_per_run: null, mean_per_reviewed_pr: null } } : undefined);
+  await mock(page, (view) => view === "overview" ? { ...overview, reviewed_prs: 0, findings: 0, trend: [] } : view === "findings" ? { ...findings, total: 0, statuses: findings.statuses.map((row) => ({ ...row, count: 0 })) } : view === "usage" ? { ...usage, total: { ...total, tokens: null, mean_per_run: null, mean_per_reviewed_pr: null } } : undefined);
   await page.goto("/analytics");
   await expect(page.getByText("No review activity in this period", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Findings", exact: true }).click();
   await expect(page.getByText("No findings match these filters", { exact: true })).toBeVisible();
+  await expect(page.locator("#analytics-panel dl > div > dd:first-of-type")).toHaveText(["0", "0", "0", "0"]);
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.locator("dl").getByText("Unavailable", { exact: true })).toHaveCount(3);
-  await expect(page.getByRole("status")).toContainText("Partial reporting");
 });
 
 test("charts follow every palette and remain keyboard accessible", async ({ page }) => {
@@ -172,6 +250,8 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-busy", "false");
     await expect(page.locator("[data-slot=chart]").first()).toBeVisible();
+    await expect(page.locator("#analytics-panel dl dt")).toHaveCount(4);
+    await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
     await page.evaluate(async () => {
       await document.fonts.ready;
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -181,9 +261,18 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
       return svg && Math.abs(svg.getBoundingClientRect().width - chart.getBoundingClientRect().width) < 2;
     }))).toBe(true);
     if (tab === "Findings") {
+      await expect(page.locator("#analytics-panel dl dt")).toHaveText(["Findings", "Open", "Resolved", "Dismissed"]);
+      const metrics = await page.locator("#analytics-panel dl").boundingBox();
+      const filters = await page.getByRole("group", { name: "Finding filters", exact: true }).boundingBox();
+      const severity = await page.getByRole("region", { name: "Severity", exact: true }).boundingBox();
+      expect(filters!.y).toBeGreaterThanOrEqual(metrics!.y + metrics!.height);
+      expect(filters!.y + filters!.height).toBeLessThanOrEqual(severity!.y);
       await expect(page.getByRole("tabpanel").getByRole("heading", { level: 2 })).toHaveText(["Severity", "Categories", "Current resolution", "Finding trends"]);
     }
     if (tab === "Reviews") {
+      await expect(page.locator("#analytics-panel dl dt")).toHaveText(["Review runs", "PRs reviewed", "Average review duration", "Contributors"]);
+      await expect(page.locator("#analytics-panel dl > div").filter({ hasText: "Average review duration" })).toContainText("3 min");
+      await expect(page.locator("#analytics-panel dl > div").filter({ hasText: "Contributors" })).toContainText("2");
       const chart = page.getByRole("region", { name: "Assessment outcomes", exact: true }).locator("[data-slot=chart]");
       expect(await chart.evaluate((element) => {
         const box = element.getBoundingClientRect();

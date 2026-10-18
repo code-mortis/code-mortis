@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from statistics import median
+from statistics import mean, median
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -310,6 +310,7 @@ def reviews(scope):
     assessments = scope.db.execute(select(outcome, func.count()).where(ReviewCandidate.run_id.in_(ids)).group_by(outcome)).all()
     return AnalyticsReviews(
         scope=scope.meta, runs=len(runs), reviewed_prs=len(reviewed),
+        mean_duration_seconds=mean(durations) if durations else None,
         median_duration_seconds=median(durations) if durations else None, duration_samples=len(durations),
         outcomes=counts(outcomes), coverage=counts(coverage, ("selected", "completed", "reused", "failed", "waived")),
         coverage_missing_runs=missing, assessments=counts(assessments, ("new", "repeated", "rejected", "withheld", "pending")),

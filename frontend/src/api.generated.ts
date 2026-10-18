@@ -1115,6 +1115,8 @@ export interface components {
             runs: number;
             /** Reviewed Prs */
             reviewed_prs: number;
+            /** Mean Duration Seconds */
+            mean_duration_seconds: number | null;
             /** Median Duration Seconds */
             median_duration_seconds: number | null;
             /** Duration Samples */
