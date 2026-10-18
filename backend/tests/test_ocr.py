@@ -47,6 +47,18 @@ def test_coverage_controls_outcome_and_private_reasoning_is_removed():
         ocr.parse_report(json.dumps(data), 0)
 
 
+@pytest.mark.parametrize("state", ["complete", "partial", "failed", "skipped"])
+def test_review_limit_warning_preserves_results_without_reporting_completion(state):
+    data = report(state)
+    data["warnings"] = [{"type": "review_limit_reached", "file": "main.py",
+                         "message": "reached the aggregate token budget; the grace round completed the task"}]
+    status, saved, comments = ocr.parse_report(json.dumps(data), 0)
+    assert status == ("partial" if state == "complete" else state)
+    assert saved["manifest"] == data["manifest"]
+    assert saved["warnings"] == data["warnings"]
+    assert len(comments) == 1
+
+
 @pytest.mark.parametrize(
     "path", ["/etc/passwd", "../secret", ".git/config", "src/../../secret", "src\\secret"]
 )

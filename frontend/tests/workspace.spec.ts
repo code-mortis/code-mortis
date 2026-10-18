@@ -1119,12 +1119,16 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
   test(`summary waiting preserves its reason: ${reason}`, async ({ page }, info) => {
     await mock(page, { run: {
       status: "running", publication: "pending", publication_error: null,
+      config: { ...run.config, pipeline_version: 2 },
       summary: { status: "pending", tokens: 0, limited_context: false },
       stages: { summary: { status: "waiting", tokens: 0, error: reason } },
     } });
     await page.goto("/runs/run");
-    await page.getByRole("button", { name: "PR summary details: Pending", exact: true }).click();
-    const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(/^waiting$/i);
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText("waiting");
     await expect(details).toContainText("Waiting to generate the summary.");
     await expect(details.getByRole("alert")).toHaveCount(0);
     await details.locator("summary", { hasText: "Technical details" }).click();
@@ -1204,9 +1208,9 @@ for (const [ocr, assessment, verification, expected] of [
     await mock(page, { run: {
       status: "completed", stages: {
         ocr: { status: ocr, tokens: 100 }, assessment: { status: assessment, tokens: 20 },
-        verification: { status: verification, tokens: 10 }, summary: { status: "failed", tokens: 0 },
+        verification: { status: verification, tokens: 10 }, summary: { status: "skipped", tokens: 0 },
       },
-      summary: { status: "failed", tokens: 0, limited_context: false },
+      summary: { status: "skipped", tokens: 0, limited_context: false },
     } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
@@ -1219,6 +1223,63 @@ for (const [ocr, assessment, verification, expected] of [
     if (expected === "Partial" && verification === "failed" || expected === "Failed" && assessment === "failed") {
       await page.screenshot({ path: `/private/tmp/review-stages-${expected.toLowerCase()}-${info.project.name}.png` });
     }
+  });
+}
+
+for (const [summary, expected] of [["completed", "Completed"], ["running", "Running"], ["waiting", "Waiting"],
+  ["pending", "Pending"], ["failed", "Partial"]] as const) {
+  test(`review stages include PR summary ${summary} in the combined status`, async ({ page }) => {
+    await mock(page, { run: { status: "completed", stages: {
+      summary: { status: summary, tokens: 0 }, ocr: { status: "completed", tokens: 100 },
+      assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+    } } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.locator(".font-medium").first()).toHaveText("PR summary");
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
+  });
+}
+
+for (const [summary, expected] of [["completed", "Completed"], ["running", "Running"],
+  ["failed", "Partial"], ["skipped", "Completed"]] as const) {
+  test(`legacy summary status overrides its pending orchestration stage: ${summary}`, async ({ page }) => {
+    await mock(page, { run: {
+      status: summary === "running" ? "running" : "completed",
+      summary: { status: summary, tokens: 0, limited_context: false },
+      stages: {
+        summary: { status: "pending", tokens: 0 }, ocr: { status: "completed", tokens: 100 },
+        assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+      },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
+  });
+}
+
+for (const [summary, expected] of [["waiting", "Waiting"], ["running", "Running"],
+  ["completed", "Completed"], ["failed", "Partial"], ["skipped", "Completed"]] as const) {
+  test(`pipeline summary stage overrides its pending generation status: ${summary}`, async ({ page }) => {
+    await mock(page, { run: {
+      status: "running", config: { ...run.config, pipeline_version: 2 },
+      summary: { status: "pending", tokens: 0, limited_context: false },
+      stages: {
+        summary: { status: summary, tokens: 0 }, ocr: { status: "completed", tokens: 100 },
+        assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+      },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
   });
 }
 
@@ -1390,31 +1451,41 @@ test(`${name} stage failure keeps only collapsed technical details`, async ({ pa
 });
 }
 
-test("PR overview keeps details in the status row and retries synchronization without starting a review", async ({ page }, info) => {
+test("PR summary comes first inside review stages and retries synchronization without starting a review", async ({ page }, info) => {
   const requests = await mock(page, {
-    run: { summary: { status: "completed", tokens: 1234, limited_context: true } },
+    run: { summary: { status: "completed", tokens: 1234, limited_context: true }, stages: {
+      summary: { status: "completed", tokens: 1234 }, ocr: { status: "completed", tokens: 100 },
+      assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+    } },
     overview: { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10", summary_pending: true, summary_error: "GitHub rate limit reached." },
   });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  await expect(publication.getByText("PR summary", { exact: true })).toBeVisible();
-  const trigger = publication.getByRole("button", { name: "PR summary details: Sync failed", exact: true });
+  await expect(publication.getByText("PR summary", { exact: true })).toHaveCount(0);
+  await expect(publication.getByRole("button", { name: /^PR summary details:/ })).toHaveCount(0);
+  const trigger = publication.getByRole("button", { name: "Review stage details", exact: true });
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
   if (info.project.name === "desktop") {
     const comments = await publication.getByText("GitHub comments", { exact: true }).boundingBox();
-    const summary = await publication.getByText("PR summary", { exact: true }).boundingBox();
-    expect(summary!.y).toBeCloseTo(comments!.y, 0);
+    const stages = await publication.getByText("Review stages", { exact: true }).boundingBox();
+    expect(stages!.y).toBeCloseTo(comments!.y, 0);
   }
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
   await trigger.focus();
   await page.keyboard.press("Enter");
-  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details.getByText(/^(PR summary|OCR|Assessment|Fix verification)$/)).toHaveText(["PR summary", "OCR", "Assessment", "Fix verification"]);
   await expect(details.getByText("1,234 tokens", { exact: true })).toBeVisible();
-  await expect(details.getByRole("link", { name: "View PR overview" })).toHaveAttribute("href", /#issuecomment-10$/);
-  await expect(details.getByText("GitHub: Update failed")).toBeVisible();
+  const summaryLink = details.getByRole("link", { name: "PR summary", exact: true });
+  await expect(summaryLink).toHaveAttribute("href", /#issuecomment-10$/);
+  await expect(summaryLink).toHaveAttribute("target", "_blank");
+  await expect(summaryLink.locator("svg")).toHaveCount(1);
+  await expect(summaryLink).toHaveCSS("text-decoration-line", "none");
+  await expect(details.getByText("View PR overview", { exact: true })).toHaveCount(0);
+  await expect(details.getByText(/^GitHub:/)).toHaveCount(0);
   await expect(details.getByRole("alert")).toHaveCount(0);
   await expect(details.getByRole("region", { name: "Summary technical details", includeHidden: true })).toBeHidden();
   await details.locator("summary", { hasText: "Technical details" }).click();
@@ -1438,13 +1509,11 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  const summary = publication.getByRole("button", { name: "PR summary details: Failed", exact: true });
   const stages = publication.getByRole("button", { name: "Review stage details", exact: true });
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
     [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
     [stages, "View stage details."],
-    [summary, "View summary details."],
   ] as const;
   for (const [trigger, text] of tooltips) {
     if (info.project.name === "desktop") {
@@ -1455,23 +1524,22 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
     await trigger.focus();
     await expect(page.getByRole("tooltip")).toHaveText(text);
     await noOverflow(page);
-    if (trigger === summary) await page.screenshot({ path: `/tmp/run-status-tooltip-${info.project.name}.png` });
+    if (trigger === stages) await page.screenshot({ path: `/tmp/run-status-tooltip-${info.project.name}.png` });
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
   }
   await stages.press("Enter");
   const stageDetails = page.getByRole("dialog", { name: "Review stage details", exact: true });
   await expect(stageDetails.getByText("OCR", { exact: true })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(stageDetails).not.toBeVisible();
-  await expect(stages).toBeFocused();
-  await summary.press("Enter");
-  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  const details = stageDetails;
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
   await expect(details.getByRole("alert")).toHaveCount(0);
   await details.locator("summary", { hasText: "Technical details" }).click();
   await expect(details.getByRole("region", { name: "Summary technical details" })).toHaveText("Summary generation was interrupted.");
   await expect(details.getByRole("button", { name: /Retry (summary generation|GitHub sync)/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(details).not.toBeVisible();
+  await expect(stages).toBeFocused();
 });
 
 test("PR summary errors and warnings stay in copyable technical details", async ({ page }, info) => {
@@ -1480,8 +1548,8 @@ test("PR summary errors and warnings stay in copyable technical details", async 
     status: "failed", tokens: 100, limited_context: false, error: errors[0], diagram_warning: errors[1],
   } }, overview: { summary_error: errors[2] } });
   await page.goto("/runs/run");
-  await page.getByRole("button", { name: "PR summary details: Sync failed", exact: true }).click();
-  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
   await expect(details.getByRole("alert")).toHaveCount(0);
   const raw = details.getByRole("region", { name: "Summary technical details", includeHidden: true });
   await expect(raw).toBeHidden();
@@ -1507,8 +1575,8 @@ test("failed PR summary retries generation separately and removes recovery after
   const summary: NonNullable<Run["summary"]> = { status: "failed", tokens: 0, limited_context: false, error: "Provider rejected the summary request." };
   const requests = await mock(page, { run: { status: "completed", summary }, overview: { summary_error: null } });
   await page.goto("/runs/run");
-  await page.getByRole("button", { name: "PR summary details: Failed", exact: true }).click();
-  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
   await expect(details.getByRole("button", { name: "Retry GitHub sync" })).toHaveCount(0);
   summary.status = "pending";
   summary.error = null;
@@ -1526,8 +1594,8 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   const overview = { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10", summary_pending: false, summary_error: null };
   await mock(page, { run: { status: "completed", summary: { status: "failed", tokens: 0, limited_context: false, error: "Summary request failed." } }, overview });
   await page.goto("/runs/run");
-  await page.getByRole("button", { name: "PR summary details: Failed", exact: true }).click();
-  const details = page.getByRole("dialog", { name: "PR summary details", exact: true });
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
   await page.clock.runFor(500);
   await details.click({ trial: true });
   const original = await details.elementHandle();
@@ -1536,7 +1604,8 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   for (const pending of [true, false, true, false]) {
     overview.summary_pending = pending;
     await page.clock.runFor(5500);
-    await expect(details.getByText(pending ? "GitHub: Updating overview…" : "GitHub: Overview available")).toBeVisible();
+    await expect(details.getByRole("link", { name: "PR summary", exact: true })).toHaveAttribute("href", overview.summary_url);
+    await expect(details.getByText(/^GitHub:/)).toHaveCount(0);
     expect(await original!.evaluate((element) => element.isConnected)).toBe(true);
     expect(await details.boundingBox()).toEqual(bounds);
     expect(await focused!.evaluate((element) => element === document.activeElement)).toBe(true);
@@ -8606,10 +8675,10 @@ test("live refresh: open stage popover follows parent stage updates",async({page
 
 test("live refresh: open PR summary popover follows generation and sync updates",async({page})=>{
   await page.clock.install();const state:any={status:"running",summary:{status:"running",tokens:null,error:null}};const overview:any={summary_pending:true};
-  await mock(page,{run:state,overview});await page.goto("/runs/run");await page.getByRole("button",{name:"PR summary details: Running",exact:true}).click();
-  const popup=page.getByRole("dialog",{name:"PR summary details",exact:true});await expect(popup).toContainText("Updating overview");
+  await mock(page,{run:state,overview});await page.goto("/runs/run");await page.getByRole("button",{name:"Review stage details",exact:true}).click();
+  const popup=page.getByRole("dialog",{name:"Review stage details",exact:true});await expect(popup.getByText("PR summary",{exact:true})).toBeVisible();await expect(popup.getByRole("link",{name:"PR summary",exact:true})).toHaveCount(0);
   state.summary.status="completed";state.summary.tokens=123;overview.summary_pending=false;overview.summary_url="https://github.com/acme/payments/pull/148";
-  await ticks(page,1);await expect(popup).toContainText("Overview available");await expect(popup).toContainText("123 tokens");
+  await ticks(page,1);await expect(popup.getByRole("link",{name:"PR summary",exact:true})).toHaveAttribute("href",overview.summary_url);await expect(popup).toContainText("123 tokens");
 });
 
 test("live refresh: open finding drawer follows status and verification changes",async({page})=>{

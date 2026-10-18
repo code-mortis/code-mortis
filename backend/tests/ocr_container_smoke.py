@@ -20,7 +20,9 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import assessment, background, ocr, verification
+from code_mortis import assessment, background, checks, ocr, verification
+from code_mortis.db import now
+from code_mortis.models import ReviewRun
 
 calls = []
 verification_mode = "fixed"
@@ -44,6 +46,10 @@ class Provider(BaseHTTPRequestHandler):
             content = [
                 {"type": "tool_use", "id": "selftest", "name": "ocr_selftest", "input": {"note": "test"}}
             ]
+        elif verification_mode == "review_budget" and "task_done" in names:
+            continuing = any(message.get("role") == "assistant" for message in data["messages"])
+            content = [{"type": "tool_use", "id": "budget", "name": "task_done" if continuing else "file_read_diff",
+                        "input": {"state": "DONE"} if continuing else {"path_array": ["main.py"]}}]
         elif "Code Mortis project background evidence" in text and "code_comment" in names and not any(
             message.get("role") == "assistant" for message in data["messages"]
         ):
@@ -126,7 +132,8 @@ class Provider(BaseHTTPRequestHandler):
             "model": "test-model",
             "content": content,
             "stop_reason": "tool_use" if content[0]["type"] == "tool_use" else "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "usage": {"input_tokens": 1000001 if verification_mode == "review_budget" and
+                      content[0].get("name") == "file_read_diff" else 10, "output_tokens": 5},
         }
         try:
             self.send_response(200)
@@ -221,6 +228,23 @@ def main():
             assert len(report["manifest"]["coverage"]["selected"]) == 1
             assert len(report["manifest"]["coverage"]["completed"]) == 1
             assert findings == []
+            verification_mode = "review_budget"
+            with ocr.configuration(connection, {"api_key": "fake-test-key"}, {}):
+                code, output, errors = ocr.command([
+                    "ocr", "review", "--repo", str(root), "--from", base, "--to", head,
+                    "--format", "json", "--audience", "agent", "--effort", "low", "--concurrency", "1",
+                    "--max-tokens-budget", "1000000", "--timeout", "0",
+                ], root, env, timeout=60)
+            verification_mode = "fixed"
+            assert code == 0, errors[-2000:]
+            status, limited_report, comments = ocr.parse_report(output, code)
+            assert status == "partial" and comments == []
+            assert len(limited_report["manifest"]["coverage"]["completed"]) == 1
+            assert any(w["type"] == "review_limit_reached" for w in limited_report["warnings"])
+            run = ReviewRun(id="budget", head_sha=head, status=status, publication="no_new_comments",
+                            report=limited_report, progress={}, created_at=now())
+            assert checks.check_payload(run, 0)["conclusion"] == "failure"
+            print("Pinned OCR grace-round completion retained its budget warning and could not produce a successful GitHub check.")
             from code_mortis import delegated, runner_client
             from code_mortis.schemas import RepoSettings
 

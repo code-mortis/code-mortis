@@ -226,7 +226,7 @@ def api_generate(directory, connection, credentials, prompt, timeout, stopped, t
             "--max-tokens", "32000", "--max-tokens-budget", str(token_budget or 0), "--timeout", "0"]
     with ocr.configuration(connection, credentials, {}, stopped):
         code, output, errors = ocr.command(args, directory, env, timeout=timeout, stopped=stopped)
-        diagnostics = scan_diagnostics(directory, env, code, errors, (
+        diagnostics, _ = scan_diagnostics(directory, env, code, errors, (
             credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
         ), stopped)
     return parse_api_result(code, output, diagnostics, token_budget, (

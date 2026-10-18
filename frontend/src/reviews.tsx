@@ -969,7 +969,11 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const assessmentStatus = run.status === "running" && (assessment?.pending ?? 0) > 0
     && (!savedAssessmentStatus || savedAssessmentStatus === "partial")
     ? "running" : savedAssessmentStatus ?? (assessment?.incomplete ? "partial" : "pending");
+  const summaryStage = run.summary?.status === "not_applicable" ? undefined
+    : run.config.pipeline_version === 2 ? run.stages?.summary ?? run.summary
+    : run.summary ?? run.stages?.summary;
   const stageStatuses: string[] = [
+    summaryStage?.status ?? "skipped",
     run.stages?.ocr?.status ?? "skipped",
     run.stages?.assessment ? assessmentStatus : "skipped",
     run.stages?.verification?.status ?? "skipped",
@@ -980,7 +984,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       : stageStatuses.every((status) => status === "cancelled" || status === "skipped") ? "cancelled"
       : stageStatuses.some((status) => ["partial", "failed", "cancelled"].includes(status)) ? "partial"
       : "completed");
-  const summaryDiagnostics = [run.summary?.error || run.stages?.summary?.error, run.summary?.diagram_warning, pr.summary_error]
+  const summaryDiagnostics = [summaryStage?.error, run.summary?.diagram_warning, pr.summary_error]
     .filter(Boolean).join("\n\n");
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
@@ -1030,7 +1034,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
-          {run.stages?.ocr && <div className="flex items-center gap-2">
+          {(run.stages?.ocr || summaryStage) && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Review stages</span>
             <Popover>
               <Tooltip>
@@ -1040,6 +1044,17 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
                 <TooltipContent sideOffset={6}>View stage details.</TooltipContent>
               </Tooltip>
               <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
+                {summaryStage && <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    {pr.summary_url ? <a className="inline-flex items-center gap-1 rounded-sm font-medium no-underline outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring" href={pr.summary_url} target="_blank" rel="noreferrer">PR summary<ArrowUpRight aria-hidden="true" className="size-3" /></a> : <span className="font-medium">PR summary</span>}
+                    <Status value={summaryStage.status} />
+                  </div>
+                  <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
+                  {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
+                  {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
+                  {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+                  {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
+                </div>}
                 {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
                   const stage = run.stages?.[key];
                   if (!stage) return null;
@@ -1050,29 +1065,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
                     {stage.error && <TechnicalDetails error={stage.error} name={name} />}
                   </div>;
                 })}
-              </PopoverContent>
-            </Popover>
-          </div>}
-          {run.summary && run.summary.status !== "not_applicable" && <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">PR summary</span>
-            <Popover>
-              <Tooltip>
-                <TooltipTrigger asChild><PopoverTrigger asChild>
-                  <button type="button" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" aria-label={`PR summary details: ${pr.summary_error ? "Sync failed" : label(run.summary.status)}`}>
-                    <Status value={pr.summary_error ? "failed" : run.summary.status} label={pr.summary_error ? "Sync failed" : undefined} icon={<ChevronDown aria-hidden="true" className="size-3" />} />
-                  </button>
-                </PopoverTrigger></TooltipTrigger>
-                <TooltipContent sideOffset={6}>View summary details.</TooltipContent>
-              </Tooltip>
-              <PopoverContent align="start" aria-label="PR summary details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto text-xs">
-                <div className="flex items-center justify-between gap-2"><span className="font-medium">PR summary</span><Status value={run.summary.status} /></div>
-                <p className="text-muted-foreground">{tokenUsage(run.summary.tokens, run.summary.status)}</p>
-                {pr.summary_url && <a className="inline-flex items-center gap-1 underline underline-offset-4" href={pr.summary_url} target="_blank" rel="noreferrer">View PR overview<ArrowUpRight aria-hidden="true" className="size-3" /></a>}
-                <p className="text-muted-foreground" aria-live="polite">GitHub: {pr.summary_error ? "Update failed" : pr.summary_pending ? "Updating overview…" : pr.summary_url ? "Overview available" : "Not published yet"}</p>
-                {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
-                {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
-                {can_write && run.summary.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
-                {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
               </PopoverContent>
             </Popover>
           </div>}

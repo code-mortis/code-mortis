@@ -55,6 +55,21 @@ def test_lifecycle_mapping_and_safe_summary(state, publication, reason, status, 
     assert payload["details_url"].endswith("/runs/run")
 
 
+def test_review_limit_warning_cannot_publish_a_successful_check():
+    item = {"item_id": "main", "path": "main.py"}
+    status, report, _ = ocr.parse_report(json.dumps({
+        "manifest": {"schema_version": "ocr.run-manifest/v1", "terminal_state": "complete", "coverage": {
+            "selected": [item], "completed": [item], "reused": [], "failed": [], "waived": [],
+        }},
+        "comments": [], "warnings": [{"type": "review_limit_reached"}],
+    }), 0)
+    run = ReviewRun(id="run", head_sha="a" * 40, status=status, publication="no_new_comments",
+                    report=report, progress={}, created_at=now())
+    payload = checks.check_payload(run, 0)
+    assert payload["conclusion"] == "failure"
+    assert payload["output"]["title"] == "Review incomplete"
+
+
 @pytest.fixture
 def check_api(monkeypatch, github_stub):
     stored, writes = [], []

@@ -265,6 +265,11 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
         state = "partial" if coverage["completed"] or coverage["reused"] else "failed"
     if exit_code != 0 and state == "complete":
         state = "failed"
+    if state == "complete" and any(
+        isinstance(warning, dict) and warning.get("type") == "review_limit_reached"
+        for warning in data.get("warnings") or []
+    ):
+        state = "partial"
     raw_comments = data.get("comments")
     if not isinstance(raw_comments, list):
         raise ValueError("OCR returned an invalid findings list.")

@@ -12,7 +12,7 @@ RUN bun run build
 
 FROM ${DOCKERHUB_REGISTRY}/library/python:3.13-slim-bookworm AS runtime
 ARG TARGETARCH
-ARG OCR_VERSION=1.12.11
+ARG OCR_VERSION=1.13.1
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN set -eu; arch="$TARGETARCH"; \
     curl -fsSL "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/opencodereview-linux-${arch}" -o /tmp/ocr; \
