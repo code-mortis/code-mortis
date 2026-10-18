@@ -219,13 +219,18 @@ def app_token(db: Session) -> str:
     )
 
 
-def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
-    return installation_token_from_jwt(app_token(db), installation_id, checks=checks, resolve=resolve)
+def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
+    options = {"checks": checks, "resolve": resolve}
+    if issues:
+        options["issues"] = True
+    return installation_token_from_jwt(app_token(db), installation_id, **options)
 
 
-def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
+def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
     """Exchange a snapshotted App JWT without keeping a database transaction open."""
     data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
+    if issues and data.get("permissions", {}).get("issues") != "write":
+        raise GitHubError(403, "Enable Issues: Read and write on the existing GitHub App and approve the installation permission update. Security scans and reports remain available.")
     if resolve and data.get("permissions", {}).get("contents") != "write":
         raise GitHubError(
             403, "GitHub requires Contents: Read and write to resolve or reopen review threads. "

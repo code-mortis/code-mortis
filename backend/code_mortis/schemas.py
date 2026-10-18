@@ -275,6 +275,21 @@ class StartRunInput(StrictModel):
     connection_id: str | None = None
 
 
+class SecuritySummary(StrictModel):
+    grade: str | None = None
+    state: str = "not_scanned"
+    grade_scan_id: str | None = None
+    grade_sha: str | None = None
+    graded_at: datetime | None = None
+    latest_scan_id: str | None = None
+    latest_status: str | None = None
+    latest_at: datetime | None = None
+    default_branch: str | None = None
+    head_sha: str | None = None
+    checked_at: datetime | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
 class RepositoryOut(ORMModel):
     id: int
     installation_id: int
@@ -286,6 +301,7 @@ class RepositoryOut(ORMModel):
     settings: RepoSettings
     open_prs: int = 0
     has_running_review: bool = False
+    security: SecuritySummary | None = None
 
 
 class SummaryGroup(StrictModel):

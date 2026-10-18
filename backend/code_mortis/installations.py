@@ -166,12 +166,15 @@ def remove_installation(db, identity):
 
 
 def deactivate_repositories(db, repositories, reason):
+    from .repository_security import cancel_access
+
     ids = []
     for repo in repositories:
         repo.active, repo.enabled = False, False
         ids.append(repo.id)
     if not ids:
         return
+    cancel_access(db, repository_ids=ids, reason=reason)
     # Share create_run's PR-before-run lock order so concurrent requests cannot escape cancellation.
     db.execute(select(PullRequest.id).where(PullRequest.repository_id.in_(ids)).order_by(
         PullRequest.id,

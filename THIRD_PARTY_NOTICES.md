@@ -4,6 +4,8 @@ Code Mortis is an independent project. It bundles the unmodified Open Code Revie
 
 backend/code_mortis/providers.json incorporates provider metadata from that version's extensions/frontend/src/shared/providers.generated.ts. Code Mortis adds OpenCode and custom-endpoint presets. This metadata remains covered by the upstream Apache License 2.0.
 
+The application image also bundles the unmodified Trivy 0.76.0 executable from https://github.com/aquasecurity/trivy, licensed under Apache License 2.0. Its upstream license remains in /usr/share/doc/trivy/LICENSE in the image; the license terms are also reproduced in LICENSES/Apache-2.0.txt. Downloaded vulnerability databases and checks retain their upstream data-source notices.
+
 Frontend UI primitives in frontend/src/components/ui are generated from shadcn/ui, licensed under MIT. Copyright (c) 2023 shadcn. The MIT terms in LICENSES/shadcn-MIT.txt apply to those files.
 
 Other dependencies retain their own licenses, supplied in the installed Python and JavaScript packages. The application uses Inter by Rasmus Andersson, distributed by @fontsource-variable/inter under the SIL Open Font License 1.1. See LICENSES/Inter-OFL.txt.

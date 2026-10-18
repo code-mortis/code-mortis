@@ -819,7 +819,8 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
   await page.goto("/settings");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(nav.getByRole("link")).toHaveCount(41);
+  await expect(nav.getByRole("link", { name: new RegExp(name) })).toHaveCount(40);
+  await expect(nav.getByRole("link", { name: "Security", exact: true })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true })).toBeInViewport();
   const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
   await last.scrollIntoViewIfNeeded();
@@ -3239,6 +3240,7 @@ for (const editing of [false, true]) {
     await expect(headers).toHaveValue('{"Authorization":"draft-header"}');
     if (editing) await page.getByRole("tab", { name: "General", exact: true }).click();
     await page.getByRole("button", { name: /^(Load|Refresh) models$/, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
     const model = page.getByLabel("Model", { exact: true });
     await chooseOption(page, model, "next-model");
     if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();

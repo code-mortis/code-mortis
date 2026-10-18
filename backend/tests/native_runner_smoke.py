@@ -23,9 +23,11 @@ from code_mortis.native_runner import (
     locks,
     run_codex,
 )
+from code_mortis.security_engine import model_schema
+from code_mortis.security_schemas import SecurityAnalysis, SecurityFix
 
 
-async def codex_review_smoke(client, identity, model):
+async def codex_review_smoke(client, identity, model, task="review"):
     config = (await client.call("config/read", {"includeLayers": False}))["config"]
     permissions = config["permissions"]["mortis-review"]
     assert config["default_permissions"] == "mortis-review"
@@ -54,8 +56,9 @@ async def codex_review_smoke(client, identity, model):
     try:
         with tempfile.TemporaryDirectory(prefix="mortis-context-") as temporary:
             body = ReviewBody(
-                kind="chatgpt", model=model, effort="low", prompt="Return an empty comments array.",
-                output_schema=output_schema(), timeout=30,
+                task=task, kind="chatgpt", model=model, effort="low", prompt="Validate task startup only.",
+                output_schema=(model_schema(SecurityFix if task == "security_verification" else SecurityAnalysis)
+                               if task.startswith("security_") else output_schema()), timeout=30,
             )
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait_for(run_codex(identity, body, Path(temporary), {"tokens": None}), 35)
@@ -117,6 +120,8 @@ async def main():
         models = await client.call("model/list", {"limit": 100, "includeHidden": False})
         assert models["data"] and all(row["model"] and row["displayName"] for row in models["data"])
         await codex_review_smoke(client, "00000000-0000-4000-8000-000000000001", models["data"][0]["model"])
+        for task in ("security_analysis", "security_verification"):
+            await codex_review_smoke(client, "00000000-0000-4000-8000-000000000001", models["data"][0]["model"], task)
         claude_catalog = await claude_models("00000000-0000-4000-8000-000000000002")
         assert claude_catalog and all(row.id and row.name for row in claude_catalog)
         if "--auth-start" in sys.argv:

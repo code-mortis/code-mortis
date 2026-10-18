@@ -33,6 +33,9 @@ import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from ".
 import "./index.css";
 
 const Analytics = lazy(() => import("./analytics"));
+const SecurityOverview = lazy(() => import("./security").then((module) => ({ default: module.SecurityOverview })));
+const SecurityRepository = lazy(() => import("./security").then((module) => ({ default: module.SecurityRepository })));
+const SecurityScan = lazy(() => import("./security").then((module) => ({ default: module.SecurityScan })));
 
 const initialAppearance = readAppearance();
 const initialDark = initialAppearance.mode === "dark" || (initialAppearance.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -261,6 +264,9 @@ function App() {
             <Routes>
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
               <Route path="/analytics" element={<Suspense fallback={<Loading />}><Analytics /></Suspense>} />
+              <Route path="/security" element={<Suspense fallback={<Loading />}><SecurityOverview user={session.data} /></Suspense>} />
+              <Route path="/security/repositories/:id" element={<Suspense fallback={<Loading />}><SecurityRepository user={session.data} /></Suspense>} />
+              <Route path="/security/scans/:id" element={<Suspense fallback={<Loading />}><SecurityScan user={session.data} /></Suspense>} />
               <Route
                 path="/repositories/:repositoryId?"
                 element={<Repositories admin={session.data.role === "admin"} />}

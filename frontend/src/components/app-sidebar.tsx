@@ -1,5 +1,5 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { ChartNoAxesCombined, FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, Users, X } from "lucide-react";
+import { ChartNoAxesCombined, FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
@@ -76,6 +76,11 @@ export function AppSidebar({ user, onLogout, signingOut }: {
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={route.pathname === "/analytics"} className="h-10">
                 <Link to="/analytics" aria-current={route.pathname === "/analytics" ? "page" : undefined} onClick={closeMobile}><ChartNoAxesCombined aria-hidden="true" /><span>Analytics</span></Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={route.pathname.startsWith("/security")} className="h-10">
+                <Link to="/security" aria-current={route.pathname.startsWith("/security") ? "page" : undefined} onClick={closeMobile}><ShieldCheck aria-hidden="true" /><span>Security</span></Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

@@ -1,0 +1,171 @@
+"""Public security records and strict model output contracts."""
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import Field, field_validator
+
+from .schemas import ORMModel, RepositoryOut, ReviewComment, RunLimits, SecuritySummary, StrictModel
+
+
+class SecurityScanInput(RunLimits):
+    connection_id: str = Field(min_length=1, max_length=36)
+    model: str = Field(default="", max_length=150)
+    request_key: str = Field(min_length=16, max_length=100)
+
+
+class SecurityCitation(StrictModel):
+    revision: Literal["original", "current"] = "current"
+    path: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    quote: str = Field(min_length=1, max_length=20000)
+
+    _path = field_validator("path")(ReviewComment.relative_path)
+
+
+class SecurityProposal(StrictModel):
+    title: str = Field(min_length=1, max_length=200)
+    category: str = Field(min_length=1, max_length=50)
+    severity: Literal["critical", "high", "medium", "low"]
+    path: str
+    explanation: str = Field(min_length=1, max_length=12000)
+    trigger: str = Field(min_length=1, max_length=4000)
+    impact: str = Field(min_length=1, max_length=4000)
+    remediation: str = Field(min_length=1, max_length=8000)
+    verification: str = Field(min_length=1, max_length=4000)
+    evidence: list[SecurityCitation] = Field(min_length=1, max_length=20)
+
+    _path = field_validator("path")(ReviewComment.relative_path)
+
+
+class SecurityAnalysis(StrictModel):
+    findings: list[SecurityProposal] = Field(max_length=100)
+    required_paths: list[str] = Field(max_length=10)
+
+
+class SecurityAssessment(StrictModel):
+    verdict: Literal["confirmed", "rejected", "uncertain"]
+    finding_id: str | None
+    explanation: str = Field(min_length=1, max_length=12000)
+    evidence: list[SecurityCitation] = Field(max_length=20)
+    required_paths: list[str] = Field(max_length=10)
+
+
+class SecurityFix(StrictModel):
+    verdict: Literal["fixed", "still_present", "uncertain"]
+    explanation: str = Field(min_length=1, max_length=12000)
+    change_explanation: str = Field(max_length=12000)
+    original_issue_present: bool
+    evidence: list[SecurityCitation] = Field(max_length=20)
+    required_paths: list[str] = Field(max_length=10)
+
+
+class SecurityScanOut(ORMModel):
+    id: str
+    repository_id: int
+    actor_id: int
+    connection_id: str | None
+    parent_id: str | None
+    branch: str
+    head_sha: str
+    config: dict[str, Any]
+    status: str
+    stages: dict[str, Any]
+    progress: dict[str, Any]
+    coverage: dict[str, Any]
+    report: dict[str, Any]
+    grade: str | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class SecurityFindingOut(ORMModel):
+    id: str
+    repository_id: int
+    state: str
+    kind: str
+    severity: str
+    title: str
+    path: str
+    first_scan_id: str
+    last_scan_id: str
+    evidence: dict[str, Any]
+    version: int
+    rotation: dict[str, Any] | None
+    issue: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SecurityActivityOut(ORMModel):
+    id: str
+    scan_id: str | None
+    finding_id: str | None
+    actor_id: int | None
+    action: str
+    detail: dict[str, Any]
+    created_at: datetime
+
+
+class SecurityRepositoryOut(StrictModel):
+    repository: RepositoryOut
+    summary: SecuritySummary
+    can_write: bool | None = None
+
+
+class SecurityScanDetail(StrictModel):
+    repository: RepositoryOut
+    scan: SecurityScanOut
+    can_write: bool
+    activity: list[SecurityActivityOut]
+
+
+class SecurityFindingDetail(StrictModel):
+    repository: RepositoryOut
+    finding: SecurityFindingOut
+    can_write: bool
+    observations: list[dict[str, Any]]
+    activity: list[SecurityActivityOut]
+
+
+class SecurityScanPage(StrictModel):
+    items: list[SecurityScanOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityFindingPage(StrictModel):
+    items: list[SecurityFindingOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityTriage(StrictModel):
+    state: Literal["open", "false_positive", "accepted_risk"]
+    reason: str = Field(min_length=1, max_length=4000)
+    version: int = Field(ge=0)
+
+
+class SecurityRotation(StrictModel):
+    reason: str = Field(min_length=1, max_length=4000)
+    version: int = Field(ge=0)
+
+
+class SecurityIssueInput(StrictModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=50000)
+    version: int = Field(ge=0)
+    public: bool
+
+
+class SecurityIssuePreview(StrictModel):
+    title: str
+    body: str
+    repository: str
+    public: bool
+    version: int
