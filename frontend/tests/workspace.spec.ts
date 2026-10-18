@@ -1239,6 +1239,26 @@ for (const [summary, expected] of [["completed", "Completed"], ["running", "Runn
   });
 }
 
+for (const [summary, expected] of [["completed", "Completed"], ["running", "Running"],
+  ["failed", "Partial"], ["skipped", "Completed"]] as const) {
+  test(`legacy summary status overrides its pending orchestration stage: ${summary}`, async ({ page }) => {
+    await mock(page, { run: {
+      status: summary === "running" ? "running" : "completed",
+      summary: { status: summary, tokens: 0, limited_context: false },
+      stages: {
+        summary: { status: "pending", tokens: 0 }, ocr: { status: "completed", tokens: 100 },
+        assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+      },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
+  });
+}
+
 test("skipped fix verification shows its saved reason in stage details", async ({ page }, info) => {
   const reason = "Fix verification was skipped because the pull request or finding changed, or automatic resolution was disabled. Check the latest finding status and repository settings.";
   await mock(page, { run: { status: "running", publication: "pending", publication_error: null, stages: {

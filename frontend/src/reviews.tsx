@@ -971,7 +971,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     ? "running" : savedAssessmentStatus ?? (assessment?.incomplete ? "partial" : "pending");
   const summaryStage = run.summary?.status === "not_applicable" ? undefined : run.summary ?? run.stages?.summary;
   const stageStatuses: string[] = [
-    summaryStage ? run.stages?.summary?.status ?? summaryStage.status : "skipped",
+    summaryStage?.status ?? "skipped",
     run.stages?.ocr?.status ?? "skipped",
     run.stages?.assessment ? assessmentStatus : "skipped",
     run.stages?.verification?.status ?? "skipped",
