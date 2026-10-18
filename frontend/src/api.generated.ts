@@ -140,6 +140,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Overview */
+        get: operations["analytics_overview_api_v1_analytics_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Findings */
+        get: operations["analytics_findings_api_v1_analytics_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Reviews */
+        get: operations["analytics_reviews_api_v1_analytics_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Usage */
+        get: operations["analytics_usage_api_v1_analytics_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}": {
         parameters: {
             query?: never;
@@ -952,6 +1020,199 @@ export interface components {
              */
             created_at: string;
         };
+        /** AnalyticsCount */
+        AnalyticsCount: {
+            /** Key */
+            key: string;
+            /** Count */
+            count: number;
+        };
+        /** AnalyticsFindings */
+        AnalyticsFindings: {
+            scope: components["schemas"]["AnalyticsScope"];
+            /** Total */
+            total: number;
+            /** Unfiltered Total */
+            unfiltered_total: number;
+            /** Category Options */
+            category_options: string[];
+            /** Severities */
+            severities: components["schemas"]["AnalyticsCount"][];
+            /** Categories */
+            categories: components["schemas"]["AnalyticsCount"][];
+            /** Statuses */
+            statuses: components["schemas"]["AnalyticsCount"][];
+            /** Trend */
+            trend: components["schemas"]["AnalyticsPoint"][];
+        };
+        /** AnalyticsOverview */
+        AnalyticsOverview: {
+            scope: components["schemas"]["AnalyticsScope"];
+            /** Reviewed Prs */
+            reviewed_prs: number;
+            /** Findings */
+            findings: number;
+            /** Resolved */
+            resolved: number;
+            usage: components["schemas"]["AnalyticsUsageTotals"];
+            /** Trend */
+            trend: components["schemas"]["AnalyticsPoint"][];
+            /** Severities */
+            severities: components["schemas"]["AnalyticsCount"][];
+            /** Categories */
+            categories: components["schemas"]["AnalyticsCount"][];
+            /** Repositories */
+            repositories: components["schemas"]["AnalyticsRepository"][];
+        };
+        /** AnalyticsPoint */
+        AnalyticsPoint: {
+            /** Date */
+            date: string;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Findings
+             * @default 0
+             */
+            findings: number;
+            /** Tokens */
+            tokens?: number | null;
+            /**
+             * Missing Reports
+             * @default 0
+             */
+            missing_reports: number;
+        };
+        /** AnalyticsRepository */
+        AnalyticsRepository: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /**
+             * Reviewed Prs
+             * @default 0
+             */
+            reviewed_prs: number;
+            /**
+             * Findings
+             * @default 0
+             */
+            findings: number;
+            /**
+             * Resolved
+             * @default 0
+             */
+            resolved: number;
+        };
+        /** AnalyticsReviews */
+        AnalyticsReviews: {
+            scope: components["schemas"]["AnalyticsScope"];
+            /** Runs */
+            runs: number;
+            /** Reviewed Prs */
+            reviewed_prs: number;
+            /** Mean Duration Seconds */
+            mean_duration_seconds: number | null;
+            /** Median Duration Seconds */
+            median_duration_seconds: number | null;
+            /** Duration Samples */
+            duration_samples: number;
+            /** Outcomes */
+            outcomes: components["schemas"]["AnalyticsCount"][];
+            /** Coverage */
+            coverage: components["schemas"]["AnalyticsCount"][];
+            /** Coverage Missing Runs */
+            coverage_missing_runs: number;
+            /** Assessments */
+            assessments: components["schemas"]["AnalyticsCount"][];
+            /** Assessment Missing Runs */
+            assessment_missing_runs: number;
+            /** Contributors */
+            contributors: components["schemas"]["AnalyticsCount"][];
+        };
+        /** AnalyticsScope */
+        AnalyticsScope: {
+            /**
+             * From At
+             * Format: date-time
+             */
+            from_at: string;
+            /**
+             * To At
+             * Format: date-time
+             */
+            to_at: string;
+            /** Timezone */
+            timezone: string;
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "day" | "week" | "month";
+            /** Repositories */
+            repositories: components["schemas"]["InboxRepository"][];
+        };
+        /** AnalyticsUsage */
+        AnalyticsUsage: {
+            scope: components["schemas"]["AnalyticsScope"];
+            total: components["schemas"]["AnalyticsUsageTotals"];
+            /** Trend */
+            trend: components["schemas"]["AnalyticsPoint"][];
+            /** Stages */
+            stages: components["schemas"]["AnalyticsUsageGroup"][];
+            /** Repositories */
+            repositories: components["schemas"]["AnalyticsUsageGroup"][];
+            /** Models */
+            models: components["schemas"]["AnalyticsUsageGroup"][];
+            /** Efforts */
+            efforts: components["schemas"]["AnalyticsUsageGroup"][];
+        };
+        /** AnalyticsUsageGroup */
+        AnalyticsUsageGroup: {
+            /** Key */
+            key: string;
+            /** Repository Id */
+            repository_id?: number | null;
+            usage: components["schemas"]["AnalyticsUsageTotals"];
+        };
+        /** AnalyticsUsageTotals */
+        AnalyticsUsageTotals: {
+            /** Tokens */
+            tokens?: number | null;
+            /**
+             * Known Reports
+             * @default 0
+             */
+            known_reports: number;
+            /**
+             * Missing Reports
+             * @default 0
+             */
+            missing_reports: number;
+            /**
+             * Complete Runs
+             * @default 0
+             */
+            complete_runs: number;
+            /**
+             * Total Runs
+             * @default 0
+             */
+            total_runs: number;
+            /** Mean Per Run */
+            mean_per_run?: number | null;
+            /**
+             * Reviewed Pr Samples
+             * @default 0
+             */
+            reviewed_pr_samples: number;
+            /** Mean Per Reviewed Pr */
+            mean_per_reviewed_pr?: number | null;
+        };
         /** AssessmentResult */
         AssessmentResult: {
             /**
@@ -1702,36 +1963,18 @@ export interface components {
         };
         /** RepoSettings */
         RepoSettings: {
-            /**
-             * Timeout Seconds
-             * @default 900
-             */
-            timeout_seconds: number | null;
-            /**
-             * Token Budget
-             * @default 200000
-             */
-            token_budget: number | null;
-            /**
-             * Assessment Token Budget
-             * @default 200000
-             */
-            assessment_token_budget: number | null;
-            /**
-             * Verification Token Budget
-             * @default 200000
-             */
-            verification_token_budget: number | null;
-            /**
-             * Summary Token Budget
-             * @default 60000
-             */
-            summary_token_budget: number | null;
-            /**
-             * Summary Timeout Seconds
-             * @default 180
-             */
-            summary_timeout_seconds: number | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
+            /** Assessment Token Budget */
+            assessment_token_budget?: number | null;
+            /** Verification Token Budget */
+            verification_token_budget?: number | null;
+            /** Summary Token Budget */
+            summary_token_budget?: number | null;
+            /** Summary Timeout Seconds */
+            summary_timeout_seconds?: number | null;
             /**
              * Summary Diagram Enabled
              * @default false
@@ -1769,6 +2012,12 @@ export interface components {
              */
             effort: "low" | "medium" | "high";
             /**
+             * Review Sensitivity
+             * @default balanced
+             * @enum {string}
+             */
+            review_sensitivity: "low_noise" | "balanced" | "broad";
+            /**
              * Language
              * @default English
              */
@@ -1783,16 +2032,10 @@ export interface components {
              * @default
              */
             background: string;
-            /**
-             * Max Files
-             * @default 40
-             */
-            max_files: number | null;
-            /**
-             * Delegated Context Bytes
-             * @default 800000
-             */
-            delegated_context_bytes: number | null;
+            /** Max Files */
+            max_files?: number | null;
+            /** Delegated Context Bytes */
+            delegated_context_bytes?: number | null;
             /**
              * Concurrency
              * @default 2
@@ -1898,16 +2141,10 @@ export interface components {
         };
         /** RunLimits */
         RunLimits: {
-            /**
-             * Timeout Seconds
-             * @default 900
-             */
-            timeout_seconds: number | null;
-            /**
-             * Token Budget
-             * @default 200000
-             */
-            token_budget: number | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
         };
         /** RunOut */
         RunOut: {
@@ -2384,6 +2621,149 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"][];
+                };
+            };
+        };
+    };
+    analytics_overview_api_v1_analytics_overview_get: {
+        parameters: {
+            query?: {
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_findings_api_v1_analytics_findings_get: {
+        parameters: {
+            query?: {
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                status?: ("open" | "resolved" | "dismissed")[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsFindings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_reviews_api_v1_analytics_reviews_get: {
+        parameters: {
+            query?: {
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsReviews"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_usage_api_v1_analytics_usage_get: {
+        parameters: {
+            query?: {
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsUsage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

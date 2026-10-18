@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import fcntl
 import json
 import os
@@ -13,7 +14,7 @@ from sqlalchemy import select
 from test_ocr import report
 from test_review_flow import new_run
 
-from code_mortis import jobs, native_runner, ocr, reviews, runner_client
+from code_mortis import jobs, native_runner, ocr, review_policy, reviews, runner_client
 from code_mortis.db import now, transaction
 from code_mortis.models import Job, PullRequest, Repository, ReviewRun
 from code_mortis.schemas import RepoSettings
@@ -21,10 +22,16 @@ from code_mortis.schemas import RepoSettings
 
 def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
     defaults = RepoSettings()
-    assert (defaults.timeout_seconds, defaults.token_budget, defaults.max_files) == (900, 200000, 40)
-    assert defaults.delegated_context_bytes == 800000
-    for values in ({"timeout_seconds": None}, {"token_budget": None}, {"max_files": None},
+    limits = ("timeout_seconds", "token_budget", "max_files", "assessment_token_budget",
+              "verification_token_budget", "summary_token_budget", "summary_timeout_seconds", "delegated_context_bytes")
+    assert all(getattr(defaults, key) is None for key in limits)
+    assert defaults.review_sensitivity == "balanced"
+    for values in ({}, {"timeout_seconds": None}, {"token_budget": None}, {"max_files": None},
                    {"delegated_context_bytes": None},
+                   {"timeout_seconds": 900, "token_budget": 200000, "max_files": 40,
+                    "assessment_token_budget": 200000, "verification_token_budget": 200000,
+                    "summary_token_budget": 60000, "summary_timeout_seconds": 180, "delegated_context_bytes": 800000},
+                   *({"review_sensitivity": value} for value in ("low_noise", "balanced", "broad")),
                    {"timeout_seconds": None, "token_budget": None, "max_files": None, "delegated_context_bytes": None}):
         response = client.put("/api/v1/repositories/22", json={
             "enabled": True, "connection_id": "connection", "settings": values,
@@ -34,10 +41,36 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
         with transaction() as db:
             assert db.get(Repository, 22).settings == response.json()["settings"]
     for key, values in {"timeout_seconds": [0, 59, 3601], "token_budget": [0, 999, 5000001],
-                        "max_files": [0, -1, 1.5, True], "delegated_context_bytes": [0, 4095, 20000001]}.items():
+                        "max_files": [0, -1, 1.5, True], "delegated_context_bytes": [0, 4095, 20000001],
+                        "review_sensitivity": [None, "high", 1]}.items():
         for value in values:
             with pytest.raises(ValidationError):
                 RepoSettings(**{key: value})
+
+
+def test_review_sensitivity_snapshots_preserve_settings_and_legacy_runs(seed, github_stub):
+    rules = {"rules": [{"path": "**/*.py", "rule": "Keep this project rule", "merge_system_rule": True}],
+             "include": ["src/**"], "exclude": ["generated/**"]}
+    with transaction() as db:
+        repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
+        repo.settings = {"rules": rules, "background": "Project context"}
+        first = reviews.create_run(db, pr, repo, "manual")
+        assert first.config["settings"]["review_sensitivity"] == "balanced"
+        assert all(first.config["settings"][key] is None for key in (
+            "timeout_seconds", "token_budget", "max_files", "assessment_token_budget",
+            "verification_token_budget", "summary_token_budget", "summary_timeout_seconds", "delegated_context_bytes",
+        ))
+        original = copy.deepcopy(first.config)
+        repo.settings = {**repo.settings, "review_sensitivity": "low_noise"}
+        second = reviews.create_run(db, pr, repo, "manual")
+        assert second.config["settings"]["review_sensitivity"] == "low_noise"
+        assert first.config == original
+        assert repo.settings["rules"] == second.config["settings"]["rules"] == rules
+        assert repo.settings["background"] == second.config["settings"]["background"] == "Project context"
+        legacy = {key: value for key, value in original["settings"].items() if key != "review_sensitivity"}
+        assert review_policy.instructions(legacy) == ""
+        assert review_policy.background(legacy) == "Project context"
+        assert review_policy.instructions({}) == review_policy.background({}) == ""
 
 
 @pytest.mark.parametrize("language,expected", [("  Mapudungun  ", "Mapudungun"), ("\tEnglish\n", "English"),
@@ -67,13 +100,14 @@ def test_old_snapshots_keep_unlimited_files_and_automatic_edits_do_not_rerun(see
         assert reviews.create_run(db, pr, repo, "automatic").id == old.id
         pr.head_sha = "c" * 40
         new = reviews.create_run(db, pr, repo, "automatic")
-        assert new.id != old.id and new.config["settings"]["max_files"] == 40
+        assert new.id != old.id and new.config["settings"]["max_files"] is None
         assert old.config["settings"] == original
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("count,maximum", [(39, 40), (40, 40), (41, 40), (41, None)])
-def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, monkeypatch):
+@pytest.mark.parametrize("sensitivity", [None, "low_noise", "balanced", "broad"])
+def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, tmp_path, monkeypatch):
     monkeypatch.setattr(ocr.settings(), "work_dir", tmp_path)
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
     configured = False
@@ -91,12 +125,17 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
     base, head = "a" * 40, "b" * 40
     paths = [f"source{index}.py" for index in range(count)]
     inference, previews, completed = [], [], []
+    rules = {"rules": [{"path": "**/*.py", "rule": "Review code", "merge_system_rule": True}],
+             "include": ["src/**"], "exclude": ["generated/**"]}
 
     def git(root, env, *args, **kwargs):
         return head if args[0] == "rev-parse" else base if args[0] == "merge-base" else "value = 1\n"
 
     def command(args, root, env, **kwargs):
         assert "--exclude" in args and "--rule" in args
+        assert json.loads(Path(args[args.index("--rule") + 1]).read_text()) == rules
+        background = Path(args[args.index("--background-file") + 1]).read_text()
+        assert background == (review_policy.background(options) if kind == "api" else "Project context")
         if "--preview" in args or "preview" in args:
             previews.append(args)
             data = {"schema_version": "1", "reviewable_count": count,
@@ -119,6 +158,12 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
         assert payload["prompt_token_ceiling"] == 200000
         inference.append(payload)
         assert payload["token_budget"] is None
+        prompt = json.loads(payload["prompt"])
+        assert prompt["background"] == "Project context" and prompt["rules"] == ["Review code"]
+        if sensitivity is None:
+            assert "review_policy" not in prompt
+        else:
+            assert prompt["review_policy"] == review_policy.instructions(options)
         return {"comments": []}, {"tokens": 25}
 
     def after_review(result, repo, env, fetch_env):
@@ -130,11 +175,17 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
     monkeypatch.setattr(ocr, "command", command)
     monkeypatch.setattr(runner_client, "review", native)
     options = RepoSettings(timeout_seconds=None, token_budget=None, max_files=maximum,
-                           exclusions="*.lock", rules={"default_rule": "Review code"}).model_dump()
+                           exclusions="*.lock", rules=rules, background="Project context").model_dump()
+    if sensitivity is None:
+        options.pop("review_sensitivity")
+    else:
+        options["review_sensitivity"] = sensitivity
+    original = copy.deepcopy(options)
     status, saved, comments = ocr.review("owner/repo", 1, base, head,
         {"id": "connection", "kind": kind, "model": "model", "options": {"prompt_token_ceiling": 200000}}, {}, options, "token", lambda: False,
         after_review=after_review)
     assert completed == [(status, saved, comments)]
+    assert options == original
     assert comments == []
     if maximum is not None and count > maximum:
         assert status == "skipped" and not inference
@@ -180,7 +231,7 @@ def test_invalid_api_preview_stops_with_a_uniform_error(code, output, tmp_path, 
 
     monkeypatch.setattr(ocr, "command", command)
     with pytest.raises(ValueError, match=r"^The review engine could not prepare the files and rules for review\. Check file exclusions and review rules, then start a new review\.$"):
-        ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings().model_dump(),
+        ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings(max_files=40).model_dump(),
                    "token", lambda: False, after_review=after_review)
 
 
@@ -262,7 +313,7 @@ def test_native_prompt_limit_preserves_token_budget_and_ignores_legacy_byte_limi
     used = 800000
     status, report, comments = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
         {"id": "connection", "kind": "chatgpt", "model": "model", "options": {"prompt_token_ceiling": 200000}},
-        RepoSettings(delegated_context_bytes=byte_budget).model_dump(), "run", lambda: False, progress.append,
+        RepoSettings(delegated_context_bytes=byte_budget, token_budget=200000).model_dump(), "run", lambda: False, progress.append,
         {"context_bytes": used, "total_tokens": 0})
     assert not comments and report["limits"]["token_budget"] == 200000
     assert status == "partial" and len(calls) == 2
@@ -339,7 +390,7 @@ def test_subscription_legacy_or_invalid_usage_cannot_reset_finite_budget(tmp_pat
     if tokens is not None:
         checkpoint["total_tokens"] = tokens
     status, report, _ = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
-        {"id": "connection", "kind": "chatgpt", "model": "model"}, RepoSettings().model_dump(),
+        {"id": "connection", "kind": "chatgpt", "model": "model"}, RepoSettings(token_budget=200000).model_dump(),
         "run", lambda: False, lambda *a: None, checkpoint)
     assert status == "failed" and report["summary"]["total_tokens"] is None
     assert "remaining budget cannot be verified" in report["errors"][0]["message"]

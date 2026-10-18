@@ -821,7 +821,7 @@ def test_personal_summary_uses_selected_model_and_preserves_serialization(seed, 
 
     def infer(connection_id, run_id, payload, stopped):
         body = native_runner.ReviewBody.model_validate(payload)
-        assert body.task == "summary" and body.model == "test-model" and body.token_budget == 60000
+        assert body.task == "summary" and body.model == "test-model" and body.token_budget is None
         assert "supplied changes" in native_runner.task_instructions(body)
         assert connection_id == "connection" and run_id == identity + "-summary"
         with transaction() as db:
@@ -839,7 +839,7 @@ def test_personal_summary_uses_selected_model_and_preserves_serialization(seed, 
         reviews.perform_review(second)
     with transaction() as db:
         assert db.get(ReviewRun, second).config["settings"]["summary_token_budget"] == 90000
-        assert db.get(ReviewRun, identity).config["settings"]["summary_token_budget"] == 60000
+        assert db.get(ReviewRun, identity).config["settings"]["summary_token_budget"] is None
 
 
 def test_worker_recovery_does_not_repeat_interrupted_summary(seed, generation, monkeypatch, tmp_path):

@@ -9,7 +9,7 @@ from threading import Event
 from pydantic import Field, ValidationError
 from sqlalchemy import func, select
 
-from . import github, ocr, runner_client, verification
+from . import github, ocr, review_policy, runner_client, verification
 from .db import now, transaction, uid
 from .models import (
     Activity,
@@ -204,6 +204,7 @@ def history(db, run, *, lock=False):
         accepted = db.scalar(select(ReviewCandidate).where(
             ReviewCandidate.finding_id == finding.id, ReviewCandidate.status == "completed",
         ).order_by(ReviewCandidate.created_at.desc(), ReviewCandidate.position.desc()).limit(1))
+        assessment_run = db.get(ReviewRun, accepted.run_id) if accepted else None
         reasons = list(db.scalars(select(Activity.reason).where(
             Activity.finding_id == finding.id, Activity.reason != "",
         ).order_by(Activity.created_at)))
@@ -213,6 +214,7 @@ def history(db, run, *, lock=False):
             "version": finding.sync_version, "last_seen_run_id": finding.last_seen_run_id,
             "sha": previous.head_sha, "snapshot": occurrence.snapshot, "reasons": reasons,
             "assessment": accepted.result if accepted else None,
+            "review_sensitivity": assessment_run.config["settings"].get("review_sensitivity") if assessment_run else None,
         })
     prior_candidates = [
         {"id": row.id, "snapshot": row.snapshot, "result": row.result}
@@ -375,6 +377,7 @@ def exact_repeat(context):
     for item in context["history"]:
         previous = item.get("assessment")
         if (item["sha"] == context["head_sha"] and previous and previous["verdict"] == "confirmed"
+            and item.get("review_sensitivity") == context.get("review_sensitivity")
             and all(candidate.get(key) == item["snapshot"].get(key)
                     for key in ("path", "start_line", "end_line", "content", "existing_code", "source_sha", "suggestion_code"))
             and all(evidence["path"] in context["sources"].get(evidence["revision"], {})
@@ -455,6 +458,13 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         options = dict(run.config["settings"])
         if run.config.get("pipeline_version") == 2:
             options["token_budget"] = options["assessment_token_budget"]
+        instructions = INSTRUCTIONS
+        if policy := review_policy.instructions(options):
+            instructions += "\n\n" + policy + (
+                " Confirm only candidates within this reporting scope. For a defect outside the selected "
+                "scope, return rejected and explain that the reporting policy excludes it. "
+                "A policy exclusion does not mean an existing finding is fixed or resolved."
+            )
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     concurrency = options.get("concurrency", 1)
@@ -506,6 +516,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 raise context
             if context is None:
                 context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
+            context = {**context, "review_sensitivity": options.get("review_sensitivity")}
             result = exact_repeat(context)
             unit = "tokens"
             consumed = 0
@@ -517,7 +528,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
                 request_context = {**context, "validation_feedback": feedback} if feedback else context
                 check_context_size(request_context, options)
-                prompt = INSTRUCTIONS + "\n\n" + verification.evidence_bundle(request_context)
+                prompt = instructions + "\n\n" + verification.evidence_bundle(request_context)
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
@@ -555,7 +566,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         if connection["kind"] == "api":
                             result, spent = verification.api_verify(
                                 repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
-                                instructions=INSTRUCTIONS, schema=output_schema(context), validator=validate_response,
+                                instructions=instructions, schema=output_schema(context), validator=validate_response,
                                 configuration_managed=parallel,
                             )
                             consumed += spent[unit]

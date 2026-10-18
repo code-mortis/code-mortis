@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import (
+    analytics,
     assessment,
     background,
     candidate_list,
@@ -27,6 +28,14 @@ from . import (
     resolved_list,
     runner_client,
     verification,
+)
+from .analytics_schemas import (
+    AnalyticsFilters,
+    AnalyticsFindingFilters,
+    AnalyticsFindings,
+    AnalyticsOverview,
+    AnalyticsReviews,
+    AnalyticsUsage,
 )
 from .config import settings
 from .db import get_db, now
@@ -413,6 +422,26 @@ def pr_out(db: Session, pr: PullRequest) -> PullRequestOut:
 @router.get("/repositories", response_model=list[RepositoryOut])
 def repositories(db: DB, user: USER):
     return [repo_out(db, repo) for repo in github.visible_repositories(db, user)]
+
+
+@router.get("/analytics/overview", response_model=AnalyticsOverview)
+def analytics_overview(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Query()]):
+    return analytics.overview(analytics.Scope(db, user, filters))
+
+
+@router.get("/analytics/findings", response_model=AnalyticsFindings)
+def analytics_findings(db: DB, user: USER, filters: Annotated[AnalyticsFindingFilters, Query()]):
+    return analytics.findings(analytics.Scope(db, user, filters))
+
+
+@router.get("/analytics/reviews", response_model=AnalyticsReviews)
+def analytics_reviews(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Query()]):
+    return analytics.reviews(analytics.Scope(db, user, filters))
+
+
+@router.get("/analytics/usage", response_model=AnalyticsUsage)
+def analytics_usage(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Query()]):
+    return analytics.usage(analytics.Scope(db, user, filters))
 
 
 @router.put("/repositories/{repository_id}", response_model=RepositoryOut)

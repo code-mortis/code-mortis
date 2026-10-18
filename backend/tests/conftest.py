@@ -102,7 +102,11 @@ def seed():
             )
         )
         repo = Repository(
-            id=22, installation_id=10, full_name="team/project", connection_id=connection.id, enabled=True
+            id=22, installation_id=10, full_name="team/project", connection_id=connection.id, enabled=True,
+            # Exercise saved finite caps independently of the defaults for new repositories.
+            settings={"timeout_seconds": 900, "token_budget": 200000, "max_files": 40,
+                      "assessment_token_budget": 200000, "verification_token_budget": 200000,
+                      "summary_token_budget": 60000, "summary_timeout_seconds": 180, "delegated_context_bytes": 800000},
         )
         db.add(repo)
         db.flush()

@@ -52,6 +52,8 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
       crumbs.push({ label: "Pull request", to: path });
     }
     if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
+  } else if (path === "/analytics") {
+    crumbs.push({ label: "Analytics", to: path + route.search });
   } else if (path === "/settings") {
     const tab = params.get("tab") === "appearance" || admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });

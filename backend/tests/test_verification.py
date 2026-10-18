@@ -62,7 +62,8 @@ def scenario(seed, github_stub, monkeypatch):
         finding = db.scalar(select(Finding))
         finding.thread_id, finding.comment_id = "thread", 12
         fid = finding.id
-        db.get(Repository, 22).settings = {"automatic": True, "auto_resolve": True}
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "automatic": True, "auto_resolve": True}
         db.get(PullRequest, "pr").head_sha = HEAD
     thread = {"id": "thread", "isResolved": False, "isOutdated": True, "resolvedBy": None,
               "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
@@ -329,7 +330,7 @@ def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations"])
+@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
     identity = scenario["run"]
     with transaction() as db:
@@ -345,10 +346,18 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             run.owner_id = 7
             run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
     helper = "\n\ndef report_tokens(report):\n    return None\n"
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths))
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"private/helper.py"})
+    def tree(repo, env, *args, stopped):
+        assert args == ("ls-tree", "-r", "-t", "-z", HEAD) and not stopped()
+        return "\0".join(f"{mode} blob {'a' * 40}\t{path}" for mode, path in (
+            ("100644", "helper.py"), ("100644", "private/helper.py"), ("120000", "linked/helper.py"),
+        ))
+    monkeypatch.setattr(ocr, "git", tree)
     reads, calls, native_ids = [], [], []
     def read(repo, env, sha, path, stopped):
         reads.append((sha, path))
+        if path == "app/helper.py":
+            raise ValueError(f"The source file {path!r} is missing in commit {sha}.")
         assert path == "helper.py" and sha == HEAD and not stopped()
         return helper
     monkeypatch.setattr(verification, "read_source", read)
@@ -358,7 +367,9 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         calls.append((copy.deepcopy(context), budget))
         raw = copy.deepcopy(RESULT)
         loaded = "helper.py" in context["sources"]["current"]
-        if sequence == "multiple_citations":
+        if sequence == "missing_request" and len(calls) == 1:
+            raw.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "app/helper.py"}])
+        elif sequence == "multiple_citations":
             if len(calls) == 1:
                 raw["evidence"].append(copy.deepcopy(raw["evidence"][-1]))
                 for evidence in raw["evidence"]:
@@ -372,6 +383,11 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": 1,
                                     "end_line": 2, "quote": helper.strip()})
         elif not loaded:
+            if sequence == "missing_request":
+                feedback = context["validation_feedback"]
+                assert feedback["path"] == "app/helper.py" and feedback["revision"] == "current"
+                assert feedback["available_paths"] == ["helper.py"]
+                assert "does not exist" in feedback["reason"]
             raw.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "helper.py"}])
         else:
             start = 1 if sequence == "request_correct" and len(calls) == 2 else 3
@@ -411,22 +427,29 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             assert row.context["sources"]["current"]["helper.py"] == helper
         assert "required_sources" not in row.result
     assert len(calls) == (2 if sequence in {"request", "multiple_citations"} else 3)
-    assert reads == ([] if sequence == "multiple_citations" else [(HEAD, "helper.py")])
+    assert reads == ([] if sequence == "multiple_citations" else
+                     [(HEAD, "app/helper.py"), (HEAD, "helper.py")] if sequence == "missing_request" else
+                     [(HEAD, "helper.py")])
     assert [budget for _, budget in calls] == [calls[0][1] - 25 * index for index in range(len(calls))]
     assert len(native_ids) == len(set(native_ids))
 
 
-@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "missing", "unknown", "three_passes", "repeat_citation"])
+@pytest.mark.parametrize("stop", ["budget", "timeout", "cancel", "disabled", "connection", "finding", "excluded", "missing", "missing_budget", "missing_timeout", "missing_unknown", "unknown", "three_passes", "repeat_citation"])
 def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, stop):
     calls = []
     tick = now()
     monkeypatch.setattr(verification, "now", lambda: tick)
     monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if stop == "excluded" else set(paths))
-    if stop == "missing":
-        monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    if stop.startswith("missing"):
+        def missing_git(*args, **kwargs):
+            nonlocal tick
+            if stop == "missing_timeout":
+                tick += timedelta(hours=1)
+            return ""
+        monkeypatch.setattr(ocr, "git", missing_git)
     else:
         monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
-    if stop == "budget":
+    if stop in {"budget", "missing_budget"}:
         with transaction() as db:
             run = db.get(ReviewRun, scenario["run"])
             run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 125}}
@@ -448,17 +471,19 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
                 db.get(Connection, "connection").base_url = "https://changed.example.com/v1"
             elif stop == "finding":
                 db.get(Finding, scenario["finding"]).sync_version += 1
+        if stop == "missing" and len(calls) > 1:
+            assert context["validation_feedback"]["path"] == f"helper{len(calls) - 1}.py"
         return {**RESULT, "verdict": "uncertain", "required_sources": [
             {"revision": "current", "path": f"helper{len(calls)}.py"},
-        ]}, {"tokens": 25}
+        ]}, {"tokens": None if stop == "missing_unknown" else 25}
     monkeypatch.setattr(verification, "api_verify", infer)
     row, finding, _ = perform(scenario)
-    assert len(calls) == (3 if stop == "three_passes" else 2 if stop == "repeat_citation" else 1)
+    assert len(calls) == (3 if stop in {"three_passes", "missing"} else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
-    assert row.usage == {"tokens": calls[0] if stop == "unknown" else 25 * len(calls)}
-    assert row.status == ("completed" if stop == "three_passes" else "failed" if stop in {"connection", "excluded", "missing", "unknown", "repeat_citation"} else "skipped")
+    assert row.usage == {"tokens": calls[0] if stop == "unknown" else None if stop == "missing_unknown" else 25 * len(calls)}
+    assert row.status == ("completed" if stop in {"three_passes", "missing"} else "failed" if stop in {"connection", "excluded", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
     if stop == "missing":
-        assert "helper1.py" in row.error and HEAD in row.error
+        assert "three passes" in row.result["explanation"]
 
 
 @pytest.mark.parametrize("bad", ["excluded", "missing", "symlink", "binary", "oversize", "traversal", "already_loaded", "file_limit"])
@@ -471,7 +496,7 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
     commands = []
     def git(repo, env, *args, **kwargs):
         commands.append(args)
-        assert args[1] == HEAD if args[0] == "ls-tree" else args[1] == HEAD + ":" + path
+        assert HEAD in args if args[0] == "ls-tree" else args[1] == HEAD + ":" + path
         if args[0] == "ls-tree":
             if bad == "missing":
                 return ""

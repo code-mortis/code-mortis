@@ -16,7 +16,17 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import assessment, checks, github, jobs, ocr, reviews, runner_client, verification
+from code_mortis import (
+    assessment,
+    checks,
+    github,
+    jobs,
+    ocr,
+    review_policy,
+    reviews,
+    runner_client,
+    verification,
+)
 from code_mortis.db import now, transaction
 from code_mortis.models import (
     Connection,
@@ -54,7 +64,7 @@ def verdict(context, **changes):
 @pytest.fixture
 def pipeline(seed, github_stub, monkeypatch):
     state = {"comments": [copy.deepcopy(COMMENT)], "calls": 0, "reviews": [], "head": "a" * 40,
-             "allowances": [], "native_sizes": [], "native_ids": [], "analysis_calls": 0}
+             "allowances": [], "native_sizes": [], "native_ids": [], "analysis_calls": 0, "instructions": []}
     calls_lock = Lock()
 
     def request(method, path, token, **kwargs):
@@ -74,6 +84,7 @@ def pipeline(seed, github_stub, monkeypatch):
             return (item["snapshot"]["path"] == snapshot["path"]
                     or (anchor and anchor == item["snapshot"].get("existing_code", "").strip()))
         state["context"] = {"finding": snapshot, "head_sha": run.head_sha, "original_sha": run.head_sha,
+                            "review_sensitivity": run.config["settings"].get("review_sensitivity"),
                             "sources": {"current": {snapshot["path"]: SOURCE}}, "diff": "-retry()\n+while True:",
                             "history": [item for item in previous["findings"] if related(item)],
                             "prior_candidates": [item for item in previous["prior_candidates"] if related(item)]}
@@ -90,6 +101,7 @@ def pipeline(seed, github_stub, monkeypatch):
 
     def assess(*args, **kwargs):
         state["allowances"].append(args[5])
+        state["instructions"].append(kwargs["instructions"])
         raw = response(args[4])
         try:
             result = kwargs["validator"](raw, args[4])
@@ -102,6 +114,7 @@ def pipeline(seed, github_stub, monkeypatch):
         state["native_sizes"].append(len(payload["prompt"].encode()) + 4096)
         state["allowances"].append(payload["token_budget"])
         state["native_ids"].append(identity)
+        state["instructions"].append(payload["prompt"].split("# Code Mortis verification evidence\n\n", 1)[0].rstrip())
         metadata, _ = json.JSONDecoder().raw_decode(payload["prompt"].split(
             "# Code Mortis verification evidence\n\n", 1,
         )[1])
@@ -135,6 +148,67 @@ def run_and_publish():
     reviews.perform_review(identity)
     reviews.publish_run(identity)
     return identity
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("sensitivity", [None, "low_noise", "balanced", "broad"])
+def test_assessment_uses_saved_sensitivity_on_retry(pipeline, client, kind, sensitivity):
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        repo.settings = {"review_sensitivity": sensitivity or "balanced"}
+        if kind != "api":
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            connection.secret = seal("{}")
+    identity = new_run(assessed=True)
+    if sensitivity is None:
+        with transaction() as db:
+            run = db.get(ReviewRun, identity)
+            run.config = {**run.config, "settings": {key: value for key, value in run.config["settings"].items()
+                                                    if key != "review_sensitivity"}}
+    pipeline["failure"] = verification.VerificationOutputError("Temporary failure", {"tokens": 25})
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert candidate.status == "failed"
+        candidate_id = candidate.id
+        saved = copy.deepcopy(db.get(ReviewRun, identity).config)
+        db.get(Repository, 22).settings = {"review_sensitivity": "broad" if sensitivity != "broad" else "low_noise"}
+    pipeline.pop("failure")
+    response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
+    assert response.status_code == 202, response.text
+    reviews.perform_review(identity)
+    assert len(pipeline["instructions"]) == 2
+    assert pipeline["instructions"][0] == pipeline["instructions"][1]
+    if sensitivity is None:
+        assert pipeline["instructions"][0] == assessment.INSTRUCTIONS
+    else:
+        assert review_policy.instructions(saved["settings"]) in pipeline["instructions"][0]
+        assert "return rejected and explain" in pipeline["instructions"][0]
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).config == saved
+        assert db.get(ReviewCandidate, candidate_id).result["verdict"] == "confirmed"
+
+
+def test_sensitivity_change_reassesses_confirmations_without_resolving_findings(pipeline):
+    first = run_and_publish()
+    with transaction() as db:
+        original = db.scalar(select(Finding))
+        finding_id, status = original.id, original.status
+        first_config = copy.deepcopy(db.get(ReviewRun, first).config)
+    run_and_publish()
+    assert pipeline["calls"] == 1
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"review_sensitivity": "low_noise"}
+    pipeline["decision"] = {"verdict": "rejected", "explanation": "Excluded by the Low noise reporting policy."}
+    third = run_and_publish()
+    assert pipeline["calls"] == 2
+    with transaction() as db:
+        assert db.get(Finding, finding_id).status == status
+        assert db.get(ReviewRun, first).config == first_config
+        candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == third))
+        assert candidate.result["verdict"] == "rejected" and "policy" in candidate.result["explanation"]
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
@@ -1044,6 +1118,16 @@ def test_exact_repeat_requires_previously_requested_evidence():
     assert assessment.exact_repeat(context)["relationship"] == "duplicate"
 
 
+@pytest.mark.parametrize("current,previous", [(None, None), ("balanced", "balanced"),
+                                             ("low_noise", "broad"), ("balanced", None), (None, "balanced")])
+def test_exact_repeat_requires_matching_review_sensitivity(current, previous):
+    context = {"finding": COMMENT, "head_sha": "a" * 40, "history": [],
+               "sources": {"current": {COMMENT["path"]: SOURCE}}, "review_sensitivity": current}
+    context["history"] = [{"id": "existing", "sha": context["head_sha"], "snapshot": COMMENT,
+                           "assessment": verdict(context), "review_sensitivity": previous}]
+    assert (assessment.exact_repeat(context) is not None) == (current == previous)
+
+
 def test_revocation_between_evidence_passes_stops_before_another_call(pipeline, monkeypatch):
     pipeline["decision"] = {"verdict": "uncertain", "required_paths": ["helper.py"]}
     def expand(*args):
@@ -1214,7 +1298,7 @@ def test_assessment_concurrency_uses_saved_limits_and_preserves_model(pipeline, 
     original = verification.api_verify
     def api(*args, **kwargs):
         assert args[2]["model"] == "test-model" and args[2]["id"] == "connection"
-        assert kwargs["instructions"] == assessment.INSTRUCTIONS
+        assert kwargs["instructions"].startswith(assessment.INSTRUCTIONS + "\n\n" + review_policy.instructions(args[4]))
         assert kwargs["configuration_managed"] == (expected > 1)
         return original(*args, **kwargs)
     monkeypatch.setattr(verification, "api_verify", api)
@@ -1310,7 +1394,7 @@ def test_parallel_batches_retain_rejected_history_and_exact_repeat_checks(pipeli
 def test_parallel_batch_revalidates_history_and_execution(pipeline, monkeypatch, change):
     pipeline["comments"] = independent_comments(3)
     with transaction() as db:
-        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None, "timeout_seconds": 900}
     identity = new_run(assessed=True)
     barrier, changed = Barrier(2), Event()
     clock = [now()]

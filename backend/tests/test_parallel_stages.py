@@ -354,7 +354,7 @@ def test_migration_copies_limits_and_preserves_historical_runs(seed, budget):
     with transaction() as db:
         settings = RepoSettings.model_validate(db.get(Repository, 22).settings)
         assert settings.token_budget == settings.assessment_token_budget == settings.verification_token_budget == budget
-        assert settings.summary_token_budget == 60000
+        assert settings.summary_token_budget is None
         assert not settings.summary_diagram_enabled and not settings.ai_fix_prompts_enabled
         assert db.get(ReviewRun, identity).config == original
 

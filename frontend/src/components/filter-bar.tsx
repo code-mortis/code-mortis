@@ -22,15 +22,15 @@ export type FilterDefinition<Key extends string> = {
   clearValues?: string[];
 };
 
-export function FilterBar<Key extends string>({ query, searchResetKey = 0, searchLabel, searchPlaceholder, searchInputRef, filters, onChange, onSearch, children }: {
-  query: string;
+export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, searchLabel, searchPlaceholder, searchInputRef, filters, onChange, onSearch, children }: {
+  query?: string;
   searchResetKey?: number;
-  searchLabel: string;
-  searchPlaceholder: string;
+  searchLabel?: string;
+  searchPlaceholder?: string;
   searchInputRef?: RefObject<HTMLInputElement | null>;
   filters: FilterDefinition<Key>[];
   onChange: (key: Key, values: string[]) => void;
-  onSearch: (value: string) => void;
+  onSearch?: (value: string) => void;
   children?: ReactNode;
 }) {
   const [draft, setDraft] = useState({ query, searchResetKey, value: query });
@@ -39,7 +39,7 @@ export function FilterBar<Key extends string>({ query, searchResetKey = 0, searc
   // Navigation wins before effects run: https://react.dev/reference/react/useState#storing-information-from-previous-renders
   if (draft.query !== query || draft.searchResetKey !== searchResetKey) setDraft({ query, searchResetKey, value: query });
   useEffect(() => {
-    if (draft.value === query || draft.query !== query || draft.searchResetKey !== searchResetKey) return;
+    if (!onSearch || draft.value === query || draft.query !== query || draft.searchResetKey !== searchResetKey) return;
     const timer = setTimeout(() => onSearch(draft.value), INBOX_SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [draft, query, searchResetKey, onSearch]);
@@ -76,11 +76,11 @@ export function FilterBar<Key extends string>({ query, searchResetKey = 0, searc
   }
   return <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
     <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-1">
-      <div className="relative w-full sm:w-56">
+      {onSearch && <div className="relative w-full sm:w-56">
         <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
         <Input ref={searchInput} aria-label={searchLabel} placeholder={searchPlaceholder} className="h-9 bg-card pl-9 pr-9" value={draft.value} maxLength={INBOX_QUERY_MAX_LENGTH} onChange={(event) => setDraft({ query, searchResetKey, value: event.target.value })} />
         {draft.value && <Button variant="ghost" size="icon" className="absolute right-0 top-0" aria-label="Clear search" onClick={() => { setDraft({ query, searchResetKey, value: "" }); onSearch(""); searchInput.current?.focus(); }}><X className="size-3.5" /></Button>}
-      </div>
+      </div>}
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild><Button ref={filtersButton} variant="outline" className="bg-card"><ListFilter className="text-muted-foreground" />Filters</Button></DropdownMenuTrigger>
         <DropdownMenuContent align="start" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => {

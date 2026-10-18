@@ -5,7 +5,7 @@ import time
 
 from pydantic import ValidationError
 
-from . import ocr, runner_client
+from . import ocr, review_policy, runner_client
 from .config import settings
 from .schemas import ReviewComment
 from .security import digest
@@ -156,6 +156,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 "task": "Review this complete file and diff. Return findings only for the assigned path.",
                 "language": options["language"],
                 "background": options.get("background", ""),
+                **({"review_policy": review_policy.instructions(options)} if "review_sensitivity" in options else {}),
                 "assigned_path": path,
                 "rules": [group["rule"] for group in groups],
                 "head_file": source,
