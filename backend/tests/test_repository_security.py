@@ -409,7 +409,7 @@ def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, s
 
 @pytest.mark.parametrize("concurrency", [1, 3])
 @pytest.mark.parametrize("budget", [None, 1200])
-@pytest.mark.parametrize("failure", [None, "citation", "usage", "quota", "cancel"])
+@pytest.mark.parametrize("failure", [None, "citation", "evidence", "usage", "quota", "cancel"])
 def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_errors(
     seed, security_github, monkeypatch, tmp_path, concurrency, budget, failure,
 ):
@@ -418,6 +418,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
         sha=SHA, git=tmp_path, env={})
     calls, configurations, active = [], [], [0, 0]
+    original_ask = security_engine.ask
     lock, barrier = Lock(), Barrier(concurrency)
 
     @contextmanager
@@ -448,12 +449,16 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
                     feedback={"errors": [{"reason": "invented quote"}]})
             if failure == "quota":
                 raise security_engine.runner_client.RunnerBlocked("quota")
+            if failure == "evidence":
+                return original_ask(*args, **kwargs)
         return {"findings": [], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
     monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
+        {"findings": [], "required_paths": ["bad.py"]}, {"tokens": 12}))
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget))
@@ -468,12 +473,17 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
         else:
             assert scan.status == ("partial" if failure else "completed"), scan.error
             assert scan.grade == (None if failure else "A")
-            assert scan.progress["tokens"] == 72 and len(calls) == 6
+            assert scan.progress["tokens"] == (84 if failure == "evidence" else 72) and len(calls) == 6
             assert scan.stages["analysis"]["completed"] == (5 if failure else 6)
             assert scan.stages["analysis"]["failed"] == (1 if failure else 0)
             assert scan.stages["report"]["status"] == "completed"
             if failure:
-                assert scan.progress["tasks"]["analysis:bad.py"]["error"] == "Invalid citation"
+                task = scan.progress["tasks"]["analysis:bad.py"]
+                if failure == "evidence":
+                    assert task["validation_feedback"]["required_paths"] == ["bad.py"]
+                    assert task["tokens"] == 24
+                else:
+                    assert task["error"] == "Invalid citation"
                 assert scan.report["problems"] == ["Source analysis could not be validated: bad.py."]
         if budget:
             assert all(allowance > 0 for _, allowance in calls)
@@ -532,7 +542,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
 
 @pytest.mark.parametrize("concurrency", [1, 4])
 @pytest.mark.parametrize("budget", [None, 1200])
-@pytest.mark.parametrize("failure", [None, "citation", "usage", "quota", "cancel", "timeout"])
+@pytest.mark.parametrize("failure", [None, "citation", "evidence", "usage", "quota", "cancel", "timeout"])
 def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     seed, security_github, monkeypatch, tmp_path, concurrency, budget, failure,
 ):
@@ -541,6 +551,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
         redact=lambda text: text, sha=SHA, git=tmp_path, env={})
     calls, configurations, active = [], [], [0, 0]
+    original_ask = security_engine.ask
     lock, barrier = Lock(), Barrier(concurrency)
     clock = [0]
     if failure == "timeout":
@@ -580,6 +591,8 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
                 raise security_engine.runner_client.RunnerBlocked("quota")
             if failure == "timeout":
                 clock[0] = 61
+            if failure == "evidence":
+                return original_ask(*args, **kwargs)
         return {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed",
                 "evidence": context["proposal"]["evidence"], "required_paths": []}, {"tokens": 12}
 
@@ -587,6 +600,8 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
+        {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget,
@@ -608,7 +623,13 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
             assert scan.stages["assessment"]["failed"] == (1 if failure else 0)
             assert len(scan.report["findings"]) == (7 if failure else 8)
             if failure:
-                assert scan.progress["tasks"]["assessment:1"]["error"] == "Invalid citation"
+                task = scan.progress["tasks"]["assessment:1"]
+                if failure == "evidence":
+                    assert "missing_guard.py" in task["error"] and "prepared snapshot" in task["error"]
+                    assert task["validation_feedback"]["required_paths"] == ["missing_guard.py"]
+                    assert task["validation_feedback"]["kind"] == "evidence"
+                else:
+                    assert task["error"] == "Invalid citation"
         if budget:
             assert sum(allowance for _, allowance in calls[:concurrency]) <= budget - 96
             if len(calls) > concurrency:
@@ -843,6 +864,122 @@ def test_failed_expansion_keeps_already_consumed_tokens(tmp_path, monkeypatch):
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
         security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"diff": "", "sources": {"current": {}}}, 100, 60, lambda: False, uid())
     assert error.value.usage["tokens"] == 12
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("failure,reason", [
+    ("missing", "not in the prepared snapshot"),
+    ("excluded", "Generated directory"),
+    ("oversized", "4 MB evidence limit"),
+    ("supplied", "already supplied"),
+    ("protected", "agent instructions and MCP configuration"),
+    ("file_limit", "100-source-file evidence limit"),
+    ("pass_limit", "four evidence passes"),
+])
+def test_unavailable_security_evidence_reports_path_reason_and_usage(tmp_path, monkeypatch, kind, failure, reason):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.read = lambda *args: "safe"
+    path = "AGENTS.md" if failure == "protected" else "guard.py"
+    sources = {"app.py": "safe"}
+    item.inventory = {path: {}}
+    if failure in {"missing", "excluded", "oversized"}:
+        item.inventory = {}
+    if failure == "excluded":
+        item.excluded = [{"path": path, "reason": "Generated directory"}]
+    if failure == "oversized":
+        item.problems = [{"path": path, "reason": "File exceeds the 4 MB evidence limit"}]
+    if failure == "supplied":
+        sources[path] = "safe"
+    if failure == "file_limit":
+        sources = {f"source{number}.py": "safe" for number in range(100)}
+    if failure == "pass_limit":
+        item.inventory = {f"guard{number}.py": {} for number in range(1, 5)}
+        path = "guard4.py"
+    calls = []
+
+    def response():
+        calls.append(1)
+        return {"findings": [], "required_paths": [f"guard{len(calls)}.py" if failure == "pass_limit" else path]}
+
+    def api(*args, **kwargs):
+        return kwargs["validator"](response(), args[4]), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", lambda *args: (response(), {"tokens": 7}))
+    with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
+            {"assigned_path": "app.py", "sources": {"current": sources}, "diff": ""}, 100, 60, lambda: False, uid())
+    assert len(calls) == (4 if failure == "pass_limit" else 2 if failure == "supplied" else 1)
+    assert error.value.usage == {"tokens": 7 * len(calls)}
+    assert path in str(error.value) and reason in str(error.value)
+    assert error.value.feedback["kind"] == "evidence"
+    assert error.value.feedback["required_paths"] == [path]
+    assert reason in error.value.feedback["reason"]
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+@pytest.mark.parametrize("case", ["empty", "mixed", "repeat", "budget", "unknown_usage"])
+def test_security_repeated_evidence_gets_one_correction(tmp_path, monkeypatch, kind, task, case):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}, "guard.py": {}}
+    reads, calls, contexts = [], [], []
+    bundle = security_engine.verification.evidence_bundle
+
+    def read(path, sha=None):
+        reads.append((path, sha))
+        return "safe guard"
+
+    def evidence_bundle(context):
+        contexts.append(json.loads(json.dumps(context)))
+        return bundle(context)
+
+    def response():
+        paths = ["app.py"] if len(calls) == 1 or case == "repeat" else []
+        if case == "mixed" and len(calls) == 1:
+            paths += ["guard.py", "guard.py"]
+        if task == "analysis":
+            return {"findings": [], "required_paths": paths}
+        return {"verdict": "uncertain", "explanation": "Synthetic test", "evidence": [], "required_paths": paths,
+                **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": False})}
+
+    def api(*args, **kwargs):
+        evidence_bundle(args[4])
+        calls.append(args[5])
+        return kwargs["validator"](response(), args[4]), {"tokens": None if case == "unknown_usage" else 7}
+
+    def native(connection, identity, payload, stopped):
+        calls.append(payload["token_budget"])
+        return response(), {"tokens": None if case == "unknown_usage" else 7}
+
+    item.read = read
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": ""}}, "diff": "", "original_sha": OLD}
+    connection = {"id": "connection", "kind": kind, "model": "test"}
+    budget = 7 if case == "budget" else 100
+    if case in {"repeat", "budget", "unknown_usage"}:
+        with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+            security_engine.ask(item, connection, {}, task, context, budget, 60, lambda: False, uid())
+        assert error.value.usage == {"tokens": None if case == "unknown_usage" else 14 if case == "repeat" else 7}
+        if case == "repeat":
+            assert error.value.feedback["required_paths"] == ["app.py"]
+            assert error.value.feedback["kind"] == "evidence"
+    else:
+        result, usage = security_engine.ask(item, connection, {}, task, context, budget, 60, lambda: False, uid())
+        assert result["required_paths"] == [] and usage == {"tokens": 14}
+    assert calls == ([budget] if case in {"budget", "unknown_usage"} else [100, 93])
+    assert "validation_feedback" not in contexts[0]
+    if len(calls) == 2:
+        assert contexts[1]["validation_feedback"]["kind"] == "evidence"
+        assert contexts[1]["validation_feedback"]["required_paths"] == ["app.py"]
+        assert "empty" in contexts[1]["validation_feedback"]["reason"]
+        assert contexts[1]["sources"]["current"]["app.py"] == ""
+    expected_reads = [("guard.py", None)] if case == "mixed" else []
+    if case == "mixed" and task == "verification":
+        expected_reads.append(("guard.py", OLD))
+    assert reads == expected_reads
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])

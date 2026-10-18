@@ -89,6 +89,7 @@ import { SecurityGrade } from "./components/security-grade";
 import { LoadMoreFooter } from "./components/load-more-footer";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
+import { runDuration } from "./lib/run-duration";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -194,12 +195,6 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     {selected && <RepositoryPulls key={selected.id} repositoryId={selected.id} admin={admin} />}
     {admin && <div className="mt-6 text-xs text-muted-foreground"><Link className="rounded-sm underline underline-offset-4 hover:text-foreground" to="/settings?tab=github">{available?.length ? "Manage repositories" : "Connect repository"}</Link></div>}
   </>;
-}
-
-function runDuration(run: Run) {
-  const seconds = run.started_at && run.finished_at
-    ? Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000)) : null;
-  return seconds === null ? null : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function RunList({ prId }: { prId: string }) {

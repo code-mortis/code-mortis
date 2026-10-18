@@ -1061,6 +1061,47 @@ test("security findings append without duplicates, pause expanded polling, and r
   expect(requests.slice(-2)).toEqual([{ page: 1, search: "ownership" }, { page: 1, search: null }]);
 });
 
+test("security history and details show recorded durations and live elapsed time", async ({ page }, info) => {
+  await page.clock.install({ time: new Date("2026-10-18T23:08:00Z") });
+  await page.clock.setFixedTime(new Date("2026-10-18T23:08:00Z"));
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page);
+  const timed = { ...scan, status: "partial", grade: null, started_at: "2026-10-18T22:38:14.256114Z", finished_at: "2026-10-18T23:07:56.739231Z" };
+  const running: Schema["SecurityScanOut"] = { ...scan, id: "running", status: "running", started_at: "2026-10-18T23:07:50Z", finished_at: null };
+  const rows = [timed, running, { ...scan, id: "queued", status: "queued", started_at: null, finished_at: null },
+    { ...scan, id: "unknown", status: "cancelled", finished_at: null }];
+  await page.route("**/api/v1/security/repositories/22/scans**", (route) => route.fulfill({ json: { items: rows, total: rows.length, page: 1, page_size: 20 } }));
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: timed, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
+  await page.route("**/api/v1/security/scans/running", (route) => route.fulfill({ json: { repository, scan: running, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
+  await page.goto("/security/repositories/22?tab=history");
+  const history = page.getByRole("tabpanel");
+  await expect(history.locator('a[href="/security/scans/scan"]')).toContainText("29m 42s");
+  await expect(history.locator('a[href="/security/scans/running"]')).toContainText("10s elapsed");
+  await expect(history.locator('a[href="/security/scans/queued"]')).toContainText("Not started");
+  await expect(history.locator('a[href="/security/scans/unknown"]')).toContainText("Unavailable");
+  await page.clock.setFixedTime(new Date("2026-10-18T23:08:05Z"));
+  await page.clock.fastForward(5000);
+  await expect(history.locator('a[href="/security/scans/running"]')).toContainText("15s elapsed");
+  await expect(history.locator('a[href="/security/scans/scan"]')).toContainText("29m 42s");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("security-history-duration-dark.png"), fullPage: true });
+  await history.locator('a[href="/security/scans/scan"]').click();
+  await expect(page.locator("main header")).toContainText("Duration: 29m 42s");
+  await page.goto("/security/scans/running");
+  await expect(page.locator("main header")).toContainText("Duration: 15s elapsed");
+  await page.clock.setFixedTime(new Date("2026-10-18T23:08:10Z"));
+  await page.clock.fastForward(5000);
+  await expect(page.locator("main header")).toContainText("Duration: 20s elapsed");
+  running.status = "completed";
+  running.finished_at = "2026-10-18T23:08:08Z";
+  await page.clock.fastForward(5000);
+  await expect(page.locator("main header")).toContainText("Duration: 18s");
+  await expect(page.locator("main header")).not.toContainText("elapsed");
+  await page.clock.fastForward(5000);
+  await expect(page.locator("main header")).toContainText("Duration: 18s");
+  expect(writes).toHaveLength(0);
+});
+
 test("security finding sheets and history retain focus and fit dark narrow layouts", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page, { longPath: true });

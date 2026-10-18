@@ -7,6 +7,11 @@ export function errorFeedback(error: unknown) {
   if (/token (?:consumption|usage) is unknown|token usage.*(?:unavailable|invalid)|did not report valid token usage/i.test(message)) {
     return explain("AI usage could not be verified", "The AI service did not report reliable token usage. Further requests were stopped. Check the connection and technical details before retrying.");
   }
+  if (/Required security evidence|Required supporting source cannot be supplied safely|AI requested evidence it already received|Security analysis could not settle its required evidence/i.test(message)) {
+    return explain("Supporting evidence unavailable", message.includes("unavailable or exceeds its limit")
+      ? "Supporting source could not be supplied. This older record did not save the requested path or distinguish missing source from an evidence limit."
+      : message.replace(/^Required security evidence could not be supplied:\s*/i, ""));
+  }
   if (/(?:Security|Verification|Assessment) evidence|source validation|source citation|cited source lines/i.test(message)) {
     return explain("Evidence could not be verified", "The AI returned source evidence that did not match the supplied code. Review the technical details and retry the run. Unverified results were not accepted.");
   }

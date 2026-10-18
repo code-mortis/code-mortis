@@ -4,6 +4,9 @@ import { errorFeedback } from "../src/lib/error-feedback";
 for (const [raw, title] of [
   ['OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[]}', "Evidence could not be verified"],
   ['The native security result failed source validation: Security evidence cites source that was not supplied.', "Evidence could not be verified"],
+  ['Required security evidence is unavailable or exceeds its limit.', "Supporting evidence unavailable"],
+  ['Required security evidence could not be supplied: guard.py. This path is not in the prepared snapshot at the scanned commit.', "Supporting evidence unavailable"],
+  ['Required security evidence could not be supplied: guard.py. The 100-source-file evidence limit was reached; this is separate from time and token budgets.', "Supporting evidence unavailable"],
   ['AI token usage is unknown; response={"internal":"output"}', "AI usage could not be verified"],
   ['Security token budget exhausted.', "AI limit reached"],
   ['OCR returned an invalid verification verdict; response={"invalid":true}', "AI response could not be used"],
@@ -16,7 +19,7 @@ for (const [raw, title] of [
   ['Unexpected output: {"internal":"data"}', "Action could not be completed"],
   ["x".repeat(1000), "Action could not be completed"],
 ] as const) {
-  test(`shared errors explain ${title}: ${raw.slice(0, 40)}`, () => {
+  test(`shared errors explain ${title}: ${raw.slice(0, 95)}`, () => {
     const feedback = errorFeedback(new Error(raw));
     expect(feedback.title).toBe(title);
     expect(feedback.details).toBe(raw);
@@ -24,6 +27,13 @@ for (const [raw, title] of [
     expect(feedback.message.length).toBeLessThan(250);
   });
 }
+
+test("security evidence errors distinguish unavailable source from actual limits and legacy records", () => {
+  const missing = "guard.py. This path is not in the prepared snapshot at the scanned commit.";
+  expect(errorFeedback(`Required security evidence could not be supplied: ${missing}`).message).toBe(missing);
+  expect(errorFeedback("Required security evidence could not be supplied: guard.py. File exceeds the 4 MB evidence limit").message).toContain("4 MB evidence limit");
+  expect(errorFeedback("Required security evidence is unavailable or exceeds its limit.").message).toContain("older record did not save the requested path");
+});
 
 test("shared errors preserve actionable messages and separate technical suffixes", () => {
   for (const message of [

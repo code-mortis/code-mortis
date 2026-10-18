@@ -39,7 +39,9 @@ INSTRUCTIONS = (
     "verbatim source citations. Distinguish authentication from authorization. Check guards and callers; "
     "do not infer exploitability from an isolated dangerous function. Never reproduce secrets or private "
     "reasoning. Evidence quotes use the source line numbers before |. When supporting source is necessary, "
-    "request exact repository-relative required_paths and remain uncertain. Use the requested language for "
+    "request exact repository-relative required_paths and remain uncertain. Source blocks are complete files, "
+    "including empty files. Request only paths absent from sources.current. For validation_feedback kind evidence, "
+    "use the supplied source blocks and remove already supplied paths from required_paths. Use the requested language for "
     "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
     "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
     "match the requested schema. For citation feedback, correct every listed citation using the exact "
@@ -477,6 +479,13 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         return result
 
     used, feedback, corrected = 0, None, False
+
+    def evidence_unavailable(paths, reason):
+        raise verification.VerificationOutputError(
+            "Required security evidence could not be supplied: " + ", ".join(paths) + ". " + reason,
+            {"tokens": used}, feedback={"kind": "evidence", "task": task, "required_paths": paths, "reason": reason},
+        )
+
     deadline = time.monotonic() + timeout if timeout is not None else None
     for attempt in range(4):
         if stopped():
@@ -524,18 +533,30 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             return json.loads(item.redact(json.dumps(result))), {"tokens": used}
         if attempt == 3:
             break
-        for path in result["required_paths"]:
+        repeated = [path for path in dict.fromkeys(result["required_paths"]) if path in context["sources"]["current"]]
+        if repeated:
+            reason = "These complete source files are already supplied, including empty files. Use their source blocks and remove them from required_paths."
+            if corrected:
+                evidence_unavailable(repeated, reason)
+            feedback = {"kind": "evidence", "task": task, "required_paths": repeated, "reason": reason}
+            corrected = True
+        for path in dict.fromkeys(result["required_paths"]):
             if path in context["sources"]["current"]:
-                raise verification.VerificationOutputError("AI requested evidence it already received.", {"tokens": used})
-            if path not in item.inventory or len(context["sources"]["current"]) >= 100:
-                raise verification.VerificationOutputError("Required security evidence is unavailable or exceeds its limit.", {"tokens": used})
+                continue
+            if path not in item.inventory:
+                reason = next((entry["reason"] for entry in [*item.excluded, *item.problems]
+                               if isinstance(entry, dict) and entry.get("path") == path),
+                              "This path is not in the prepared snapshot at the scanned commit.")
+                evidence_unavailable([path], reason)
+            if len(context["sources"]["current"]) >= 100:
+                evidence_unavailable([path], "The 100-source-file evidence limit was reached; this is separate from time and token budgets.")
             try:
                 context["sources"]["current"][path] = item.source(path)
             except ValueError as exc:
-                raise verification.VerificationOutputError("Required supporting source cannot be supplied safely.", {"tokens": used}) from exc
+                evidence_unavailable([path], str(exc))
             if task == "verification":
                 try:
                     context["sources"].setdefault("original", {})[path] = item.source(path, context["original_sha"])
                 except ValueError:
                     pass
-    raise verification.VerificationOutputError("Security analysis could not settle its required evidence.", {"tokens": used})
+    evidence_unavailable(result["required_paths"], "Additional source was still required after four evidence passes.")
