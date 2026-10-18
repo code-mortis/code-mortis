@@ -1,6 +1,6 @@
 import "./sentry";
 import { reactErrorHandler } from "@sentry/react";
-import React, { useEffect, useLayoutEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
@@ -31,6 +31,8 @@ import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
 import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
 import "./index.css";
+
+const Analytics = lazy(() => import("./analytics"));
 
 const initialAppearance = readAppearance();
 const initialDark = initialAppearance.mode === "dark" || (initialAppearance.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -258,6 +260,7 @@ function App() {
             <ErrorNotice error={action.error} />
             <Routes>
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
+              <Route path="/analytics" element={<Suspense fallback={<Loading />}><Analytics /></Suspense>} />
               <Route
                 path="/repositories/:repositoryId?"
                 element={<Repositories admin={session.data.role === "admin"} />}

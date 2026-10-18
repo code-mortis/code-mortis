@@ -8,6 +8,15 @@
   font-family: "Inter Variable", sans-serif;
   color-scheme: light;
   --radius: 0.5rem;
+  --chart-1: var(--primary);
+  --chart-2: var(--code-keyword);
+  --chart-3: var(--code-function);
+  --chart-4: var(--code-number);
+  --chart-5: var(--code-string);
+  --chart-critical: #991b1b;
+  --chart-high: #dc2626;
+  --chart-medium: #a16207;
+  --chart-low: #64748b;
   --sidebar: var(--muted);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
@@ -19,6 +28,10 @@
 }
 .dark {
   color-scheme: dark;
+  --chart-critical: #fca5a5;
+  --chart-high: #f87171;
+  --chart-medium: #fde047;
+  --chart-low: #94a3b8;
 }
 @theme inline {
   --font-sans: "Inter Variable", sans-serif;
@@ -41,6 +54,11 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
