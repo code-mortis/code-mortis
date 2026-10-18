@@ -281,7 +281,7 @@ def main():
                 assert len(paths) == 41 and ocr.file_limit_result(paths, 40)[0] == "skipped"
                 before = len(calls)
                 result = delegated.review(root, env, base, large_head, base, native,
-                                          RepoSettings().model_dump(), "large", lambda: False, events.append, {})
+                                          RepoSettings(max_files=40).model_dump(), "large", lambda: False, events.append, {})
                 assert result[0] == "skipped" and len(calls) == before
                 assert result[1]["message"] == "41 reviewable files exceeds the maximum of 40."
                 git("checkout", "--detach", base)
