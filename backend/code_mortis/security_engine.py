@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from pydantic import ValidationError
+
 from . import ocr, runner_client, verification
 from .config import settings
 from .db import now
@@ -38,8 +40,10 @@ INSTRUCTIONS = (
     "do not infer exploitability from an isolated dangerous function. Never reproduce secrets or private "
     "reasoning. Evidence quotes use the source line numbers before |. When supporting source is necessary, "
     "request exact repository-relative required_paths and remain uncertain. Use the requested language for "
-    "explanations and remediation. If validation_feedback is supplied, correct every listed citation using "
-    "the exact source_lines without adding escapes, syntax or line-number prefixes. Return the complete "
+    "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
+    "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
+    "match the requested schema. For citation feedback, correct every listed citation using the exact "
+    "source_lines without adding escapes, syntax or line-number prefixes. Return the complete "
     "requested schema, never invent evidence or weaken a finding to bypass validation. "
 )
 
@@ -392,12 +396,21 @@ def validate_citations(evidence, sources, *, field="evidence"):
         if text is None:
             problem["reason"] = "unavailable source"
         else:
-            lines = text.splitlines()
+            lines = text.splitlines(keepends=True)
             start, end = citation["start_line"], citation["end_line"]
+            quote = citation["quote"]
+            if quote.strip() and quote not in "".join(lines[max(0, start - 1):end]):
+                # Correct location drift only when the unchanged quote has one exact source match.
+                offset = text.find(quote)
+                if offset >= 0 and text.find(quote, offset + 1) < 0:
+                    start = text.count("\n", 0, offset) + 1
+                    end = start + quote.count("\n") - int(quote.endswith("\n"))
+                    citation.update(start_line=start, end_line=end)
+                    problem.update(start_line=start, end_line=end)
             if not 1 <= start <= end <= len(lines):
                 problem["reason"] = "invalid source line range"
             else:
-                source_lines = "\n".join(lines[start - 1:end])
+                source_lines = "".join(lines[start - 1:end])
                 if not citation["quote"].strip() or citation["quote"] not in source_lines:
                     problem.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
         if "reason" in problem:
@@ -410,11 +423,13 @@ def validate_citations(evidence, sources, *, field="evidence"):
     return revisions
 
 
-def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity):
+def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
+        *, configuration_managed=False):
     model = {"analysis": SecurityAnalysis, "assessment": SecurityAssessment, "verification": SecurityFix}[task]
     schema = model_schema(model)
     instructions = INSTRUCTIONS + {
-        "analysis": "Audit the assigned file and report all evidenced security defects. Context files are supporting evidence.",
+        "analysis": ("Audit the assigned file and report all evidenced security defects. Context files are supporting evidence. "
+                     "Put start_line, end_line and quote only inside evidence citations, never directly on a finding."),
         "assessment": ("Independently test the proposed security finding against protections and history. Confirm only a concrete "
                        "cause, reachable trigger and impact. Match finding_id only to the same established defect in supplied history; "
                        "rewording, moved lines or scanner origin do not create a different issue. Otherwise use null."),
@@ -424,7 +439,13 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
     }[task]
 
     def validate(raw, supplied):
-        result = model.model_validate(raw, strict=True).model_dump()
+        try:
+            result = model.model_validate(raw, strict=True).model_dump()
+        except ValidationError as exc:
+            feedback = {"kind": "schema", "errors": exc.errors(include_url=False, include_context=False, include_input=False)}
+            raise verification.ResultValidationError(
+                "Security result does not match the requested schema. " + json.dumps(feedback), feedback,
+            ) from exc
         for path in result["required_paths"]:
             relative_path(path)
         evidence = result.get("evidence", [])
@@ -470,7 +491,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         try:
             if connection["kind"] == "api":
                 result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
-                    remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate)
+                    remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
+                    configuration_managed=configuration_managed)
             else:
                 result, usage = runner_client.review(connection["id"], f"{identity}-{attempt}", {
                     "task": "security_verification" if task == "verification" else "security_analysis",

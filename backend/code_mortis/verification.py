@@ -384,6 +384,7 @@ def evidence_bundle(context):
 
 RESULT_DELIVERY = (
     " Submit exactly one task_done call with state DONE and the complete structured result in result. "
+    "The state field alone never submits a result; result must be an object matching the requested schema. "
     "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
     "This terminal call submits the result and ends the task. Do not use code_comment. "
     "Evidence must cite paths and line numbers from the supplied source blocks, never evidence.py. "
@@ -404,16 +405,24 @@ def verification_tools(instructions=INSTRUCTIONS, schema=None, delivery=RESULT_D
     }}]
 
 
+def delivery_error(reason, **received):
+    problem = {"field": "task_done", "reason": reason, "received": received,
+               "expected": {"state": "DONE", "result": "Complete object matching the requested output schema"}}
+    feedback = {"kind": "delivery", **problem, "errors": [problem]}
+    return ResultValidationError("The AI did not submit a complete structured result. " + json.dumps(feedback), feedback)
+
+
 def terminal_result(root, session_id):
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
         raise ValueError("The review engine did not identify which analysis produced this result. It cannot be trusted for automatic resolution. Start a new review.")
-    results = []
+    results, matched = [], False
     for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
         with path.open() as stream:
             header = json.loads(next(stream, ""))
             if (header.get("type") != "session_start" or header.get("cwd") != str(root)
                 or header.get("sessionId") != session_id):
                 continue
+            matched = True
             for line in stream:
                 row = json.loads(line)
                 if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
@@ -421,13 +430,22 @@ def terminal_result(root, session_id):
                         raise ValueError("The review engine returned a result from a different analysis. It cannot be used to verify this finding. Start a new review.")
                     for call in row.get("tool_calls") or []:
                         if call.get("name") != "task_done":
-                            raise ValueError("The AI returned an unsupported response instead of a finding assessment. Start a new review or check the selected model.")
-                        value = json.loads(call["arguments"])
+                            raise delivery_error("The response used a tool outside the requested result transport.")
+                        try:
+                            value = json.loads(call.get("arguments", ""))
+                        except (ValueError, TypeError) as exc:
+                            raise delivery_error("task_done arguments are not valid JSON.") from exc
                         if (not isinstance(value, dict) or value.get("state") != "DONE"
                             or not isinstance(value.get("result"), dict)):
-                            raise ValueError("The AI finished without returning a final assessment. Start a new review or check the selected model.")
+                            fields = [key for key in ("state", "result", "findings", "verdict", "evidence", "required_paths")
+                                      if isinstance(value, dict) and key in value]
+                            raise delivery_error("task_done did not include the required DONE state and result object.",
+                                argument_type=type(value).__name__, argument_fields=fields,
+                                result_type=type(value.get("result")).__name__ if isinstance(value, dict) else None)
                         results.append(value["result"])
     if len(results) != 1:
+        if matched:
+            raise delivery_error("The response must submit exactly one complete task_done result.", result_count=len(results))
         raise ValueError("The AI did not return exactly one final assessment. Start a new review or check the selected model.")
     return results[0]
 
@@ -525,11 +543,12 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                     ) from exc
                 failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
                 raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
-            raw, result_error = None, None
+            raw, result_error, result_feedback = None, None, None
             try:
                 raw = terminal_result(root, data.get("session_id"))
             except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
                 result_error = str(exc) or "The AI did not return a final assessment."
+                result_feedback = exc.feedback if isinstance(exc, ResultValidationError) else None
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
@@ -544,18 +563,20 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                     f"(80% of max_tokens={max_tokens:,}): {message}", {"tokens": usage}, "skipped",
                 )
         comments = data.get("comments", [])
-        if (code or data.get("status") != "success" or summary.get("budget_exceeded")
-            or summary.get("files_reviewed") != 1 or data.get("warnings") or comments or result_error):
+        complete = (not code and data.get("status") == "success" and not summary.get("budget_exceeded")
+                    and summary.get("files_reviewed") == 1 and not data.get("warnings") and not comments)
+        if not complete or result_error:
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
                                  "warnings": data.get("warnings"), "result_error": result_error,
                                  "diagnostics": diagnostics})[:4000]
-            raise VerificationOutputError("The AI did not finish checking this finding. Technical details: " + detail, {"tokens": usage})
+            raise VerificationOutputError("The AI did not finish checking this finding. Technical details: " + detail,
+                                          {"tokens": usage}, feedback=result_feedback if complete else None)
         try:
             validated = validator(raw, context)
             return validated, {"tokens": usage}
         except (ValueError, KeyError, TypeError) as exc:
             raise VerificationOutputError(
-                "OCR returned an invalid verification verdict: " + str(exc) +
+                "OCR returned an invalid structured result: " + str(exc) +
                 "; response=" + json.dumps(raw)[:2000], {"tokens": usage},
                 feedback=exc.feedback if isinstance(exc, ResultValidationError) else None,
             ) from exc

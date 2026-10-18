@@ -19,6 +19,16 @@ export const date = (value: string) =>
     timeStyle: "short",
   }).format(new Date(value));
 export const words = (value: string) => value.replaceAll("_", " ");
+const listDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+export function ListDate({ value }: { value: string }) {
+  return <time dateTime={value} title={date(value)} className="text-xs tabular-nums text-muted-foreground">{listDate.format(new Date(value))}</time>;
+}
+export function StatusGroup({ children }: { children: ReactNode }) {
+  return <span data-slot="status-group" className="inline-flex w-fit overflow-hidden rounded-full border border-border align-middle [&_[data-slot=badge]]:rounded-none [&_[data-slot=badge]]:border-0 [&_a]:rounded-none [&_a:focus-visible]:-outline-offset-2">{children}</span>;
+}
+export function FindingCount({ count }: { count: number }) {
+  return <Badge variant="outline" className={count ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{count} unresolved<span className="sr-only"> findings</span></Badge>;
+}
 export function Status({ value, label, icon }: { value: string; label?: string; icon?: ReactNode }) {
   const good = ["completed", "published", "resolved", "connected", "success", "active"].includes(
     value,
@@ -63,7 +73,7 @@ export function ErrorNotice({ error, title }: { error: unknown; title?: string }
       <AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
         {heading && <p className="mb-1 font-medium">{heading}</p>}
-        <p className="max-w-[75ch] leading-relaxed">{feedback.message}</p>
+        <p className="leading-relaxed">{feedback.message}</p>
         {feedback.details && <div className="mt-2"><TechnicalDetails error={feedback.details} name={heading || "Error"} /></div>}
       </div>
     </div>

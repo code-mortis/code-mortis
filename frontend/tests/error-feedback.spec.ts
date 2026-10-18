@@ -7,6 +7,7 @@ for (const [raw, title] of [
   ['AI token usage is unknown; response={"internal":"output"}', "AI usage could not be verified"],
   ['Security token budget exhausted.', "AI limit reached"],
   ['OCR returned an invalid verification verdict; response={"invalid":true}', "AI response could not be used"],
+  ['OCR returned an invalid structured result; response={"invalid":true}', "AI response could not be used"],
   ['TypeError: fetch failed ECONNREFUSED', "Connection failed"],
   ['HTTP 401: {"error":"invalid_api_key"}', "Authentication required"],
   ['HTTP 403: {"error":"forbidden"}', "Access denied"],

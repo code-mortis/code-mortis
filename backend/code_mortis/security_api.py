@@ -1,19 +1,22 @@
 """Authenticated repository security endpoints."""
 
 import json
+from collections import Counter
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 
-from . import github, repository_security, security_issues
+from . import github, repository_security, security_assessments, security_issues
 from .api import DB, USER, repo_access, repo_out
 from .db import now
 from .models import SecurityActivity, SecurityFinding, SecurityOccurrence, SecurityScan
 from .schemas import RepositoryOut
 from .security_schemas import (
     SecurityActivityOut,
+    SecurityAssessmentOut,
+    SecurityAssessmentPage,
     SecurityFindingDetail,
     SecurityFindingOut,
     SecurityFindingPage,
@@ -64,7 +67,9 @@ def repository(repository_id: int, db: DB, user: USER):
     summary = repository_security.summaries(db, [repo.id])[repo.id]
     summary.default_branch = remote.get("default_branch") or summary.default_branch
     return SecurityRepositoryOut(repository=repo_out(db, repo), summary=summary,
-                                 can_write=bool(remote.get("permissions", {}).get("push")))
+        can_write=bool(remote.get("permissions", {}).get("push")),
+        finding_count=db.scalar(select(func.count()).select_from(SecurityFinding).where(SecurityFinding.repository_id == repo.id)),
+        scan_count=db.scalar(select(func.count()).select_from(SecurityScan).where(SecurityScan.repository_id == repo.id)))
 
 
 @router.get("/repositories/{repository_id}/scans", response_model=SecurityScanPage)
@@ -85,10 +90,45 @@ def start_scan(repository_id: int, body: SecurityScanInput, db: DB, user: USER):
 @router.get("/scans/{scan_id}", response_model=SecurityScanDetail)
 def scan_detail(scan_id: str, db: DB, user: USER):
     scan, repo, remote = scan_access(db, user, scan_id)
+    _, assessment = security_assessments.read(db, scan)
     return SecurityScanDetail(repository=repo_out(db, repo), scan=repository_security.public_scan(scan),
         can_write=bool(remote.get("permissions", {}).get("push")),
+        assessment=assessment,
+        finding_count=db.scalar(select(func.count()).select_from(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id)),
+        activity_count=db.scalar(select(func.count()).select_from(SecurityActivity).where(SecurityActivity.scan_id == scan.id)),
         activity=[SecurityActivityOut.model_validate(row) for row in db.scalars(select(SecurityActivity).where(
             SecurityActivity.scan_id == scan.id).order_by(SecurityActivity.created_at.desc()).limit(200))])
+
+
+@router.get("/scans/{scan_id}/assessments", response_model=SecurityAssessmentPage)
+def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_length=200)] = "",
+    outcome: Annotated[list[Literal["pending", "confirmed", "rejected", "uncertain", "failed", "interrupted", "withheld"]] | None, Query()] = None,
+    severity: Annotated[list[Literal["critical", "high", "medium", "low"]] | None, Query()] = None,
+    category: Annotated[list[str] | None, Query(max_length=100)] = None,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    scan, _, _ = scan_access(db, user, scan_id)
+    rows, summary = security_assessments.read(db, scan)
+    severity_counts = Counter(row.proposal.get("severity") for row in rows if row.proposal.get("severity"))
+    category_counts = Counter(row.proposal.get("category") for row in rows if row.proposal.get("category"))
+    query = q.strip().casefold()
+    rows = [row for row in rows if (not outcome or row.outcome in outcome)
+        and (not severity or row.proposal.get("severity") in severity)
+        and (not category or row.proposal.get("category") in category)
+        and (not query or any(query in str(row.proposal.get(key, "")).casefold() for key in ("title", "path", "category")))]
+    return SecurityAssessmentPage(items=rows[(page - 1) * page_size:page * page_size], total=len(rows),
+        registered_total=summary.total, outcome_counts=summary.outcome_counts, severity_counts=dict(severity_counts),
+        category_counts=dict(category_counts), revision=summary.revision, page=page, page_size=page_size)
+
+
+@router.get("/scans/{scan_id}/assessments/{assessment_id}", response_model=SecurityAssessmentOut)
+def assessment_detail(scan_id: str, assessment_id: str, db: DB, user: USER):
+    scan, _, _ = scan_access(db, user, scan_id)
+    rows, _ = security_assessments.read(db, scan)
+    row = next((row for row in rows if row.id == assessment_id), None)
+    if row is None:
+        raise HTTPException(404, "Security assessment not found.")
+    return row
 
 
 @router.post("/scans/{scan_id}/cancel", response_model=SecurityScanOut)

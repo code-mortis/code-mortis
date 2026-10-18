@@ -1033,6 +1033,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/scans/{scan_id}/assessments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assessments */
+        get: operations["assessments_api_v1_security_scans__scan_id__assessments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/assessments/{assessment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assessment Detail */
+        get: operations["assessment_detail_api_v1_security_scans__scan_id__assessments__assessment_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/security/scans/{scan_id}/cancel": {
         parameters: {
             query?: never;
@@ -2482,6 +2516,98 @@ export interface components {
              */
             created_at: string;
         };
+        /** SecurityAssessmentOut */
+        SecurityAssessmentOut: {
+            /** Id */
+            id: string;
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+            /** Proposal */
+            proposal: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed" | "failed" | "interrupted";
+            /**
+             * Progress Phase
+             * @enum {string}
+             */
+            progress_phase: "queued" | "checking" | "validating" | "finished";
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "confirmed" | "rejected" | "uncertain" | "failed" | "interrupted" | "withheld";
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** Error */
+            error?: string | null;
+            /** Tokens */
+            tokens?: number | null;
+            /**
+             * Reused
+             * @default false
+             */
+            reused: boolean;
+            /** Finding Id */
+            finding_id?: string | null;
+        };
+        /** SecurityAssessmentPage */
+        SecurityAssessmentPage: {
+            /** Items */
+            items: components["schemas"]["SecurityAssessmentOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Revision */
+            revision: string;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityAssessmentSummary */
+        SecurityAssessmentSummary: {
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Status Counts */
+            status_counts?: {
+                [key: string]: number;
+            };
+            /** Outcome Counts */
+            outcome_counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+        };
         /** SecurityFindingDetail */
         SecurityFindingDetail: {
             repository: components["schemas"]["RepositoryOut"];
@@ -2581,6 +2707,10 @@ export interface components {
             summary: components["schemas"]["SecuritySummary"];
             /** Can Write */
             can_write?: boolean | null;
+            /** Finding Count */
+            finding_count?: number | null;
+            /** Scan Count */
+            scan_count?: number | null;
         };
         /** SecurityRotation */
         SecurityRotation: {
@@ -2595,6 +2725,11 @@ export interface components {
             scan: components["schemas"]["SecurityScanOut"];
             /** Can Write */
             can_write: boolean;
+            assessment?: components["schemas"]["SecurityAssessmentSummary"];
+            /** Finding Count */
+            finding_count: number;
+            /** Activity Count */
+            activity_count: number;
             /** Activity */
             activity: components["schemas"]["SecurityActivityOut"][];
         };
@@ -2611,6 +2746,11 @@ export interface components {
              * @default
              */
             model: string;
+            /**
+             * Concurrency
+             * @default 4
+             */
+            concurrency: number;
             /** Request Key */
             request_key: string;
         };
@@ -5051,6 +5191,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SecurityScanDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assessments_api_v1_security_scans__scan_id__assessments_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                outcome?: ("pending" | "confirmed" | "rejected" | "uncertain" | "failed" | "interrupted" | "withheld")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low")[] | null;
+                category?: string[] | null;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAssessmentPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assessment_detail_api_v1_security_scans__scan_id__assessments__assessment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_id: string;
+                assessment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAssessmentOut"];
                 };
             };
             /** @description Validation Error */

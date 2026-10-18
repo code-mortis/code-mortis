@@ -554,6 +554,7 @@ def test_correction_failure_accounts_for_previous_consumption(scenario, monkeypa
 @pytest.mark.parametrize("mode", [
     "valid", "unrelated_empty", "unrelated_truncated", "missing", "multiple", "wrong_repo", "wrong_task",
     "malformed", "nonobject", "empty", "wrong_session", "wrong_response_session", "missing_session",
+    "flat_result", "string_result", "missing_state",
 ])
 def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -574,6 +575,12 @@ def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatc
         record["tool_calls"][0]["arguments"] = "invalid"
     elif mode == "nonobject":
         record["tool_calls"][0]["arguments"] = "null"
+    elif mode == "flat_result":
+        record["tool_calls"][0]["arguments"] = json.dumps({"state": "DONE", **RESULT})
+    elif mode == "string_result":
+        record["tool_calls"][0]["arguments"] = json.dumps({"state": "DONE", "result": json.dumps(RESULT)})
+    elif mode == "missing_state":
+        record["tool_calls"][0]["arguments"] = json.dumps({"result": RESULT})
     elif mode == "wrong_response_session":
         record["sessionId"] = "another-session"
     header = {"type": "session_start", "sessionId": session_id,
@@ -588,8 +595,13 @@ def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatc
     if mode == "valid" or mode.startswith("unrelated_"):
         assert verification.terminal_result(root, session_id) == RESULT
     else:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as caught:
             verification.terminal_result(root, None if mode == "missing_session" else session_id)
+        if mode in {"missing", "malformed", "nonobject", "flat_result", "string_result", "missing_state", "multiple", "wrong_task"}:
+            assert caught.value.feedback["kind"] == "delivery"
+            assert caught.value.feedback["expected"]["state"] == "DONE"
+        else:
+            assert not hasattr(caught.value, "feedback")
 
 
 def test_unchanged_code_or_suggestion_match_is_not_fix_proof():

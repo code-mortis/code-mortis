@@ -1,4 +1,5 @@
-import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
+import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useRunResource } from "./hooks/use-run-resource";
@@ -33,11 +34,6 @@ import {
   GitBranch,
   GitCommitHorizontal,
   LoaderCircle,
-  Bug,
-  Shield,
-  Gauge,
-  Wrench,
-  Tag,
 } from "lucide-react";
 import {
   ApiError,
@@ -90,6 +86,8 @@ import { RunCoverage } from "./components/run-coverage";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { SecurityGrade } from "./components/security-grade";
+import { LoadMoreFooter } from "./components/load-more-footer";
+import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
 
 function RunFeedback({ run, repositoryId, admin }: {
@@ -226,7 +224,6 @@ function RunList({ prId }: { prId: string }) {
     return true;
   });
   const total = query.data.pages.at(-1)!.total;
-  const paginated = query.hasNextPage || query.data.pages.length > 1;
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -271,15 +268,7 @@ function RunList({ prId }: { prId: string }) {
           </Link>
         );
       })}
-      {(paginated || query.error) && <div className="space-y-2 px-5 py-3">
-        <ErrorNotice error={query.error} />
-        <div className="flex items-center justify-between gap-3">
-          {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
-            {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> run history</span>
-          </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button> : null}
-          {paginated && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{runs.length} of {total}</span>}
-        </div>
-      </div>}
+      <LoadMoreFooter query={query} shown={runs.length} total={total} label="run history" />
     </div>
   );
 }
@@ -473,41 +462,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
   </>;
 }
 
-function FindingCategory({ value }: { value: string }) {
-  const icons = new Map([["bug", Bug], ["security", Shield], ["performance", Gauge], ["maintainability", Wrench]]);
-  const Icon = icons.get(value) ?? Tag;
-  return <Badge variant="outline" className="gap-1.5 text-muted-foreground"><Icon aria-hidden="true" />{label(value)}</Badge>;
-}
-
-function FindingCard({ evidence, state, onClick }: {
-  evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
-  state: ReactNode; onClick: MouseEventHandler<HTMLButtonElement>;
-}) {
-  const path = String(evidence.path ?? "Path not recorded");
-  const slash = path.lastIndexOf("/");
-  return <button type="button" data-slot="finding-card" onClick={onClick}
-    className="group w-full min-w-0 bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
-    <span className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
-      <span className="flex min-w-0 max-w-full items-center gap-2">
-        <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 font-mono text-xs leading-[22px]">
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 [overflow-wrap:anywhere]">
-            <span className="min-w-0">
-              {slash >= 0 && <span className="text-muted-foreground">{path.slice(0, slash + 1)}</span>}<span className="font-medium">{path.slice(slash + 1)}</span>
-            </span>
-            {evidence.start_line != null && <span className="text-muted-foreground">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
-          </span>
-        </span>
-      </span>
-      <span className="flex shrink-0">{state}</span>
-    </span>
-    <span className="mt-4 line-clamp-3 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
-    <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</span>
-    </span>
-  </button>;
-}
-
 function FindingPanel({ id, canWrite, snapshot, headSha }: {
   id: string; canWrite: boolean; snapshot?: Schema["OccurrenceOut"]["snapshot"]; headSha?: string;
 }) {
@@ -653,30 +607,6 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   if (finding.sync_error) return "Retry sync";
   if (finding.status === "open") return "Resolve finding";
   return "Reopen finding";
-}
-
-function getCandidateFeedback(candidate: Schema["CandidateOut"]) {
-  if (candidate.finding_id && candidate.is_new) return { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding." };
-  if (candidate.finding_id) return { label: "Repeated observation", description: "Matches an existing finding from review history." };
-  if (candidate.result?.verdict === "rejected") return { label: "Not supported", description: "The evidence did not support this proposed issue." };
-  if (candidate.progress_phase === "validating") return { label: "Response received; validating", description: "Processing finished. Final validation must finish before a finding can be accepted." };
-  if (active(candidate.status)) return { label: "Awaiting assessment", description: "Queued or being checked against evidence." };
-  return { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." };
-}
-
-function CandidateStatus({ candidate, inCard = false }: { candidate: Schema["CandidateOut"]; inCard?: boolean }) {
-  const feedback = getCandidateFeedback(candidate);
-  let value = "partial";
-  if (candidate.finding_id) value = "completed";
-  else if (candidate.result?.verdict === "rejected") value = "rejected";
-  else if (active(candidate.status)) value = candidate.status;
-  return <Tooltip>
-    <TooltipTrigger asChild><span tabIndex={inCard ? undefined : 0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">
-      <Status value={value} label={feedback.label} />
-      {inCard && <span className="sr-only">{feedback.description}</span>}
-    </span></TooltipTrigger>
-    <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.description}</TooltipContent>
-  </Tooltip>;
 }
 
 function ResolvedList({ runId, running, revision, tick, onOpen }: {

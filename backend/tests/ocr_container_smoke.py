@@ -1,6 +1,6 @@
 """Run in the isolated image: python tests/ocr_container_smoke.py.
 
-Uses the real pinned OCR binary with a deterministic local Anthropic endpoint.
+Uses the real pinned OCR binary with deterministic local Anthropic and Responses endpoints.
 No model account, GitHub credentials, or external traffic are used.
 """
 
@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ["CM_ENCRYPTION_KEY"] = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 os.environ["CM_BOOTSTRAP_TOKEN"] = "container-smoke-test-token"
@@ -20,7 +21,7 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import assessment, background, checks, ocr, verification
+from code_mortis import assessment, background, checks, ocr, security_engine, verification
 from code_mortis.db import now
 from code_mortis.models import ReviewRun
 
@@ -38,20 +39,22 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         calls.append(data)
+        responses = self.path.endswith("/responses")
+        messages = data.get("input", []) if responses else data["messages"]
         names = {tool["name"] for tool in data.get("tools", [])}
         text = json.dumps(data)
         if "ocr_selftest" in names and not any(
-            message.get("role") == "assistant" for message in data["messages"]
+            message.get("role") == "assistant" for message in messages
         ):
             content = [
                 {"type": "tool_use", "id": "selftest", "name": "ocr_selftest", "input": {"note": "test"}}
             ]
         elif verification_mode == "review_budget" and "task_done" in names:
-            continuing = any(message.get("role") == "assistant" for message in data["messages"])
+            continuing = any(message.get("role") == "assistant" for message in messages)
             content = [{"type": "tool_use", "id": "budget", "name": "task_done" if continuing else "file_read_diff",
                         "input": {"state": "DONE"} if continuing else {"path_array": ["main.py"]}}]
         elif "Code Mortis project background evidence" in text and "code_comment" in names and not any(
-            message.get("role") == "assistant" for message in data["messages"]
+            message.get("role") == "assistant" for message in messages
         ):
             assert names == {"code_comment", "task_done"}, names
             assert "The required output is a project overview" in text, "OCR must load the generation rule"
@@ -61,7 +64,7 @@ class Provider(BaseHTTPRequestHandler):
                 "existing_code": "# Code Mortis project background evidence", "suggestion_code": "",
             }]}}]
         elif "Code Mortis verification evidence" in text and "task_done" in names and not any(
-            message.get("role") == "assistant" for message in data["messages"]
+            message.get("role") == "assistant" for message in messages
         ):
             assert names == {"task_done"}, names
             assert "internal result transport" in text
@@ -89,6 +92,15 @@ class Provider(BaseHTTPRequestHandler):
                 value.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "helper.py"}])
             elif verification_mode == "bad_citation":
                 value["evidence"][1]["quote"] = "invented"
+            elif verification_mode == "security_delivery":
+                value = {"findings": [], "required_paths": []}
+            elif verification_mode == "security_assessment":
+                path = next(path for path in ("one.py", "two.py", "three.py", "four.py") if path in text)
+                conversation_keys.append(self.headers.get("X-Smoke-Session"))
+                assessment_barrier.wait(timeout=15)
+                value = {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed in " + path,
+                         "evidence": [{"revision": "current", "path": path, "start_line": 1, "end_line": 1,
+                                       "quote": "for attempt in range(3): retry()"}], "required_paths": []}
             if verification_mode.startswith("assessment_"):
                 assert verification.RESULT_DELIVERY in text
                 value = {
@@ -117,6 +129,18 @@ class Provider(BaseHTTPRequestHandler):
                         "input": {"state": "DONE", "result": value}}]
             if verification_mode == "no_verdict":
                 content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
+            elif verification_mode == "security_delivery":
+                definition = next(tool for tool in data["tools"] if tool["name"] == "task_done")
+                parameters = definition["parameters"] if responses else definition["input_schema"]
+                assert parameters["required"] == ["state", "result"]
+                assert parameters["properties"]["result"]["required"] == ["findings", "required_paths"]
+                prompt = "\n".join(message["content"] if isinstance(message.get("content"), str) else
+                    "\n".join(part.get("text", "") for part in message.get("content", []) if isinstance(part, dict))
+                    for message in messages)
+                if '"validation_feedback":' not in prompt:
+                    content = [{"type": "tool_use", "id": "done", "name": "task_done", "input": {"state": "DONE"}}]
+                else:
+                    assert '"kind": "delivery"' in prompt
             elif verification_mode == "multiple_results":
                 content.append({**content[0], "id": "extra"})
         elif "task_done" in names:
@@ -135,6 +159,11 @@ class Provider(BaseHTTPRequestHandler):
             "usage": {"input_tokens": 1000001 if verification_mode == "review_budget" and
                       content[0].get("name") == "file_read_diff" else 10, "output_tokens": 5},
         }
+        if responses:
+            result = {"id": "resp_smoke", "object": "response", "status": "completed", "model": "test-model",
+                      "output": [{"type": "function_call", "id": "fc_smoke", "call_id": block["id"],
+                                  "name": block["name"], "arguments": json.dumps(block["input"])} for block in content],
+                      "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -365,6 +394,43 @@ def main():
                     assert usage["tokens"] > 0
                 assert len(calls) == before + 1
             print("Pinned OCR transported dependency requests and strict citation feedback (mock provider).")
+            verification_mode = "security_delivery"
+            security_context = {"assigned_path": "main.py", "diff": "", "sources": {"current": {"main.py": "safe"}}}
+            item = SimpleNamespace(git=root, env=env, redact=lambda text: text)
+            for protocol in ("anthropic", "openai-responses"):
+                before = len(calls)
+                raw, usage = security_engine.ask(item, {**connection, "kind": "api", "protocol": protocol}, {"api_key": "fake-test-key"},
+                    "analysis", security_context, None, 60, lambda: False, "smoke-delivery")
+                assert raw == {"findings": [], "required_paths": []} and usage == {"tokens": 30}
+                assert len(calls) == before + 2, "A bare DONE must be rejected and receive exactly one correction."
+                print(f"Pinned OCR reproduced bare DONE and recovered a validated security result with counted usage via {protocol} (mock provider).")
+            verification_mode = "security_assessment"
+            paths = ["one.py", "two.py", "three.py", "four.py"]
+            for protocol in ("anthropic", "openai-responses"):
+                assessment_barrier = threading.Barrier(4)
+                conversation_keys.clear()
+                before = len(calls)
+                selected = {**connection, "kind": "api", "protocol": protocol}
+                credentials = {"api_key": "fake-test-key", "extra_headers": {"X-Smoke-Session": "{ocr_session_key}"}}
+
+                def security_assess(path, selected=selected, credentials=credentials):
+                    prepared = {"proposal": {"path": path}, "history": [], "head_sha": "a" * 40, "diff": "",
+                                "sources": {"current": {path: "for attempt in range(3): retry()"}}}
+                    raw, usage = security_engine.ask(item, selected, credentials, "assessment", prepared, None, 60,
+                                                    lambda: False, "smoke-" + path, configuration_managed=True)
+                    assert raw["verdict"] == "confirmed" and raw["evidence"][0]["path"] == path
+                    assert raw["explanation"].endswith(path) and usage == {"tokens": 15}
+
+                try:
+                    with ocr.configuration(selected, credentials, {}, session_per_task=True), ThreadPoolExecutor(max_workers=4) as pool:
+                        list(pool.map(security_assess, paths))
+                finally:
+                    assessment_barrier = None
+                assert len(calls) == before + 4 and len(set(conversation_keys)) == 4
+                assert all(conversation_keys) and "{ocr_session_key}" not in conversation_keys
+                assert not (Path.home() / ".opencodereview/config.json").exists()
+                print(f"Four pinned OCR security assessments overlapped with isolated sessions and validated evidence via {protocol} (mock provider).")
+            conversation_keys.clear()
             assessment_context = {**context, "history": [], "finding": {}}
             for verdict in ("confirmed", "rejected", "uncertain", "context"):
                 verification_mode = "assessment_" + verdict

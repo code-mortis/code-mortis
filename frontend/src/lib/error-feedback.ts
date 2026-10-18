@@ -13,7 +13,7 @@ export function errorFeedback(error: unknown) {
   if (/token budget.*(?:exhausted|reached)|no token budget remains|exceeds budget|evidence prompt exceeds|context limit exhausted/i.test(message)) {
     return explain("AI limit reached", "The analysis could not continue within its configured limits. Review the token budget and prompt limit before retrying.");
   }
-  if (/invalid verification verdict|OCR returned invalid JSON|(?:AI|review engine|native).*unsupported.*(?:format|response)|did not return.*final|did not finish checking|OCR verification process failed/i.test(message)) {
+  if (/invalid (?:verification verdict|structured result)|OCR returned invalid JSON|(?:AI|review engine|native).*unsupported.*(?:format|response)|did not return.*final|did not finish checking|OCR verification process failed/i.test(message)) {
     return explain("AI response could not be used", "The AI did not return a complete, valid result. Check the selected connection, model, and technical details before retrying.");
   }
   if (/ECONN\w+|ENOTFOUND|Failed to fetch|fetch failed|NetworkError/i.test(message)) {

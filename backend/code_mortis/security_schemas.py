@@ -11,6 +11,7 @@ from .schemas import ORMModel, RepositoryOut, ReviewComment, RunLimits, Security
 class SecurityScanInput(RunLimits):
     connection_id: str = Field(min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
+    concurrency: int = Field(default=4, ge=1, le=8, strict=True)
     request_key: str = Field(min_length=16, max_length=100)
 
 
@@ -114,12 +115,50 @@ class SecurityRepositoryOut(StrictModel):
     repository: RepositoryOut
     summary: SecuritySummary
     can_write: bool | None = None
+    finding_count: int | None = Field(default=None, ge=0)
+    scan_count: int | None = Field(default=None, ge=0)
+
+
+class SecurityAssessmentOut(StrictModel):
+    id: str
+    revision: str = ""
+    proposal: dict[str, Any]
+    status: Literal["queued", "running", "completed", "failed", "interrupted"]
+    progress_phase: Literal["queued", "checking", "validating", "finished"]
+    outcome: Literal["pending", "confirmed", "rejected", "uncertain", "failed", "interrupted", "withheld"]
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    tokens: int | None = None
+    reused: bool = False
+    finding_id: str | None = None
+
+
+class SecurityAssessmentSummary(StrictModel):
+    total: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    revision: str = ""
+
+
+class SecurityAssessmentPage(StrictModel):
+    items: list[SecurityAssessmentOut]
+    total: int
+    registered_total: int
+    outcome_counts: dict[str, int]
+    severity_counts: dict[str, int]
+    category_counts: dict[str, int]
+    revision: str
+    page: int
+    page_size: int
 
 
 class SecurityScanDetail(StrictModel):
     repository: RepositoryOut
     scan: SecurityScanOut
     can_write: bool
+    assessment: SecurityAssessmentSummary = Field(default_factory=SecurityAssessmentSummary)
+    finding_count: int = Field(ge=0)
+    activity_count: int = Field(ge=0)
     activity: list[SecurityActivityOut]
 
 

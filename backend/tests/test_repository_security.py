@@ -1,7 +1,8 @@
 import json
 import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
+from threading import Barrier, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from code_mortis.models import (
     ConnectionGrant,
     Job,
     Repository,
+    SecurityActivity,
     SecurityFinding,
     SecurityOccurrence,
     SecurityScan,
@@ -60,6 +62,43 @@ def freshness(sha=SHA):
     return {"head_sha": sha, "default_branch": "main", "checked_at": now().isoformat()}
 
 
+def test_security_detail_counts_include_empty_lists(seed, security_github, client):
+    detail = client.get("/api/v1/security/repositories/22").json()
+    assert detail["finding_count"] == detail["scan_count"] == 0
+    with transaction() as db:
+        scan_id = saved_scan(db, seed, status="completed").id
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["finding_count"] == detail["activity_count"] == 0
+
+
+def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filters(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        other = saved_scan(db, seed, status="partial")
+        scan_id = scan.id
+        for index in range(25):
+            finding = saved_finding(db, seed, scan, state=["open", "resolved", "false_positive", "accepted_risk"][index % 4])
+            db.add(SecurityOccurrence(scan_id=scan.id if index < 21 else other.id, finding_id=finding.id,
+                                      outcome="present", snapshot={}))
+        db.add_all([SecurityActivity(scan_id=scan.id, action="finding_observed") for _ in range(205)])
+        db.add(SecurityActivity(scan_id=other.id, action="scan_created"))
+        repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
+        db.add(repo)
+        db.flush()
+        unrelated = saved_scan(db, {**seed, "repo": repo}, status="completed")
+        saved_finding(db, {**seed, "repo": repo}, unrelated)
+    detail = client.get("/api/v1/security/repositories/22").json()
+    assert detail["finding_count"] == 25 and detail["scan_count"] == 2
+    page = client.get("/api/v1/security/repositories/22/findings?state=open").json()
+    assert page["total"] == 7
+    assert client.get("/api/v1/security/repositories/22").json()["finding_count"] == 25
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["finding_count"] == 21 and detail["activity_count"] == 205
+    assert len(detail["activity"]) == 200
+    page = client.get(f"/api/v1/security/scans/{scan_id}/findings").json()
+    assert page["total"] == 21 and len(page["items"]) == 20
+
+
 @pytest.mark.parametrize(("severity", "grade"), [(None, "A"), ("low", "B"), ("medium", "C"), ("high", "D"), ("critical", "F"), ("unknown", None)])
 def test_rating_uses_highest_unresolved_severity(severity, grade):
     rows = [SimpleNamespace(state="open", severity=severity)] if severity else []
@@ -94,18 +133,103 @@ def test_scan_reads_and_writes_recheck_github_access(seed, security_github, clie
     monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: (_ for _ in ()).throw(github.GitHubError(403, "Denied")))
     assert client.get(f"/api/v1/security/scans/{identity}").status_code == 403
     assert client.post(f"/api/v1/security/scans/{identity}/cancel").status_code == 403
+    assert client.get(f"/api/v1/security/scans/{identity}/assessments").status_code == 403
+    assert client.get(f"/api/v1/security/scans/{identity}/assessments/0").status_code == 403
+
+
+def test_security_assessment_history_is_live_scoped_filtered_and_read_only(seed, security_github, client):
+    proposals = [{"title": f"Candidate {number}", "category": "Access Control", "severity": "high", "path": "app.py",
+        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix", "verification": "Test",
+        "evidence": [{"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": f"source {number}"}]}
+        for number in range(25)]
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        scan.stages = {"analysis": {"status": "completed"}, "assessment": {"status": "running"}}
+        scan.coverage = {"inventory": {"app.py": {"code": True}}}
+        tasks = {"analysis:app.py": {"status": "completed", "result": {"findings": proposals}}}
+        for number, verdict in enumerate(["confirmed", "rejected", "uncertain"]):
+            tasks[f"assessment:{number}"] = {"status": "completed", "proposal": proposals[number], "tokens": 12,
+                "result": {"verdict": verdict, "finding_id": None, "explanation": verdict,
+                           "evidence": proposals[number]["evidence"], "required_paths": [], "api_key": "internal-secret"},
+                "input_hash": "internal-hash", "credentials": "internal-secret"}
+        tasks["assessment:3"] = {"status": "failed", "proposal": proposals[3], "tokens": None, "error": "Invalid citation"}
+        tasks["assessment:4"] = {"status": "running", "proposal": proposals[4]}
+        tasks["assessment:5"] = {**tasks["assessment:0"], "proposal": proposals[5]}
+        scan.progress = {"tasks": tasks, "tokens": None, "execution": "untouched:1"}
+        fingerprint = digest(json.dumps(["code", "app.py", "Access Control", "source 0", "Candidate 0"]))
+        finding = saved_finding(db, seed, scan, kind="infrastructure", ai_analysis={"fingerprint": fingerprint})
+        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
+        identity, finding_id = scan.id, finding.id
+        original = json.dumps([scan.progress, scan.stages, scan.coverage], sort_keys=True)
+        other = saved_scan(db, seed, status="completed")
+        other_id = other.id
+    detail = client.get(f"/api/v1/security/scans/{identity}").json()
+    assert detail["assessment"]["total"] == 25
+    assert detail["assessment"]["status_counts"] == {"completed": 3, "failed": 1, "running": 2, "queued": 19}
+    assert detail["finding_count"] == 1
+    page = client.get(f"/api/v1/security/scans/{identity}/assessments").json()
+    assert page["total"] == page["registered_total"] == 25 and len(page["items"]) == 20
+    assert page["outcome_counts"] == {"confirmed": 1, "rejected": 1, "uncertain": 1, "failed": 1, "pending": 21}
+    assert page["revision"] == detail["assessment"]["revision"]
+    assert page["items"][0]["finding_id"] == finding_id
+    assert page["items"][5]["progress_phase"] == "validating" and page["items"][5]["finding_id"] is None
+    assert all(value not in json.dumps(page) for value in ("internal-secret", "internal-hash", "credentials"))
+    second = client.get(f"/api/v1/security/scans/{identity}/assessments?page=2").json()
+    assert [row["id"] for row in second["items"]] == [str(number) for number in range(20, 25)]
+    filtered = client.get(f"/api/v1/security/scans/{identity}/assessments?outcome=rejected&severity=high&category=Access%20Control&q=candidate%201").json()
+    assert filtered["total"] == 1 and filtered["registered_total"] == 25 and filtered["items"][0]["id"] == "1"
+    assert filtered["outcome_counts"] == page["outcome_counts"]
+    assert client.get(f"/api/v1/security/scans/{identity}/assessments/3").json()["tokens"] is None
+    assert client.get(f"/api/v1/security/scans/{identity}/assessments/99").status_code == 404
+    assert client.get(f"/api/v1/security/scans/{other_id}/assessments/0").status_code == 404
+    for query in ("page=0", "page_size=101", "outcome=invented", "severity=bad", "q=" + "x" * 201):
+        assert client.get(f"/api/v1/security/scans/{identity}/assessments?{query}").status_code == 422
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert original == json.dumps([scan.progress, scan.stages, scan.coverage], sort_keys=True)
+        scan.status = "partial"
+    ended = client.get(f"/api/v1/security/scans/{identity}/assessments").json()
+    assert ended["revision"] != page["revision"]
+    assert ended["items"][4]["status"] == "interrupted"
+    assert ended["items"][5]["outcome"] == "withheld"
+    assert "pending" not in ended["outcome_counts"]
+
+
+def test_security_assessments_support_legacy_checkpoints_and_do_not_renumber_during_analysis(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        scan.stages = {"analysis": {"status": "running"}, "assessment": {"status": "pending"}}
+        scan.coverage = {"inventory": {"a.py": {"code": True}, "b.py": {"code": True}}}
+        scan.progress = {"tasks": {"analysis:b.py": {"status": "completed", "result": {"findings": [{"title": "B", "path": "b.py"}]}},
+            "analysis:a.py": {"status": "completed", "result": {"findings": [{"title": "A", "path": "a.py"}]}}}, "tokens": 0}
+        identity = scan.id
+    assert client.get(f"/api/v1/security/scans/{identity}/assessments").json()["registered_total"] == 0
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        scan.stages = {"analysis": {"status": "completed"}, "assessment": {"status": "running"}}
+        scan.progress = {**scan.progress, "tasks": {**scan.progress["tasks"], "assessment:0": {
+            "status": "completed", "result": {"verdict": "rejected", "explanation": "Not supported", "finding_id": None}}}}
+    rows = client.get(f"/api/v1/security/scans/{identity}/assessments").json()["items"]
+    assert [(row["id"], row["proposal"]["title"], row["outcome"]) for row in rows] == [("0", "A", "rejected"), ("1", "B", "pending")]
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        scan.coverage, scan.progress = {}, {"tasks": {"assessment:7": {"status": "failed", "error": "Legacy interrupted result"}}}
+    rows = client.get(f"/api/v1/security/scans/{identity}/assessments").json()["items"]
+    assert len(rows) == 1 and rows[0]["id"] == "7" and rows[0]["proposal"] == {}
 
 
 def test_personal_scans_require_owner_and_repository_grant(seed, security_github):
     with transaction() as db:
         connection = db.get(type(seed["connection"]), "connection")
         connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
-        body = SecurityScanInput(connection_id="connection", request_key=uid())
+        body = SecurityScanInput(connection_id="connection", request_key=uid(), concurrency=8)
         with pytest.raises(ValueError, match="Authorize this repository"):
             security.create_scan(db, seed["repo"], seed["user"], body)
         db.add(ConnectionGrant(connection_id="connection", repository_id=22, automatic=False))
         db.flush()
-        assert security.create_scan(db, seed["repo"], seed["user"], body).config["connection"]["kind"] == "chatgpt"
+        scan = security.create_scan(db, seed["repo"], seed["user"], body)
+        assert scan.config["connection"]["kind"] == "chatgpt"
+        assert scan.config["limits"]["concurrency"] == 1
 
 
 @pytest.mark.parametrize(("complete", "current", "resolved"), [(True, True, True), (False, True, False), (True, False, False)])
@@ -283,6 +407,342 @@ def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, s
     assert calls == ["analysis"]
 
 
+@pytest.mark.parametrize("concurrency", [1, 3])
+@pytest.mark.parametrize("budget", [None, 1200])
+@pytest.mark.parametrize("failure", [None, "citation", "usage", "quota", "cancel"])
+def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_errors(
+    seed, security_github, monkeypatch, tmp_path, concurrency, budget, failure,
+):
+    paths = ["a.py", "bad.py", "c.py", "d.py", "e.py", "f.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={})
+    calls, configurations, active = [], [], [0, 0]
+    lock, barrier = Lock(), Barrier(concurrency)
+
+    @contextmanager
+    def snapshot(*args):
+        yield item
+
+    @contextmanager
+    def configuration(*args, **kwargs):
+        configurations.append(kwargs)
+        yield
+
+    def ask(*args, **kwargs):
+        path, allowance = args[4]["assigned_path"], args[5]
+        with lock:
+            active[0] += 1
+            active[1] = max(active)
+            calls.append((path, allowance))
+        barrier.wait(timeout=10)
+        with lock:
+            active[0] -= 1
+        assert kwargs.get("configuration_managed", False) is (concurrency > 1)
+        if path == "bad.py":
+            if failure == "cancel":
+                with transaction() as db:
+                    security.cancel(db, db.get(SecurityScan, identity))
+            if failure in {"citation", "usage"}:
+                raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": None if failure == "usage" else 12},
+                    feedback={"errors": [{"reason": "invented quote"}]})
+            if failure == "quota":
+                raise security_engine.runner_client.RunnerBlocked("quota")
+        return {"findings": [], "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "snapshot", snapshot)
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget))
+        identity = scan.id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        if failure in {"usage", "quota", "cancel"}:
+            assert scan.status == {"usage": "failed", "quota": "blocked", "cancel": "cancelled"}[failure], scan.error
+            assert scan.progress["tokens"] is None and scan.grade is None
+            assert len(calls) == (3 if concurrency == 3 else 2)
+        else:
+            assert scan.status == ("partial" if failure else "completed"), scan.error
+            assert scan.grade == (None if failure else "A")
+            assert scan.progress["tokens"] == 72 and len(calls) == 6
+            assert scan.stages["analysis"]["completed"] == (5 if failure else 6)
+            assert scan.stages["analysis"]["failed"] == (1 if failure else 0)
+            assert scan.stages["report"]["status"] == "completed"
+            if failure:
+                assert scan.progress["tasks"]["analysis:bad.py"]["error"] == "Invalid citation"
+                assert scan.report["problems"] == ["Source analysis could not be validated: bad.py."]
+        if budget:
+            assert all(allowance > 0 for _, allowance in calls)
+            assert sum(allowance for _, allowance in calls[:concurrency]) <= budget
+            if len(calls) > concurrency:
+                assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 12 * concurrency
+    assert active[1] == concurrency
+    assert configurations == ([{"session_per_task": True}] if concurrency > 1 else [])
+
+
+@pytest.mark.parametrize("value", [0, 9, 1.5, True, "4"])
+def test_security_concurrency_is_validated_at_the_api_boundary(seed, security_github, client, value):
+    response = client.post("/api/v1/security/repositories/22/scans", json={
+        "connection_id": "connection", "request_key": uid(), "concurrency": value})
+    assert response.status_code == 422
+
+
+def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_github, monkeypatch, tmp_path):
+    item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("unsafe"), "lines": 1}},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={})
+    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
+    finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
+               "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+               "verification": "Test", "evidence": [citation]}
+
+    @contextmanager
+    def snapshot(*args):
+        yield item
+
+    def ask(*args, **kwargs):
+        if args[3] == "analysis":
+            return {"findings": [{**finding, "title": "Invalid candidate"}, finding], "required_paths": []}, {"tokens": 12}
+        if args[4]["proposal"]["title"] == "Invalid candidate":
+            raise security_engine.verification.VerificationOutputError("Invented source", {"tokens": 12},
+                feedback={"errors": [{"reason": "invented quote"}]})
+        return {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed", "evidence": [citation], "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "snapshot", snapshot)
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
+        identity = scan.id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == "partial" and scan.grade is None, scan.error
+        assert scan.progress["tokens"] == 36
+        assert scan.stages["assessment"]["completed"] == scan.stages["assessment"]["failed"] == 1
+        assert scan.progress["tasks"]["assessment:0"]["validation_feedback"]["errors"] == [{"reason": "invented quote"}]
+        assert db.scalar(select(SecurityFinding.title)) == "Synthetic defect"
+        assert len(scan.report["findings"]) == 1
+
+
+@pytest.mark.parametrize("concurrency", [1, 4])
+@pytest.mark.parametrize("budget", [None, 1200])
+@pytest.mark.parametrize("failure", [None, "citation", "usage", "quota", "cancel", "timeout"])
+def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
+    seed, security_github, monkeypatch, tmp_path, concurrency, budget, failure,
+):
+    paths = ["a.py", "bad.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(path), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
+        redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+    calls, configurations, active = [], [], [0, 0]
+    lock, barrier = Lock(), Barrier(concurrency)
+    clock = [0]
+    if failure == "timeout":
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
+
+    @contextmanager
+    def configuration(*args, **kwargs):
+        configurations.append(kwargs)
+        yield
+
+    def ask(*args, **kwargs):
+        task, context, allowance = args[3:6]
+        if task == "analysis":
+            path = context["assigned_path"]
+            citation = {"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": path}
+            return {"findings": [{"title": path, "category": "test", "severity": "low", "path": path,
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                "verification": "Test", "evidence": [citation]}], "required_paths": []}, {"tokens": 12}
+        assert task == "assessment"
+        path = context["proposal"]["path"]
+        with lock:
+            active[0] += 1
+            active[1] = max(active)
+            calls.append((path, allowance))
+        barrier.wait(timeout=10)
+        with lock:
+            active[0] -= 1
+        assert kwargs.get("configuration_managed", False) is (concurrency > 1)
+        if path == "bad.py":
+            if failure == "cancel":
+                with transaction() as db:
+                    security.cancel(db, db.get(SecurityScan, identity))
+            if failure in {"citation", "usage"}:
+                raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": None if failure == "usage" else 12},
+                    feedback={"errors": [{"reason": "invented quote"}]})
+            if failure == "quota":
+                raise security_engine.runner_client.RunnerBlocked("quota")
+            if failure == "timeout":
+                clock[0] = 61
+        return {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed",
+                "evidence": context["proposal"]["evidence"], "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget,
+            timeout_seconds=60 if failure == "timeout" else None)).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        if failure in {"usage", "quota", "cancel", "timeout"}:
+            assert scan.status == {"usage": "partial" if concurrency == 1 else "failed", "quota": "blocked", "cancel": "cancelled",
+                                   "timeout": "partial" if concurrency == 1 else "failed"}[failure], scan.error
+            assert scan.grade is None
+            assert scan.progress["tokens"] == (96 + 12 * len(calls) if failure == "timeout" else None)
+            assert len(calls) == (4 if concurrency == 4 else 2)
+        else:
+            assert scan.status == ("partial" if failure else "completed"), scan.error
+            assert (scan.grade is None) is bool(failure)
+            assert scan.progress["tokens"] == 192 and len(calls) == 8
+            assert scan.stages["assessment"]["completed"] == (7 if failure else 8)
+            assert scan.stages["assessment"]["failed"] == (1 if failure else 0)
+            assert len(scan.report["findings"]) == (7 if failure else 8)
+            if failure:
+                assert scan.progress["tasks"]["assessment:1"]["error"] == "Invalid citation"
+        if budget:
+            assert sum(allowance for _, allowance in calls[:concurrency]) <= budget - 96
+            if len(calls) > concurrency:
+                assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 96 - 12 * concurrency
+    assert active[1] == concurrency
+    assert configurations == ([{"session_per_task": True}] * 2 if concurrency > 1 else [])
+
+
+def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
+    def proposal(path, quote):
+        return {"path": path, "evidence": [{"path": path, "quote": quote}]}
+
+    proposals = [proposal("new.py", "first"), proposal("same.py", "shared"), proposal("same.py", "other"),
+                 proposal("another.py", "shared"), proposal("bridge.py", "last"), proposal("independent.py", "independent")]
+    rows = [SimpleNamespace(id=number, position=number, proposal=value) for number, value in enumerate(proposals)]
+    history = [{"path": "old.py", "evidence": {"source_sha": OLD, "evidence": [{"path": "bridge.py", "quote": "old"}]}},
+               {"path": "bridge.py", "evidence": {"source_sha": SHA, "locations": [{"path": "same.py"}]}}]
+    item = SimpleNamespace(sha=SHA, renamed=lambda sha, path: "new.py" if path == "old.py" else path)
+    assert [row.id for row in security.assessment_batch(rows, history, item, 4)] == [0, 5]
+    assert [row.id for row in security.assessment_batch(rows[1:], history, item, 4)] == [1, 5]
+
+
+@pytest.mark.parametrize("history_changed", [False, True])
+def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects_stale_history(
+    seed, security_github, monkeypatch, tmp_path, history_changed,
+):
+    paths = ["same.py", "independent.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(path), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
+        redact=lambda text: text, sha=SHA, git=tmp_path, env={}, renamed=lambda sha, path: path)
+    barrier, calls = Barrier(2), []
+
+    def ask(*args, **kwargs):
+        task, context = args[3:5]
+        if task == "analysis":
+            path = context["assigned_path"]
+            citation = {"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": path}
+            proposal = {"title": path, "category": "test", "severity": "low", "path": path,
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                "verification": "Test", "evidence": [citation]}
+            return {"findings": [proposal, {**proposal, "title": "Reworded"}] if path == "same.py" else [proposal],
+                    "required_paths": []}, {"tokens": 12}
+        assert task == "assessment"
+        proposal = context["proposal"]
+        calls.append(proposal["title"])
+        if proposal["title"] != "Reworded":
+            barrier.wait(timeout=10)
+            if history_changed and proposal["path"] == "same.py":
+                with transaction() as db:
+                    saved_finding(db, seed, db.get(SecurityScan, identity), path="external.py")
+            finding_id = None
+        else:
+            matches = [row for row in context["history"] if row["path"] == "same.py"]
+            assert len(matches) == 1, "A related proposal must see the preceding accepted finding."
+            finding_id = matches[0]["id"]
+        return {"verdict": "confirmed", "finding_id": finding_id, "explanation": "Confirmed",
+                "evidence": proposal["evidence"], "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=4)).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        findings = list(db.scalars(select(SecurityFinding)))
+        if history_changed:
+            assert scan.status == "failed" and scan.grade is None
+            assert "history changed" in scan.error
+            assert len(findings) == 1 and findings[0].path == "external.py"
+            assert scan.progress["tokens"] == 48 and len(calls) == 2
+            assert not list(db.scalars(select(SecurityOccurrence)))
+        else:
+            assert scan.status == "completed", scan.error
+            assert len(findings) == 2 and len(list(db.scalars(select(SecurityOccurrence)))) == 2
+            assert scan.progress["tokens"] == 60
+            assert calls[-1] == "Reworded"
+            assert scan.stages["assessment"]["completed"] == 3
+
+
+@pytest.mark.parametrize("concurrency", [None, 3])
+def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, security_github, monkeypatch, tmp_path, concurrency):
+    item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("safe"), "lines": 1}},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={})
+
+    @contextmanager
+    def snapshot(*args):
+        yield item
+
+    monkeypatch.setattr(security_engine, "snapshot", snapshot)
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Completed legacy analysis must be reused"))
+    with transaction() as db:
+        parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
+        config = {**parent.config, "limits": {"token_budget": None, "timeout_seconds": None}}
+        context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}}, "language": "English"}
+        parent.config, parent.status = config, "partial"
+        parent.progress = {"tokens": 12, "tasks": {"analysis:app.py": {"status": "completed", "tokens": 12,
+            "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}}}
+        with pytest.raises(security.HTTPException, match="Retry must use the original"):
+            security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid(), token_budget=1000), parent=parent)
+        retry = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid(),
+            **({"concurrency": concurrency} if concurrency else {})), parent=parent)
+        identity = retry.id
+        assert retry.config["limits"]["concurrency"] == (concurrency or 1)
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == "completed", scan.error
+        assert scan.progress["tokens"] == 0 and scan.progress["tasks"]["analysis:app.py"]["reused"]
+
+
+@pytest.mark.parametrize("revision", ["original", "current"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+def test_security_citations_reanchor_only_unchanged_unique_source_text(revision, trailing_newline):
+    source = "def list_installations(db, user):\n    remote = {}\n    visible = user_installations(db, user)\n    results = {}\n"
+    quote = "    remote = {}\n    visible = user_installations(db, user)\n    results = {}" + ("\n" if trailing_newline else "")
+    citation = {"revision": revision, "path": "app.py", "start_line": 1, "end_line": 3, "quote": quote}
+    assert security_engine.validate_citations([citation], {revision: {"app.py": source}}) == {revision}
+    assert citation["start_line"] == 2 and citation["end_line"] == 4 and citation["quote"] == quote
+
+
+@pytest.mark.parametrize("quote", ["invented", "safe", 'value = \\"synthetic\\"', "safe\n...\nsafe"])
+def test_security_citations_never_reanchor_invented_escaped_or_ambiguous_quotes(quote):
+    citation = {"revision": "current", "path": "app.py", "start_line": 2, "end_line": 2, "quote": quote}
+    with pytest.raises(security_engine.verification.ResultValidationError):
+        security_engine.validate_citations([citation], {"current": {"app.py": 'safe\nvalue = "synthetic"\nsafe'}})
+    assert citation["start_line"] == citation["end_line"] == 2
+
+
 def test_github_issue_creation_is_explicit_and_reconciles_unknown_delivery(seed, security_github, monkeypatch, client):
     security_github["private"] = False
     with transaction() as db:
@@ -387,6 +847,126 @@ def test_failed_expansion_keeps_already_consumed_tokens(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+@pytest.mark.parametrize("corrected", [True, False])
+def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch, kind, task, corrected):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
+    calls, contexts = [], []
+    bundle = security_engine.verification.evidence_bundle
+
+    def evidence_bundle(context):
+        contexts.append(context)
+        return bundle(context)
+
+    def response():
+        evidence = [citation]
+        if task == "analysis":
+            finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
+                       "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                       "verification": "Test", "evidence": evidence}
+            raw = {"findings": [finding, dict(finding)], "required_paths": []}
+            target = raw["findings"][1]
+        else:
+            raw = {"verdict": "uncertain", "explanation": "Synthetic test", "evidence": evidence, "required_paths": [],
+                   **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": True})}
+            target = raw
+        if len(calls) == 1 or not corrected:
+            target.update(start_line=1, end_line=1, quote="unsafe")
+        return raw
+
+    def command(args, *a, **kwargs):
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        calls.append(int(args[args.index("--max-tokens-budget") + 1]))
+        return 0, json.dumps({"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 7}}), ""
+
+    def native(connection, identity, payload, stopped):
+        calls.append(payload["token_budget"])
+        return response(), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(security_engine.ocr, "command", command)
+    monkeypatch.setattr(security_engine.verification, "terminal_result", lambda *a: response())
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "unsafe"}}, "diff": "", "history": []}
+    connection = {"id": "connection", "kind": kind, "model": "test"}
+    if corrected:
+        result, usage = security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        assert usage == {"tokens": 14}
+        assert (result["findings"][1] if task == "analysis" else result)["evidence"] == [citation]
+    else:
+        with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+            security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        assert error.value.usage == {"tokens": 14}
+    assert calls == [100, 93]
+    assert "validation_feedback" not in contexts[0]
+    feedback = contexts[1]["validation_feedback"]
+    assert feedback["kind"] == "schema"
+    assert [problem["loc"][-1] for problem in feedback["errors"]] == ["start_line", "end_line", "quote"]
+    assert all(problem["type"] == "extra_forbidden" and "input" not in problem for problem in feedback["errors"])
+    if task == "analysis":
+        assert all(problem["loc"][:2] == ("findings", 1) for problem in feedback["errors"])
+
+
+@pytest.mark.parametrize("case", ["corrected", "repeat", "warning", "unknown_usage", "wrong_session", "budget"])
+def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_path, monkeypatch, case):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    session_id = "00000000-0000-4000-8000-000000000001"
+    folder = tmp_path / ".opencodereview/sessions/repo"
+    folder.mkdir(parents=True)
+    calls, contexts = [], []
+    bundle = security_engine.verification.evidence_bundle
+
+    def evidence_bundle(context):
+        contexts.append(context)
+        return bundle(context)
+
+    def command(args, root, *a, **kwargs):
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        calls.append(int(args[args.index("--max-tokens-budget") + 1]))
+        payload = {"state": "DONE"}
+        if case == "corrected" and len(calls) == 2:
+            payload["result"] = {"findings": [], "required_paths": []}
+        header = {"type": "session_start", "cwd": str(root), "sessionId": session_id}
+        row = {"type": "llm_response", "sessionId": "another-session" if case == "wrong_session" else session_id,
+               "taskType": "main_task", "tool_calls": [{"name": "task_done", "arguments": json.dumps(payload)}]}
+        (folder / f"{session_id}.jsonl").write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
+        return 0, json.dumps({"session_id": session_id, "status": "success",
+            "summary": {"files_reviewed": 1, "total_tokens": None if case == "unknown_usage" else 71300},
+            "warnings": ["incomplete"] if case == "warning" else None}), ""
+
+    monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(security_engine.ocr, "command", command)
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": ""}
+    budget = 71300 if case == "budget" else 200000
+    if case == "corrected":
+        result, usage = security_engine.ask(item, {"kind": "api"}, {}, "analysis", context, budget, 60, lambda: False, uid())
+        assert result == {"findings": [], "required_paths": []} and usage == {"tokens": 142600}
+    else:
+        with pytest.raises(ValueError) as caught:
+            security_engine.ask(item, {"kind": "api"}, {}, "analysis", context, budget, 60, lambda: False, uid())
+        if case != "unknown_usage":
+            assert caught.value.usage["tokens"] == (142600 if case == "repeat" else 71300)
+    assert calls == ([200000, 128700] if case in {"corrected", "repeat"} else [budget])
+    if len(calls) == 2:
+        feedback = contexts[1]["validation_feedback"]
+        assert feedback["kind"] == "delivery"
+        assert feedback["received"]["argument_fields"] == ["state"]
+        assert feedback["received"]["result_type"] == "NoneType"
+    elif case in {"warning", "wrong_session"}:
+        assert caught.value.feedback is None
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 def test_security_corrects_citations_once_with_exact_feedback_and_known_usage(tmp_path, monkeypatch, kind, task):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     source = 'url = "synthetic"'
@@ -464,13 +1044,13 @@ def test_security_citation_feedback_keeps_missing_source_ranges_and_quote_mismat
                 for start, quote in [(1, "safe}"), (5, "safe"), (1, " ")]]
     evidence.append({**evidence[0], "path": "missing.py"})
     with pytest.raises(security_engine.verification.ResultValidationError) as error:
-        security_engine.validate_citations(evidence, {"current": {"app.py": "safe"}})
+        security_engine.validate_citations(evidence, {"current": {"app.py": "safe\nsafe"}})
     problems = error.value.feedback["errors"]
     assert [problem["reason"] for problem in problems] == [
         "quote is not verbatim text within the cited source lines", "invalid source line range",
         "quote is not verbatim text within the cited source lines", "unavailable source",
     ]
-    assert problems[0]["source_lines"] == problems[2]["source_lines"] == "safe"
+    assert problems[0]["source_lines"] == problems[2]["source_lines"] == "safe\n"
     assert "source_lines" not in problems[1] and "source_lines" not in problems[3]
 
 

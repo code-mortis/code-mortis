@@ -54,7 +54,7 @@ export function assessmentFeedback(error: string, stage: "assessment" | "verific
   if (field === "finding_id" || message.includes("Assessment references an unavailable finding") || message.includes("Only a duplicate may reference")) {
     return { title: "Finding reference could not be verified", message: "The AI returned an invalid finding reference. Only findings supplied in the review history can be linked." };
   }
-  if (/without returning a final assessment|did not return exactly one final assessment|unsupported response instead of a finding assessment|invalid verification verdict/.test(message)) {
+  if (/without returning a final assessment|did not return exactly one final assessment|unsupported response instead of a finding assessment|invalid (?:verification verdict|structured result)/.test(message)) {
     return { title: `No usable ${stage} returned`, message: `The AI did not return a complete ${stage} in the required format. Check the selected model and technical details before starting another review.` };
   }
   if (/OCR evidence prompt exceeds|Context limit exhausted|Assessment needs .* bytes|Token budget exhausted|No token budget remains/.test(message)) {
