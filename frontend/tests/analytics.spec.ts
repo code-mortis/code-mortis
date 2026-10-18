@@ -82,7 +82,7 @@ test("custom dates default to the last 30 days on each new visit", async ({ page
 test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/analytics");
-  await expect(page.getByRole("heading", { name: "Analytics", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toHaveClass("sr-only");
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Top repositories", exact: true }).first()).toBeVisible();
   expect(requests.every((url) => url.pathname.endsWith("/overview"))).toBe(true);

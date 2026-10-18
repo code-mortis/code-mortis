@@ -102,7 +102,7 @@ export default function Analytics() {
     : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
-    <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Analytics</h1>
+    <h1 className="sr-only">Analytics</h1>
     <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Analytics filters">
       <div className="min-w-0 max-w-full"><FilterBar filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change} /></div>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
