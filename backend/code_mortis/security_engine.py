@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -37,7 +38,9 @@ INSTRUCTIONS = (
     "do not infer exploitability from an isolated dangerous function. Never reproduce secrets or private "
     "reasoning. Evidence quotes use the source line numbers before |. When supporting source is necessary, "
     "request exact repository-relative required_paths and remain uncertain. Use the requested language for "
-    "explanations and remediation. Return the requested schema. "
+    "explanations and remediation. If validation_feedback is supplied, correct every listed citation using "
+    "the exact source_lines without adding escapes, syntax or line-number prefixes. Return the complete "
+    "requested schema, never invent evidence or weaken a finding to bypass validation. "
 )
 
 
@@ -380,18 +383,30 @@ def model_schema(model):
     return schema
 
 
-def validate_citations(evidence, sources):
-    revisions = set()
-    for citation in evidence:
+def validate_citations(evidence, sources, *, field="evidence"):
+    revisions, problems = set(), []
+    for index, citation in enumerate(evidence):
         path, revision = relative_path(citation["path"]), citation["revision"]
+        problem = {"field": f"{field}[{index}]", **citation}
         text = sources.get(revision, {}).get(path)
         if text is None:
-            raise ValueError("Security evidence cites source that was not supplied.")
-        lines = text.splitlines()
-        start, end = citation["start_line"], citation["end_line"]
-        if not 1 <= start <= end <= len(lines) or citation["quote"] not in "\n".join(lines[start - 1:end]):
-            raise ValueError("Security evidence does not match its cited source lines.")
-        revisions.add(revision)
+            problem["reason"] = "unavailable source"
+        else:
+            lines = text.splitlines()
+            start, end = citation["start_line"], citation["end_line"]
+            if not 1 <= start <= end <= len(lines):
+                problem["reason"] = "invalid source line range"
+            else:
+                source_lines = "\n".join(lines[start - 1:end])
+                if not citation["quote"].strip() or citation["quote"] not in source_lines:
+                    problem.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
+        if "reason" in problem:
+            problems.append(problem)
+        else:
+            revisions.add(revision)
+    if problems:
+        feedback = {**problems[0], "errors": problems}
+        raise verification.ResultValidationError("Security evidence does not match its cited source lines. " + json.dumps(feedback), feedback)
     return revisions
 
 
@@ -414,10 +429,17 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             relative_path(path)
         evidence = result.get("evidence", [])
         if task == "analysis":
-            for proposed in result["findings"]:
+            problems = []
+            for index, proposed in enumerate(result["findings"]):
                 if proposed["path"] != supplied["assigned_path"]:
                     raise ValueError("Security analysis returned a finding outside its assigned file.")
-                validate_citations(proposed["evidence"], supplied["sources"])
+                try:
+                    validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
+                except verification.ResultValidationError as exc:
+                    problems.extend(exc.feedback["errors"])
+            if problems:
+                feedback = {**problems[0], "errors": problems}
+                raise verification.ResultValidationError("Security evidence does not match its cited source lines. " + json.dumps(feedback), feedback)
         else:
             revisions = validate_citations(evidence, supplied["sources"])
             if task == "assessment":
@@ -433,37 +455,49 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 result["verdict"] = "uncertain"
         return result
 
-    used = 0
+    used, feedback, corrected = 0, None, False
+    deadline = time.monotonic() + timeout if timeout is not None else None
     for attempt in range(4):
         if stopped():
             raise ocr.ReviewStopped("Security scan cancelled.")
         remaining = None if budget is None else budget - used
         if remaining is not None and remaining <= 0:
             raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": used}, "skipped")
+        remaining_time = max(0, int(deadline - time.monotonic())) if deadline is not None else None
+        if remaining_time is not None and remaining_time <= 0:
+            raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
+        request_context = {**context, "validation_feedback": feedback} if feedback else context
         try:
             if connection["kind"] == "api":
-                result, usage = verification.api_verify(item.git, item.env, connection, credentials, context,
-                    remaining, timeout, stopped, instructions=instructions, schema=schema, validator=validate)
+                result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
+                    remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate)
             else:
                 result, usage = runner_client.review(connection["id"], f"{identity}-{attempt}", {
                     "task": "security_verification" if task == "verification" else "security_analysis",
                     "kind": connection["kind"], "model": connection["model"], "effort": "high",
-                    "prompt": instructions + "\n\n" + verification.evidence_bundle(context), "output_schema": schema,
+                    "prompt": instructions + "\n\n" + verification.evidence_bundle(request_context), "output_schema": schema,
                     "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                    "token_budget": remaining, "timeout": timeout,
+                    "token_budget": remaining, "timeout": remaining_time,
                 }, stopped)
                 try:
-                    result = validate(result, context)
+                    result = validate(result, request_context)
                 except (ValueError, KeyError, TypeError) as exc:
-                    raise verification.VerificationOutputError("The native security result failed source validation.", usage) from exc
+                    raise verification.VerificationOutputError("The native security result failed source validation: " + str(exc), usage,
+                        feedback=exc.feedback if isinstance(exc, verification.ResultValidationError) else None) from exc
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = exc.usage.get("tokens")
-            exc.usage = {**exc.usage, "tokens": used + tokens if type(tokens) is int and tokens >= 0 else None}
+            known = type(tokens) is int and tokens >= 0
+            used = used + tokens if known else None
+            exc.usage = {**exc.usage, "tokens": used}
+            if isinstance(exc, verification.VerificationOutputError) and exc.feedback and known and not corrected and attempt < 3:
+                feedback, corrected = exc.feedback, True
+                continue
             raise
         tokens = usage.get("tokens")
         if type(tokens) is not int or tokens < 0:
             raise verification.VerificationOutputError("Security token usage is unknown.", {"tokens": None})
         used += tokens
+        feedback = None
         if not result["required_paths"]:
             return json.loads(item.redact(json.dumps(result))), {"tokens": used}
         if attempt == 3:

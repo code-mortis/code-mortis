@@ -20,7 +20,6 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ClipboardCheck,
-  Copy,
   LockKeyhole,
   Globe,
   SlidersHorizontal,
@@ -77,6 +76,7 @@ import {
   date,
   Empty,
   ErrorNotice,
+  TechnicalDetails,
   ExternalLink,
   Field,
   Loading,
@@ -782,24 +782,6 @@ function InferenceError({ error, withheld = false, stage = "assessment" }: {
   </div>;
 }
 
-function TechnicalDetails({ error, name }: { error: string; name: string }) {
-  const [copying, setCopying] = useState(false);
-  return <details className="group text-xs text-muted-foreground">
-    <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" /></summary>
-    <div className="group/diagnostics relative mt-3">
-      <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="min-h-14 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 pr-14 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:pr-12 [overflow-wrap:anywhere]">{error}</pre>
-      <Button variant="ghost" size="icon" aria-label={`${copying ? "Copying" : "Copy"} ${name} details`} title={`${copying ? "Copying" : "Copy"} ${name} details`} className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/diagnostics:opacity-100 group-focus-within/diagnostics:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" disabled={copying} onClick={async () => {
-        setCopying(true);
-        try {
-          await navigator.clipboard.writeText(error);
-          toast.success(`${name} details copied`);
-        } catch {
-          toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
-        } finally { setCopying(false); }
-      }}>{copying ? <LoaderCircle aria-hidden="true" className="size-3.5 motion-safe:animate-spin" /> : <Copy aria-hidden="true" className="size-3.5" />}</Button>
-    </div>
-  </details>;
-}
 
 function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
   candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; onOpenFinding: () => void;

@@ -146,7 +146,7 @@ export function GitHubInstallations() {
                     </DropdownMenu>
                   </div>
                   {!removed && (busy || failed || !item.active) && <p className="settings-row-note text-xs leading-relaxed text-muted-foreground">{installationDescription(item, status)}</p>}
-                  {failed && item.operation_error && <p role="alert" className="settings-row-note break-words text-sm text-destructive">{item.operation_error}</p>}
+                  {failed && item.operation_error && <div className="settings-row-note"><ErrorNotice error={item.operation_error} /></div>}
                   {!removed && !busy && item.unavailable_reason && <p className="settings-row-note break-words text-xs text-muted-foreground">{item.unavailable_reason}</p>}
                 </article>
               );

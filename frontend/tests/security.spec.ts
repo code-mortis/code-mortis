@@ -27,11 +27,17 @@ const finding: Schema["SecurityFindingOut"] = { id: "finding", repository_id: 22
     remediation: "Constrain the order lookup to the authenticated account.", verification: "Add a cross-account access regression test.",
     evidence: [{ path: "src/orders.ts", start_line: 14, end_line: 14, quote: "return orders.find(id);" }] }, created_at: at, updated_at: at };
 
-async function mock(page: Page, options: { partial?: boolean; secret?: boolean; canWrite?: boolean } = {}) {
+async function mock(page: Page, options: { partial?: boolean; secret?: boolean; canWrite?: boolean; scanError?: string } = {}) {
   let current = structuredClone(finding);
   if (options.secret) current = { ...current, kind: "secret", title: "Exposed credential material", evidence: { ...current.evidence, identity: "keyed-digest" } };
   const state = options.partial ? { ...summary, state: "incomplete", latest_status: "partial", counts: { critical: 1 } } : summary;
   const saved = { ...scan, report: { commit: sha, grade: "D", status: "completed", findings: [{ ...current, finding_id: current.id, outcome: "present" }], problems: [] } };
+  if (options.scanError) Object.assign(saved, { status: "partial", grade: null, error: options.scanError,
+    stages: { ...saved.stages, analysis: { status: "failed", total: 163, completed: 13 },
+      assessment: { status: "skipped" }, verification: { status: "skipped" } },
+    progress: { tokens: 4500, work: { completed: 13, failed: 1, analysis_total: 163, analysis_completed: 13 } },
+    coverage: { ...saved.coverage, units: [{ task: "analysis:src/orders.ts", status: "failed", error: options.scanError }] },
+    report: { ...saved.report, grade: null, status: "partial", problems: [options.scanError] } });
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
@@ -62,6 +68,33 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   });
   return writes;
 }
+
+test("security errors explain failed evidence and keep diagnostics collapsed and copyable", async ({ page }, info) => {
+  const error = 'OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[{"title":"Synthetic finding","evidence":[{"quote":"unmatched code"}]}]}';
+  await mock(page, { scanError: error });
+  await page.goto("/security/scans/scan");
+  const alert = page.getByRole("alert").first();
+  await expect(alert.getByText("Evidence could not be verified", { exact: true })).toBeVisible();
+  await expect(alert).toContainText("Review the technical details and retry the run.");
+  const details = alert.getByRole("region", { name: "Evidence could not be verified technical details", includeHidden: true });
+  await expect(details).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("security-readable-error.png"), fullPage: true });
+  await alert.getByText("Technical details", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(details).toBeVisible();
+  await expect(details).toHaveText(error);
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
+    value: { writeText: async (value: string) => { document.body.dataset.copiedError = value; } } }));
+  await alert.getByRole("button", { name: "Copy Evidence could not be verified details", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied-error", error);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  await page.getByText("Analysis work units", { exact: true }).click();
+  const work = page.getByRole("tabpanel").getByRole("alert");
+  await expect(work.getByText("Evidence could not be verified", { exact: true })).toBeVisible();
+  await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
+});
 
 test("security overview keeps historical grades qualified and filters in the URL", async ({ page }, info) => {
   await mock(page, { partial: true });

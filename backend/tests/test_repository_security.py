@@ -385,6 +385,117 @@ def test_failed_expansion_keeps_already_consumed_tokens(tmp_path, monkeypatch):
     assert error.value.usage["tokens"] == 12
 
 
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+def test_security_corrects_citations_once_with_exact_feedback_and_known_usage(tmp_path, monkeypatch, kind, task):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    source = 'url = "synthetic"'
+    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1,
+                "quote": source.replace('"', '\\"')}
+    calls, identities, clock = [], [], [0]
+    monkeypatch.setattr(security_engine, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def response():
+        evidence = [{**citation, "quote": citation["quote"] if len(calls) == 1 else source}]
+        if task == "analysis":
+            finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
+                       "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                       "verification": "Test", "evidence": evidence}
+            return {"findings": [finding, finding], "required_paths": []}
+        return {"verdict": "uncertain", "explanation": "Synthetic test", "evidence": evidence, "required_paths": [],
+                **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": True})}
+
+    def api(*args, **kwargs):
+        calls.append((args[4], args[5], args[6]))
+        clock[0] += 10
+        try:
+            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+        except security_engine.verification.ResultValidationError as exc:
+            assert len(exc.feedback["errors"]) == (2 if task == "analysis" else 1)
+            raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": 7}, feedback=exc.feedback) from exc
+
+    def native(connection, identity, payload, stopped):
+        calls.append((payload, payload["token_budget"], payload["timeout"]))
+        identities.append(identity)
+        clock[0] += 10
+        return response(), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+        {"assigned_path": "app.py", "sources": {"current": {"app.py": source}}, "diff": "", "history": []},
+        100, 60, lambda: False, uid())
+    assert usage == {"tokens": 14} and len(calls) == 2
+    assert [call[1:] for call in calls] == [(100, 60), (93, 50)]
+    if kind == "api":
+        feedback = calls[1][0]["validation_feedback"]
+        assert feedback["source_lines"] == source and feedback["quote"] == citation["quote"]
+        if task == "analysis":
+            assert [error["field"] for error in feedback["errors"]] == ["findings[0].evidence[0]", "findings[1].evidence[0]"]
+        assert "validation_feedback" not in calls[0][0]
+    else:
+        assert len(set(identities)) == 2
+        assert '"source_lines": ' + json.dumps(source) in calls[1][0]["prompt"]
+    assert (result["findings"][0]["evidence"] if task == "analysis" else result["evidence"])[0]["quote"] == source
+
+
+@pytest.mark.parametrize(("tokens", "budget", "expected_calls", "expected_usage"), [
+    (5, 100, 2, 10), (None, 100, 1, None), (5, 5, 1, 5),
+])
+def test_security_citation_recovery_is_bounded_and_never_repeats_unknown_usage(
+    tmp_path, monkeypatch, tokens, budget, expected_calls, expected_usage,
+):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    calls = []
+
+    def api(*args, **kwargs):
+        calls.append(1)
+        raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": tokens},
+            feedback={"field": "evidence[0]", "errors": [{"reason": "invalid source line range"}]})
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, budget, 60, lambda: False, uid())
+    assert len(calls) == expected_calls and error.value.usage["tokens"] == expected_usage
+
+
+def test_security_citation_feedback_keeps_missing_source_ranges_and_quote_mismatches_distinct():
+    evidence = [{"revision": "current", "path": "app.py", "start_line": start, "end_line": start, "quote": quote}
+                for start, quote in [(1, "safe}"), (5, "safe"), (1, " ")]]
+    evidence.append({**evidence[0], "path": "missing.py"})
+    with pytest.raises(security_engine.verification.ResultValidationError) as error:
+        security_engine.validate_citations(evidence, {"current": {"app.py": "safe"}})
+    problems = error.value.feedback["errors"]
+    assert [problem["reason"] for problem in problems] == [
+        "quote is not verbatim text within the cited source lines", "invalid source line range",
+        "quote is not verbatim text within the cited source lines", "unavailable source",
+    ]
+    assert problems[0]["source_lines"] == problems[2]["source_lines"] == "safe"
+    assert "source_lines" not in problems[1] and "source_lines" not in problems[3]
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+def test_security_does_not_start_correction_after_cancellation_or_timeout(tmp_path, monkeypatch, interruption):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    clock, calls = [0], []
+    monkeypatch.setattr(security_engine, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def api(*args, **kwargs):
+        calls.append(1)
+        clock[0] = 60
+        raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": 7},
+            feedback={"field": "evidence[0]", "errors": [{"reason": "invalid source line range"}]})
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    error_type = security_engine.ocr.ReviewStopped if interruption == "cancel" else security_engine.verification.VerificationOutputError
+    with pytest.raises(error_type) as error:
+        security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, 100, 60,
+            lambda: bool(calls) and interruption == "cancel", uid())
+    assert len(calls) == 1
+    if interruption == "timeout":
+        assert error.value.usage == {"tokens": 7}
+
+
 def test_secret_censored_multiline_identity_is_recovered_without_persisting_material(tmp_path):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     source = "key = '''BEGIN\nsynthetic-private-material\nEND'''\n"

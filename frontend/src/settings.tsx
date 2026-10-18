@@ -1097,7 +1097,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                 <span className="font-semibold">{job.kind}</span>
                 {job.available_at && <time dateTime={job.available_at} className="text-muted-foreground">Scheduled {date(job.available_at)}</time>}
               </div>
-              <p className="mt-1 break-words text-muted-foreground">{job.error}</p>
+              <div className="mt-2"><ErrorNotice error={job.error} /></div>
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
                 {job.attempts !== undefined && <span>{job.attempts} {job.attempts === 1 ? "attempt" : "attempts"}</span>}
                 <span className="min-w-0 break-all">Job <code>{job.id}</code></span>
