@@ -1119,12 +1119,16 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
   test(`summary waiting preserves its reason: ${reason}`, async ({ page }, info) => {
     await mock(page, { run: {
       status: "running", publication: "pending", publication_error: null,
+      config: { ...run.config, pipeline_version: 2 },
       summary: { status: "pending", tokens: 0, limited_context: false },
       stages: { summary: { status: "waiting", tokens: 0, error: reason } },
     } });
     await page.goto("/runs/run");
-    await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(/^waiting$/i);
+    await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText("waiting");
     await expect(details).toContainText("Waiting to generate the summary.");
     await expect(details.getByRole("alert")).toHaveCount(0);
     await details.locator("summary", { hasText: "Technical details" }).click();
@@ -1247,6 +1251,26 @@ for (const [summary, expected] of [["completed", "Completed"], ["running", "Runn
       summary: { status: summary, tokens: 0, limited_context: false },
       stages: {
         summary: { status: "pending", tokens: 0 }, ocr: { status: "completed", tokens: 100 },
+        assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
+      },
+    } });
+    await page.goto("/runs/run");
+    const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+    await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
+  });
+}
+
+for (const [summary, expected] of [["waiting", "Waiting"], ["running", "Running"],
+  ["completed", "Completed"], ["failed", "Partial"], ["skipped", "Completed"]] as const) {
+  test(`pipeline summary stage overrides its pending generation status: ${summary}`, async ({ page }) => {
+    await mock(page, { run: {
+      status: "running", config: { ...run.config, pipeline_version: 2 },
+      summary: { status: "pending", tokens: 0, limited_context: false },
+      stages: {
+        summary: { status: summary, tokens: 0 }, ocr: { status: "completed", tokens: 100 },
         assessment: { status: "completed", tokens: 20 }, verification: { status: "skipped", tokens: 0 },
       },
     } });

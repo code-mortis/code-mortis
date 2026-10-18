@@ -969,7 +969,9 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const assessmentStatus = run.status === "running" && (assessment?.pending ?? 0) > 0
     && (!savedAssessmentStatus || savedAssessmentStatus === "partial")
     ? "running" : savedAssessmentStatus ?? (assessment?.incomplete ? "partial" : "pending");
-  const summaryStage = run.summary?.status === "not_applicable" ? undefined : run.summary ?? run.stages?.summary;
+  const summaryStage = run.summary?.status === "not_applicable" ? undefined
+    : run.config.pipeline_version === 2 ? run.stages?.summary ?? run.summary
+    : run.summary ?? run.stages?.summary;
   const stageStatuses: string[] = [
     summaryStage?.status ?? "skipped",
     run.stages?.ocr?.status ?? "skipped",
@@ -982,7 +984,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       : stageStatuses.every((status) => status === "cancelled" || status === "skipped") ? "cancelled"
       : stageStatuses.some((status) => ["partial", "failed", "cancelled"].includes(status)) ? "partial"
       : "completed");
-  const summaryDiagnostics = [run.summary?.error || run.stages?.summary?.error, run.summary?.diagram_warning, pr.summary_error]
+  const summaryDiagnostics = [summaryStage?.error, run.summary?.diagram_warning, pr.summary_error]
     .filter(Boolean).join("\n\n");
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
@@ -1048,7 +1050,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
                     <Status value={summaryStage.status} />
                   </div>
                   <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
-                  {run.stages?.summary?.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
+                  {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
                   {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
                   {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
                   {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
