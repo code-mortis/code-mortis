@@ -120,6 +120,41 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   return writes;
 }
 
+test("security navigation shows scan activity and clears it when scanning stops", async ({ page }, info) => {
+  await mock(page);
+  let latestStatus: string | null = null;
+  let denied = false;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill(denied
+    ? { status: 403, json: { detail: "Access denied" } }
+    : { json: [{ ...repository, security: { ...summary, latest_status: latestStatus } }] }));
+  for (const status of [null, "queued", "running", "blocked", "completed", "partial", "failed", "cancelled"]) {
+    latestStatus = status;
+    await page.goto("/security");
+    await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
+    if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
+    const link = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /^Security/ });
+    const active = status === "queued" || status === "running";
+    await expect(link).toHaveAccessibleName(active ? "Security, scan running" : "Security");
+    const spinner = link.locator(".motion-safe\\:animate-spin");
+    await expect(spinner).toHaveCount(active ? 1 : 0);
+    if (active) await expect(spinner).toHaveCSS("animation-name", "none");
+    if (status === "running") {
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await expect(spinner).toHaveCSS("animation-name", "spin");
+      await page.screenshot({ path: info.outputPath("security-sidebar-running.png"), animations: "disabled" });
+      await page.getByRole("navigation", { name: "Main navigation" }).screenshot({ path: info.outputPath("security-sidebar-preview.png"), animations: "disabled" });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+    }
+  }
+  denied = true;
+  latestStatus = "running";
+  await page.goto("/security");
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(nav.getByRole("link", { name: "Security", exact: true }).locator(".motion-safe\\:animate-spin")).toHaveCount(0);
+});
+
 test("security errors explain failed evidence and keep diagnostics collapsed and copyable", async ({ page }, info) => {
   const error = 'OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[{"title":"Synthetic finding","evidence":[{"quote":"unmatched code"}]}]}';
   await mock(page, { scanError: error });

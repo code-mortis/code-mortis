@@ -46,6 +46,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
+  const securityRunning = !repos.error && repositories.some((repo) => ["queued", "running"].includes(repo.security?.latest_status ?? ""));
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const settingsSearch = new URLSearchParams(route.search);
@@ -80,7 +81,10 @@ export function AppSidebar({ user, onLogout, signingOut }: {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={route.pathname.startsWith("/security")} className="h-10">
-                <Link to="/security" aria-current={route.pathname.startsWith("/security") ? "page" : undefined} onClick={closeMobile}><ShieldCheck aria-hidden="true" /><span>Security</span></Link>
+                <Link to="/security" aria-label={securityRunning ? "Security, scan running" : undefined} aria-current={route.pathname.startsWith("/security") ? "page" : undefined} onClick={closeMobile}>
+                  <ShieldCheck aria-hidden="true" /><span className="flex-1">Security</span>
+                  {securityRunning && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}
+                </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
