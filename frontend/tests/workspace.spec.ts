@@ -4824,7 +4824,8 @@ for (const publication of ["not_applicable", "failed"] as const) {
       const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
       await expect(row.getByText("cancelled", { exact: true })).toBeVisible();
       await expect(row).not.toContainText("This review was cancelled before it finished.");
-      if (publication === "failed") await expect(row).toContainText("Publication failed");
+      if (publication === "failed" && path === "/") await expect(row).toContainText("Publication failed");
+      else await expect(row).not.toContainText("Publication failed");
       await noOverflow(page);
       if (publication === "not_applicable") {
         await page.screenshot({ path: `/private/tmp/mortis-cancelled-row-${path === "/" ? "inbox" : "repository"}-${info.project.name}.png`, fullPage: true });
@@ -4834,9 +4835,14 @@ for (const publication of ["not_applicable", "failed"] as const) {
 }
 
 for (const example of feedbackCases) {
-  test(`review feedback: ${example.name}`, async ({ page }) => {
+  test(`review feedback: ${example.name}`, async ({ page }, info) => {
     await mock(page, { run: { publication: "not_applicable", publication_error: null, ...example.state } });
-    await page.goto("/pulls/pr");
+    await page.goto("/repositories/22");
+    const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
+    await expect(row).toBeVisible();
+    await expect(row).not.toContainText(example.summary);
+    if (example.name === "empty scope") await page.screenshot({ path: `/private/tmp/mortis-pr-list-${info.project.name}.png`, fullPage: true });
+    await row.getByRole("link", { name: pr.title, exact: true }).click();
     const outcome = page.getByRole("region", { name: "Review outcome" });
     await expect(outcome).toContainText(example.summary);
     await expect(outcome).toContainText(example.nextStep);

@@ -20,7 +20,7 @@ export function PullRequestStatus({ reviewStatus, state }: { reviewStatus: strin
   </span>;
 }
 
-export function PullRequestRow({ id, number, repositoryId, admin, ignored, title, metadata, status, findings, timestamp, state, feedback }: {
+export function PullRequestRow({ id, number, repositoryId, admin, ignored, title, metadata, status, findings, timestamp, state }: {
   id: string;
   number: number;
   repositoryId: number;
@@ -32,7 +32,6 @@ export function PullRequestRow({ id, number, repositoryId, admin, ignored, title
   findings: number;
   timestamp: string | null;
   state: { inbox?: string; repository?: string };
-  feedback?: string;
 }) {
   return <div data-pull-row className="inbox-row-grid group relative grid gap-y-3 border-b last:border-b-0 px-4 py-4 text-sm transition-colors hover:bg-muted/50 md:items-center md:px-5 md:py-3">
     <div className="flex min-w-0 items-start gap-3 pr-12 sm:items-center md:pr-0">
@@ -41,7 +40,6 @@ export function PullRequestRow({ id, number, repositoryId, admin, ignored, title
         <p className="break-words font-medium group-hover:text-primary"><Link to={`/pulls/${id}`} state={state} className="after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring">{title}</Link></p>
         <p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">{metadata}</p>
         {ignored && <Badge variant="secondary" className="mt-2">Ignored</Badge>}
-        {feedback && <p className="mt-2 break-words text-xs text-muted-foreground">{feedback}</p>}
       </div>
     </div>
     <div className="min-w-0 space-y-1">{status}</div>
