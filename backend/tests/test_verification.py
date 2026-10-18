@@ -1550,6 +1550,60 @@ def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, mo
     assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
 
 
+@pytest.mark.parametrize("session", ["valid", "wrong_id", "wrong_repo", "wrong_limit", "wrong_path", "provider_error",
+                                     "completed", "reused", "llm_failure", "extra_item", "missing_counts", "bool_count"])
+def test_failed_scan_prompt_limit_requires_matching_pre_request_session(tmp_path, monkeypatch, session):
+    from contextlib import nullcontext
+
+    session_id = "00000000-0000-4000-8000-000000000001"
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    calls = []
+    def command(args, root, *a, **k):
+        calls.append(args)
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
+        if "scan" in args:
+            return 1, "", f"[ocr] Session: {session_id}\nError: all file scans failed"
+        summary = {"session_id": session_id, "repo_dir": str(root), "review_mode": "full_scan",
+                   "selected_files": 1, "failed_files": 1, "completed_files": 0, "reused_files": 0,
+                   "llm_failures": 0}
+        item = {"type": "failed", "file_path": "evidence.py",
+                "error": "prompt tokens (48135) exceed 80% of max_tokens(58888)"}
+        if session == "wrong_id":
+            summary["session_id"] = "another-session"
+        elif session == "wrong_repo":
+            summary["repo_dir"] = "/another/repo"
+        elif session == "wrong_limit":
+            item["error"] = "prompt tokens (48135) exceed 80% of max_tokens(32000)"
+        elif session == "wrong_path":
+            item["file_path"] = "another.py"
+        elif session == "provider_error":
+            item["error"] = "LLM completion error: prompt tokens (48135) exceed 80% of max_tokens(58888)"
+        elif session == "completed":
+            summary["completed_files"] = 1
+        elif session == "reused":
+            summary["reused_files"] = 1
+        elif session == "llm_failure":
+            summary["llm_failures"] = 1
+        elif session == "missing_counts":
+            summary.pop("llm_failures")
+        elif session == "bool_count":
+            summary["selected_files"] = True
+        return 0, json.dumps({"summary": summary, "items": [item] * (2 if session == "extra_item" else 1)}), ""
+    monkeypatch.setattr(ocr, "command", command)
+    with pytest.raises(ValueError) as caught:
+        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
+    if session == "valid":
+        assert isinstance(caught.value, verification.VerificationOutputError)
+        assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
+        assert "47,110-token limit" in str(caught.value) and "58888" in str(caught.value)
+    else:
+        assert "token consumption is unknown" in str(caught.value)
+        assert not hasattr(caught.value, "usage")
+    assert sum("scan" in args and "--preview" not in args for args in calls) == 1
+
+
 def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, monkeypatch):
     from contextlib import nullcontext
 

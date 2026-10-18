@@ -1,6 +1,6 @@
 # Third-party notices
 
-Code Mortis is an independent project. It bundles the unmodified Open Code Review executable, version 1.12.11, from https://github.com/alibaba/open-code-review, licensed under Apache License 2.0. Copyright 2026 alibaba/open-code-review Contributors. Its license is reproduced in LICENSES/Apache-2.0.txt.
+Code Mortis is an independent project. It bundles the unmodified Open Code Review executable, version 1.13.1, from https://github.com/alibaba/open-code-review, licensed under Apache License 2.0. Copyright 2026 alibaba/open-code-review Contributors. Its license is reproduced in LICENSES/Apache-2.0.txt.
 
 backend/code_mortis/providers.json incorporates provider metadata from that version's extensions/frontend/src/shared/providers.generated.ts. Code Mortis adds OpenCode and custom-endpoint presets. This metadata remains covered by the upstream Apache License 2.0.
 

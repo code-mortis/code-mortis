@@ -432,8 +432,9 @@ def terminal_result(root, session_id):
     return results[0]
 
 
-def scan_diagnostics(root, env, code, errors, secrets, stopped):
+def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, int | None]:
     detail = {"exit_code": code, "stderr": clean_text(errors, secrets)}
+    overflow_limit = None
     session = re.search(r"\[ocr\] Session: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b", errors)
     if code and session and not stopped():
         try:
@@ -443,11 +444,21 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped):
             data = json.loads(output)
             summary = data["summary"]
             if not status and summary["session_id"] == session[1] and summary["repo_dir"] == str(root):
-                detail["failures"] = [clean_text(item["error"], secrets) for item in data["items"]
+                items = data["items"]
+                detail["failures"] = [clean_text(item["error"], secrets) for item in items
                                       if item.get("file_path") == "evidence.py" and item.get("error")]
+                # This single-file scan disables preparation calls; this exact failure precedes inference.
+                counts = {"selected_files": 1, "failed_files": 1, "completed_files": 0,
+                          "reused_files": 0, "llm_failures": 0}
+                if (summary.get("review_mode") == "full_scan" and len(items) == 1
+                    and items[0].get("type") == "failed" and items[0].get("file_path") == "evidence.py"
+                    and all(type(summary.get(key)) is int and summary[key] == value for key, value in counts.items())):
+                    overflow = re.fullmatch(r"prompt tokens \((\d+)\) exceed 80% of max_tokens\((\d+)\)", items[0].get("error", ""))
+                    if overflow and int(overflow[1]) > int(overflow[2]) * 4 // 5:
+                        overflow_limit = int(overflow[2])
         except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ocr.ReviewStopped):
             pass  # Missing diagnostics must not hide the original failure or release its reservation.
-    return json.dumps(detail)[:4000]
+    return json.dumps(detail)[:4000], overflow_limit
 
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
@@ -498,7 +509,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             if stopped():
                 raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
             code, output, errors = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
-            diagnostics = scan_diagnostics(root, env, code, errors, (
+            diagnostics, overflow_limit = scan_diagnostics(root, env, code, errors, (
                 credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
             ), stopped)
             try:
@@ -506,6 +517,12 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 if not isinstance(data, dict):
                     raise ValueError("The review engine returned an unreadable assessment response.")
             except ValueError as exc:
+                if overflow_limit == max_tokens:
+                    raise VerificationOutputError(
+                        f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
+                        f"(80% of max_tokens={max_tokens:,}); no AI request was made. Technical details: " + diagnostics,
+                        {"tokens": 0}, "skipped",
+                    ) from exc
                 failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
                 raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
             raw, result_error = None, None
