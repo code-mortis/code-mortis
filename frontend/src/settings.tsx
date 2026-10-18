@@ -155,7 +155,16 @@ export function RepositorySettings({
   }
   const [enabled, setEnabled] = useState(repo.enabled);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
-  const [settings, setSettings] = useState(repo.settings);
+  const [settings, setSettings] = useState({
+    ...repo.settings,
+    timeout_seconds: repo.settings.timeout_seconds ?? null,
+    token_budget: repo.settings.token_budget ?? null,
+    assessment_token_budget: repo.settings.assessment_token_budget ?? null,
+    verification_token_budget: repo.settings.verification_token_budget ?? null,
+    summary_timeout_seconds: repo.settings.summary_timeout_seconds ?? null,
+    summary_token_budget: repo.settings.summary_token_budget ?? null,
+    max_files: repo.settings.max_files ?? null,
+  });
   const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
   const sensitivity = reviewSensitivities[sensitivityIndex];
   const limitedValues = useRef({

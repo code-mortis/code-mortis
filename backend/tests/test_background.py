@@ -53,6 +53,7 @@ def test_generation_uses_draft_model_and_never_saves_repository(generation, clie
     assert result == {"id": identity, "status": "done", "background": "A review service using Python and React.", "error": None}
     assert generation[0][0]["model"] == expected
     assert "A review service" in generation[0][1]
+    assert generation[0][2:] == (None, None)
     with transaction() as db:
         repo = db.get(Repository, 22)
         assert repo.settings == {"background": "Original", "model": "saved-model"}
@@ -65,6 +66,7 @@ def test_generation_uses_draft_model_and_never_saves_repository(generation, clie
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 def test_personal_generation_requires_consent_and_uses_isolated_runner(generation, client, monkeypatch, kind):
     with transaction() as db:
+        db.get(Repository, 22).settings = {}
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
         connection.options = {"prompt_token_ceiling": 200000}
@@ -80,7 +82,7 @@ def test_personal_generation_requires_consent_and_uses_isolated_runner(generatio
         assert "installation-token" not in json.dumps(body) and "provider-secret" not in json.dumps(body)
         instructions = native_runner.task_instructions(native_runner.ReviewBody(**body))
         assert "untrusted data" in instructions and "background" in instructions
-        assert body["token_budget"] == 200000
+        assert body["token_budget"] is None
         return {"background": "A native background draft."}, {"tokens": 75}
 
     monkeypatch.setattr(runner_client, "review", native)

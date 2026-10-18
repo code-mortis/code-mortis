@@ -22,11 +22,15 @@ from code_mortis.schemas import RepoSettings
 
 def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
     defaults = RepoSettings()
-    assert (defaults.timeout_seconds, defaults.token_budget, defaults.max_files) == (900, 200000, 40)
-    assert defaults.delegated_context_bytes == 800000
+    limits = ("timeout_seconds", "token_budget", "max_files", "assessment_token_budget",
+              "verification_token_budget", "summary_token_budget", "summary_timeout_seconds", "delegated_context_bytes")
+    assert all(getattr(defaults, key) is None for key in limits)
     assert defaults.review_sensitivity == "balanced"
-    for values in ({"timeout_seconds": None}, {"token_budget": None}, {"max_files": None},
+    for values in ({}, {"timeout_seconds": None}, {"token_budget": None}, {"max_files": None},
                    {"delegated_context_bytes": None},
+                   {"timeout_seconds": 900, "token_budget": 200000, "max_files": 40,
+                    "assessment_token_budget": 200000, "verification_token_budget": 200000,
+                    "summary_token_budget": 60000, "summary_timeout_seconds": 180, "delegated_context_bytes": 800000},
                    *({"review_sensitivity": value} for value in ("low_noise", "balanced", "broad")),
                    {"timeout_seconds": None, "token_budget": None, "max_files": None, "delegated_context_bytes": None}):
         response = client.put("/api/v1/repositories/22", json={
@@ -52,6 +56,10 @@ def test_review_sensitivity_snapshots_preserve_settings_and_legacy_runs(seed, gi
         repo.settings = {"rules": rules, "background": "Project context"}
         first = reviews.create_run(db, pr, repo, "manual")
         assert first.config["settings"]["review_sensitivity"] == "balanced"
+        assert all(first.config["settings"][key] is None for key in (
+            "timeout_seconds", "token_budget", "max_files", "assessment_token_budget",
+            "verification_token_budget", "summary_token_budget", "summary_timeout_seconds", "delegated_context_bytes",
+        ))
         original = copy.deepcopy(first.config)
         repo.settings = {**repo.settings, "review_sensitivity": "low_noise"}
         second = reviews.create_run(db, pr, repo, "manual")
@@ -92,7 +100,7 @@ def test_old_snapshots_keep_unlimited_files_and_automatic_edits_do_not_rerun(see
         assert reviews.create_run(db, pr, repo, "automatic").id == old.id
         pr.head_sha = "c" * 40
         new = reviews.create_run(db, pr, repo, "automatic")
-        assert new.id != old.id and new.config["settings"]["max_files"] == 40
+        assert new.id != old.id and new.config["settings"]["max_files"] is None
         assert old.config["settings"] == original
 
 
@@ -223,7 +231,7 @@ def test_invalid_api_preview_stops_with_a_uniform_error(code, output, tmp_path, 
 
     monkeypatch.setattr(ocr, "command", command)
     with pytest.raises(ValueError, match=r"^The review engine could not prepare the files and rules for review\. Check file exclusions and review rules, then start a new review\.$"):
-        ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings().model_dump(),
+        ocr.review("owner/repo", 1, base, head, {"kind": "api"}, {}, RepoSettings(max_files=40).model_dump(),
                    "token", lambda: False, after_review=after_review)
 
 
@@ -305,7 +313,7 @@ def test_native_prompt_limit_preserves_token_budget_and_ignores_legacy_byte_limi
     used = 800000
     status, report, comments = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
         {"id": "connection", "kind": "chatgpt", "model": "model", "options": {"prompt_token_ceiling": 200000}},
-        RepoSettings(delegated_context_bytes=byte_budget).model_dump(), "run", lambda: False, progress.append,
+        RepoSettings(delegated_context_bytes=byte_budget, token_budget=200000).model_dump(), "run", lambda: False, progress.append,
         {"context_bytes": used, "total_tokens": 0})
     assert not comments and report["limits"]["token_budget"] == 200000
     assert status == "partial" and len(calls) == 2
@@ -382,7 +390,7 @@ def test_subscription_legacy_or_invalid_usage_cannot_reset_finite_budget(tmp_pat
     if tokens is not None:
         checkpoint["total_tokens"] = tokens
     status, report, _ = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
-        {"id": "connection", "kind": "chatgpt", "model": "model"}, RepoSettings().model_dump(),
+        {"id": "connection", "kind": "chatgpt", "model": "model"}, RepoSettings(token_budget=200000).model_dump(),
         "run", lambda: False, lambda *a: None, checkpoint)
     assert status == "failed" and report["summary"]["total_tokens"] is None
     assert "remaining budget cannot be verified" in report["errors"][0]["message"]

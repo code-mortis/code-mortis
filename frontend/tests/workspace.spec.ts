@@ -3577,6 +3577,45 @@ test("project background explains missing output and displays its generation ref
   await page.screenshot({ path: `../.impeccable/review/project-background-error-${info.project.name}.png`, fullPage: true });
 });
 
+test("repository limits default to unlimited and preserve an explicit cap", async ({ page }, info) => {
+  await mock(page);
+  const limits = [
+    ["Maximum files", "max_files"], ["Timeout (seconds)", "timeout_seconds"],
+    ["OCR token budget", "token_budget"], ["Assessment token budget", "assessment_token_budget"],
+    ["Verification token budget", "verification_token_budget"],
+    ["Summary timeout (seconds)", "summary_timeout_seconds"], ["Summary token budget", "summary_token_budget"],
+  ] as const;
+  const unlimited = Object.fromEntries(limits.map(([, key]) => [key, null]));
+  let current = structuredClone(repo) as Schema["RepositoryOut"];
+  for (const [, key] of limits) delete current.settings[key];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [current] }));
+  await page.route("**/api/v1/repositories/22", async (route) => {
+    current = { ...current, ...route.request().postDataJSON() };
+    await route.fulfill({ json: current });
+  });
+  await page.goto("/repositories/22/settings?tab=limits");
+  for (const [label] of limits) {
+    await expect(page.getByLabel(`Unlimited ${label.toLowerCase()}`, { exact: true })).toBeChecked();
+    await expect(page.getByLabel(label, { exact: true })).toBeDisabled();
+    await expect(page.getByLabel(label, { exact: true })).toHaveValue("");
+  }
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/unlimited-defaults-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+  expect(current.settings).toMatchObject(unlimited);
+  await page.goto("/repositories/22/settings?tab=limits");
+  await page.getByLabel("Unlimited maximum files", { exact: true }).uncheck();
+  await expect(page.getByLabel("Maximum files", { exact: true })).toHaveValue("40");
+  await page.getByLabel("Maximum files", { exact: true }).fill("75");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+  expect(current.settings).toMatchObject({ ...unlimited, max_files: 75 });
+  await page.goto("/repositories/22/settings?tab=limits");
+  await expect(page.getByLabel("Unlimited maximum files", { exact: true })).not.toBeChecked();
+  await expect(page.getByLabel("Maximum files", { exact: true })).toHaveValue("75");
+});
+
 test("review limits save and reopen independent unlimited choices", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("color-theme", "code-mortis"));
   await mock(page);

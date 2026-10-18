@@ -1394,7 +1394,7 @@ def test_parallel_batches_retain_rejected_history_and_exact_repeat_checks(pipeli
 def test_parallel_batch_revalidates_history_and_execution(pipeline, monkeypatch, change):
     pipeline["comments"] = independent_comments(3)
     with transaction() as db:
-        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
+        db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None, "timeout_seconds": 900}
     identity = new_run(assessed=True)
     barrier, changed = Barrier(2), Event()
     clock = [now()]

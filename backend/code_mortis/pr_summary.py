@@ -353,7 +353,9 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
                            "error": "Summary unavailable because the review encountered an authentication or account usage restriction. Restore access before starting another review."}
             return
         config = config or run.config
-        options = {**RepoSettings().model_dump(), **config["settings"]}
+        # Missing summary limits identify legacy snapshots; explicit null remains unlimited.
+        options = {**RepoSettings().model_dump(), "summary_token_budget": 60000,
+                   "summary_timeout_seconds": 180, **config["settings"]}
         flags = {name: options.get(name, False) for name in ("summary_diagram_enabled", "ai_fix_prompts_enabled")}
         run.summary = {"status": "running", "tokens": 0, "settings": flags}
         if retry_job_id and pipeline.enabled(run):

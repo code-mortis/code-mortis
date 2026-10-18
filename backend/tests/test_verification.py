@@ -62,7 +62,8 @@ def scenario(seed, github_stub, monkeypatch):
         finding = db.scalar(select(Finding))
         finding.thread_id, finding.comment_id = "thread", 12
         fid = finding.id
-        db.get(Repository, 22).settings = {"automatic": True, "auto_resolve": True}
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "automatic": True, "auto_resolve": True}
         db.get(PullRequest, "pr").head_sha = HEAD
     thread = {"id": "thread", "isResolved": False, "isOutdated": True, "resolvedBy": None,
               "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [

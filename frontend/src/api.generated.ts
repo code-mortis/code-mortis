@@ -1963,36 +1963,18 @@ export interface components {
         };
         /** RepoSettings */
         RepoSettings: {
-            /**
-             * Timeout Seconds
-             * @default 900
-             */
-            timeout_seconds: number | null;
-            /**
-             * Token Budget
-             * @default 200000
-             */
-            token_budget: number | null;
-            /**
-             * Assessment Token Budget
-             * @default 200000
-             */
-            assessment_token_budget: number | null;
-            /**
-             * Verification Token Budget
-             * @default 200000
-             */
-            verification_token_budget: number | null;
-            /**
-             * Summary Token Budget
-             * @default 60000
-             */
-            summary_token_budget: number | null;
-            /**
-             * Summary Timeout Seconds
-             * @default 180
-             */
-            summary_timeout_seconds: number | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
+            /** Assessment Token Budget */
+            assessment_token_budget?: number | null;
+            /** Verification Token Budget */
+            verification_token_budget?: number | null;
+            /** Summary Token Budget */
+            summary_token_budget?: number | null;
+            /** Summary Timeout Seconds */
+            summary_timeout_seconds?: number | null;
             /**
              * Summary Diagram Enabled
              * @default false
@@ -2050,16 +2032,10 @@ export interface components {
              * @default
              */
             background: string;
-            /**
-             * Max Files
-             * @default 40
-             */
-            max_files: number | null;
-            /**
-             * Delegated Context Bytes
-             * @default 800000
-             */
-            delegated_context_bytes: number | null;
+            /** Max Files */
+            max_files?: number | null;
+            /** Delegated Context Bytes */
+            delegated_context_bytes?: number | null;
             /**
              * Concurrency
              * @default 2
@@ -2165,16 +2141,10 @@ export interface components {
         };
         /** RunLimits */
         RunLimits: {
-            /**
-             * Timeout Seconds
-             * @default 900
-             */
-            timeout_seconds: number | null;
-            /**
-             * Token Budget
-             * @default 200000
-             */
-            token_budget: number | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
         };
         /** RunOut */
         RunOut: {
