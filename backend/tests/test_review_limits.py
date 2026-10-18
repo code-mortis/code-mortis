@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import fcntl
 import json
 import os
@@ -13,7 +14,7 @@ from sqlalchemy import select
 from test_ocr import report
 from test_review_flow import new_run
 
-from code_mortis import jobs, native_runner, ocr, reviews, runner_client
+from code_mortis import jobs, native_runner, ocr, review_policy, reviews, runner_client
 from code_mortis.db import now, transaction
 from code_mortis.models import Job, PullRequest, Repository, ReviewRun
 from code_mortis.schemas import RepoSettings
@@ -23,8 +24,10 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
     defaults = RepoSettings()
     assert (defaults.timeout_seconds, defaults.token_budget, defaults.max_files) == (900, 200000, 40)
     assert defaults.delegated_context_bytes == 800000
+    assert defaults.review_sensitivity == "balanced"
     for values in ({"timeout_seconds": None}, {"token_budget": None}, {"max_files": None},
                    {"delegated_context_bytes": None},
+                   *({"review_sensitivity": value} for value in ("low_noise", "balanced", "broad")),
                    {"timeout_seconds": None, "token_budget": None, "max_files": None, "delegated_context_bytes": None}):
         response = client.put("/api/v1/repositories/22", json={
             "enabled": True, "connection_id": "connection", "settings": values,
@@ -34,10 +37,32 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
         with transaction() as db:
             assert db.get(Repository, 22).settings == response.json()["settings"]
     for key, values in {"timeout_seconds": [0, 59, 3601], "token_budget": [0, 999, 5000001],
-                        "max_files": [0, -1, 1.5, True], "delegated_context_bytes": [0, 4095, 20000001]}.items():
+                        "max_files": [0, -1, 1.5, True], "delegated_context_bytes": [0, 4095, 20000001],
+                        "review_sensitivity": [None, "high", 1]}.items():
         for value in values:
             with pytest.raises(ValidationError):
                 RepoSettings(**{key: value})
+
+
+def test_review_sensitivity_snapshots_preserve_settings_and_legacy_runs(seed, github_stub):
+    rules = {"rules": [{"path": "**/*.py", "rule": "Keep this project rule", "merge_system_rule": True}],
+             "include": ["src/**"], "exclude": ["generated/**"]}
+    with transaction() as db:
+        repo, pr = db.get(Repository, 22), db.get(PullRequest, "pr")
+        repo.settings = {"rules": rules, "background": "Project context"}
+        first = reviews.create_run(db, pr, repo, "manual")
+        assert first.config["settings"]["review_sensitivity"] == "balanced"
+        original = copy.deepcopy(first.config)
+        repo.settings = {**repo.settings, "review_sensitivity": "low_noise"}
+        second = reviews.create_run(db, pr, repo, "manual")
+        assert second.config["settings"]["review_sensitivity"] == "low_noise"
+        assert first.config == original
+        assert repo.settings["rules"] == second.config["settings"]["rules"] == rules
+        assert repo.settings["background"] == second.config["settings"]["background"] == "Project context"
+        legacy = {key: value for key, value in original["settings"].items() if key != "review_sensitivity"}
+        assert review_policy.instructions(legacy) == ""
+        assert review_policy.background(legacy) == "Project context"
+        assert review_policy.instructions({}) == review_policy.background({}) == ""
 
 
 @pytest.mark.parametrize("language,expected", [("  Mapudungun  ", "Mapudungun"), ("\tEnglish\n", "English"),
@@ -73,7 +98,8 @@ def test_old_snapshots_keep_unlimited_files_and_automatic_edits_do_not_rerun(see
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("count,maximum", [(39, 40), (40, 40), (41, 40), (41, None)])
-def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, monkeypatch):
+@pytest.mark.parametrize("sensitivity", [None, "low_noise", "balanced", "broad"])
+def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, tmp_path, monkeypatch):
     monkeypatch.setattr(ocr.settings(), "work_dir", tmp_path)
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
     configured = False
@@ -91,12 +117,17 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
     base, head = "a" * 40, "b" * 40
     paths = [f"source{index}.py" for index in range(count)]
     inference, previews, completed = [], [], []
+    rules = {"rules": [{"path": "**/*.py", "rule": "Review code", "merge_system_rule": True}],
+             "include": ["src/**"], "exclude": ["generated/**"]}
 
     def git(root, env, *args, **kwargs):
         return head if args[0] == "rev-parse" else base if args[0] == "merge-base" else "value = 1\n"
 
     def command(args, root, env, **kwargs):
         assert "--exclude" in args and "--rule" in args
+        assert json.loads(Path(args[args.index("--rule") + 1]).read_text()) == rules
+        background = Path(args[args.index("--background-file") + 1]).read_text()
+        assert background == (review_policy.background(options) if kind == "api" else "Project context")
         if "--preview" in args or "preview" in args:
             previews.append(args)
             data = {"schema_version": "1", "reviewable_count": count,
@@ -119,6 +150,12 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
         assert payload["prompt_token_ceiling"] == 200000
         inference.append(payload)
         assert payload["token_budget"] is None
+        prompt = json.loads(payload["prompt"])
+        assert prompt["background"] == "Project context" and prompt["rules"] == ["Review code"]
+        if sensitivity is None:
+            assert "review_policy" not in prompt
+        else:
+            assert prompt["review_policy"] == review_policy.instructions(options)
         return {"comments": []}, {"tokens": 25}
 
     def after_review(result, repo, env, fetch_env):
@@ -130,11 +167,17 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, tmp_path, mon
     monkeypatch.setattr(ocr, "command", command)
     monkeypatch.setattr(runner_client, "review", native)
     options = RepoSettings(timeout_seconds=None, token_budget=None, max_files=maximum,
-                           exclusions="*.lock", rules={"default_rule": "Review code"}).model_dump()
+                           exclusions="*.lock", rules=rules, background="Project context").model_dump()
+    if sensitivity is None:
+        options.pop("review_sensitivity")
+    else:
+        options["review_sensitivity"] = sensitivity
+    original = copy.deepcopy(options)
     status, saved, comments = ocr.review("owner/repo", 1, base, head,
         {"id": "connection", "kind": kind, "model": "model", "options": {"prompt_token_ceiling": 200000}}, {}, options, "token", lambda: False,
         after_review=after_review)
     assert completed == [(status, saved, comments)]
+    assert options == original
     assert comments == []
     if maximum is not None and count > maximum:
         assert status == "skipped" and not inference

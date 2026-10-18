@@ -122,6 +122,7 @@ class RepoSettings(RunLimits):
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)
     effort: Literal["low", "medium", "high"] = "medium"
+    review_sensitivity: Literal["low_noise", "balanced", "broad"] = "balanced"
     language: str = Field(default="English", min_length=1, max_length=100)
     exclusions: str = Field(default="", max_length=4000)
     background: str = Field(default="", max_length=20000)

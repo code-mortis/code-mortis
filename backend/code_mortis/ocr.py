@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from . import review_policy
 from .config import settings
 from .schemas import ReviewComment
 from .security import clean_text, digest, safe_endpoint, safe_repo_name
@@ -480,9 +481,10 @@ def review(
         ]
         if review_settings.get("exclusions"):
             args += ["--exclude", review_settings["exclusions"]]
-        if review_settings.get("background"):
+        policy_background = review_policy.background(review_settings)
+        if policy_background:
             background = directory / "background.md"
-            background.write_text(review_settings["background"])
+            background.write_text(policy_background)
             args += ["--background-file", str(background)]
         if review_settings.get("rules") is not None:
             rules = directory / "rules.json"

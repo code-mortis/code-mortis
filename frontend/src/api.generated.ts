@@ -2030,6 +2030,12 @@ export interface components {
              */
             effort: "low" | "medium" | "high";
             /**
+             * Review Sensitivity
+             * @default balanced
+             * @enum {string}
+             */
+            review_sensitivity: "low_noise" | "balanced" | "broad";
+            /**
              * Language
              * @default English
              */

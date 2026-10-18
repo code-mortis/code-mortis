@@ -23,6 +23,7 @@ const repo = {
     automatic: true,
     model: "",
     effort: "medium",
+    review_sensitivity: "balanced" as const,
     language: "English",
     exclusions: "",
     background: "",
@@ -1025,6 +1026,62 @@ test("repository URLs strip inbox pagination and preserve grouped pages", async 
   await page.goto("/repositories/22?state=all&all_pages=2&active_pages=2");
   await expect(page).toHaveURL(/\?state=all&active_pages=2$/);
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(12);
+});
+
+test("repository sensitivity preserves custom rules and saves all three policies", async ({ page }, info) => {
+  const requests = await mock(page);
+  const rules = { rules: [{ path: "**/*.py", rule: "Keep project checks", merge_system_rule: true }], exclude: ["generated/**"] };
+  let savedSettings: Partial<Schema["RepoSettings"]> = { ...repo.settings, effort: "medium", rules, background: "Saved project context" };
+  delete savedSettings.review_sensitivity;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
+  const saves: Schema["RepoSettings"][] = [];
+  await page.route("**/api/v1/repositories/22", async (route) => {
+    const body = route.request().postDataJSON();
+    savedSettings = body.settings;
+    saves.push(body.settings);
+    await route.fulfill({ json: { ...repo, settings: savedSettings } });
+  });
+  await page.goto("/repositories/22/settings");
+  const slider = page.getByRole("slider", { name: "Review sensitivity", exact: true });
+  await expect(slider).toHaveValue("1");
+  await expect(slider).toHaveAttribute("aria-valuetext", "Balanced");
+  await expect(slider).toHaveAccessibleDescription("Actionable bugs and edge cases.");
+  await slider.focus();
+  await slider.press("ArrowLeft");
+  await expect(slider).toHaveValue("0");
+  await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
+  await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
+  await repositorySection(page, "Limits & rules");
+  await expect(page.getByRole("textbox", { name: "OCR rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
+  await repositorySection(page, "Review behavior");
+  await expect(slider).toHaveValue("0");
+  expect(saves).toHaveLength(0);
+  expect(requests).toHaveLength(0);
+  for (const [index, value, label] of [[0, "low_noise", "Low noise"], [1, "balanced", "Balanced"], [2, "broad", "Broad"]] as const) {
+    await slider.focus();
+    await slider.press("Home");
+    for (let step = 0; step < index; step++) await slider.press("ArrowRight");
+    await expect(slider).toHaveAttribute("aria-valuetext", label);
+    const hint = slider.locator("..").locator("p");
+    const layout = await hint.evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+      contentWidth: element.scrollWidth,
+      availableWidth: element.clientWidth,
+    }));
+    expect(layout.height).toBeLessThanOrEqual(layout.lineHeight + 1);
+    expect(layout.contentWidth).toBeLessThanOrEqual(layout.availableWidth);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+    expect(saves.at(-1)).toMatchObject({ review_sensitivity: value, rules, background: "Saved project context" });
+    await page.goto("/repositories/22/settings");
+    await expect(slider).toHaveValue(String(index));
+    await expect(slider).toHaveAttribute("aria-valuetext", label);
+  }
+  await slider.focus();
+  await noOverflow(page);
+  await slider.locator("..").screenshot({ path: `../.impeccable/review/repository-sensitivity-${info.project.name}.png` });
+  expect(requests.filter((request) => request.path.includes("/reviews"))).toHaveLength(0);
 });
 
 test("repository configuration keeps drafts across sections and restores filtered navigation", async ({ page }, info) => {

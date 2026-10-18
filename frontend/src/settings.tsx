@@ -121,6 +121,12 @@ function memberRoleLabel(role: string) {
   return role;
 }
 
+const reviewSensitivities = [
+  { value: "low_noise", label: "Low noise", description: "Material bugs with likely triggers." },
+  { value: "balanced", label: "Balanced", description: "Actionable bugs and edge cases." },
+  { value: "broad", label: "Broad", description: "Also minor bugs and rare cases." },
+] as const;
+
 export function RepositorySettings({
   repository: repo,
   onSaved,
@@ -150,6 +156,8 @@ export function RepositorySettings({
   const [enabled, setEnabled] = useState(repo.enabled);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState(repo.settings);
+  const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
+  const sensitivity = reviewSensitivities[sensitivityIndex];
   const limitedValues = useRef({
     timeout_seconds: repo.settings.timeout_seconds ?? 900,
     token_budget: repo.settings.token_budget ?? 200000,
@@ -275,6 +283,28 @@ export function RepositorySettings({
                 </div>
                 <Switch id={`${id}-${key}`} aria-describedby={`${id}-${key}-hint`} checked={settings[key] ?? false} onCheckedChange={(value) => change(key, value)} className="mt-0.5 shrink-0" />
               </div>)}
+            </div>
+            <div className="space-y-2 rounded-lg border bg-card p-5">
+              <label htmlFor={`${id}-sensitivity`} className="text-sm font-medium">Review sensitivity</label>
+              <input
+                id={`${id}-sensitivity`}
+                type="range"
+                min={0}
+                max={2}
+                step={1}
+                value={sensitivityIndex}
+                aria-valuetext={sensitivity.label}
+                aria-describedby={`${id}-sensitivity-hint`}
+                onChange={(event) => change("review_sensitivity", reviewSensitivities[Number(event.target.value)].value)}
+                className="block h-11 w-full cursor-pointer rounded-sm accent-primary"
+              />
+              <div aria-hidden="true" className="grid grid-cols-3 gap-3 text-xs">
+                {reviewSensitivities.map((item) => <span key={item.value}
+                  className={`text-center first:text-left last:text-right ${item.value === sensitivity.value ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                  {item.label}
+                </span>)}
+              </div>
+              <p id={`${id}-sensitivity-hint`} className="truncate text-xs leading-relaxed text-muted-foreground">{sensitivity.description}</p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Language">
