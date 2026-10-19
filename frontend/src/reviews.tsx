@@ -329,7 +329,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
-    : running || pr.state !== "open" ? null
+    : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -393,7 +393,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
             }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
           </div>}
         </div>
-        {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
+        {reviewUnavailable && <p id="review-unavailable" className={can_write && !pr.ignored && pr.state !== "open" ? "sr-only" : "mt-3 text-xs text-muted-foreground"}>{reviewUnavailable}</p>}
       </section>
     </header>
     <ErrorNotice error={action.error || query.error} />

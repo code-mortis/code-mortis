@@ -158,7 +158,7 @@ test("security navigation shows scan activity and clears it when scanning stops"
     await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
     if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
     const link = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: /^Security/ });
-    const active = status === "queued" || status === "running";
+    const active = status === "queued" || status === "running" || status === "blocked";
     await expect(link).toHaveAccessibleName(active ? "Security, scan running" : "Security");
     const spinner = link.locator(".motion-safe\\:animate-spin");
     await expect(spinner).toHaveCount(active ? 1 : 0);
@@ -291,7 +291,7 @@ test("security overview keeps historical grades qualified and filters in the URL
 
 for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"], ["outdated", "Outdated"], ["not_scanned", "Unscanned"], ["unavailable", "Unverified"]] as const) {
   test(`repository detail grade badge uses one label for ${state}`, async ({ page }) => {
-    await mock(page, { summary: { state, ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
+    await mock(page, { summary: { state, ...(["outdated", "unavailable"].includes(state) ? { latest_status: "partial" } : {}), ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
     await page.goto("/security/repositories/22");
     const label = badgeLabel === "Unscanned" ? badgeLabel : `Security ${badgeLabel}`;
     const badge = page.getByRole("link", { name: label, exact: true });
@@ -360,7 +360,7 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
     summary: { ...summary, grade, counts: { high: grade === "A" ? 0 : 1 } } }));
   rows.push({ repository: { ...repository, id: 27, full_name: "acme/unscanned" }, summary: { ...summary, state: "not_scanned", grade: null,
     grade_scan_id: null, latest_scan_id: null, latest_status: null, latest_at: null, counts: {} } },
-    { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated" } },
+    { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated", latest_status: "partial" } },
     { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } },
     { repository: { ...repository, id: 30, full_name: "acme/running-scan" }, summary: { ...summary, state: "incomplete", latest_status: "running", grade_scan_id: "previous" } });
   await page.route("**/api/v1/security/repositories", (route) => route.fulfill({ json: rows }));

@@ -23,7 +23,7 @@ export function SecurityGrade({ repositoryId, summary, shield = false, showLabel
   repositoryId: number; summary?: Schema["SecuritySummary"] | null; shield?: boolean; showLabel?: boolean;
 }) {
   const current = summary?.state === "current";
-  const partial = summary?.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id && summary.grade;
+  const partial = summary?.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id && summary.grade;
   const label = current || partial ? summary?.grade ?? "Unrated" : badgeStates[summary?.state ?? "not_scanned"] ?? "Unrated";
   const status = !current && !partial ? "unknown" : summary?.grade === "A" ? "completed" : ["D", "F"].includes(summary?.grade ?? "") ? "failed" : "partial";
   const iconState = summary?.state === "incomplete" && summary.latest_status && summary.latest_status !== "completed" ? summary.latest_status : summary?.state ?? "not_scanned";

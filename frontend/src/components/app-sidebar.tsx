@@ -46,7 +46,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
-  const securityRunning = !repos.error && repositories.some((repo) => ["queued", "running"].includes(repo.security?.latest_status ?? ""));
+  const securityRunning = !repos.error && repositories.some((repo) => ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? ""));
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const settingsSearch = new URLSearchParams(route.search);
