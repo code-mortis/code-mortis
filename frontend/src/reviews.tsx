@@ -329,7 +329,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
-    : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
+    : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -384,7 +384,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
               {latest ? <><span>{date(latest.created_at)}</span><span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span></> : <span>A review records findings and coverage for this commit.</span>}
             </div>
           </div>
-          {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
               options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
             <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} onClick={async () => {
@@ -393,7 +393,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
             }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
           </div>}
         </div>
-        {reviewUnavailable && <p id="review-unavailable" className={can_write && !pr.ignored && pr.state !== "open" ? "sr-only" : "mt-3 text-xs text-muted-foreground"}>{reviewUnavailable}</p>}
+        {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
     </header>
     <ErrorNotice error={action.error || query.error} />

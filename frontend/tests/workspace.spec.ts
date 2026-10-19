@@ -8462,9 +8462,9 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    if (state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
+    if (["running", "merged", "closed"].includes(state)) await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
     else await expect(summary).toContainText(messages[state]);
-    if (state === "viewer") {
+    if (["viewer", "merged", "closed"].includes(state)) {
       await expect(summary.getByRole("button")).toHaveCount(0);
       await expect(page.getByLabel("Review connection")).toHaveCount(0);
     } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
@@ -8473,9 +8473,7 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
       await expect(page.getByLabel("Review connection")).toBeDisabled();
     }
     if (state === "merged" || state === "closed") {
-      await expect(page.locator("#review-unavailable")).toHaveClass("sr-only");
-      await expect(summary.getByRole("button", { name: "Run review", exact: true })).toHaveAccessibleDescription(messages[state]);
-      await expect(page.getByLabel("Review connection")).toHaveAccessibleDescription(messages[state]);
+      await expect(page.locator("#review-unavailable")).toHaveCount(0);
       await summary.screenshot({ path: `/private/tmp/code-mortis-review-availability-${state}-${info.project.name}.png` });
     }
     await noOverflow(page);
