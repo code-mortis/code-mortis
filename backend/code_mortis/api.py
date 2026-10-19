@@ -247,7 +247,7 @@ def manifest(body: ManifestInput, request: Request, response: Response, db: DB) 
             "setup_url": origin + "/api/v1/installations/callback",
             "public": True,
             "request_oauth_on_install": False,
-            "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "read", "members": "read"},
+            "default_permissions": {"contents": "write", "pull_requests": "write", "metadata": "read", "checks": "write", "issues": "write", "members": "read"},
             "default_events": ["pull_request", "pull_request_review_thread", "pull_request_review_comment", "check_run", "issue_comment"],
         },
     }
@@ -421,7 +421,14 @@ def pr_out(db: Session, pr: PullRequest) -> PullRequestOut:
 
 @router.get("/repositories", response_model=list[RepositoryOut])
 def repositories(db: DB, user: USER):
-    return [repo_out(db, repo) for repo in github.visible_repositories(db, user)]
+    from .repository_security import summaries
+
+    repos = github.visible_repositories(db, user)
+    security = summaries(db, [repo.id for repo in repos])
+    result = [repo_out(db, repo) for repo in repos]
+    for repo in result:
+        repo.security = security[repo.id]
+    return result
 
 
 @router.get("/analytics/overview", response_model=AnalyticsOverview)
@@ -1006,7 +1013,12 @@ def test_connection(connection_id: str, db: DB, user: USER) -> dict:
 
 @router.delete("/connections/{connection_id}")
 def delete_connection(connection_id: str, db: DB, user: USER) -> dict:
+    from .models import SecurityScan
+
     connection = manage_connection(db, user, connection_id)
+    if db.scalar(select(SecurityScan.id).where(SecurityScan.connection_id == connection_id,
+                                               SecurityScan.status.in_({"queued", "running", "blocked"})).limit(1)):
+        raise HTTPException(409, "Wait for active security scans using this connection to finish or cancel them.")
     if db.scalar(select(Repository).where(Repository.connection_id == connection_id).limit(1)):
         raise HTTPException(409, "Change the repositories using this connection before deleting it.")
     if any(
@@ -1202,6 +1214,8 @@ def add_member(body: MemberInput, db: DB, user: ADMIN) -> dict:
 
 @router.delete("/members/{user_id}")
 def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
+    from .repository_security import cancel_access
+
     memberships = lock_memberships(db, user)
     membership = memberships.get(user_id)
     retain_administrator(memberships, membership)
@@ -1212,6 +1226,7 @@ def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
     existing = db.get(User, user_id)
     if existing:
         existing.enabled, existing.access_token, existing.refresh_token = False, "", ""
+    cancel_access(db, actor_id=user_id, reason="Security scan requester access was removed.")
     for run in db.scalars(
         select(ReviewRun)
         .where(

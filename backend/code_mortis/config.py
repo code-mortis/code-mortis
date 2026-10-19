@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     session_days: int = Field(default=7, ge=1, le=30)
     ocr_binary: str = "ocr"
     ocr_version: str = "1.13.1"
+    trivy_binary: str = "trivy"
+    trivy_version: str = "0.76.0"
+    trivy_cache_dir: Path = Path("/tmp/code-mortis-trivy")
     ocr_isolated_runtime: bool = False
     work_dir: Path = Path("/tmp/code-mortis-runs")
     frontend_dir: Path = Path(__file__).resolve().parents[2] / "frontend" / "dist"

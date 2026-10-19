@@ -31,6 +31,8 @@ from .models import (
     PullRequest,
     Repository,
     ReviewRun,
+    SecurityFinding,
+    SecurityScan,
 )
 from .reviews import (
     complete_saved_review,
@@ -168,6 +170,8 @@ def enqueue_reconciliation(db, kind, payload):
     conditions = [Job.kind == kind, Job.status.in_(["queued", "running"])]
     conditions.extend(Job.payload[key].as_integer() == payload[key]
                       for key in ("installation_id", "repository_id", "number") if key in payload)
+    if "finding_id" in payload:
+        conditions.append(Job.payload["finding_id"].as_string() == payload["finding_id"])
     if kind == "sync_pr":
         conditions.extend([
             Job.payload["sender_type"].as_string().is_(None),
@@ -230,7 +234,19 @@ def process_webhook(payload: dict):
 
 
 def execute(kind: str, payload: dict):
-    if kind == "review":
+    if kind == "security_scan":
+        from .repository_security import perform
+
+        perform(payload["scan_id"], payload["_claim"])
+    elif kind == "security_refresh":
+        from .repository_security import refresh_repository
+
+        refresh_repository(payload["repository_id"])
+    elif kind in {"security_issue_publish", "security_issue_sync"}:
+        from . import security_issues
+
+        (security_issues.publish if kind == "security_issue_publish" else security_issues.sync)(payload["finding_id"])
+    elif kind == "review":
         perform_review(payload["run_id"], payload.get("_claim"))
     elif kind == "generate_background":
         background.perform(payload["_job_id"], payload["_attempt"])
@@ -279,6 +295,12 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        if job.kind in {"security_issue_publish", "security_issue_sync"}:
+            db.scalar(select(SecurityFinding).where(SecurityFinding.id == job.payload["finding_id"]).with_for_update())
+            if db.scalar(select(Job.id).where(Job.kind.in_(["security_issue_publish", "security_issue_sync"]),
+                Job.status == "running", Job.payload["finding_id"].as_string() == job.payload["finding_id"]).limit(1)):
+                job.available_at, job.dispatched_at = now() + timedelta(seconds=30), None
+                return
         if job.kind == "sync_summary":
             # Serialize claims, then release the PR lock before GitHub calls.
             db.scalar(select(PullRequest).where(PullRequest.id == job.payload["pr_id"]).with_for_update())
@@ -290,12 +312,14 @@ def execute_job(job_id: str):
                 return
         lease_seconds = ((job.payload.get("limits", {}).get("timeout_seconds", 900) or 300) + 60
                          if job.kind == "generate_background" else 7200)
+        if job.kind == "security_scan":
+            lease_seconds = 360
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
+        execute(kind, execution if kind in {"review", "security_scan", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -314,6 +338,10 @@ def execute_job(job_id: str):
                 if run and not run.cancel_requested:
                     run.status, run.blocked_reason = "queued" if waiting else "blocked", exc.reason
                     run.error = str(exc)
+            elif kind == "security_scan":
+                scan = db.get(SecurityScan, payload["scan_id"])
+                if scan and not scan.cancel_requested:
+                    scan.status, scan.error = "queued" if waiting else "blocked", str(exc)
             elif kind == "generate_summary" and not waiting:
                 pr_summary.fail_retry(db, job, str(exc))
             elif kind in pipeline.KINDS:
@@ -356,6 +384,14 @@ def execute_job(job_id: str):
                     elif not complete_saved_review(db, run, message[:2000]):
                         run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
                         run.failure_reason = "timeout" if isinstance(exc, TimeoutError) else "execution"
+            elif kind == "security_scan":
+                from .repository_security import interrupt_work, report_data
+
+                scan = db.get(SecurityScan, payload["scan_id"])
+                if scan and scan.status in {"queued", "running", "blocked"}:
+                    scan.status, scan.error, scan.finished_at = "failed", message[:2000], now()
+                    interrupt_work(scan)
+                    scan.report = report_data(db, scan, [scan.error])
             elif kind == "sync_check":
                 run = db.get(ReviewRun, payload["run_id"])
                 if run:
@@ -397,6 +433,10 @@ def execute_job(job_id: str):
 
 
 def job_queue(kind, payload=None):
+    if kind == "security_scan":
+        return "security"
+    if kind in {"security_refresh", "security_issue_publish", "security_issue_sync"}:
+        return "sync"
     if kind == "verify_fixes":
         return "verification"
     if kind in {"summarize_review", "generate_summary"}:
@@ -424,6 +464,16 @@ def dispatch():
             .where(Job.status == "running", Job.lease_until < now())
             .with_for_update(skip_locked=True)
         ):
+            if job.kind == "security_scan":
+                from .repository_security import interrupt_work, report_data
+
+                job.status, job.error, job.lease_until = "failed", "Security worker stopped. Retry explicitly; inference usage may have been consumed.", None
+                scan = db.get(SecurityScan, job.payload["scan_id"])
+                if scan and scan.status in {"queued", "running", "blocked"}:
+                    scan.status, scan.error, scan.finished_at = "partial", job.error, now()
+                    interrupt_work(scan)
+                    scan.report = report_data(db, scan, [job.error])
+                continue
             if job.kind in pipeline.KINDS:
                 job.status, job.error, job.lease_until = "failed", "The worker stopped during this stage. Retry explicitly to start new inference.", None
                 run = db.scalar(select(ReviewRun).where(ReviewRun.id == job.payload["run_id"]).with_for_update())
@@ -504,6 +554,12 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
+        for identity in db.scalars(select(SecurityScan.repository_id).join(Repository)
+                                   .where(Repository.active.is_(True)).distinct()):
+            enqueue_reconciliation(db, "security_refresh", {"repository_id": identity})
+        for finding in db.scalars(select(SecurityFinding).where(
+            SecurityFinding.issue["operation_id"].as_string().is_not(None))):
+            enqueue_reconciliation(db, "security_issue_sync", {"finding_id": finding.id})
         for run in db.scalars(select(ReviewRun).where(
             ReviewRun.config["pipeline_version"].as_integer() == 2,
             ReviewRun.status.in_(["running", "queued", "cancelled", "superseded"]),

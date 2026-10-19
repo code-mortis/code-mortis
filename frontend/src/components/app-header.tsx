@@ -52,6 +52,10 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
       crumbs.push({ label: "Pull request", to: path });
     }
     if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
+  } else if (path.startsWith("/security")) {
+    crumbs.push({ label: "Security", to: "/security" });
+    if (path.startsWith("/security/repositories/")) crumbs.push({ label: "Repository security", to: path + route.search });
+    if (path.startsWith("/security/scans/")) crumbs.push({ label: "Security scan", to: path + route.search });
   } else if (path === "/analytics") {
     crumbs.push({ label: "Analytics", to: path + route.search });
   } else if (path === "/settings") {

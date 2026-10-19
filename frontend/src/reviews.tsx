@@ -1,4 +1,5 @@
-import { useRef, useState, type MouseEventHandler, type ReactNode } from "react";
+import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useRunResource } from "./hooks/use-run-resource";
@@ -20,7 +21,6 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ClipboardCheck,
-  Copy,
   LockKeyhole,
   Globe,
   SlidersHorizontal,
@@ -34,11 +34,6 @@ import {
   GitBranch,
   GitCommitHorizontal,
   LoaderCircle,
-  Bug,
-  Shield,
-  Gauge,
-  Wrench,
-  Tag,
 } from "lucide-react";
 import {
   ApiError,
@@ -77,6 +72,7 @@ import {
   date,
   Empty,
   ErrorNotice,
+  TechnicalDetails,
   ExternalLink,
   Field,
   Loading,
@@ -89,7 +85,11 @@ import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
+import { SecurityGrade } from "./components/security-grade";
+import { LoadMoreFooter } from "./components/load-more-footer";
+import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
+import { runDuration } from "./lib/run-duration";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -162,6 +162,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
           </h1>
           {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
+            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
             <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
           </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
         </div>
@@ -196,12 +197,6 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   </>;
 }
 
-function runDuration(run: Run) {
-  const seconds = run.started_at && run.finished_at
-    ? Math.max(0, Math.round((+new Date(run.finished_at) - +new Date(run.started_at)) / 1000)) : null;
-  return seconds === null ? null : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
 function RunList({ prId }: { prId: string }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
@@ -224,7 +219,6 @@ function RunList({ prId }: { prId: string }) {
     return true;
   });
   const total = query.data.pages.at(-1)!.total;
-  const paginated = query.hasNextPage || query.data.pages.length > 1;
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -269,15 +263,7 @@ function RunList({ prId }: { prId: string }) {
           </Link>
         );
       })}
-      {(paginated || query.error) && <div className="space-y-2 px-5 py-3">
-        <ErrorNotice error={query.error} />
-        <div className="flex items-center justify-between gap-3">
-          {query.hasNextPage ? <Button variant="ghost" size="sm" disabled={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>
-            {query.isFetchingNextPage ? "Loading…" : query.isFetchNextPageError ? "Retry" : "Load more"}<span className="sr-only"> run history</span>
-          </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button> : null}
-          {paginated && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{runs.length} of {total}</span>}
-        </div>
-      </div>}
+      <LoadMoreFooter query={query} shown={runs.length} total={total} label="run history" />
     </div>
   );
 }
@@ -343,7 +329,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
-    : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
+    : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -398,7 +384,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
               {latest ? <><span>{date(latest.created_at)}</span><span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span></> : <span>A review records findings and coverage for this commit.</span>}
             </div>
           </div>
-          {can_write && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
               options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
             <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} onClick={async () => {
@@ -469,41 +455,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </SheetContent>
     </Sheet>
   </>;
-}
-
-function FindingCategory({ value }: { value: string }) {
-  const icons = new Map([["bug", Bug], ["security", Shield], ["performance", Gauge], ["maintainability", Wrench]]);
-  const Icon = icons.get(value) ?? Tag;
-  return <Badge variant="outline" className="gap-1.5 text-muted-foreground"><Icon aria-hidden="true" />{label(value)}</Badge>;
-}
-
-function FindingCard({ evidence, state, onClick }: {
-  evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"];
-  state: ReactNode; onClick: MouseEventHandler<HTMLButtonElement>;
-}) {
-  const path = String(evidence.path ?? "Path not recorded");
-  const slash = path.lastIndexOf("/");
-  return <button type="button" data-slot="finding-card" onClick={onClick}
-    className="group w-full min-w-0 bg-card p-4 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:p-5">
-    <span className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
-      <span className="flex min-w-0 max-w-full items-center gap-2">
-        <FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 font-mono text-xs leading-[22px]">
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 [overflow-wrap:anywhere]">
-            <span className="min-w-0">
-              {slash >= 0 && <span className="text-muted-foreground">{path.slice(0, slash + 1)}</span>}<span className="font-medium">{path.slice(slash + 1)}</span>
-            </span>
-            {evidence.start_line != null && <span className="text-muted-foreground">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
-          </span>
-        </span>
-      </span>
-      <span className="flex shrink-0">{state}</span>
-    </span>
-    <span className="mt-4 line-clamp-3 break-words text-sm font-medium leading-relaxed [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
-    <span className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <span className="flex flex-wrap items-center gap-2">{evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="text-xs text-muted-foreground">Proposed finding</span>}{!!evidence.category && <FindingCategory value={String(evidence.category)} />}</span>
-    </span>
-  </button>;
 }
 
 function FindingPanel({ id, canWrite, snapshot, headSha }: {
@@ -653,30 +604,6 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
-function getCandidateFeedback(candidate: Schema["CandidateOut"]) {
-  if (candidate.finding_id && candidate.is_new) return { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding." };
-  if (candidate.finding_id) return { label: "Repeated observation", description: "Matches an existing finding from review history." };
-  if (candidate.result?.verdict === "rejected") return { label: "Not supported", description: "The evidence did not support this proposed issue." };
-  if (candidate.progress_phase === "validating") return { label: "Response received; validating", description: "Processing finished. Final validation must finish before a finding can be accepted." };
-  if (active(candidate.status)) return { label: "Awaiting assessment", description: "Queued or being checked against evidence." };
-  return { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." };
-}
-
-function CandidateStatus({ candidate, inCard = false }: { candidate: Schema["CandidateOut"]; inCard?: boolean }) {
-  const feedback = getCandidateFeedback(candidate);
-  let value = "partial";
-  if (candidate.finding_id) value = "completed";
-  else if (candidate.result?.verdict === "rejected") value = "rejected";
-  else if (active(candidate.status)) value = candidate.status;
-  return <Tooltip>
-    <TooltipTrigger asChild><span tabIndex={inCard ? undefined : 0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">
-      <Status value={value} label={feedback.label} />
-      {inCard && <span className="sr-only">{feedback.description}</span>}
-    </span></TooltipTrigger>
-    <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.description}</TooltipContent>
-  </Tooltip>;
-}
-
 function ResolvedList({ runId, running, revision, tick, onOpen }: {
   runId: string; running: boolean; revision: string; tick: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
 }) {
@@ -780,24 +707,6 @@ function InferenceError({ error, withheld = false, stage = "assessment" }: {
   </div>;
 }
 
-function TechnicalDetails({ error, name }: { error: string; name: string }) {
-  const [copying, setCopying] = useState(false);
-  return <details className="group text-xs text-muted-foreground">
-    <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" /></summary>
-    <div className="group/diagnostics relative mt-3">
-      <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="min-h-14 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 pr-14 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:pr-12 [overflow-wrap:anywhere]">{error}</pre>
-      <Button variant="ghost" size="icon" aria-label={`${copying ? "Copying" : "Copy"} ${name} details`} title={`${copying ? "Copying" : "Copy"} ${name} details`} className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/diagnostics:opacity-100 group-focus-within/diagnostics:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" disabled={copying} onClick={async () => {
-        setCopying(true);
-        try {
-          await navigator.clipboard.writeText(error);
-          toast.success(`${name} details copied`);
-        } catch {
-          toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });
-        } finally { setCopying(false); }
-      }}>{copying ? <LoaderCircle aria-hidden="true" className="size-3.5 motion-safe:animate-spin" /> : <Copy aria-hidden="true" className="size-3.5" />}</Button>
-    </div>
-  </details>;
-}
 
 function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
   candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; onOpenFinding: () => void;

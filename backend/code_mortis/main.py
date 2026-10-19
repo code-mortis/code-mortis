@@ -12,6 +12,7 @@ from .api import router
 from .config import settings
 from .db import engine
 from .github import GitHubError
+from .security_api import router as security_router
 from .subscriptions import router as subscriptions_router
 from .telemetry import init_sentry
 
@@ -24,6 +25,7 @@ app = FastAPI(
 )
 app.include_router(router)
 app.include_router(subscriptions_router)
+app.include_router(security_router)
 
 
 @app.exception_handler(GitHubError)

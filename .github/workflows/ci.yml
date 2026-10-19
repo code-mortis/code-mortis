@@ -82,6 +82,10 @@ jobs:
           --tmpfs /tmp:mode=1777,size=256m
           --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m
           code-mortis:test python tests/ocr_container_smoke.py
+      - run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:mode=1777,size=512m
+          code-mortis:test python tests/security_scanner_smoke.py
   native-clients:
     runs-on: ubuntu-latest
     steps:

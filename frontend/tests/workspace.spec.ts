@@ -819,7 +819,8 @@ test("sidebar handles long repository lists and empty access", async ({ page }, 
   await page.goto("/settings");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(nav.getByRole("link")).toHaveCount(41);
+  await expect(nav.getByRole("link", { name: new RegExp(name) })).toHaveCount(40);
+  await expect(nav.getByRole("link", { name: "Security", exact: true })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true })).toBeInViewport();
   const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
   await last.scrollIntoViewIfNeeded();
@@ -3239,6 +3240,7 @@ for (const editing of [false, true]) {
     await expect(headers).toHaveValue('{"Authorization":"draft-header"}');
     if (editing) await page.getByRole("tab", { name: "General", exact: true }).click();
     await page.getByRole("button", { name: /^(Load|Refresh) models$/, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
     const model = page.getByLabel("Model", { exact: true });
     await chooseOption(page, model, "next-model");
     if (editing) await page.getByRole("tab", { name: "Connection", exact: true }).click();
@@ -8445,7 +8447,8 @@ test("pull detail paginates each finding status independently and resets pages w
 });
 
 for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {
-  test(`pull detail handles review availability for ${state}`, async ({ page }) => {
+  test(`pull detail handles review availability for ${state}`, async ({ page }, info) => {
+    if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
     await mock(page);
     await mockPullDetail(page, () => ({
       pull_request: { ...pr, state: state === "merged" || state === "closed" ? state : "open", fork: state === "fork" },
@@ -8459,15 +8462,19 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
-    if (state === "running") await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
+    if (["running", "merged", "closed"].includes(state)) await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
     else await expect(summary).toContainText(messages[state]);
-    if (state === "viewer") {
+    if (["viewer", "merged", "closed"].includes(state)) {
       await expect(summary.getByRole("button")).toHaveCount(0);
       await expect(page.getByLabel("Review connection")).toHaveCount(0);
     } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
     else {
       await expect(summary.getByRole("button")).toBeDisabled();
       await expect(page.getByLabel("Review connection")).toBeDisabled();
+    }
+    if (state === "merged" || state === "closed") {
+      await expect(page.locator("#review-unavailable")).toHaveCount(0);
+      await summary.screenshot({ path: `/private/tmp/code-mortis-review-availability-${state}-${info.project.name}.png` });
     }
     await noOverflow(page);
   });
@@ -8719,7 +8726,7 @@ for (const count of [10, 50, 100]) {
     expect(requests).toHaveLength(initial);
     candidates.at(-1)!.progress_phase = "validating";
     await ticks(page, 1);
-    await expect(cards.last()).toContainText("Response received; validating");
+    await expect(cards.last()).toContainText("Validating");
     expect(requests).toHaveLength(initial + 1);
     expect(requests.at(-1)!.searchParams.get("page_size")).toBe(String(count));
     const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));

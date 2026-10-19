@@ -34,7 +34,11 @@ def personal(db, user, identity):
     return connection
 
 
-def cancel_connection_runs(db, identity, repository_id=None):
+def cancel_connection_runs(db, identity, repository_id=None, *, security=True):
+    if security:
+        from .repository_security import cancel_access
+
+        cancel_access(db, connection_id=identity, repository_ids=[repository_id] if repository_id is not None else None)
     query = select(ReviewRun).where(
         ReviewRun.connection_id == identity, ReviewRun.status.in_({"queued", "running", "blocked"})
     )
@@ -118,7 +122,7 @@ def grant(identity: str, repository_id: int, body: GrantInput, db: DB, user: USE
         row = ConnectionGrant(connection_id=identity, repository_id=repository_id)
         db.add(row)
     if row.automatic and not body.automatic:
-        cancel_connection_runs(db, identity, repository_id)
+        cancel_connection_runs(db, identity, repository_id, security=False)
     row.automatic = body.automatic
     return {"repository_id": repository_id, "automatic": body.automatic}
 

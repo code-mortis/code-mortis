@@ -964,6 +964,299 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repositories */
+        get: operations["repositories_api_v1_security_repositories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/repositories/{repository_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repository */
+        get: operations["repository_api_v1_security_repositories__repository_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/repositories/{repository_id}/scans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scans */
+        get: operations["scans_api_v1_security_repositories__repository_id__scans_get"];
+        put?: never;
+        /** Start Scan */
+        post: operations["start_scan_api_v1_security_repositories__repository_id__scans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Detail */
+        get: operations["scan_detail_api_v1_security_scans__scan_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/assessments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assessments */
+        get: operations["assessments_api_v1_security_scans__scan_id__assessments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/assessments/{assessment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assessment Detail */
+        get: operations["assessment_detail_api_v1_security_scans__scan_id__assessments__assessment_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Scan */
+        post: operations["cancel_scan_api_v1_security_scans__scan_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Scan */
+        post: operations["retry_scan_api_v1_security_scans__scan_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report */
+        get: operations["report_api_v1_security_scans__scan_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/report/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report Findings */
+        get: operations["report_findings_api_v1_security_scans__scan_id__report_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/repositories/{repository_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Findings */
+        get: operations["findings_api_v1_security_repositories__repository_id__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Findings */
+        get: operations["scan_findings_api_v1_security_scans__scan_id__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Finding Detail */
+        get: operations["finding_detail_api_v1_security_findings__finding_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Triage */
+        patch: operations["triage_api_v1_security_findings__finding_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}/rotation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotation */
+        post: operations["rotation_api_v1_security_findings__finding_id__rotation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/repositories/{repository_id}/github-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Issue Candidates */
+        get: operations["issue_candidates_api_v1_security_repositories__repository_id__github_issues_get"];
+        put?: never;
+        /** Create Issues */
+        post: operations["create_issues_api_v1_security_repositories__repository_id__github_issues_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}/github-issue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Issue Preview */
+        get: operations["issue_preview_api_v1_security_findings__finding_id__github_issue_get"];
+        put?: never;
+        /** Create Issue */
+        post: operations["create_issue_api_v1_security_findings__finding_id__github_issue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}/github-issue/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Issue */
+        post: operations["sync_issue_api_v1_security_findings__finding_id__github_issue_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/live": {
         parameters: {
             query?: never;
@@ -2081,6 +2374,7 @@ export interface components {
              * @default false
              */
             has_running_review: boolean;
+            security?: components["schemas"]["SecuritySummary"] | null;
         };
         /** ResolvedPage */
         ResolvedPage: {
@@ -2234,6 +2528,469 @@ export interface components {
              * @default 10
              */
             page_size: number;
+        };
+        /** SecurityActivityOut */
+        SecurityActivityOut: {
+            /** Id */
+            id: string;
+            /** Scan Id */
+            scan_id: string | null;
+            /** Finding Id */
+            finding_id: string | null;
+            /** Actor Id */
+            actor_id: number | null;
+            /** Action */
+            action: string;
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** SecurityAssessmentOut */
+        SecurityAssessmentOut: {
+            /** Id */
+            id: string;
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+            /** Proposal */
+            proposal: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed" | "failed" | "interrupted";
+            /**
+             * Progress Phase
+             * @enum {string}
+             */
+            progress_phase: "queued" | "checking" | "validating" | "finished";
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "pending" | "confirmed" | "rejected" | "uncertain" | "failed" | "interrupted" | "withheld";
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** Error */
+            error?: string | null;
+            /** Tokens */
+            tokens?: number | null;
+            /**
+             * Reused
+             * @default false
+             */
+            reused: boolean;
+            /** Finding Id */
+            finding_id?: string | null;
+        };
+        /** SecurityAssessmentPage */
+        SecurityAssessmentPage: {
+            /** Items */
+            items: components["schemas"]["SecurityAssessmentOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Revision */
+            revision: string;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityAssessmentSummary */
+        SecurityAssessmentSummary: {
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Status Counts */
+            status_counts?: {
+                [key: string]: number;
+            };
+            /** Outcome Counts */
+            outcome_counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+        };
+        /** SecurityBulkIssueInput */
+        SecurityBulkIssueInput: {
+            /** Issues */
+            issues: components["schemas"]["SecurityIssueDraft"][];
+        };
+        /** SecurityFindingDetail */
+        SecurityFindingDetail: {
+            repository: components["schemas"]["RepositoryOut"];
+            finding: components["schemas"]["SecurityFindingOut"];
+            /** Can Write */
+            can_write: boolean;
+            /** Observations */
+            observations: {
+                [key: string]: unknown;
+            }[];
+            /** Activity */
+            activity: components["schemas"]["SecurityActivityOut"][];
+        };
+        /** SecurityFindingOut */
+        SecurityFindingOut: {
+            /** Id */
+            id: string;
+            /** Repository Id */
+            repository_id: number;
+            /** State */
+            state: string;
+            /** Kind */
+            kind: string;
+            /** Severity */
+            severity: string;
+            /** Title */
+            title: string;
+            /** Path */
+            path: string;
+            /** First Scan Id */
+            first_scan_id: string;
+            /** Last Scan Id */
+            last_scan_id: string;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Version */
+            version: number;
+            /** Rotation */
+            rotation: {
+                [key: string]: unknown;
+            } | null;
+            /** Issue */
+            issue: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SecurityFindingPage */
+        SecurityFindingPage: {
+            /** Items */
+            items: components["schemas"]["SecurityFindingOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Result Counts */
+            result_counts?: {
+                [key: string]: number;
+            };
+        };
+        /** SecurityIssueCandidate */
+        SecurityIssueCandidate: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Repository */
+            repository: string;
+            /** Public */
+            public: boolean;
+            /** Version */
+            version: number;
+            /** Recovery Token */
+            recovery_token?: string | null;
+            /** Id */
+            id: string;
+            /** Path */
+            path: string;
+            /** Severity */
+            severity: string;
+        };
+        /** SecurityIssueCandidatePage */
+        SecurityIssueCandidatePage: {
+            /** Items */
+            items: components["schemas"]["SecurityIssueCandidate"][];
+            /** Repository */
+            repository: string;
+            /** Public */
+            public: boolean;
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityIssueDraft */
+        SecurityIssueDraft: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Version */
+            version: number;
+            /** Public */
+            public: boolean;
+            /** Recovery Token */
+            recovery_token?: string | null;
+            /** Finding Id */
+            finding_id: string;
+        };
+        /** SecurityIssueInput */
+        SecurityIssueInput: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Version */
+            version: number;
+            /** Public */
+            public: boolean;
+            /** Recovery Token */
+            recovery_token?: string | null;
+        };
+        /** SecurityIssuePreview */
+        SecurityIssuePreview: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Repository */
+            repository: string;
+            /** Public */
+            public: boolean;
+            /** Version */
+            version: number;
+            /** Recovery Token */
+            recovery_token?: string | null;
+        };
+        /** SecurityReportPage */
+        SecurityReportPage: {
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Kind Counts */
+            kind_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityRepositoryOut */
+        SecurityRepositoryOut: {
+            repository: components["schemas"]["RepositoryOut"];
+            summary: components["schemas"]["SecuritySummary"];
+            /** Can Write */
+            can_write?: boolean | null;
+            /** Finding Count */
+            finding_count?: number | null;
+            /** Scan Count */
+            scan_count?: number | null;
+        };
+        /** SecurityRotation */
+        SecurityRotation: {
+            /** Reason */
+            reason: string;
+            /** Version */
+            version: number;
+        };
+        /** SecurityScanDetail */
+        SecurityScanDetail: {
+            repository: components["schemas"]["RepositoryOut"];
+            scan: components["schemas"]["SecurityScanOut"];
+            /** Can Write */
+            can_write: boolean;
+            assessment?: components["schemas"]["SecurityAssessmentSummary"];
+            /** Finding Count */
+            finding_count: number;
+            /**
+             * Report Count
+             * @default 0
+             */
+            report_count: number;
+            /** Activity Count */
+            activity_count: number;
+            /** Activity */
+            activity: components["schemas"]["SecurityActivityOut"][];
+        };
+        /** SecurityScanInput */
+        SecurityScanInput: {
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
+             * Concurrency
+             * @default 4
+             */
+            concurrency: number;
+            /** Request Key */
+            request_key: string;
+        };
+        /** SecurityScanOut */
+        SecurityScanOut: {
+            /** Id */
+            id: string;
+            /** Repository Id */
+            repository_id: number;
+            /** Actor Id */
+            actor_id: number;
+            /** Connection Id */
+            connection_id: string | null;
+            /** Parent Id */
+            parent_id: string | null;
+            /** Branch */
+            branch: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            /** Stages */
+            stages: {
+                [key: string]: unknown;
+            };
+            /** Progress */
+            progress: {
+                [key: string]: unknown;
+            };
+            /** Coverage */
+            coverage: {
+                [key: string]: unknown;
+            };
+            /** Report */
+            report: {
+                [key: string]: unknown;
+            };
+            /** Grade */
+            grade: string | null;
+            /** Error */
+            error: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Started At */
+            started_at: string | null;
+            /** Finished At */
+            finished_at: string | null;
+        };
+        /** SecurityScanPage */
+        SecurityScanPage: {
+            /** Items */
+            items: components["schemas"]["SecurityScanOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecuritySummary */
+        SecuritySummary: {
+            /** Grade */
+            grade?: string | null;
+            /**
+             * State
+             * @default not_scanned
+             */
+            state: string;
+            /** Grade Scan Id */
+            grade_scan_id?: string | null;
+            /** Grade Sha */
+            grade_sha?: string | null;
+            /** Graded At */
+            graded_at?: string | null;
+            /** Latest Scan Id */
+            latest_scan_id?: string | null;
+            /** Latest Status */
+            latest_status?: string | null;
+            /** Latest At */
+            latest_at?: string | null;
+            /** Default Branch */
+            default_branch?: string | null;
+            /** Head Sha */
+            head_sha?: string | null;
+            /** Checked At */
+            checked_at?: string | null;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+        };
+        /** SecurityTriage */
+        SecurityTriage: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "false_positive" | "accepted_risk";
+            /** Reason */
+            reason: string;
+            /** Version */
+            version: number;
         };
         /** StageState */
         StageState: {
@@ -4415,6 +5172,703 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repositories_api_v1_security_repositories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRepositoryOut"][];
+                };
+            };
+        };
+    };
+    repository_api_v1_security_repositories__repository_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRepositoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scans_api_v1_security_repositories__repository_id__scans_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityScanPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_scan_api_v1_security_repositories__repository_id__scans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityScanInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityScanOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_detail_api_v1_security_scans__scan_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityScanDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assessments_api_v1_security_scans__scan_id__assessments_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                outcome?: ("pending" | "confirmed" | "rejected" | "uncertain" | "failed" | "interrupted" | "withheld")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low")[] | null;
+                category?: string[] | null;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAssessmentPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assessment_detail_api_v1_security_scans__scan_id__assessments__assessment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_id: string;
+                assessment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAssessmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_scan_api_v1_security_scans__scan_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityScanOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_scan_api_v1_security_scans__scan_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityScanInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityScanOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_api_v1_security_scans__scan_id__report_get: {
+        parameters: {
+            query?: {
+                format?: "json" | "markdown";
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_findings_api_v1_security_scans__scan_id__report_findings_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                q?: string;
+                outcome?: ("present" | "fixed" | "not_observed" | "uncertain" | "unknown")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
+                kind?: string[] | null;
+                finding_id?: string | null;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityReportPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    findings_api_v1_security_repositories__repository_id__findings_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk") | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown") | null;
+                kind?: ("code" | "dependency" | "secret" | "infrastructure") | null;
+                search?: string;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_findings_api_v1_security_scans__scan_id__findings_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                outcome?: ("new" | "open_repeat" | "resolved_repeat" | "false_positive_repeat" | "accepted_risk_repeat" | "repeated" | "recorded" | "fixed" | "not_observed" | "uncertain")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown") | null;
+                kind?: ("code" | "dependency" | "secret" | "infrastructure") | null;
+                search?: string;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_detail_api_v1_security_findings__finding_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_api_v1_security_findings__finding_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityTriage"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotation_api_v1_security_findings__finding_id__rotation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityRotation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_candidates_api_v1_security_repositories__repository_id__github_issues_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityIssueCandidatePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_issues_api_v1_security_repositories__repository_id__github_issues_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityBulkIssueInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_preview_api_v1_security_findings__finding_id__github_issue_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityIssuePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_issue_api_v1_security_findings__finding_id__github_issue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityIssueInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_issue_api_v1_security_findings__finding_id__github_issue_sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"];
                 };
             };
             /** @description Validation Error */

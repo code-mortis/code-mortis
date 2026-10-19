@@ -2,7 +2,8 @@ import { useState } from "react";
 import { CircleCheck, FileCode2, History } from "lucide-react";
 import type { Run } from "../api";
 import { fileFeedback } from "../lib/run-feedback";
-import { active, Code, Empty, Status } from "./common";
+import { errorFeedback } from "../lib/error-feedback";
+import { active, Code, Empty, Status, TechnicalDetails } from "./common";
 import { Button } from "./ui/button";
 
 const outcomes = {
@@ -69,14 +70,17 @@ export function RunCoverage({ run }: { run: Run }) {
           const heading = group === "attention" ? "Files not reviewed" : "Reviewed files";
           return <section key={group} aria-label={heading}>
             <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{heading}<span className="text-xs font-normal tabular-nums text-muted-foreground">{files.length}</span></h3>
-            <ul className="divide-y border-y">{visible.map((file) => <li key={file.path} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 py-3">
+            <ul className="divide-y border-y">{visible.map((file) => {
+              const feedback = errorFeedback(file.reason);
+              return <li key={file.path} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 py-3">
               <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
               <div className="min-w-0 flex-1">
                 <code className="block break-words text-xs leading-5 [overflow-wrap:anywhere]">{file.path}</code>
-                {file.reason !== outcomes[file.outcome].reason && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{file.reason}</p>}
+                {file.reason !== outcomes[file.outcome].reason && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{feedback.message}</p>}
+                {feedback.details && <TechnicalDetails error={feedback.details} name={file.path} />}
               </div>
               <FileStatus file={file} />
-            </li>)}</ul>
+            </li>; })}</ul>
             {(visible.length < files.length || (pages[group] ?? 1) > 1) && <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
               {visible.length < files.length && <Button variant="ghost" size="sm" onClick={() => setPages((current) => ({ ...current, [group]: (current[group] ?? 1) + 1 }))}>Load more<span className="sr-only"> {heading.toLowerCase()}</span></Button>}
               <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{visible.length} of {files.length} shown</span>

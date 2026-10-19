@@ -1,11 +1,9 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { GitPullRequest } from "lucide-react";
-import { date, Status } from "./common";
+import { FindingCount, ListDate, Status, StatusGroup } from "./common";
 import { Badge } from "./ui/badge";
 import { PullRequestActions } from "./pull-request-actions";
-
-const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 export function PullRequestListHeading({ dateLabel = "Created" }: { dateLabel?: string }) {
   return <div aria-hidden="true" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid">
@@ -14,10 +12,10 @@ export function PullRequestListHeading({ dateLabel = "Created" }: { dateLabel?: 
 }
 
 export function PullRequestStatus({ reviewStatus, state }: { reviewStatus: string; state: string }) {
-  return <span className="inline-flex w-fit overflow-hidden rounded-full border border-border align-middle [&>[data-slot=badge]]:rounded-none [&>[data-slot=badge]]:border-0">
+  return <StatusGroup>
     <span className="sr-only">Review status: </span><Status value={reviewStatus} />
     <span className="sr-only">; Pull request state: </span><Badge variant="secondary" className="capitalize"><GitPullRequest aria-hidden="true" />{state}</Badge>
-  </span>;
+  </StatusGroup>;
 }
 
 export function PullRequestRow({ id, number, repositoryId, admin, ignored, title, metadata, status, findings, timestamp, state }: {
@@ -43,8 +41,8 @@ export function PullRequestRow({ id, number, repositoryId, admin, ignored, title
       </div>
     </div>
     <div className="min-w-0 space-y-1">{status}</div>
-    <div><Badge variant="outline" className={findings ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{findings} unresolved<span className="sr-only"> findings</span></Badge></div>
-    {timestamp ? <time dateTime={timestamp} title={date(timestamp)} className="text-xs tabular-nums text-muted-foreground">{formatter.format(new Date(timestamp))}</time> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
+    <div><FindingCount count={findings} /></div>
+    {timestamp ? <ListDate value={timestamp} /> : <span className="text-xs text-muted-foreground" title="Creation date will be available after the next sync">Pending sync</span>}
     <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><PullRequestActions id={id} number={number} title={title} repositoryId={repositoryId} admin={admin} ignored={ignored} state={state} /></div>
   </div>;
 }

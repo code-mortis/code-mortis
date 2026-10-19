@@ -387,6 +387,10 @@ def perform_review(run_id: str, claim: str | None = None):
         if connection.kind != "api":
             # Serialize ownership claims across workers without holding a transaction during inference.
             db.scalar(select(Connection).where(Connection.id == connection.id).with_for_update())
+            from .repository_security import connection_busy
+
+            if connection_busy(db, connection.id, run_id=run.id):
+                raise runner_client.RunnerBlocked("busy")
             other = db.scalar(
                 select(ReviewRun.id)
                 .where(

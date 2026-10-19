@@ -321,6 +321,10 @@ def perform(job_id, attempt):
         connection = db.get(Connection, payload["connection_id"])
         remote = authorize(db, repo, actor, connection)
         snapshot = payload["connection"]
+        from .repository_security import connection_busy
+
+        if connection.kind != "api" and connection_busy(db, connection.id, job_id=job_id):
+            raise runner_client.RunnerBlocked("busy")
         if any(snapshot[key] != getattr(connection, key) for key in ("kind", "provider", "protocol", "base_url", "options", "owner_id")):
             raise ValueError("The connection changed after generation was queued. Generate again to retry.")
         if connection.kind != "api" and db.scalar(select(ReviewRun.id).where(

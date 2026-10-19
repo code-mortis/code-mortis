@@ -353,6 +353,10 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
                            "error": "Summary unavailable because the review encountered an authentication or account usage restriction. Restore access before starting another review."}
             return
         config = config or run.config
+        from .repository_security import connection_busy
+
+        if config["connection"]["kind"] != "api" and connection_busy(db, config["connection"]["id"], run_id=run.id, job_id=retry_job_id):
+            raise runner_client.RunnerBlocked("busy")
         # Missing summary limits identify legacy snapshots; explicit null remains unlimited.
         options = {**RepoSettings().model_dump(), "summary_token_budget": 60000,
                    "summary_timeout_seconds": 180, **config["settings"]}

@@ -89,6 +89,23 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  security-worker:
+    <<: *app
+    environment:
+      <<: *environment
+      CM_OCR_ISOLATED_RUNTIME: "true"
+      CM_TRIVY_CACHE_DIR: /var/cache/mortis-trivy
+    volumes:
+      - ./backend/code_mortis:/app/backend/code_mortis:ro
+      - ./backend/migrations:/app/backend/migrations:ro
+      - trivy-cache:/var/cache/mortis-trivy
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, security, --concurrency=1, --loglevel=INFO, --hostname=security@%h]
+    mem_limit: 2g
+    cpus: 2
+    networks: [default, runners]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
   verification-worker:
     <<: *app
     environment:
@@ -146,6 +163,7 @@ volumes:
   postgres-data:
   redis-data:
   runner-profiles:
+  trivy-cache:
   frontend-modules:
 
 networks:

@@ -1,5 +1,5 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { ChartNoAxesCombined, FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, Users, X } from "lucide-react";
+import { ChartNoAxesCombined, FolderGit2, Github, Inbox, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
@@ -46,6 +46,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
+  const securityRunning = !repos.error && repositories.some((repo) => ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? ""));
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const settingsSearch = new URLSearchParams(route.search);
@@ -72,6 +73,14 @@ export function AppSidebar({ user, onLogout, signingOut }: {
                 <Link to={inboxReturn ?? "/"} aria-current={inboxActive ? "page" : undefined} aria-describedby={openPrs !== undefined ? "inbox-open-count" : undefined} title={openPrs !== undefined ? `${openPrs} open pull ${openPrs === 1 ? "request" : "requests"}` : undefined} onClick={closeMobile}><Inbox aria-hidden="true" /><span>Inbox</span></Link>
               </SidebarMenuButton>
               {openPrs !== undefined && <SidebarMenuBadge id="inbox-open-count" className="right-2 h-6 min-w-6 rounded-md border border-sidebar-border bg-sidebar px-1.5 text-xs font-normal peer-data-[size=default]/menu-button:top-2">{openPrs}<span className="sr-only"> open pull {openPrs === 1 ? "request" : "requests"}</span></SidebarMenuBadge>}
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={route.pathname.startsWith("/security")} className="h-10">
+                <Link to="/security" aria-label={securityRunning ? "Security, scan running" : undefined} aria-current={route.pathname.startsWith("/security") ? "page" : undefined} onClick={closeMobile}>
+                  <ShieldCheck aria-hidden="true" /><span className="flex-1">Security</span>
+                  {securityRunning && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}
+                </Link>
+              </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={route.pathname === "/analytics"} className="h-10">

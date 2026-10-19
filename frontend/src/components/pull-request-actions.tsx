@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ClipboardCheck, ExternalLink, EyeOff, GitPullRequest, MoreHorizontal, Play, RefreshCw, RotateCcw, Settings2, Square } from "lucide-react";
 import { toast } from "sonner";
+import { errorFeedback } from "../lib/error-feedback";
 import { useAction, useApi, type Run, type Schema } from "../api";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -57,7 +58,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, ign
         action: { label: "Undo", onClick: () => { void ignore(false); } },
       } : undefined);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update this pull request.");
+      toast.error(errorFeedback(error).message);
     }
   }
 
@@ -69,7 +70,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, ign
         action: { label: "View review", onClick: () => navigate(`/runs/${(result as Run).id}`, { state }) },
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update the review.");
+      toast.error(errorFeedback(error).message);
       void detail.refetch();
     }
   }
@@ -88,7 +89,7 @@ export function PullRequestActions({ id, number, title, repositoryId, admin, ign
     }}>
       {detail.isLoading && <p role="status" className="px-2 py-2 text-xs text-muted-foreground">Loading review actions…</p>}
       {detail.error && <>
-        <p role="alert" className="px-2 py-2 text-xs text-destructive">{detail.error.message}</p>
+        <p role="alert" className="px-2 py-2 text-xs text-destructive">{errorFeedback(detail.error).message}</p>
         <DropdownMenuItem onSelect={(event) => { event.preventDefault(); void detail.refetch(); }}><RefreshCw aria-hidden="true" />Retry actions</DropdownMenuItem>
       </>}
       {data && (data.can_write ? <>

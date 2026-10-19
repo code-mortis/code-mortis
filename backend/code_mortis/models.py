@@ -313,6 +313,77 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class SecurityScan(Base):
+    __tablename__ = "security_scans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"), index=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    connection_id: Mapped[str | None] = mapped_column(ForeignKey("connections.id", ondelete="SET NULL"), index=True)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("security_scans.id"))
+    request_key: Mapped[str] = mapped_column(String(100), unique=True)
+    branch: Mapped[str] = mapped_column(Text)
+    head_sha: Mapped[str] = mapped_column(String(40))
+    config: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    stages: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    grade: Mapped[str | None] = mapped_column(String(1))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+Index("uq_security_active_repository", SecurityScan.repository_id, unique=True,
+      postgresql_where=SecurityScan.status.in_(["queued", "running", "blocked"]))
+
+
+class SecurityFinding(Base):
+    __tablename__ = "security_findings"
+    __table_args__ = (UniqueConstraint("repository_id", "fingerprint"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    severity: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)
+    first_scan_id: Mapped[str] = mapped_column(ForeignKey("security_scans.id"))
+    last_scan_id: Mapped[str] = mapped_column(ForeignKey("security_scans.id"))
+    evidence: Mapped[dict] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    rotation: Mapped[dict | None] = mapped_column(JSON)
+    issue: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SecurityOccurrence(Base):
+    __tablename__ = "security_occurrences"
+    __table_args__ = (UniqueConstraint("scan_id", "finding_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("security_scans.id"), index=True)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("security_findings.id"), index=True)
+    outcome: Mapped[str] = mapped_column(String(20))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SecurityActivity(Base):
+    __tablename__ = "security_activities"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    scan_id: Mapped[str | None] = mapped_column(ForeignKey("security_scans.id"), index=True)
+    finding_id: Mapped[str | None] = mapped_column(ForeignKey("security_findings.id"), index=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(40))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 # Read pending state from durable jobs instead of locking the PR while flushing a locked run.
 PullRequest.summary_pending = column_property(or_(
     PullRequest.summary_error.is_not(None),

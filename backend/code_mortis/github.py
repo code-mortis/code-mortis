@@ -147,14 +147,16 @@ def permission_request(user_id: int, path: str, token: str, *, fresh: bool = Fal
     key = _permission_cache_key(user_id, path, token)
     try:
         with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as cache:
+            previous = cache.get(key) if fresh else None
             cached = _cached_permission(cache, key, fresh)
             if cached is not None:
                 return cached
-            lock = cache.lock(key + ":lock", timeout=120, blocking_timeout=2)
+            lock = cache.lock(key + ":lock", timeout=120, blocking_timeout=60)
             if not lock.acquire():
                 raise GitHubError(503, "GitHub permissions are being refreshed. Try again shortly.", 2)
             try:
-                cached = _cached_permission(cache, key, fresh)
+                # Share only a refresh published since this caller started waiting.
+                cached = _cached_permission(cache, key, fresh and cache.get(key) == previous)
                 if cached is not None:
                     return cached
                 error = None
@@ -165,6 +167,7 @@ def permission_request(user_id: int, path: str, token: str, *, fresh: bool = Fal
                     error = exc
                     entry = {"error": [exc.status, str(exc), time.time() + exc.retry_after]}
                     ttl = max(5, exc.retry_after)
+                entry["refresh_id"] = lock.local.token.decode()
                 try:
                     # Publish only while owning the lease, so a late response cannot restore revoked access.
                     stored = cache.eval("""
@@ -219,13 +222,18 @@ def app_token(db: Session) -> str:
     )
 
 
-def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
-    return installation_token_from_jwt(app_token(db), installation_id, checks=checks, resolve=resolve)
+def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
+    options = {"checks": checks, "resolve": resolve}
+    if issues:
+        options["issues"] = True
+    return installation_token_from_jwt(app_token(db), installation_id, **options)
 
 
-def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False) -> str:
+def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
     """Exchange a snapshotted App JWT without keeping a database transaction open."""
     data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
+    if issues and data.get("permissions", {}).get("issues") != "write":
+        raise GitHubError(403, "Enable Issues: Read and write on the existing GitHub App and approve the installation permission update. Security scans and reports remain available.")
     if resolve and data.get("permissions", {}).get("contents") != "write":
         raise GitHubError(
             403, "GitHub requires Contents: Read and write to resolve or reopen review threads. "
