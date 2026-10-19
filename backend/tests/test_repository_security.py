@@ -1258,7 +1258,9 @@ def test_github_issue_creation_is_explicit_and_reconciles_unknown_delivery(seed,
         issue = db.get(SecurityFinding, identity).issue
         assert issue["started"] is True and issue["sync_status"] == "uncertain"
     path = f"/api/v1/security/findings/{identity}/github-issue"
-    assert client.get(path).status_code == 409
+    recovery_preview = client.get(path)
+    assert recovery_preview.status_code == 200
+    assert recovery_preview.json()["recovery_token"] == issue["attempt_id"]
     assert client.post(path, json={"title": "Another issue", "body": draft["body"], "version": 0, "public": True}).status_code == 409
     assert client.post(path + "/sync").status_code == 202
     security_issues.sync(identity)
@@ -1278,6 +1280,101 @@ def test_issue_permission_upgrade_is_actionable(monkeypatch):
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: {"token": "test", "permissions": {"issues": "read"}})
     with pytest.raises(github.GitHubError, match="Issues: Read and write"):
         github.installation_token_from_jwt("jwt", 10, issues=True)
+
+
+@pytest.mark.parametrize("remote_appears", [False, True])
+def test_issue_recovery_requires_current_explicit_approval_and_reconciles_first(seed, security_github, monkeypatch, client, remote_appears):
+    with transaction() as db:
+        finding_id = saved_finding(db, seed, saved_scan(db, seed)).id
+    path = f"/api/v1/security/findings/{finding_id}/github-issue"
+    draft = client.get(path).json()
+    body = {key: draft[key] for key in ("title", "body", "version", "public")}
+    original = client.post(path, json=body).json()["issue"]
+    with transaction() as db:
+        finding = db.get(SecurityFinding, finding_id)
+        finding.issue = {**finding.issue, "started": True, "publication_status": "creating"}
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [])
+    posted = []
+    remote = {"id": 99, "node_id": "issue-node", "number": 9, "state": "open",
+              "html_url": "https://github.com/team/project/issues/9", "repository_url": "https://api.github.com/repos/team/project",
+              "user": {"login": "mortis-test[bot]", "type": "Bot"}, "body": original["body"]}
+
+    def request(method, endpoint, token, **kwargs):
+        assert method == "POST" and endpoint == "/repos/team/project/issues"
+        posted.append(kwargs["json"])
+        return {**remote, "body": kwargs["json"]["body"]}
+
+    monkeypatch.setattr(github, "request", request)
+    security_issues.publish(finding_id)
+    assert not posted
+    token = client.get(path).json()["recovery_token"]
+    assert token == original["operation_id"]
+    assert client.post(path, json={**body, "recovery_token": uid()}).status_code == 409
+    approval = {**body, "recovery_token": token}
+    assert client.post("/api/v1/security/repositories/22/github-issues", json={"issues": [{"finding_id": finding_id, **approval}]}).status_code == 409
+    approved = client.post(path, json=approval)
+    assert approved.status_code == 202, approved.text
+    assert client.post(path, json=approval).status_code == 202
+    assert client.get(path).status_code == 409
+    assert approved.json()["issue"]["approved_at"] == original["approved_at"]
+    if remote_appears:
+        monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [remote])
+    security_issues.publish(finding_id)
+    security_issues.publish(finding_id)
+    assert len(posted) == int(not remote_appears)
+    with transaction() as db:
+        issue = db.get(SecurityFinding, finding_id).issue
+        assert issue["operation_id"] == original["operation_id"]
+        assert issue["number"] == 9 and issue["sync_status"] == "synced"
+    assert client.post(path, json=approval).status_code == 409
+
+
+@pytest.mark.parametrize("failure", ["timeout", "permission", "permission_after_claim", "version", "multiple"])
+def test_issue_recovery_approval_does_not_authorize_unbounded_or_unsafe_retries(seed, security_github, monkeypatch, client, failure):
+    with transaction() as db:
+        finding_id = saved_finding(db, seed, saved_scan(db, seed)).id
+    path = f"/api/v1/security/findings/{finding_id}/github-issue"
+    body = {"title": "Security finding", "body": "Check ownership.", "version": 0, "public": False}
+    original = client.post(path, json=body).json()["issue"]
+    with transaction() as db:
+        finding = db.get(SecurityFinding, finding_id)
+        finding.issue = {**finding.issue, "started": True, "sync_status": "uncertain"}
+    approval = {**body, "recovery_token": original["operation_id"]}
+    assert client.post(path, json=approval).status_code == 202
+    matches = [{"body": original["body"]}] * 2 if failure == "multiple" else []
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: matches)
+    posted = []
+
+    def request(method, endpoint, token, **kwargs):
+        posted.append(kwargs["json"])
+        raise github.GitHubError(503, "Unknown outcome")
+
+    monkeypatch.setattr(github, "request", request)
+    if failure == "version":
+        with transaction() as db:
+            db.get(SecurityFinding, finding_id).version += 1
+    elif failure == "permission":
+        def denied(*args, **kwargs):
+            raise github.GitHubError(403, "Access denied")
+        monkeypatch.setattr(github, "authorize_repo", denied)
+    elif failure == "permission_after_claim":
+        original_identity = security_issues.identity
+        def denied_before_post(db, finding, *, publishing=False):
+            if publishing:
+                raise github.GitHubError(403, "Access denied before POST")
+            return original_identity(db, finding, publishing=publishing)
+        monkeypatch.setattr(security_issues, "identity", denied_before_post)
+    security_issues.publish(finding_id)
+    security_issues.publish(finding_id)
+    assert len(posted) == int(failure == "timeout")
+    with transaction() as db:
+        issue = db.get(SecurityFinding, finding_id).issue
+        assert issue["started"] is True and not issue.get("number")
+        if failure in {"timeout", "permission_after_claim"}:
+            assert issue["attempt_id"] != approval["recovery_token"]
+            assert issue["recovery_approved"] is None
+    if failure in {"timeout", "permission_after_claim"}:
+        assert client.post(path, json=approval).status_code == 409
 
 
 def test_issue_sync_does_not_infer_a_fix_from_human_closure(seed, security_github, monkeypatch):

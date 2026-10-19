@@ -235,6 +235,7 @@ class SecurityIssueInput(StrictModel):
     body: str = Field(min_length=1, max_length=50000)
     version: int = Field(ge=0)
     public: bool
+    recovery_token: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class SecurityIssuePreview(StrictModel):
@@ -243,6 +244,7 @@ class SecurityIssuePreview(StrictModel):
     repository: str
     public: bool
     version: int
+    recovery_token: str | None = None
 
 
 class SecurityIssueCandidate(SecurityIssuePreview):

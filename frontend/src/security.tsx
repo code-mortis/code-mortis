@@ -629,7 +629,7 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
         <a href={text(issue.url) || sourceUrl} target="_blank" rel="noreferrer" className={`inline-flex min-h-11 w-full items-center gap-1 text-sm text-muted-foreground sm:min-h-9 sm:w-auto ${metadataLink}`}>{text(issue.url) ? `View issue #${count(issue.number)}` : "View source"}<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
         <div className="flex flex-wrap gap-2 sm:ml-auto">
           {canWrite && !hasIssue && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Create GitHub issue</Button>}
-          {canWrite && hasIssue && !issue.number && !issue.started && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Review issue again</Button>}
+          {canWrite && hasIssue && !issue.number && (!issue.started || ["failed", "uncertain"].includes(text(issue.sync_status))) && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Review issue again</Button>}
           {canWrite && hasIssue && ["failed", "uncertain"].includes(text(issue.sync_status)) && <Button variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/github-issue/sync` })}>Retry issue synchronization</Button>}
           {canWrite ? <Button variant="outline" className="min-h-11 sm:min-h-9" aria-expanded={triaging} onClick={() => setTriaging(!triaging)}>Triage</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
         </div>
@@ -712,8 +712,8 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
 function IssueDialog({ findingId, onClose }: { findingId: string; onClose: () => void }) {
   const focus = useReturnFocus();
   const query = useApi<Schema["SecurityIssuePreview"]>(`/security/findings/${findingId}/github-issue`);
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent {...focus} className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>Create GitHub issue</DialogTitle><DialogDescription>Review the exact issue before publishing this finding.</DialogDescription></DialogHeader>
-    <ErrorNotice error={query.error} />{query.isPending ? <Loading /> : query.data && !query.error && <IssueForm key={query.data.version} preview={query.data} findingId={findingId} onClose={onClose} />}
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent {...focus} className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{query.data?.recovery_token ? "Retry GitHub issue creation" : "Create GitHub issue"}</DialogTitle><DialogDescription>Review the exact issue before publishing this finding.</DialogDescription></DialogHeader>
+    <ErrorNotice error={query.error} />{query.isPending ? <Loading /> : query.data && !query.error && <IssueForm key={`${query.data.version}:${query.data.recovery_token ?? ""}`} preview={query.data} findingId={findingId} onClose={onClose} />}
   </DialogContent></Dialog>;
 }
 
@@ -721,12 +721,14 @@ function IssueForm({ preview, findingId, onClose }: { preview: Schema["SecurityI
   const action = useAction();
   const [title, setTitle] = useState(preview.title);
   const [body, setBody] = useState(preview.body);
-  return <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); action.mutate({ path: `/security/findings/${findingId}/github-issue`, body: { title, body, version: preview.version, public: preview.public } }, { onSuccess: onClose }); }}>
+  const [recoveryApproved, setRecoveryApproved] = useState(false);
+  return <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); if (preview.recovery_token && !recoveryApproved) return; action.mutate({ path: `/security/findings/${findingId}/github-issue`, body: { title, body, version: preview.version, public: preview.public, ...(preview.recovery_token ? { recovery_token: preview.recovery_token } : {}) } }, { onSuccess: onClose }); }}>
     <p className="break-words text-sm">Destination: <strong>{preview.repository}</strong></p>
     {preview.public && <div role="note" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">This issue will be public. Check the evidence and details before posting.</div>}
+    {preview.recovery_token && <div role="note" className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><p>The previous request has an unknown outcome. Retry synchronization and check GitHub first. Another attempt may create a duplicate if the earlier issue appears later.</p><label className="flex min-h-11 cursor-pointer items-start gap-3"><Checkbox className="mt-0.5" checked={recoveryApproved} onCheckedChange={(checked) => setRecoveryApproved(checked === true)} /><span>I checked GitHub and approve another attempt despite the risk of a duplicate issue.</span></label></div>}
     <Field label="Issue title">{(id) => <Input id={id} value={title} maxLength={200} required onChange={(event) => setTitle(event.target.value)} />}</Field>
     <Tabs defaultValue="preview"><TabsList><TabsTrigger value="preview">Preview</TabsTrigger><TabsTrigger value="edit">Edit</TabsTrigger></TabsList><TabsContent value="preview"><div className="max-h-80 overflow-y-auto rounded-md border p-4"><Markdown>{body}</Markdown></div></TabsContent><TabsContent value="edit"><Field label="Issue body">{(id) => <Textarea id={id} className="min-h-64" value={body} maxLength={50000} required onChange={(event) => setBody(event.target.value)} />}</Field></TabsContent></Tabs>
     <p className="text-xs leading-relaxed text-muted-foreground">Code Mortis will close its linked issue after a verified fix and reopen it if the same finding returns, provided no human override prevents synchronization.</p>
-    <ErrorNotice error={action.error} /><DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !title.trim() || !body.trim()}>{action.isPending ? "Queuing issue…" : "Create issue"}</Button></DialogFooter>
+    <ErrorNotice error={action.error} /><DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !title.trim() || !body.trim() || (!!preview.recovery_token && !recoveryApproved)}>{action.isPending ? "Queuing issue…" : preview.recovery_token ? "Approve another attempt" : "Create issue"}</Button></DialogFooter>
   </form>;
 }

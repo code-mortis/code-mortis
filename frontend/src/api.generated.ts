@@ -2733,6 +2733,8 @@ export interface components {
             public: boolean;
             /** Version */
             version: number;
+            /** Recovery Token */
+            recovery_token?: string | null;
             /** Id */
             id: string;
             /** Path */
@@ -2765,6 +2767,8 @@ export interface components {
             version: number;
             /** Public */
             public: boolean;
+            /** Recovery Token */
+            recovery_token?: string | null;
             /** Finding Id */
             finding_id: string;
         };
@@ -2778,6 +2782,8 @@ export interface components {
             version: number;
             /** Public */
             public: boolean;
+            /** Recovery Token */
+            recovery_token?: string | null;
         };
         /** SecurityIssuePreview */
         SecurityIssuePreview: {
@@ -2791,6 +2797,8 @@ export interface components {
             public: boolean;
             /** Version */
             version: number;
+            /** Recovery Token */
+            recovery_token?: string | null;
         };
         /** SecurityReportPage */
         SecurityReportPage: {

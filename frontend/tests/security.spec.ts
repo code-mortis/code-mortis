@@ -1282,6 +1282,50 @@ test("security finding footer preserves linked issue failures and separate findi
   expect(writes[0].path).toBe("/security/findings/finding/github-issue/sync");
 });
 
+test("uncertain issue creation needs an individually reviewed recovery approval", async ({ page }, info) => {
+  const writes = await mock(page, { issue: { operation_id: "original", started: true, sync_status: "uncertain", publication_status: "creating" } });
+  await page.route("**/api/v1/security/findings/finding/github-issue", (route) => route.request().method() === "GET"
+    ? route.fulfill({ json: { title: "Security finding", body: "Check ownership.", version: 0, public: true, repository: repository.full_name, recovery_token: "attempt-one" } })
+    : route.fallback());
+  await page.goto("/security/repositories/22?finding=finding");
+  const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+  await sheet.getByRole("button", { name: "Review issue again", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Retry GitHub issue creation", exact: true });
+  await expect(dialog.getByText(/This issue will be public/)).toBeVisible();
+  await expect(dialog.getByText(/Another attempt may create a duplicate/)).toBeVisible();
+  const approve = dialog.getByRole("button", { name: "Approve another attempt", exact: true });
+  await expect(approve).toBeDisabled();
+  expect(writes).toHaveLength(0);
+  await dialog.getByRole("checkbox", { name: /I checked GitHub and approve another attempt/ }).check();
+  await expect(approve).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-issue-recovery-${info.project.name}.png`, fullPage: true });
+  await approve.click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ path: "/security/findings/finding/github-issue", body: {
+    title: "Security finding", body: "Check ownership.", version: 0, public: true, recovery_token: "attempt-one",
+  } });
+});
+
+test("security evidence sanitizes AI links in every Markdown section", async ({ page }) => {
+  await mock(page);
+  const content = "[unsafe](javascript:alert%281%29) [data](data:text/html,unsafe) [vbscript](vbscript:msgbox%281%29) [safe](https://example.com)\n\n<script>alert(1)</script>";
+  await page.route("**/api/v1/security/findings/finding", (route) => route.fulfill({ json: { repository, finding: { ...finding,
+    evidence: { ...finding.evidence, ...Object.fromEntries(["explanation", "trigger", "impact", "remediation", "verification"].map((field) => [field, content])) },
+  }, can_write: true, observations: [], activity: [] } }));
+  await page.goto("/security/repositories/22?finding=finding");
+  const markdown = page.getByRole("dialog", { name: "Finding details", exact: true }).locator(".markdown");
+  await expect(markdown).toHaveCount(5);
+  for (const name of ["unsafe", "data", "vbscript"]) {
+    const links = markdown.getByRole("link", { name, exact: true });
+    await expect(links).toHaveCount(5);
+    for (const link of await links.all()) await expect(link).toHaveAttribute("href", "");
+  }
+  for (const link of await markdown.getByRole("link", { name: "safe", exact: true }).all()) await expect(link).toHaveAttribute("href", "https://example.com");
+  await expect(markdown.locator("script")).toHaveCount(0);
+});
+
 test("security finding sheet hides evidence and mutations after access is denied", async ({ page }) => {
   const writes = await mock(page);
   await page.route("**/api/v1/security/findings/finding", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));

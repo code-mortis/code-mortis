@@ -39,13 +39,16 @@ def preview(repo, finding):
         if isinstance(reference, str) and reference.startswith("https://"):
             lines.append(reference)
     return SecurityIssuePreview(title=clean_text(f"[Security] {finding.title}")[:200],
-        body=clean_text("\n".join(lines)), repository=repo.full_name, public=not repo.private, version=finding.version)
+        body=clean_text("\n".join(lines)), repository=repo.full_name, public=not repo.private, version=finding.version,
+        recovery_token=finding.issue.get("attempt_id", finding.issue.get("operation_id")) if finding.issue.get("started") else None)
 
 
 def create(db, repo, finding, actor, body, *, new_only=False):
     if finding.state not in {"open", "accepted_risk"} or finding.version != body.version:
         raise HTTPException(409, "The finding changed. Refresh its issue preview.")
-    operation = uid()
+    operation, recovering = uid(), bool(body.recovery_token)
+    if recovering and new_only:
+        raise HTTPException(409, "Uncertain publications require individual review and approval.")
     title, content = validate_public_text(body.title.strip()), validate_public_text(body.body.strip())
     if any(repository_security.redact_finding_text(db, finding, value) != value for value in (title, content)):
         raise ValueError("Issue text contains credential material. Remove it and review the payload before publishing.")
@@ -53,18 +56,30 @@ def create(db, repo, finding, actor, body, *, new_only=False):
         raise ValueError("Enter an issue title and body without application identity markers.")
     if finding.issue:
         saved = finding.issue
-        if saved.get("title") == title and saved.get("body") == content + "\n\n" + marker(finding, saved["operation_id"]) and saved.get("version") == body.version and saved.get("public") == body.public:
+        if (saved.get("title") == title and saved.get("body") == content + "\n\n" + marker(finding, saved["operation_id"])
+            and saved.get("version") == body.version and saved.get("public") == body.public
+            and (not recovering or (saved.get("recovery_approved") == body.recovery_token
+                                   and not saved.get("number") and saved.get("sync_status") == "pending"))):
             return
-        if new_only or saved.get("number") or saved.get("started"):
+        if recovering:
+            if (not saved.get("started") or saved.get("number") or saved.get("sync_status") not in {"uncertain", "failed"}
+                or body.recovery_token != saved.get("attempt_id", saved["operation_id"])):
+                raise HTTPException(409, "The publication attempt changed. Refresh its recovery preview.")
+            operation = saved["operation_id"]
+        elif new_only or saved.get("number") or saved.get("started"):
             raise HTTPException(409, "This finding already has an issue or an uncertain publication. Retry synchronization instead.")
+    elif recovering:
+        raise HTTPException(409, "There is no uncertain publication to recover.")
     finding.issue = {"operation_id": operation, "actor_id": actor.id, "version": finding.version,
                      "public": body.public,
                      "title": title, "body": content + "\n\n" + marker(finding, operation),
-                     "publication_status": "pending", "sync_status": "pending", "started": False,
-                     "approved_at": now().isoformat()}
+                     "publication_status": "pending", "sync_status": "pending", "started": recovering,
+                     "approved_at": saved["approved_at"] if recovering else now().isoformat(),
+                     **({"attempt_id": body.recovery_token, "recovery_approved": body.recovery_token} if recovering else {})}
     enqueue(db, "security_issue_publish", {"finding_id": finding.id})
     repository_security.activity(db, "issue_approved", finding=finding, actor=actor,
-                                 operation_id=operation, title=title, body=content, public=body.public, version=body.version)
+                                 operation_id=operation, title=title, body=content, public=body.public, version=body.version,
+                                 recovery_token=body.recovery_token)
 
 
 def identity(db, finding, *, publishing=False):
@@ -114,33 +129,40 @@ def publish(finding_id):
             if not finding or not finding.issue or finding.issue.get("number"):
                 return
             approved = dict(finding.issue)
+            attempt = approved.get("attempt_id", approved["operation_id"])
             full_name, token, login = identity(db, finding, publishing=not approved["started"])
             issue_marker = marker(finding, approved["operation_id"])
+        remote = None
         if approved["started"]:
             matches = [row for row in github.pages(f"/repos/{full_name}/issues?state=all&since={approved['approved_at']}", token)
                        if issue_marker in (row.get("body") or "") and not row.get("pull_request")]
-            if len(matches) != 1:
-                failure(finding_id, "Issue creation has an uncertain outcome. Synchronization will look for the original publication; another issue will not be posted.", uncertain=True)
+            if len(matches) == 1:
+                remote = owned(matches[0], issue_marker, full_name, login)
+            elif matches or approved.get("recovery_approved") != attempt:
+                failure(finding_id, "Issue creation has an uncertain outcome. Retry synchronization to look for the original issue, or review and explicitly approve another creation attempt after checking GitHub. Another attempt may create a duplicate.", uncertain=True)
                 return
-            remote = owned(matches[0], issue_marker, full_name, login)
-        else:
+        if remote is None:
             with transaction() as db:
                 finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
                 if finding.issue.get("operation_id") != approved["operation_id"]:
                     return
-                if finding.issue.get("started") or finding.issue.get("number"):
+                if finding.issue.get("started") != approved["started"] or finding.issue.get("number"):
+                    return
+                if approved["started"] and (finding.issue.get("recovery_approved") != attempt
+                    or finding.issue.get("attempt_id", finding.issue["operation_id"]) != attempt):
                     return
                 if finding.version != approved["version"] or finding.state not in {"open", "accepted_risk"}:
                     finding.issue = {**finding.issue, "publication_status": "needs_review", "sync_status": "failed",
                                      "error": "The finding changed after approval. Review and approve its issue again."}
                     return
-                finding.issue = {**finding.issue, "started": True, "publication_status": "creating"}
+                finding.issue = {**finding.issue, "started": True, "publication_status": "creating",
+                                 "attempt_id": uid(), "recovery_approved": None}
             claimed = True
             with transaction() as db:
                 finding = db.get(SecurityFinding, finding_id)
                 full_name, token, login = identity(db, finding, publishing=True)
                 if finding.version != approved["version"] or finding.state not in {"open", "accepted_risk"}:
-                    finding.issue = {**finding.issue, "started": False, "publication_status": "needs_review", "sync_status": "failed",
+                    finding.issue = {**finding.issue, "started": approved["started"], "publication_status": "needs_review", "sync_status": "failed",
                                      "error": "The finding changed before publication. Review and approve its issue again."}
                     return
             attempted = True
@@ -148,6 +170,8 @@ def publish(finding_id):
                 json={"title": approved["title"], "body": approved["body"]}), issue_marker, full_name, login)
         with transaction() as db:
             finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
+            if finding.issue.get("operation_id") != approved["operation_id"]:
+                return
             finding.issue = {**finding.issue, "number": remote["number"], "id": remote["id"],
                 "node_id": remote["node_id"], "url": remote["html_url"], "publication_status": "published",
                 "sync_status": "synced", "remote_state": remote["state"], "error": None,
@@ -158,7 +182,7 @@ def publish(finding_id):
             with transaction() as db:
                 finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
                 if finding and finding.issue.get("operation_id") == approved["operation_id"]:
-                    finding.issue = {**finding.issue, "started": False, "publication_status": "needs_review"}
+                    finding.issue = {**finding.issue, "started": approved["started"], "publication_status": "needs_review"}
         failure(finding_id, str(exc), uncertain=True)
 
 

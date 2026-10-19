@@ -327,7 +327,8 @@ def create_issues(repository_id: int, body: SecurityBulkIssueInput, db: DB, user
 @router.get("/findings/{finding_id}/github-issue", response_model=SecurityIssuePreview)
 def issue_preview(finding_id: str, db: DB, user: USER):
     finding, repo, remote = finding_access(db, user, finding_id, write=True)
-    if finding.state not in {"open", "accepted_risk"} or finding.issue.get("number") or finding.issue.get("started"):
+    if (finding.state not in {"open", "accepted_risk"} or finding.issue.get("number")
+        or (finding.issue.get("started") and finding.issue.get("sync_status") not in {"uncertain", "failed"})):
         raise HTTPException(409, "Only an unresolved finding without an issue can be published.")
     result = security_issues.preview(repo, finding)
     if type(remote.get("private")) is not bool:
