@@ -147,14 +147,16 @@ def permission_request(user_id: int, path: str, token: str, *, fresh: bool = Fal
     key = _permission_cache_key(user_id, path, token)
     try:
         with Redis.from_url(settings().redis_url, socket_timeout=2, socket_connect_timeout=2) as cache:
+            previous = cache.get(key) if fresh else None
             cached = _cached_permission(cache, key, fresh)
             if cached is not None:
                 return cached
-            lock = cache.lock(key + ":lock", timeout=120, blocking_timeout=2)
+            lock = cache.lock(key + ":lock", timeout=120, blocking_timeout=60)
             if not lock.acquire():
                 raise GitHubError(503, "GitHub permissions are being refreshed. Try again shortly.", 2)
             try:
-                cached = _cached_permission(cache, key, fresh)
+                # Share only a refresh published since this caller started waiting.
+                cached = _cached_permission(cache, key, fresh and cache.get(key) == previous)
                 if cached is not None:
                     return cached
                 error = None
@@ -165,6 +167,7 @@ def permission_request(user_id: int, path: str, token: str, *, fresh: bool = Fal
                     error = exc
                     entry = {"error": [exc.status, str(exc), time.time() + exc.retry_after]}
                     ttl = max(5, exc.retry_after)
+                entry["refresh_id"] = lock.local.token.decode()
                 try:
                     # Publish only while owning the lease, so a late response cannot restore revoked access.
                     stored = cache.eval("""

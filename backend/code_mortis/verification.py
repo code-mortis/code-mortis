@@ -3,6 +3,7 @@
 import json
 import re
 import tempfile
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
@@ -415,26 +416,49 @@ def delivery_error(reason, **received):
 def terminal_result(root, session_id):
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
         raise ValueError("The review engine did not identify which analysis produced this result. It cannot be trusted for automatic resolution. Start a new review.")
-    results, matched = [], False
+    results, matched, rejected = [], False, None
     for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
         with path.open() as stream:
             header = json.loads(next(stream, ""))
+            if not isinstance(header, dict):
+                raise ValueError("The review engine returned an unreadable session header.")
             if (header.get("type") != "session_start" or header.get("cwd") != str(root)
                 or header.get("sessionId") != session_id):
                 continue
             matched = True
             for line in stream:
                 row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("The review engine returned an unreadable session record.")
                 if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
                     if row.get("sessionId") != session_id:
                         raise ValueError("The review engine returned a result from a different analysis. It cannot be used to verify this finding. Start a new review.")
-                    for call in row.get("tool_calls") or []:
+                    calls = row.get("tool_calls")
+                    if calls is not None and not isinstance(calls, list):
+                        raise delivery_error("The response tool calls must be a list.")
+                    for call in calls or []:
+                        if not isinstance(call, dict):
+                            raise delivery_error("The response contains a malformed tool call.")
                         if call.get("name") != "task_done":
                             raise delivery_error("The response used a tool outside the requested result transport.")
+                        arguments = call.get("arguments")
+                        if not isinstance(arguments, str):
+                            raise delivery_error("task_done arguments must contain JSON text.")
                         try:
-                            value = json.loads(call.get("arguments", ""))
+                            value = json.loads(arguments)
                         except (ValueError, TypeError) as exc:
-                            raise delivery_error("task_done arguments are not valid JSON.") from exc
+                            # OCR executes the first balanced JSON value when a gateway adds control tokens.
+                            start = re.search(r"[\[{]", arguments)
+                            try:
+                                if start is None:
+                                    raise exc
+                                value, _ = json.JSONDecoder().raw_decode(arguments[start.start():])
+                            except ValueError:
+                                rejected = delivery_error("task_done arguments are not valid JSON.")
+                                continue
+                        if isinstance(value, dict) and "state" in value and value["state"] != "DONE":
+                            rejected = delivery_error("task_done did not report DONE.")
+                            continue
                         if (not isinstance(value, dict) or value.get("state") != "DONE"
                             or not isinstance(value.get("result"), dict)):
                             fields = [key for key in ("state", "result", "findings", "verdict", "evidence", "required_paths")
@@ -445,6 +469,8 @@ def terminal_result(root, session_id):
                         results.append(value["result"])
     if len(results) != 1:
         if matched:
+            if not results and rejected:
+                raise rejected
             raise delivery_error("The response must submit exactly one complete task_done result.", result_count=len(results))
         raise ValueError("The AI did not return exactly one final assessment. Start a new review or check the selected model.")
     return results[0]
@@ -454,8 +480,10 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
     detail = {"exit_code": code, "stderr": clean_text(errors, secrets)}
     overflow_limit = None
     session = re.search(r"\[ocr\] Session: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b", errors)
-    if code and session and not stopped():
+    if code and session:
         try:
+            if stopped():
+                return json.dumps(detail)[:4000], overflow_limit
             status, output, _ = ocr.command([
                 ocr.settings().ocr_binary, "session", "show", "--repo", str(root), "--json", session[1],
             ], root, env, timeout=5, stopped=stopped)
@@ -474,7 +502,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
                     overflow = re.fullmatch(r"prompt tokens \((\d+)\) exceed 80% of max_tokens\((\d+)\)", items[0].get("error", ""))
                     if overflow and int(overflow[1]) > int(overflow[2]) * 4 // 5:
                         overflow_limit = int(overflow[2])
-        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ocr.ReviewStopped):
+        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ocr.ReviewStopped, github.GitHubError):
             pass  # Missing diagnostics must not hide the original failure or release its reservation.
     return json.dumps(detail)[:4000], overflow_limit
 
@@ -486,6 +514,18 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
         raise ValueError("This assessment cannot start because its time limit has expired.")
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
+    def remaining_time():
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("This assessment reached its time limit.")
+        return remaining
+
+    def before_dispatch():
+        remaining_time()
+        return stopped()
+
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
     with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
         root = Path(temp)
@@ -507,11 +547,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
                 "--timeout", "0", "--max-tokens", str(max_tokens)]
         try:
-            code, preview, errors = ocr.command([*args, "--preview"], root, env, timeout=timeout, stopped=stopped)
+            code, preview, errors = ocr.command([*args, "--preview"], root, env, timeout=remaining_time(), stopped=stopped)
             selected = next((item for item in json.loads(preview).get("files", [])
                              if item.get("path") == "evidence.py"), {})
         except Exception as exc:
-            status = "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
+            status = "skipped" if isinstance(exc, (ocr.ReviewStopped, TimeoutError)) else "failed"
             raise VerificationOutputError("The review engine could not check the source evidence before analysis. No AI request was made for this assessment. Start a new review.", {"tokens": 0}, status) from exc
         if code or selected.get("will_review") is not True:
             reason = selected.get("exclude_reason", "evidence.py was not selected")
@@ -523,37 +563,47 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 detail += " " + errors[-1500:]
             detail = clean_text(detail, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
             raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
-        with nullcontext() if configuration_managed else ocr.configuration(connection, credentials, {}, stopped):
-            if stopped():
-                raise VerificationOutputError("Verification stopped before provider analysis.", {"tokens": 0}, "skipped")
-            code, output, errors = ocr.command(args, root, env, timeout=timeout, stopped=stopped)
-            diagnostics, overflow_limit = scan_diagnostics(root, env, code, errors, (
-                credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
-            ), stopped)
-            try:
-                data = json.loads(output)
-                if not isinstance(data, dict):
-                    raise ValueError("The review engine returned an unreadable assessment response.")
-            except ValueError as exc:
-                if overflow_limit == max_tokens:
-                    raise VerificationOutputError(
-                        f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
-                        f"(80% of max_tokens={max_tokens:,}); no AI request was made. Technical details: " + diagnostics,
-                        {"tokens": 0}, "skipped",
-                    ) from exc
-                failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
-                raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
-            raw, result_error, result_feedback = None, None, None
-            try:
-                raw = terminal_result(root, data.get("session_id"))
-            except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
-                result_error = str(exc) or "The AI did not return a final assessment."
-                result_feedback = exc.feedback if isinstance(exc, ResultValidationError) else None
+        dispatched = False
+        try:
+            with nullcontext() if configuration_managed else ocr.configuration(connection, credentials, {}, before_dispatch):
+                if before_dispatch():
+                    raise ocr.ReviewStopped("Verification stopped before provider analysis.")
+                allowance = remaining_time()
+                dispatched = True
+                code, output, errors = ocr.command(args, root, env, timeout=allowance, stopped=stopped)
+                diagnostics, overflow_limit = scan_diagnostics(root, env, code, errors, (
+                    credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
+                ), stopped)
+                try:
+                    data = json.loads(output)
+                    if not isinstance(data, dict):
+                        raise ValueError("The review engine returned an unreadable assessment response.")
+                except ValueError as exc:
+                    if overflow_limit == max_tokens:
+                        raise VerificationOutputError(
+                            f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
+                            f"(80% of max_tokens={max_tokens:,}); no AI request was made. Technical details: " + diagnostics,
+                            {"tokens": 0}, "skipped",
+                        ) from exc
+                    failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
+                    raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
+                raw, result_error, result_feedback = None, None, None
+                try:
+                    raw = terminal_result(root, data.get("session_id"))
+                except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
+                    result_error = str(exc) or "The AI did not return a final assessment."
+                    result_feedback = exc.feedback if isinstance(exc, ResultValidationError) else None
+        except (ValueError, OSError, TimeoutError, ocr.ReviewStopped, github.GitHubError) as exc:
+            if dispatched:
+                raise
+            status = "skipped" if isinstance(exc, (ocr.ReviewStopped, TimeoutError)) else "failed"
+            raise VerificationOutputError(str(exc), {"tokens": 0}, status) from exc
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
         if type(usage) is not int or usage < 0:
             raise ValueError("The review engine did not report valid token usage. Further AI checks were stopped to avoid exceeding the run budget. Technical details: " + diagnostics)
-        for warning in data.get("warnings") or []:
+        warnings, comments = data.get("warnings"), data.get("comments")
+        for warning in warnings if isinstance(warnings, list) else []:
             if isinstance(warning, dict) and warning.get("type") == "token_threshold_exceeded":
                 message = clean_text(str(warning.get("message", "")), (
                     credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
@@ -562,9 +612,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                     f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
                     f"(80% of max_tokens={max_tokens:,}): {message}", {"tokens": usage}, "skipped",
                 )
-        comments = data.get("comments", [])
         complete = (not code and data.get("status") == "success" and not summary.get("budget_exceeded")
-                    and summary.get("files_reviewed") == 1 and not data.get("warnings") and not comments)
+                    and type(summary.get("budget_exceeded", False)) is bool
+                    and type(summary.get("files_reviewed")) is int and summary["files_reviewed"] == 1
+                    and (warnings is None or isinstance(warnings, list)) and not warnings
+                    and (comments is None or isinstance(comments, list)) and not comments)
         if not complete or result_error:
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
                                  "warnings": data.get("warnings"), "result_error": result_error,

@@ -181,16 +181,56 @@ def test_concurrent_failed_refresh_is_shared(monkeypatch):
     request.assert_called_once()
 
 
-def _process_read(path):
+@pytest.mark.parametrize("primed", [False, True])
+@pytest.mark.parametrize("outcome", ["allowed", "revoked", 403, 503])
+def test_overlapping_fresh_checks_share_slow_refresh_without_reusing_prior_access(cache, monkeypatch, primed, outcome):
+    request = Mock(return_value=deepcopy(ALLOWED))
+    monkeypatch.setattr(github, "request", request)
+    monkeypatch.setattr(github, "user_token", lambda *_: TOKEN)
+    if primed:
+        github.permission_request(7, PATH, TOKEN)
+        request.reset_mock()
+    gate = Barrier(6)
+
+    def refresh(*args):
+        time.sleep(2.2)
+        if isinstance(outcome, int):
+            raise github.GitHubError(outcome, "Access unavailable")
+        return deepcopy(ALLOWED) if outcome == "allowed" else {"permissions": {"pull": True, "push": False}}
+
+    def check(_):
+        gate.wait(timeout=5)
+        if outcome == "allowed":
+            return github.authorize_repo(None, User(id=7), "team/project", write=True)
+        with pytest.raises(github.GitHubError) as caught:
+            github.authorize_repo(None, User(id=7), "team/project", write=True)
+        assert caught.value.status == (outcome if isinstance(outcome, int) else 403)
+        return str(caught.value)
+
+    request.side_effect = refresh
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(check, range(6)))
+    assert all(result == results[0] for result in results)
+    request.assert_called_once()
+    # A later write still revalidates, even when the previous refresh returned the same permissions.
+    request.side_effect = None
+    request.return_value = deepcopy(ALLOWED)
+    assert github.authorize_repo(None, User(id=7), "team/project", write=True) == ALLOWED
+    assert request.call_count == 2
+
+
+def _process_read(path, fresh=False, gate=None):
     from unittest.mock import patch
 
     with Redis.from_url(settings().redis_url) as cache:
         def request(*args):
             cache.incr(github._permission_cache_key(7, path, TOKEN) + ":calls")
-            time.sleep(0.1)
+            time.sleep(0.3)
             return ALLOWED
         with patch.object(github, "request", request):
-            return github.permission_request(7, path, TOKEN)
+            if gate is not None:
+                gate.wait(timeout=10)
+            return github.permission_request(7, path, TOKEN, fresh=fresh)
 
 
 @pytest.mark.parametrize("sessions", [1, 5, 20])
@@ -200,7 +240,26 @@ def test_processes_share_permission_requests(cache, sessions):
     assert int(cache.get(github._permission_cache_key(7, PATH, TOKEN) + ":calls")) == 1
 
 
-def test_lock_wait_is_bounded_and_does_not_call_github(cache, remote):
+def test_processes_share_overlapping_fresh_permission_requests(cache):
+    with multiprocessing.Manager() as manager:
+        gate = manager.Barrier(6)
+        with ProcessPoolExecutor(max_workers=6, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = [pool.submit(_process_read, PATH, True, gate) for _ in range(6)]
+            assert [future.result(timeout=15) for future in futures] == [ALLOWED] * 6
+    assert int(cache.get(github._permission_cache_key(7, PATH, TOKEN) + ":calls")) == 1
+
+
+def test_lock_wait_is_bounded_and_does_not_call_github(cache, remote, monkeypatch):
+    original_lock = Redis.lock
+    waits = []
+
+    def short_lock(self, *args, **kwargs):
+        if "blocking_timeout" in kwargs:
+            waits.append(kwargs["blocking_timeout"])
+            kwargs["blocking_timeout"] = 0.2
+        return original_lock(self, *args, **kwargs)
+
+    monkeypatch.setattr(Redis, "lock", short_lock)
     key = github._permission_cache_key(7, PATH, TOKEN)
     with cache.lock(key + ":lock", timeout=10):
         started = time.monotonic()
@@ -209,6 +268,7 @@ def test_lock_wait_is_bounded_and_does_not_call_github(cache, remote):
         assert caught.value.status == 503 and caught.value.retry_after == 2
         assert time.monotonic() - started < 3
     remote.assert_not_called()
+    assert waits == [60]
 
 
 def test_expired_lock_owner_cannot_overwrite_newer_denial(cache, monkeypatch):

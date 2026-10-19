@@ -596,6 +596,7 @@ def perform(scan_id, claim):
                         raise fatal
             stage(scan_id, "analysis", "partial" if failed else "completed", files=len(code_paths), candidates=len(candidates))
             assessment_completed, assessment_failed = 0, 0
+            assessment_problem_count = len(problems)
             stage(scan_id, "assessment", "running", total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
@@ -668,7 +669,8 @@ def perform(scan_id, claim):
                             observed.add(finding.id)
                     stage(scan_id, "assessment", "running", completed=assessment_completed)
                     remaining = [row for row in remaining if row not in batch]
-            stage(scan_id, "assessment", "completed" if not problems else "partial")
+            stage(scan_id, "assessment", "completed" if len(problems) == assessment_problem_count else "partial")
+            verification_problem_count = len(problems)
             stage(scan_id, "verification", "running", total=sum(old["id"] not in observed and
                 (old["state"] in {"open", "accepted_risk"} or old["pending_close"]) for old in previous), completed=0)
             for old in previous:
@@ -691,7 +693,7 @@ def perform(scan_id, claim):
                 stage(scan_id, "verification", "running", completed=len(verdicts))
                 if verdict["verdict"] == "uncertain":
                     problems.append(f"An earlier finding could not be verified: {old['id']}.")
-            stage(scan_id, "verification", "completed" if not problems else "partial", findings=len(verdicts))
+            stage(scan_id, "verification", "completed" if len(problems) == verification_problem_count else "partial", findings=len(verdicts))
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]))
     except ocr.ReviewStopped:

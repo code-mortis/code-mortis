@@ -95,10 +95,12 @@ class Provider(BaseHTTPRequestHandler):
             elif verification_mode == "security_delivery":
                 value = {"findings": [], "required_paths": []}
             elif verification_mode == "security_assessment":
-                path = next(path for path in ("one.py", "two.py", "three.py", "four.py") if path in text)
+                path = next(path for path in ("one.py", "two.py", "three.py", "four.py")
+                            if json.dumps(f'current source: "{path}"')[1:-1] in text)
                 conversation_keys.append(self.headers.get("X-Smoke-Session"))
                 assessment_barrier.wait(timeout=15)
-                value = {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed in " + path,
+                assert "history_1" in text
+                value = {"verdict": "confirmed", "finding_id": "history_1", "explanation": "Confirmed in " + path,
                          "evidence": [{"revision": "current", "path": path, "start_line": 1, "end_line": 1,
                                        "quote": "for attempt in range(3): retry()"}], "required_paths": []}
             if verification_mode.startswith("assessment_"):
@@ -396,7 +398,7 @@ def main():
             print("Pinned OCR transported dependency requests and strict citation feedback (mock provider).")
             verification_mode = "security_delivery"
             security_context = {"assigned_path": "main.py", "diff": "", "sources": {"current": {"main.py": "safe"}}}
-            item = SimpleNamespace(git=root, env=env, redact=lambda text: text)
+            item = SimpleNamespace(git=root, env=env, inventory={"main.py": {}}, redact=lambda text: text)
             for protocol in ("anthropic", "openai-responses"):
                 before = len(calls)
                 raw, usage = security_engine.ask(item, {**connection, "kind": "api", "protocol": protocol}, {"api_key": "fake-test-key"},
@@ -406,6 +408,7 @@ def main():
                 print(f"Pinned OCR reproduced bare DONE and recovered a validated security result with counted usage via {protocol} (mock provider).")
             verification_mode = "security_assessment"
             paths = ["one.py", "two.py", "three.py", "four.py"]
+            item.inventory.update({path: {} for path in paths})
             for protocol in ("anthropic", "openai-responses"):
                 assessment_barrier = threading.Barrier(4)
                 conversation_keys.clear()
@@ -414,11 +417,13 @@ def main():
                 credentials = {"api_key": "fake-test-key", "extra_headers": {"X-Smoke-Session": "{ocr_session_key}"}}
 
                 def security_assess(path, selected=selected, credentials=credentials):
-                    prepared = {"proposal": {"path": path}, "history": [], "head_sha": "a" * 40, "diff": "",
+                    finding_id = "228f3fbd-bb86-4143-a810-4b2622b1cc19"
+                    prepared = {"proposal": {"path": path}, "history": [{"id": finding_id, "path": path}], "head_sha": "a" * 40, "diff": "",
                                 "sources": {"current": {path: "for attempt in range(3): retry()"}}}
                     raw, usage = security_engine.ask(item, selected, credentials, "assessment", prepared, None, 60,
                                                     lambda: False, "smoke-" + path, configuration_managed=True)
                     assert raw["verdict"] == "confirmed" and raw["evidence"][0]["path"] == path
+                    assert raw["finding_id"] == finding_id
                     assert raw["explanation"].endswith(path) and usage == {"tokens": 15}
 
                 try:
@@ -584,4 +589,7 @@ def main():
 
 
 if __name__ == "__main__":
+    from ocr_transport_smoke import main as transport_smoke
+
     main()
+    transport_smoke()

@@ -506,6 +506,8 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
             assert scan.progress["tokens"] == (84 if failure == "evidence" else 72) and len(calls) == 6
             assert scan.stages["analysis"]["completed"] == (5 if failure else 6)
             assert scan.stages["analysis"]["failed"] == (1 if failure else 0)
+            assert scan.stages["assessment"]["status"] == "completed"
+            assert scan.stages["verification"]["status"] == "completed"
             assert scan.stages["report"]["status"] == "completed"
             if failure:
                 task = scan.progress["tasks"]["analysis:bad.py"]
@@ -531,7 +533,8 @@ def test_security_concurrency_is_validated_at_the_api_boundary(seed, security_gi
     assert response.status_code == 422
 
 
-def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_github, monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["citation", "history_selection"])
+def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_github, monkeypatch, tmp_path, failure):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("unsafe"), "lines": 1}},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe", redact=lambda text: text,
         sha=SHA, git=tmp_path, env={})
@@ -539,6 +542,14 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
                "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
                "verification": "Test", "evidence": [citation]}
+    original_ask = security_engine.ask
+
+    def api(*args, **kwargs):
+        try:
+            return kwargs["validator"]({"verdict": "confirmed", "finding_id": "history_999", "explanation": "Confirmed",
+                "evidence": [citation], "required_paths": []}, args[4]), {"tokens": 12}
+        except security_engine.verification.ResultValidationError as exc:
+            raise security_engine.verification.VerificationOutputError("Invalid history selection", {"tokens": 12}, feedback=exc.feedback) from exc
 
     @contextmanager
     def snapshot(*args):
@@ -548,6 +559,8 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
         if args[3] == "analysis":
             return {"findings": [{**finding, "title": "Invalid candidate"}, finding], "required_paths": []}, {"tokens": 12}
         if args[4]["proposal"]["title"] == "Invalid candidate":
+            if failure == "history_selection":
+                return original_ask(*args, **kwargs)
             raise security_engine.verification.VerificationOutputError("Invented source", {"tokens": 12},
                 feedback={"errors": [{"reason": "invented quote"}]})
         return {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed", "evidence": [citation], "required_paths": []}, {"tokens": 12}
@@ -556,6 +569,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         identity = scan.id
@@ -563,11 +577,79 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == "partial" and scan.grade == "B", scan.error
-        assert scan.progress["tokens"] == 36
+        assert scan.progress["tokens"] == (48 if failure == "history_selection" else 36)
         assert scan.stages["assessment"]["completed"] == scan.stages["assessment"]["failed"] == 1
-        assert scan.progress["tasks"]["assessment:0"]["validation_feedback"]["errors"] == [{"reason": "invented quote"}]
+        assert scan.stages["assessment"]["status"] == "partial"
+        assert scan.stages["verification"]["status"] == "completed"
+        feedback = scan.progress["tasks"]["assessment:0"]["validation_feedback"]
+        if failure == "history_selection":
+            assert feedback == {"kind": "history_selection", "field": "finding_id", "allowed_values": [None]}
+        else:
+            assert feedback["errors"] == [{"reason": "invented quote"}]
         assert db.scalar(select(SecurityFinding.title)) == "Synthetic defect"
         assert len(scan.report["findings"]) == 1
+
+
+@pytest.mark.parametrize(("earlier_error", "assessment_result", "verification_result"), [
+    (None, "rejected", "still_present"),
+    ("analysis", "rejected", "still_present"),
+    ("trivy", "rejected", "still_present"),
+    (None, "uncertain", "still_present"),
+    (None, "error", "still_present"),
+    ("analysis", "rejected", "uncertain"),
+    (None, "rejected", "error"),
+])
+def test_security_stage_status_only_reflects_its_own_results(
+    seed, security_github, monkeypatch, tmp_path, earlier_error, assessment_result, verification_result,
+):
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1}
+                                     for path in ["app.py", "bad.py"]},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
+        renamed=lambda sha, path: path, diff=lambda sha: "", redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
+    proposal = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
+        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+        "verification": "Test", "evidence": [citation]}
+
+    def ask(*args, **kwargs):
+        task, context = args[3:5]
+        if task == "analysis":
+            if context["assigned_path"] == "bad.py":
+                if earlier_error == "analysis":
+                    raise security_engine.verification.VerificationOutputError("Invalid analysis citation", {"tokens": 12},
+                        feedback={"errors": [{"reason": "invented quote"}]})
+                return {"findings": [], "required_paths": []}, {"tokens": 12}
+            return {"findings": [proposal], "required_paths": []}, {"tokens": 12}
+        verdict = assessment_result if task == "assessment" else verification_result
+        if verdict == "error":
+            if task == "verification":
+                raise ValueError("Original evidence unavailable")
+            raise security_engine.verification.VerificationOutputError("Invalid assessment citation", {"tokens": 12},
+                feedback={"errors": [{"reason": "invented quote"}]})
+        return {"verdict": verdict, "finding_id": None, "explanation": "Checked", "evidence": [citation],
+                "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {},
+        "problems": ["Dependency scan incomplete"] if earlier_error == "trivy" else [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        finding = saved_finding(db, seed, saved_scan(db, seed, status="completed"))
+        finding_id = finding.id
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid())).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        partial = bool(earlier_error or assessment_result != "rejected" or verification_result != "still_present")
+        assert scan.status == ("partial" if partial else "completed"), scan.error
+        assert scan.stages["assessment"]["status"] == ("completed" if assessment_result == "rejected" else "partial")
+        assert scan.stages["verification"]["status"] == ("completed" if verification_result == "still_present" else "partial")
+        assert scan.stages["verification"]["completed"] == scan.stages["verification"]["total"] == 1
+        assert bool(scan.error) == bool(scan.report["problems"]) == partial
+        assert scan.stages["report"]["status"] == "completed" and scan.grade == "D"
+        assert db.get(SecurityFinding, finding_id).state == "open"
 
 
 @pytest.mark.parametrize("concurrency", [1, 4])
@@ -875,6 +957,81 @@ def test_issue_sync_does_not_infer_a_fix_from_human_closure(seed, security_githu
         finding = db.get(SecurityFinding, identity)
         assert finding.state == "open" and finding.issue["remote_state"] == "closed"
         assert finding.issue["closed_by_app"] is False
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("case", ["first", "second", "new", "empty", "corrected", "repeat", "uuid", "empty_invalid", "number", "expand"])
+def test_security_assessment_selects_history_references_and_server_assigns_uuid(tmp_path, monkeypatch, kind, case):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}, "guard.py": {}}
+    item.read = lambda *args: "safe guard"
+    identities = ["228f3fbd-bb86-4143-a810-4b2622b1cc19", "1226544f-2cf5-4104-bb24-d7c151182064"]
+    history = [{"id": identity, "path": "app.py", "title": f"Finding {index}"} for index, identity in enumerate(identities)]
+    if case in {"empty", "empty_invalid"}:
+        history = []
+    original = json.dumps(history, sort_keys=True)
+    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
+    calls, contexts, schemas = [], [], []
+    bundle = security_engine.verification.evidence_bundle
+
+    def evidence_bundle(context):
+        contexts.append(json.loads(json.dumps(context)))
+        return bundle(context)
+
+    def response():
+        selected = "history_2" if case in {"second", "corrected"} else "history_1"
+        if case in {"new", "empty"}:
+            selected = None
+        elif case in {"repeat", "empty_invalid"} or (case == "corrected" and len(calls) == 1):
+            selected = "history_999"
+        elif case == "uuid":
+            selected = identities[0]
+        elif case == "number":
+            selected = 1
+        expand = case == "expand" and len(calls) == 1
+        return {"verdict": "uncertain" if expand else "confirmed", "finding_id": selected, "explanation": "Checked source",
+                "evidence": [citation], "required_paths": ["guard.py"] if expand else []}
+
+    def api(*args, **kwargs):
+        evidence_bundle(args[4])
+        calls.append(args[5])
+        schemas.append(kwargs["schema"])
+        try:
+            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+        except security_engine.verification.ResultValidationError as exc:
+            raise security_engine.verification.VerificationOutputError("Invalid selection", {"tokens": 7}, feedback=exc.feedback) from exc
+
+    def native(connection, identity, payload, stopped):
+        calls.append(payload["token_budget"])
+        schemas.append(payload["output_schema"])
+        return response(), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    context = {"history": history, "sources": {"current": {"app.py": "unsafe"}}, "diff": ""}
+    connection = {"id": "connection", "kind": kind, "model": "test"}
+    invalid = case in {"repeat", "uuid", "empty_invalid", "number"}
+    if invalid:
+        with pytest.raises(security_engine.verification.VerificationOutputError) as caught:
+            security_engine.ask(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
+        assert caught.value.usage == {"tokens": 14}
+        assert caught.value.feedback["kind"] == ("schema" if case == "number" else "history_selection")
+    else:
+        result, usage = security_engine.ask(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
+        expected_id = None if case in {"new", "empty"} else identities[1 if case in {"second", "corrected"} else 0]
+        assert result["finding_id"] == expected_id
+        assert usage == {"tokens": 7 * len(calls)}
+        assert result["evidence"] == [citation]
+    references = [f"history_{index + 1}" for index in range(len(history))]
+    assert all(schema["properties"]["finding_id"]["enum"] == [*references, None] for schema in schemas)
+    assert all([finding["id"] for finding in supplied["history"]] == references for supplied in contexts)
+    assert json.dumps(history, sort_keys=True) == original
+    assert calls == ([100, 93] if invalid or case in {"corrected", "expand"} else [100])
+    if invalid or case == "corrected":
+        feedback = contexts[1]["validation_feedback"]
+        if case != "number":
+            assert feedback == {"kind": "history_selection", "field": "finding_id", "allowed_values": [*references, None]}
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])

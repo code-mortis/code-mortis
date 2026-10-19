@@ -445,12 +445,21 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         and PurePosixPath(path).name not in INSTRUCTION_FILES)}
     model = {"analysis": SecurityAnalysis, "assessment": SecurityAssessment, "verification": SecurityFix}[task]
     schema = model_schema(model)
+    history_ids = {}
+    if task == "assessment":
+        history = context.get("history", [])
+        history_ids = {f"history_{index + 1}": finding["id"] for index, finding in enumerate(history)}
+        context["history"] = [{**finding, "id": reference} for reference, finding in zip(history_ids, history, strict=True)]
+        schema["properties"]["finding_id"]["enum"] = [*history_ids, None]
+        schema["properties"]["finding_id"]["description"] = "Select a supplied history entry reference, or null for a new finding."
     instructions = INSTRUCTIONS + {
         "analysis": ("Audit the assigned file and report all evidenced security defects. Context files are supporting evidence. "
                      "Put start_line, end_line and quote only inside evidence citations, never directly on a finding."),
         "assessment": ("Independently test the proposed security finding against protections and history. Confirm only a concrete "
-                       "cause, reachable trigger and impact. Match finding_id only to the same established defect in supplied history; "
-                       "rewording, moved lines or scanner origin do not create a different issue. Otherwise use null."),
+                       "cause, reachable trigger and impact. Select finding_id from the history entry references in the schema enum "
+                       "only for the same established defect; Code Mortis assigns its stored UUID. Never return a UUID. "
+                       "Rewording, moved lines or scanner origin do not create a different issue. Otherwise use null. "
+                       "For validation_feedback kind history_selection, choose an allowed reference or null without weakening evidence."),
         "verification": ("Verify the original security defect against original and current source. Absence from a scan is not proof "
                          "of a fix. Fixed requires original_issue_present, an actual source change, original/current citations, "
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
@@ -464,14 +473,21 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             raise verification.ResultValidationError(
                 "Security result does not match the requested schema. " + json.dumps(feedback), feedback,
             ) from exc
-        for path in result["required_paths"]:
-            relative_path(path)
+        for index, path in enumerate(result["required_paths"]):
+            try:
+                relative_path(path)
+            except ValueError as exc:
+                feedback = {"kind": "schema", "errors": [{"loc": ["required_paths", index], "msg": str(exc)}]}
+                raise verification.ResultValidationError(str(exc), feedback) from exc
         evidence = result.get("evidence", [])
         if task == "analysis":
             problems = []
             for index, proposed in enumerate(result["findings"]):
                 if proposed["path"] != supplied["assigned_path"]:
-                    raise ValueError("Security analysis returned a finding outside its assigned file.")
+                    feedback = {"kind": "schema", "errors": [{"loc": ["findings", index, "path"],
+                        "msg": "Security analysis must report findings only in its assigned file.",
+                        "expected": supplied["assigned_path"]}]}
+                    raise verification.ResultValidationError("Security analysis returned a finding outside its assigned file.", feedback)
                 try:
                     validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
                 except verification.ResultValidationError as exc:
@@ -482,11 +498,16 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         else:
             revisions = validate_citations(evidence, supplied["sources"])
             if task == "assessment":
-                allowed = {finding["id"] for finding in supplied.get("history", [])}
-                if result["finding_id"] is not None and result["finding_id"] not in allowed:
-                    raise ValueError("Security assessment returned an unrelated finding identity.")
+                if result["finding_id"] is not None and result["finding_id"] not in history_ids:
+                    feedback = {"kind": "history_selection", "field": "finding_id", "allowed_values": [*history_ids, None]}
+                    raise verification.ResultValidationError(
+                        "Security assessment must select a supplied history entry reference or null. " + json.dumps(feedback), feedback,
+                    )
                 if result["verdict"] == "confirmed" and (not evidence or "current" not in revisions or result["required_paths"]):
-                    raise ValueError("Confirmed finding needs complete current-source evidence.")
+                    feedback = {"kind": "schema", "errors": [{"loc": ["verdict"],
+                        "msg": "Confirmed finding needs complete current-source evidence and no required_paths. "
+                               "Request necessary source with an uncertain verdict until it is supplied."}]}
+                    raise verification.ResultValidationError("Confirmed finding needs complete current-source evidence.", feedback)
             elif result["verdict"] == "fixed" and (
                 revisions != {"original", "current"} or not supplied["diff"].strip()
                 or not result["original_issue_present"] or not result["change_explanation"].strip() or result["required_paths"]
@@ -547,6 +568,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         used += tokens
         feedback = None
         if not result["required_paths"]:
+            if task == "assessment" and result["finding_id"] is not None:
+                result["finding_id"] = history_ids[result["finding_id"]]
             return json.loads(item.redact(json.dumps(result))), {"tokens": used}
         if attempt == 3:
             break
