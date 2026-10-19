@@ -1187,6 +1187,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/repositories/{repository_id}/github-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Issue Candidates */
+        get: operations["issue_candidates_api_v1_security_repositories__repository_id__github_issues_get"];
+        put?: never;
+        /** Create Issues */
+        post: operations["create_issues_api_v1_security_repositories__repository_id__github_issues_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/security/findings/{finding_id}/github-issue": {
         parameters: {
             query?: never;
@@ -2608,6 +2626,11 @@ export interface components {
              */
             revision: string;
         };
+        /** SecurityBulkIssueInput */
+        SecurityBulkIssueInput: {
+            /** Issues */
+            issues: components["schemas"]["SecurityIssueDraft"][];
+        };
         /** SecurityFindingDetail */
         SecurityFindingDetail: {
             repository: components["schemas"]["RepositoryOut"];
@@ -2676,6 +2699,53 @@ export interface components {
             page: number;
             /** Page Size */
             page_size: number;
+        };
+        /** SecurityIssueCandidate */
+        SecurityIssueCandidate: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Repository */
+            repository: string;
+            /** Public */
+            public: boolean;
+            /** Version */
+            version: number;
+            /** Id */
+            id: string;
+            /** Path */
+            path: string;
+            /** Severity */
+            severity: string;
+        };
+        /** SecurityIssueCandidatePage */
+        SecurityIssueCandidatePage: {
+            /** Items */
+            items: components["schemas"]["SecurityIssueCandidate"][];
+            /** Repository */
+            repository: string;
+            /** Public */
+            public: boolean;
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityIssueDraft */
+        SecurityIssueDraft: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+            /** Version */
+            version: number;
+            /** Public */
+            public: boolean;
+            /** Finding Id */
+            finding_id: string;
         };
         /** SecurityIssueInput */
         SecurityIssueInput: {
@@ -5531,6 +5601,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_candidates_api_v1_security_repositories__repository_id__github_issues_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityIssueCandidatePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_issues_api_v1_security_repositories__repository_id__github_issues_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityBulkIssueInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"][];
                 };
             };
             /** @description Validation Error */

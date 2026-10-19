@@ -452,6 +452,124 @@ test("GitHub publication requires a reviewed individual issue and explicit publi
   await expect(dialog).not.toBeVisible();
 });
 
+async function mockBulkIssues(page: Page, isPublic = true) {
+  const writes = await mock(page);
+  const state = { previewError: 0, submissionError: 0, requests: 0, items: Array.from({ length: 21 }, (_, index): Schema["SecurityIssueCandidate"] => ({
+    id: `candidate-${index}`, title: `[Security] Order ownership check ${index + 1}`, path: `services/${"account-orders/".repeat(5)}route-${index + 1}.ts`,
+    severity: index === 0 ? "high" : "medium", repository: repository.full_name, public: isPublic, version: index,
+    body: `### Evidence\n\nOrder lookup ${index + 1} lacks an ownership check.\n\n### Remediation\n\nConstrain access to the authenticated account.`,
+  })) };
+  await page.route("**/api/v1/security/repositories/22/github-issues**", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      const body = request.postDataJSON();
+      writes.push({ path: "/security/repositories/22/github-issues", body });
+      return route.fulfill(state.submissionError
+        ? { status: state.submissionError, json: { detail: "The finding changed. Refresh its issue preview." } }
+        : { status: 202, json: body.issues.map((draft: Schema["SecurityIssueDraft"]) => ({ ...finding, id: draft.finding_id, issue: { publication_status: "pending" } })) });
+    }
+    state.requests++;
+    const pageNumber = Number(new URL(request.url()).searchParams.get("page") ?? 1);
+    return route.fulfill(state.previewError
+      ? { status: state.previewError, json: { detail: "Issue previews are unavailable." } }
+      : { json: { items: state.items.slice((pageNumber - 1) * 20, pageNumber * 20), total: state.items.length,
+        page: pageNumber, page_size: 20, repository: repository.full_name, public: isPublic } });
+  });
+  return { state, writes };
+}
+
+test("bulk GitHub issues require selection, review, count and public confirmation", async ({ page }, info) => {
+  const { state, writes } = await mockBulkIssues(page);
+  await page.goto("/security/repositories/22");
+  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
+  await expect(dialog.getByRole("button", { name: "Review 0 issues", exact: true })).toBeDisabled();
+  await expect(dialog.getByText("Destination: acme/payments", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("note")).toContainText("These issues will be public.");
+  await expect(dialog.getByText("0 issues selected · 21 eligible findings", { exact: true })).toBeVisible();
+  await dialog.getByRole("checkbox", { name: `Select ${state.items[0].title}`, exact: true }).check();
+  await page.screenshot({ path: `/private/tmp/code-mortis-bulk-select-${info.project.name}.png`, fullPage: true });
+  await dialog.getByRole("button", { name: "Load more findings" }).click();
+  await dialog.getByRole("checkbox", { name: `Select ${state.items[20].title}`, exact: true }).check();
+  await dialog.getByRole("button", { name: "Review 2 issues", exact: true }).click();
+  await expect(dialog.getByText("2 issues selected for creation", { exact: true })).toBeVisible();
+  const first = dialog.locator("details").first();
+  await first.getByRole("textbox", { name: "Issue title", exact: true }).fill("Security: enforce order ownership");
+  await page.keyboard.press("Enter");
+  await first.getByRole("tab", { name: "Edit", exact: true }).click();
+  await first.getByRole("textbox", { name: "Issue body", exact: true }).fill("A reviewed finding with a concrete ownership fix.");
+  await first.getByRole("tab", { name: "Preview", exact: true }).click();
+  await expect(first.getByText("A reviewed finding with a concrete ownership fix.", { exact: true })).toBeVisible();
+  expect(writes).toHaveLength(0);
+  expect(await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-bulk-review-${info.project.name}.png`, fullPage: true });
+  await dialog.getByRole("button", { name: "Back to selection", exact: true }).click();
+  await expect(dialog.getByRole("checkbox", { name: `Select ${state.items[20].title}`, exact: true })).toBeChecked();
+  await dialog.getByRole("button", { name: "Review 2 issues", exact: true }).click();
+  await expect(dialog.getByRole("textbox", { name: "Issue title", exact: true }).first()).toHaveValue("Security: enforce order ownership");
+  await dialog.getByRole("button", { name: "Create 2 issues", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: "2 GitHub issues queued." })).toBeVisible();
+  await expect(trigger).toBeFocused();
+  expect(writes).toEqual([{ path: "/security/repositories/22/github-issues", body: { issues: [
+    { finding_id: "candidate-0", title: "Security: enforce order ownership", body: "A reviewed finding with a concrete ownership fix.", version: 0, public: true },
+    { finding_id: "candidate-20", title: state.items[20].title, body: state.items[20].body, version: 20, public: true },
+  ] } }]);
+});
+
+test("bulk issue review preserves drafts on stale approval and cancellation never publishes", async ({ page }) => {
+  const { state, writes } = await mockBulkIssues(page, false);
+  await page.goto("/security/repositories/22");
+  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
+  await expect(dialog.getByRole("note")).toContainText("These issues will be private");
+  await dialog.getByRole("button", { name: "Select shown", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Review 20 issues", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Clear selection", exact: true }).click();
+  await dialog.getByRole("checkbox").first().check();
+  await dialog.getByRole("button", { name: "Review 1 issue", exact: true }).click();
+  await dialog.getByRole("textbox", { name: "Issue title", exact: true }).fill("Reviewed draft to preserve");
+  state.submissionError = 409;
+  await dialog.getByRole("button", { name: "Create 1 issue", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("The finding changed.");
+  await expect(dialog.getByRole("textbox", { name: "Issue title", exact: true })).toHaveValue("Reviewed draft to preserve");
+  expect(writes).toHaveLength(1);
+  await dialog.getByRole("button", { name: "Back to selection", exact: true }).click();
+  state.items = [];
+  await dialog.getByRole("button", { name: "Refresh findings", exact: true }).click();
+  await expect(dialog.getByText("No eligible findings", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Review 0 issues", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toHaveLength(1);
+});
+
+test("bulk issue preview failures cannot publish and permission denial hides candidates", async ({ page }) => {
+  const { state, writes } = await mockBulkIssues(page);
+  state.previewError = 503;
+  await page.goto("/security/repositories/22");
+  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
+  await expect(dialog.getByRole("button", { name: "Review 0 issues", exact: true })).toBeDisabled();
+  state.previewError = 0;
+  await dialog.getByRole("button", { name: "Refresh findings", exact: true }).click();
+  await dialog.getByRole("checkbox").first().check();
+  state.previewError = 403;
+  await dialog.getByRole("button", { name: "Load more findings" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Review 1 issue", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(writes).toHaveLength(0);
+});
+
 test("secret rotation requires an explicit reason and acknowledgment", async ({ page }) => {
   const writes = await mock(page, { secret: true });
   await page.goto("/security/repositories/22?finding=finding");
@@ -472,6 +590,7 @@ test("read-only users cannot publish or change finding state", async ({ page }) 
   await expect(sheet).toBeVisible();
   await expect(sheet.getByRole("button", { name: "Create GitHub issue" })).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: "Save decision" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create GitHub issues…", exact: true })).toHaveCount(0);
 });
 
 test("security controls support keyboard focus and dark narrow layouts", async ({ page }, info) => {

@@ -208,3 +208,26 @@ class SecurityIssuePreview(StrictModel):
     repository: str
     public: bool
     version: int
+
+
+class SecurityIssueCandidate(SecurityIssuePreview):
+    id: str
+    path: str
+    severity: str
+
+
+class SecurityIssueCandidatePage(StrictModel):
+    items: list[SecurityIssueCandidate]
+    repository: str
+    public: bool
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityIssueDraft(SecurityIssueInput):
+    finding_id: str = Field(min_length=1, max_length=36)
+
+
+class SecurityBulkIssueInput(StrictModel):
+    issues: list[SecurityIssueDraft] = Field(min_length=1, max_length=100)

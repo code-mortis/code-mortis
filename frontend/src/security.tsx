@@ -34,6 +34,7 @@ type Scan = Schema["SecurityScanOut"];
 type Finding = Schema["SecurityFindingOut"];
 type SecurityAssessment = Schema["SecurityAssessmentOut"];
 type SecurityRepo = Schema["SecurityRepositoryOut"];
+type IssueCandidate = Schema["SecurityIssueCandidate"];
 const active = (status: string) => ["queued", "running", "blocked"].includes(status);
 const text = (value: unknown) => typeof value === "string" ? value : "";
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -59,7 +60,7 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
   };
 }
 
-function useSecurityPages<T extends { id: string }>(path: string) {
+function useSecurityPages<T extends { id: string }>(path: string, live = true) {
   const [scope, setScope] = useState({ path, revision: 0 });
   // Returning to an earlier filter must start at its first page, even when cached.
   if (scope.path !== path) setScope({ path, revision: scope.revision + 1 });
@@ -68,7 +69,8 @@ function useSecurityPages<T extends { id: string }>(path: string) {
     queryFn: ({ pageParam, signal }) => api<{ items: T[]; total: number; page: number; page_size: number }>(`${path}${path.includes("?") ? "&" : "?"}page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
-    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    refetchInterval: (query) => live && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
+    refetchOnWindowFocus: live,
     retry: false,
   });
   const seen = new Set<string>();
@@ -227,6 +229,8 @@ export function SecurityRepository({ user }: { user: User }) {
   const query = useApi<SecurityRepo>(`/security/repositories/${id}`, true);
   const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
   const [scanning, setScanning] = useState(false);
+  const [creatingIssues, setCreatingIssues] = useState(false);
+  const [queuedIssues, setQueuedIssues] = useState(0);
   const [params, setParams] = useSearchParams();
   if (query.isPending) return <Loading />;
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
@@ -234,10 +238,14 @@ export function SecurityRepository({ user }: { user: User }) {
   const slash = repo.full_name.lastIndexOf("/");
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
-    <PageTitle title={<span className="break-words [overflow-wrap:anywhere]"><span className="font-normal text-muted-foreground">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</span>} actions={query.data.can_write !== false && <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>}>
+    <PageTitle title={<span className="break-words [overflow-wrap:anywhere]"><span className="font-normal text-muted-foreground">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</span>} actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues…</Button>
+      <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
+    </div>}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><SecurityGrade repositoryId={repo.id} summary={summary} /><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
       <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `${summary.state === "current" || (summary.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id) ? "Grade" : "Historical grade"} ${summary.grade ?? ""} saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id && " Based on confirmed findings; coverage is incomplete."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
     </PageTitle>
+    {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
     {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="font-medium">Latest scan</span><SecurityStatus value={summary.latest_status ?? "unknown"} />
@@ -250,6 +258,7 @@ export function SecurityRepository({ user }: { user: User }) {
       <TabsContent value="history"><ScanHistory repositoryId={repo.id} /></TabsContent>
     </Tabs>
     {scanning && <ScanDialog repositoryId={repo.id} user={user} onClose={() => setScanning(false)} />}
+    {creatingIssues && <BulkIssueDialog key={repo.id} repositoryId={repo.id} onClose={() => setCreatingIssues(false)} onQueued={(total) => { setQueuedIssues(total); setCreatingIssues(false); }} />}
     <FindingSheet id={params.get("finding")} onClose={() => { const next = new URLSearchParams(params); next.delete("finding"); next.delete("finding_tab"); setParams(next); }} />
   </>;
 }
@@ -577,6 +586,69 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
     </SheetFooter>
     {issueOpen && <IssueDialog findingId={finding.id} onClose={() => setIssueOpen(false)} />}
   </div>;
+}
+
+function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: number; onClose: () => void; onQueued: (total: number) => void }) {
+  const focus = useReturnFocus();
+  const action = useAction<Finding[]>();
+  const path = `/security/repositories/${repositoryId}/github-issues`;
+  const { query, items, total, denied } = useSecurityPages<IssueCandidate>(path, false);
+  const [selected, setSelected] = useState<Record<string, IssueCandidate>>({});
+  const [reviewing, setReviewing] = useState(false);
+  const drafts = Object.values(selected);
+  const preview = query.data?.pages[0] as Schema["SecurityIssueCandidatePage"] | undefined;
+  const isPublic = drafts[0]?.public ?? preview?.public;
+  const invalid = drafts.some((draft) => !draft.title.trim() || !draft.body.trim() || draft.public !== isPublic);
+  function choose(item: IssueCandidate, checked: boolean) {
+    setSelected((current) => {
+      const next = { ...current };
+      if (checked && Object.keys(next).length < 100) next[item.id] = item; else if (!checked) delete next[item.id];
+      return next;
+    });
+  }
+  function edit(id: string, patch: Partial<Pick<IssueCandidate, "title" | "body">>) {
+    setSelected((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  }
+  function submit() {
+    if (!reviewing || !drafts.length || invalid || query.error || action.isPending) return;
+    action.mutate({ path, body: { issues: drafts.map((draft) => ({ finding_id: draft.id, title: draft.title, body: draft.body, version: draft.version, public: draft.public })) } },
+      { onSuccess: (findings) => onQueued(findings.length) });
+  }
+  return <Dialog open onOpenChange={(open) => { if (!open && !action.isPending) onClose(); }}><DialogContent {...focus} className="flex max-h-[90dvh] flex-col overflow-hidden sm:max-w-3xl">
+    <DialogHeader><DialogTitle>Create GitHub issues</DialogTitle><DialogDescription>{reviewing ? "Review and edit the selected issue drafts before publishing." : "Select up to 100 findings. Resolved findings, false positives, and findings with an issue or pending publication are excluded."}</DialogDescription></DialogHeader>
+    {preview && !denied && <div className="shrink-0 space-y-2 text-sm"><p className="break-words">Destination: <strong>{preview.repository}</strong></p>
+      <p role="note" className={isPublic ? "rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive" : "text-muted-foreground"}>{isPublic ? "These issues will be public. Review the evidence and details before publishing." : "These issues will be private, visible to people with repository access."}</p>
+      <p role="status" className="tabular-nums">{drafts.length} {drafts.length === 1 ? "issue" : "issues"} selected{reviewing ? " for creation" : ` · ${total} eligible findings`}</p>
+    </div>}
+    <ErrorNotice error={query.error || action.error} />
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      {query.isPending ? <Loading /> : denied ? null : reviewing ? <div className="space-y-3">{drafts.map((draft, index) => <details key={draft.id} open={index === 0} className={disclosure}>
+        <summary className={disclosureSummary}><span className="min-w-0 break-words">{draft.title || "Untitled issue"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0" /></summary>
+        <div className="mt-4 space-y-4"><p className="break-words font-mono text-xs text-muted-foreground">{draft.path}</p><SecurityStatus value={draft.severity} />
+          <Field label="Issue title">{(id) => <Input id={id} value={draft.title} maxLength={200} required disabled={action.isPending} onChange={(event) => edit(draft.id, { title: event.target.value })} />}</Field>
+          <Tabs defaultValue="preview"><TabsList><TabsTrigger value="preview">Preview</TabsTrigger><TabsTrigger value="edit">Edit</TabsTrigger></TabsList>
+            <TabsContent value="preview"><Markdown>{draft.body}</Markdown></TabsContent>
+            <TabsContent value="edit"><Field label="Issue body">{(id) => <Textarea id={id} value={draft.body} maxLength={50000} required className="min-h-48" disabled={action.isPending} onChange={(event) => edit(draft.id, { body: event.target.value })} />}</Field></TabsContent>
+          </Tabs>
+        </div>
+      </details>)}</div> : !items.length && !query.error ? <Empty title="No eligible findings">Every finding is resolved, marked as a false positive, or already has an issue or pending publication.</Empty> : <>
+        <div className="mb-3 flex flex-wrap gap-2"><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={!items.length || !!query.error} onClick={() => setSelected((current) => {
+          const next = { ...current };
+          for (const item of items) { if (Object.keys(next).length >= 100) break; if (!next[item.id]) next[item.id] = item; }
+          return next;
+        })}>Select shown</Button><Button variant="ghost" size="sm" className="min-h-11 sm:min-h-8" disabled={!drafts.length} onClick={() => setSelected({})}>Clear selection</Button>
+          <Button variant="ghost" size="sm" className="min-h-11 sm:min-h-8" onClick={() => { setSelected({}); action.reset(); void query.refetch(); }}>Refresh findings</Button></div>
+        <div className="divide-y rounded-md border">{items.map((item) => <label key={item.id} className="flex min-h-11 cursor-pointer items-start gap-3 p-3">
+          <Checkbox className="mt-0.5" aria-label={`Select ${item.title}`} checked={!!selected[item.id]} disabled={!selected[item.id] && drafts.length >= 100} onCheckedChange={(checked) => choose(item, checked === true)} />
+          <span className="min-w-0 space-y-1"><span className="block break-words text-sm font-medium">{item.title}</span><span className="block break-words font-mono text-xs text-muted-foreground">{item.path}</span><SecurityStatus value={item.severity} /></span>
+        </label>)}<LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></div>
+      </>}
+    </div>
+    <DialogFooter className="shrink-0 border-t pt-4"><Button type="button" variant="outline" disabled={action.isPending} onClick={reviewing ? () => setReviewing(false) : onClose}>{reviewing ? "Back to selection" : "Cancel"}</Button>
+      {reviewing ? <Button type="button" disabled={action.isPending || !drafts.length || invalid || !!query.error} onClick={submit}>{action.isPending ? "Queuing issues…" : `Create ${drafts.length} ${drafts.length === 1 ? "issue" : "issues"}`}</Button>
+        : <Button type="button" disabled={!drafts.length || !!query.error || query.isPending} onClick={() => setReviewing(true)}>Review {drafts.length} {drafts.length === 1 ? "issue" : "issues"}</Button>}
+    </DialogFooter>
+  </DialogContent></Dialog>;
 }
 
 function IssueDialog({ findingId, onClose }: { findingId: string; onClose: () => void }) {

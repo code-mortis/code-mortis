@@ -42,7 +42,7 @@ def preview(repo, finding):
         body=clean_text("\n".join(lines)), repository=repo.full_name, public=not repo.private, version=finding.version)
 
 
-def create(db, repo, finding, actor, body):
+def create(db, repo, finding, actor, body, *, new_only=False):
     if finding.state not in {"open", "accepted_risk"} or finding.version != body.version:
         raise HTTPException(409, "The finding changed. Refresh its issue preview.")
     operation = uid()
@@ -55,7 +55,7 @@ def create(db, repo, finding, actor, body):
         saved = finding.issue
         if saved.get("title") == title and saved.get("body") == content + "\n\n" + marker(finding, saved["operation_id"]) and saved.get("version") == body.version and saved.get("public") == body.public:
             return
-        if saved.get("number") or saved.get("started"):
+        if new_only or saved.get("number") or saved.get("started"):
             raise HTTPException(409, "This finding already has an issue or an uncertain publication. Retry synchronization instead.")
     finding.issue = {"operation_id": operation, "actor_id": actor.id, "version": finding.version,
                      "public": body.public,

@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from . import github, repository_security, security_assessments, security_issues
 from .api import DB, USER, repo_access, repo_out
@@ -17,9 +18,12 @@ from .security_schemas import (
     SecurityActivityOut,
     SecurityAssessmentOut,
     SecurityAssessmentPage,
+    SecurityBulkIssueInput,
     SecurityFindingDetail,
     SecurityFindingOut,
     SecurityFindingPage,
+    SecurityIssueCandidate,
+    SecurityIssueCandidatePage,
     SecurityIssueInput,
     SecurityIssuePreview,
     SecurityRepositoryOut,
@@ -235,6 +239,41 @@ def rotation(finding_id: str, body: SecurityRotation, db: DB, user: USER):
     finding.version += 1
     repository_security.activity(db, "rotation_acknowledged", finding=finding, actor=user, reason=finding.rotation["reason"])
     return SecurityFindingOut.model_validate(finding)
+
+
+@router.get("/repositories/{repository_id}/github-issues", response_model=SecurityIssueCandidatePage)
+def issue_candidates(repository_id: int, db: DB, user: USER,
+                     page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("private")) is not bool:
+        raise HTTPException(502, "GitHub did not confirm repository visibility. Refresh the preview before publishing.")
+    query = select(SecurityFinding).where(SecurityFinding.repository_id == repo.id,
+        SecurityFinding.state.in_(["open", "accepted_risk"]), SecurityFinding.issue.cast(JSONB) == {})
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    rows = db.scalars(query.order_by(SecurityFinding.updated_at.desc(), SecurityFinding.id)
+                      .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
+    items = [SecurityIssueCandidate(**{**security_issues.preview(repo, finding).model_dump(), "public": not remote["private"]},
+             id=finding.id, path=finding.path, severity=finding.severity) for finding in rows]
+    return SecurityIssueCandidatePage(items=items, repository=repo.full_name, public=not remote["private"],
+                                      total=total, page=page, page_size=PAGE_SIZE)
+
+
+@router.post("/repositories/{repository_id}/github-issues", response_model=list[SecurityFindingOut], status_code=202)
+def create_issues(repository_id: int, body: SecurityBulkIssueInput, db: DB, user: USER):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    identities = [draft.finding_id for draft in body.issues]
+    if len(set(identities)) != len(identities):
+        raise HTTPException(422, "Select each finding only once.")
+    if type(remote.get("private")) is not bool or any(draft.public != (not remote["private"]) for draft in body.issues):
+        raise HTTPException(409, "Repository visibility changed. Refresh the issue previews and approve them again.")
+    findings = {finding.id: finding for finding in db.scalars(select(SecurityFinding).where(
+        SecurityFinding.repository_id == repo.id, SecurityFinding.id.in_(identities))
+        .order_by(SecurityFinding.id).with_for_update().execution_options(populate_existing=True))}
+    if len(findings) != len(identities):
+        raise HTTPException(404, "A selected finding is no longer available in this repository. Refresh the issue previews.")
+    for draft in body.issues:
+        security_issues.create(db, repo, findings[draft.finding_id], user, draft, new_only=True)
+    return [SecurityFindingOut.model_validate(findings[identity]) for identity in identities]
 
 
 @router.get("/findings/{finding_id}/github-issue", response_model=SecurityIssuePreview)

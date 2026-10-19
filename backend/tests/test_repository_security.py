@@ -1747,6 +1747,106 @@ def test_issue_double_submission_is_idempotent_and_stale_unsent_payload_can_be_r
     assert second.json()["issue"]["operation_id"] != first.json()["issue"]["operation_id"]
 
 
+def test_bulk_issue_previews_exclude_ineligible_findings_and_do_not_approve_anything(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        eligible = [saved_finding(db, seed, scan).id for _ in range(20)]
+        eligible.append(saved_finding(db, seed, scan, state="accepted_risk").id)
+        for state in ("resolved", "false_positive"):
+            saved_finding(db, seed, scan, state=state)
+        for issue in ({"number": 31}, {"publication_status": "pending"}, {"publication_status": "failed"}):
+            saved_finding(db, seed, scan).issue = issue
+        repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
+        db.add(repo)
+        db.flush()
+        other_seed = {**seed, "repo": repo}
+        saved_finding(db, other_seed, saved_scan(db, other_seed))
+        # Saved visibility is deliberately stale; previews must use GitHub's current value.
+        db.get(Repository, 22).private = False
+    path = "/api/v1/security/repositories/22/github-issues"
+    first, second = client.get(path).json(), client.get(path + "?page=2").json()
+    assert first["public"] is False and first["repository"] == "team/project"
+    assert first["total"] == second["total"] == 21 and len(first["items"]) == 20
+    assert {item["id"] for item in first["items"] + second["items"]} == set(eligible)
+    assert all(item["public"] is False and item["version"] == 0 and item["body"] for item in first["items"])
+    with transaction() as db:
+        assert not db.scalar(select(Job.id)) and not db.scalar(select(SecurityActivity.id))
+        assert all(not db.get(SecurityFinding, identity).issue for identity in eligible)
+
+
+def test_bulk_issue_approval_is_explicit_and_idempotent(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        identities = [saved_finding(db, seed, scan, state=state).id for state in ("open", "accepted_risk")]
+    path = "/api/v1/security/repositories/22/github-issues"
+    previews = client.get(path).json()["items"]
+    drafts = [{key: item[key] for key in ("title", "body", "version", "public")} | {"finding_id": item["id"]} for item in previews]
+    drafts[0].update(title="Reviewed security finding", body="Apply the reviewed ownership guard.")
+    response = client.post(path, json={"issues": drafts})
+    assert response.status_code == 202, response.text
+    approved = response.json()
+    assert [row["id"] for row in approved] == [draft["finding_id"] for draft in drafts]
+    assert approved[0]["issue"]["title"] == drafts[0]["title"]
+    assert approved[0]["issue"]["body"].startswith(drafts[0]["body"] + "\n\n<!--")
+    assert all(row["issue"]["publication_status"] == "pending" for row in approved)
+    retry = client.post(path, json={"issues": drafts})
+    assert retry.status_code == 202 and retry.json() == approved
+    assert client.get(path).json()["total"] == 0
+    with transaction() as db:
+        assert len(list(db.scalars(select(Job).where(Job.kind == "security_issue_publish")))) == 2
+        assert len(list(db.scalars(select(SecurityActivity).where(SecurityActivity.action == "issue_approved")))) == 2
+        assert {db.get(SecurityFinding, identity).state for identity in identities} == {"open", "accepted_risk"}
+
+
+@pytest.mark.parametrize(("change", "status"), [
+    ("version", 409), ("resolved", 409), ("false_positive", 409), ("linked", 409), ("pending", 409),
+    ("missing", 404), ("foreign", 404), ("visibility", 409), ("duplicate", 422), ("secret", 422), ("blank", 422),
+])
+def test_bulk_issue_approval_revalidates_the_whole_selection_atomically(seed, security_github, client, change, status):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        first, second = saved_finding(db, seed, scan), saved_finding(db, seed, scan)
+        identities = [first.id, second.id]
+    drafts = [{"finding_id": identity, "title": "Security finding", "body": "Check ownership.", "version": 0, "public": False} for identity in identities]
+    with transaction() as db:
+        second = db.get(SecurityFinding, identities[1])
+        if change == "version":
+            second.version += 1
+        elif change in {"resolved", "false_positive"}:
+            second.state = change
+        elif change in {"linked", "pending"}:
+            second.issue = {"operation_id": uid(), "publication_status": "pending", **({"number": 42} if change == "linked" else {})}
+        elif change == "foreign":
+            db.add(Repository(id=23, installation_id=10, full_name="team/other", enabled=True))
+            db.flush()
+            second.repository_id = 23
+    if change == "missing":
+        drafts[1]["finding_id"] = uid()
+    elif change == "visibility":
+        security_github["private"] = False
+    elif change == "duplicate":
+        drafts[1] = drafts[0]
+    elif change == "secret":
+        drafts[1]["body"] = "Exposed credential: provider-secret"
+    elif change == "blank":
+        drafts[1]["title"] = " "
+    response = client.post("/api/v1/security/repositories/22/github-issues", json={"issues": drafts})
+    assert response.status_code == status, response.text
+    with transaction() as db:
+        assert not db.get(SecurityFinding, identities[0]).issue
+        assert not db.scalar(select(Job.id)) and not db.scalar(select(SecurityActivity.id))
+
+
+def test_bulk_issues_require_write_access_and_a_bounded_selection(seed, security_github, client, monkeypatch):
+    path = "/api/v1/security/repositories/22/github-issues"
+    draft = {"finding_id": uid(), "title": "Security", "body": "Fix the finding.", "version": 0, "public": False}
+    for issues in ([], [draft] * 101):
+        assert client.post(path, json={"issues": issues}).status_code == 422
+    monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: (_ for _ in ()).throw(github.GitHubError(403, "Denied")))
+    assert client.get(path).status_code == 403
+    assert client.post(path, json={"issues": [draft]}).status_code == 403
+
+
 def test_cancelled_scan_cannot_write_late_observations_and_retains_unknown_consumption(seed):
     with transaction() as db:
         scan = saved_scan(db, seed)
