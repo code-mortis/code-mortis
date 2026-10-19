@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 
 from . import github, repository_security, security_assessments, security_issues
@@ -165,10 +165,21 @@ def report(scan_id: str, db: DB, user: USER, format: Literal["json", "markdown"]
                     headers={"Content-Disposition": f'attachment; filename="security-{scan.id}.{extension}"'})
 
 
-def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None):
+def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
+    result_counts = {}
     if scan_id:
         query = query.join(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan_id)
+        result = case(
+            (SecurityOccurrence.outcome.in_(["fixed", "not_observed", "uncertain"]), SecurityOccurrence.outcome),
+            (SecurityOccurrence.outcome != "present", "recorded"),
+            (SecurityFinding.first_scan_id == scan_id, "new"),
+            *[(SecurityFinding.state == state, f"{state}_repeat") for state in ("open", "resolved", "false_positive", "accepted_risk")],
+            else_="repeated",
+        )
+        result_counts = dict(db.execute(query.with_only_columns(result, func.count()).group_by(result)).all())
+        if results:
+            query = query.where(result.in_(results))
     if state:
         query = query.where(SecurityFinding.state == state)
     if severity:
@@ -180,7 +191,8 @@ def finding_page(db, repository_id, page, state, severity, kind, search, scan_id
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(SecurityFinding.updated_at.desc(), SecurityFinding.id)
                       .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
-    return SecurityFindingPage(items=[SecurityFindingOut.model_validate(row) for row in rows], total=total, page=page, page_size=PAGE_SIZE)
+    return SecurityFindingPage(items=[SecurityFindingOut.model_validate(row) for row in rows], total=total,
+                               page=page, page_size=PAGE_SIZE, result_counts=result_counts)
 
 
 @router.get("/repositories/{repository_id}/findings", response_model=SecurityFindingPage)
@@ -195,9 +207,16 @@ def findings(repository_id: int, db: DB, user: USER,
 
 
 @router.get("/scans/{scan_id}/findings", response_model=SecurityFindingPage)
-def scan_findings(scan_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+def scan_findings(scan_id: str, db: DB, user: USER,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+    outcome: Annotated[list[Literal["new", "open_repeat", "resolved_repeat", "false_positive_repeat", "accepted_risk_repeat",
+                                   "repeated", "recorded", "fixed", "not_observed", "uncertain"]] | None, Query(max_length=100)] = None,
+    severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None,
+    kind: Literal["code", "dependency", "secret", "infrastructure"] | None = None,
+    search: Annotated[str, Query(max_length=200)] = "",
+):
     scan, _, _ = scan_access(db, user, scan_id)
-    return finding_page(db, scan.repository_id, page, None, None, None, "", scan_id)
+    return finding_page(db, scan.repository_id, page, None, severity, kind, search, scan_id, outcome)
 
 
 @router.get("/findings/{finding_id}", response_model=SecurityFindingDetail)

@@ -2699,6 +2699,10 @@ export interface components {
             page: number;
             /** Page Size */
             page_size: number;
+            /** Result Counts */
+            result_counts?: {
+                [key: string]: number;
+            };
         };
         /** SecurityIssueCandidate */
         SecurityIssueCandidate: {
@@ -5484,6 +5488,10 @@ export interface operations {
         parameters: {
             query?: {
                 page?: number;
+                outcome?: ("new" | "open_repeat" | "resolved_repeat" | "false_positive_repeat" | "accepted_risk_repeat" | "repeated" | "recorded" | "fixed" | "not_observed" | "uncertain")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown") | null;
+                kind?: ("code" | "dependency" | "secret" | "infrastructure") | null;
+                search?: string;
             };
             header?: never;
             path: {

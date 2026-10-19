@@ -8721,7 +8721,7 @@ for (const count of [10, 50, 100]) {
     expect(requests).toHaveLength(initial);
     candidates.at(-1)!.progress_phase = "validating";
     await ticks(page, 1);
-    await expect(cards.last()).toContainText("Response received; validating");
+    await expect(cards.last()).toContainText("Validating");
     expect(requests).toHaveLength(initial + 1);
     expect(requests.at(-1)!.searchParams.get("page_size")).toBe(String(count));
     const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));

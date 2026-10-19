@@ -186,7 +186,7 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
 });
 
-for (const grade of ["A", "D"]) test(`finished partial reports show grade ${grade} with incomplete coverage`, async ({ page }, info) => {
+for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} without an incomplete badge suffix`, async ({ page }, info) => {
   const error = "AI citation mismatch in docker-compose.yml: the quoted text or line numbers do not match the supplied source.";
   await mock(page, { partial: true, summary: { grade, grade_scan_id: "scan", counts: grade === "D" ? { high: 1 } : {} } });
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
@@ -197,14 +197,22 @@ for (const grade of ["A", "D"]) test(`finished partial reports show grade ${grad
     can_write: true, finding_count: grade === "D" ? 1 : 0, activity_count: 0, activity: [],
   } }));
   await page.goto("/security");
-  const badge = page.getByRole("link", { name: `${grade} · Incomplete`, exact: true });
+  const badge = page.getByRole("link", { name: grade, exact: true });
   await expect(badge).toBeVisible();
   await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-status-good/);
   await badge.click();
   await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toBeVisible();
   await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toBeVisible();
+  await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
+    items: [{ ...scan, status: "partial", grade }], total: 1, page: 1, page_size: 20,
+  } }));
+  await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
+  const row = page.locator('[data-slot="security-scan-row"]');
+  await expect(row.locator('[data-slot="badge"]').first()).toHaveText(grade);
+  await expect(row).not.toContainText("Incomplete");
   await page.goto("/security/scans/scan");
-  await expect(page.getByText(`${grade} · Incomplete`, { exact: true })).toBeVisible();
+  await expect(page.getByText(grade, { exact: true })).toBeVisible();
+  await expect(page.getByText(`${grade} · Incomplete`, { exact: true })).toHaveCount(0);
   const alert = page.getByRole("alert").first();
   await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(alert).toContainText("docker-compose.yml");
@@ -1123,6 +1131,75 @@ test("security scan tabs count saved report observations separately from current
   await expect(page.getByText("Showing the latest 200 of 201 activities.", { exact: true })).toBeVisible();
 });
 
+test("scan findings filter new and repeated observations like review runs without changing saved reports", async ({ page }, info) => {
+  await mock(page);
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const rows = [
+    { result: "new", finding: { ...finding, title: "New defect" } },
+    ...Array.from({ length: 21 }, (_, index) => ({ result: "open_repeat", finding: { ...finding, id: `repeat-${index}`, title: `Earlier defect ${index + 1}`, first_scan_id: "earlier", severity: "medium" } })),
+    ...["resolved", "false_positive", "accepted_risk"].map((state) => ({ result: `${state}_repeat`, finding: { ...finding, id: state, title: `${state} repeated defect`, first_scan_id: "earlier", state } })),
+    ...["fixed", "not_observed", "uncertain"].map((outcome) => ({ result: outcome, finding: { ...finding, id: outcome, title: `Verification ${outcome}`, first_scan_id: "earlier" } })),
+  ];
+  const resultCounts = Object.fromEntries([...new Set(rows.map((row) => row.result))].map((key) => [key, rows.filter((row) => row.result === key).length]));
+  const writes: string[] = [];
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: { ...scan,
+    report: { findings: [{ ...finding, finding_id: finding.id, outcome: "present", title: "Original report evidence" }] } },
+    can_write: true, finding_count: rows.length, activity_count: 0, activity: [] } }));
+  await page.route("**/api/v1/security/scans/scan/findings**", (route) => {
+    const request = route.request();
+    if (request.method() !== "GET") writes.push(request.method());
+    const params = new URL(request.url()).searchParams;
+    const selected = rows.filter((row) => (!params.has("outcome") || params.getAll("outcome").includes(row.result))
+      && (!params.has("severity") || row.finding.severity === params.get("severity"))
+      && (!params.has("search") || row.finding.title.toLowerCase().includes(params.get("search")!.toLowerCase())));
+    const pageNumber = Number(params.get("page") ?? 1);
+    return route.fulfill({ json: { items: selected.slice((pageNumber - 1) * 20, pageNumber * 20).map((row) => row.finding),
+      total: selected.length, page: pageNumber, page_size: 20, result_counts: resultCounts } });
+  });
+  await page.goto("/security/scans/scan?tab=findings&assessment_outcome=withheld");
+  const list = page.getByRole("region", { name: "Current findings for this scan", exact: true });
+  await expect(page.getByRole("tab", { name: "Findings 28", exact: true })).toBeVisible();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open repeats/ })).toHaveAccessibleName("Open repeats 21");
+  await page.getByRole("checkbox", { name: /^Open repeats/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  await list.getByRole("button", { name: "Load more findings", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(21);
+  await expect(list.getByText("open", { exact: true })).toHaveCount(21);
+  await expect(page.getByRole("status").filter({ hasText: "21 of 28 findings" })).toBeAttached();
+  await page.getByRole("button", { name: "Edit Result: Open repeats", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-scan-finding-results-${info.project.name}.png` });
+  await page.getByRole("checkbox", { name: /^New findings/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => url.searchParams.getAll("outcome").length === 2 && url.searchParams.get("assessment_outcome") === "withheld");
+  await page.getByRole("textbox", { name: "Search scan findings", exact: true }).fill("New defect");
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Filter by Severity", exact: true })).toBeHidden();
+  await expect(page.getByRole("heading", { name: "No findings match these filters", exact: true })).toBeVisible();
+  await page.getByRole("tabpanel").getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  await expect(page.getByRole("textbox", { name: "Search scan findings", exact: true })).toBeFocused();
+  await page.goto("/security/scans/scan?tab=findings&outcome=not_observed");
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await expect(list).toContainText("Verification not_observed");
+  await page.reload();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await page.getByRole("tab", { name: "Report 1", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Findings at this scan", exact: true })).toContainText("Original report evidence");
+  await page.getByRole("tab", { name: "Findings 28", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  expect(writes).toHaveLength(0);
+});
+
 test("security tabs display zero for empty repositories and scans", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/security/**", (route) => {
@@ -1360,7 +1437,7 @@ test("security assessments and open drawer update live through validation withou
   state.revision++;
   await page.clock.fastForward(5100);
   await expect(drawer.getByText("Response received; validating against the current source and finding history.")).toBeVisible();
-  await expect(drawer.getByText("Response received; validating", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("Validating", { exact: true })).toBeVisible();
   await expect(drawer.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   state.rows[4] = securityAssessment("4", { outcome: "confirmed", finding_id: "finding", result: { verdict: "confirmed", finding_id: null, explanation: "Accepted", evidence: [{ revision: "current", path: "src/orders.ts", start_line: 14, end_line: 14, quote: "return acceptedOrder;" }] } });

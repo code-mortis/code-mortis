@@ -182,6 +182,7 @@ class SecurityFindingPage(StrictModel):
     total: int
     page: int
     page_size: int
+    result_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class SecurityTriage(StrictModel):

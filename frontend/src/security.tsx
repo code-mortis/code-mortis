@@ -66,7 +66,7 @@ function useSecurityPages<T extends { id: string }>(path: string, live = true) {
   if (scope.path !== path) setScope({ path, revision: scope.revision + 1 });
   const query = useInfiniteQuery({
     queryKey: ["security-pages", path, scope.revision],
-    queryFn: ({ pageParam, signal }) => api<{ items: T[]; total: number; page: number; page_size: number }>(`${path}${path.includes("?") ? "&" : "?"}page=${pageParam}`, "GET", undefined, undefined, signal),
+    queryFn: ({ pageParam, signal }) => api<{ items: T[]; total: number; page: number; page_size: number; result_counts?: Record<string, number> }>(`${path}${path.includes("?") ? "&" : "?"}page=${pageParam}`, "GET", undefined, undefined, signal),
     initialPageParam: 1,
     getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
     refetchInterval: (query) => live && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
@@ -80,18 +80,19 @@ function useSecurityPages<T extends { id: string }>(path: string, live = true) {
     return true;
   });
   const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  return { query, items, denied, total: query.data?.pages.at(-1)?.total ?? 0 };
+  return { query, items, denied, total: query.data?.pages.at(-1)?.total ?? 0, resultCounts: query.data?.pages[0]?.result_counts ?? {} };
 }
 
 function useFilters() {
   const [params, setParams] = useSearchParams();
-  function change(key: string, value: string) {
+  function change(key: string, value: string | string[]) {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value); else next.delete(key);
-    if (["search", "state", "severity", "kind", "grade", "status"].includes(key)) next.delete("page");
+    next.delete(key);
+    for (const item of Array.isArray(value) ? value : [value]) if (item) next.append(key, item);
+    if (["search", "state", "severity", "kind", "grade", "status", "outcome"].includes(key)) next.delete("page");
     setParams(next);
   }
-  return { params, change };
+  return { params, change, setParams };
 }
 
 export function SecurityOverview({ user }: { user: User }) {
@@ -263,23 +264,36 @@ export function SecurityRepository({ user }: { user: User }) {
   </>;
 }
 
+const scanFindingResults = {
+  new: "New findings", open_repeat: "Open repeats", resolved_repeat: "Resolved repeats",
+  false_positive_repeat: "False-positive repeats", accepted_risk_repeat: "Accepted-risk repeats",
+  repeated: "Repeats with unknown status", recorded: "Unclassified observations",
+  fixed: "Verified fixes", not_observed: "Not observed", uncertain: "Verification uncertain",
+};
+
 function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: string }) {
-  const { params, change } = useFilters();
+  const { params, change, setParams } = useFilters();
+  const searchInput = useRef<HTMLInputElement>(null);
   const queryParams = new URLSearchParams();
-  if (!scanId) for (const key of ["search", "state", "severity", "kind"]) { const value = params.get(key); if (value) queryParams.set(key, value); }
+  for (const key of ["search", "severity", "kind", ...(!scanId ? ["state"] : [])]) { const value = params.get(key); if (value) queryParams.set(key, value); }
+  if (scanId) for (const value of params.getAll("outcome")) queryParams.append("outcome", value);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
-  const { query, items, total, denied } = useSecurityPages<Finding>(`${path}${queryParams.size ? `?${queryParams}` : ""}`);
+  const { query, items, total, denied, resultCounts } = useSecurityPages<Finding>(`${path}${queryParams.size ? `?${queryParams}` : ""}`);
+  const registered = Math.max(total, Object.values(resultCounts).reduce((sum, value) => sum + value, 0));
   return <div className="pt-4">
-    {!scanId && <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel="Search findings" searchPlaceholder="Search findings…"
-      onSearch={(value) => change("search", value)} onChange={(key, values) => change(key, values[0] ?? "")} filters={[
-        { key: "state", label: "State", single: true, values: params.get("state") ? [params.get("state")!] : [], choices: ["open", "resolved", "false_positive", "accepted_risk"].map((value) => ({ value, name: label(value) })) },
+    {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this scan. Repeats were observed again; their labels show the current status. Fix verification outcomes remain separate. Saved observations stay unchanged.</p>}
+    <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
+      onSearch={(value) => change("search", value)} onChange={(key, values) => change(key, key === "outcome" ? values : values[0] ?? "")} filters={[
+        ...(scanId ? [{ key: "outcome", label: "Result", values: params.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: resultCounts[value] ?? 0 })) }]
+          : [{ key: "state", label: "State", single: true, values: params.get("state") ? [params.get("state")!] : [], choices: ["open", "resolved", "false_positive", "accepted_risk"].map((value) => ({ value, name: label(value) })) }]),
         { key: "severity", label: "Severity", single: true, values: params.get("severity") ? [params.get("severity")!] : [], choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value) })) },
         { key: "kind", label: "Type", single: true, values: params.get("kind") ? [params.get("kind")!] : [], choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value) })) },
-      ]} /></div>}
-    {query.isPending ? <Loading /> : denied ? <ErrorNotice error={query.error} /> : !items.length && !query.error ? <Empty title="No findings in this view">Findings will appear here as security scans complete. Change filters to inspect other states.</Empty> :
-      <div className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((finding) => <FindingCard key={finding.id}
+      ]}>{scanId && <span role="status" className="sr-only">{total} of {registered} findings</span>}</FilterBar></div>
+    {query.isPending ? <Loading /> : denied ? <ErrorNotice error={query.error} /> : !items.length && !query.error ? <Empty title={scanId && registered ? "No findings match these filters" : "No findings in this view"}>
+      {scanId && registered ? <><p>Try another search, result, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["search", "outcome", "severity", "kind", "page"]) next.delete(key); setParams(next); searchInput.current?.focus(); }}>Clear filters</Button></> : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty> :
+      <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((finding) => <FindingCard key={finding.id}
         evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
-        state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></div>
+        state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></section>
     }
   </div>;
 }
@@ -305,7 +319,7 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
       <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ScanDuration scan={scan} /></span>
-      <span><Badge variant="outline" className={scan.grade ? undefined : "text-muted-foreground"}>{scan.grade ? `${scan.grade}${scan.status === "partial" ? " · Incomplete" : ""}` : "Unrated"}</Badge></span><SecurityStatus value={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+      <span><Badge variant="outline" className={scan.grade ? undefined : "text-muted-foreground"}>{scan.grade || "Unrated"}</Badge></span><SecurityStatus value={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
     </Link>)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="scan history" /></div></div>;
 }
 
@@ -335,7 +349,7 @@ export function SecurityScan({ user }: { user: User }) {
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
     </>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityStatus value={scan.status} />{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings. Coverage is incomplete; unvalidated code may change the grade." : "The grade saved with this scan. Current repository risk is shown separately."}><Badge variant="outline">{scan.grade}{scan.status === "partial" && " · Incomplete"}</Badge></SecurityBadge>}<span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityStatus value={scan.status} />{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings. Coverage is incomplete; unvalidated code may change the grade." : "The grade saved with this scan. Current repository risk is shown separately."}><Badge variant="outline">{scan.grade}</Badge></SecurityBadge>}<span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ScanDuration scan={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
     <ErrorNotice error={scan.error || action.error} />

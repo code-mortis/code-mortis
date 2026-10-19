@@ -99,6 +99,58 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
     assert page["total"] == 21 and len(page["items"]) == 20
 
 
+def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pagination(seed, security_github, client):
+    expected = {"new": 2, "open_repeat": 21, "resolved_repeat": 1, "false_positive_repeat": 1,
+                "accepted_risk_repeat": 1, "fixed": 1, "not_observed": 1, "uncertain": 1, "recorded": 1, "repeated": 1}
+    identities = {key: [] for key in expected}
+    with transaction() as db:
+        earlier, scan = saved_scan(db, seed, status="completed"), saved_scan(db, seed, status="completed")
+        scan_id = scan.id
+        for state in ("open", "resolved"):
+            finding = saved_finding(db, seed, scan, state=state)
+            identities["new"].append(finding.id)
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={"title": "Original evidence"}))
+        for state in ("open", "resolved", "false_positive", "accepted_risk", "legacy"):
+            key = f"{state}_repeat" if state != "legacy" else "repeated"
+            for index in range(21 if state == "open" else 1):
+                finding = saved_finding(db, seed, earlier, state=state, title=f"Earlier defect {index}",
+                    severity="medium" if index == 20 else "high", kind="infrastructure" if index == 20 else "code")
+                identities[key].append(finding.id)
+                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={"title": "Original evidence"}))
+        for outcome in ("fixed", "not_observed", "uncertain", "legacy"):
+            finding = saved_finding(db, seed, earlier)
+            identities[outcome if outcome != "legacy" else "recorded"].append(finding.id)
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome=outcome, snapshot={}))
+        saved_finding(db, seed, earlier)
+        repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
+        db.add(repo)
+        db.flush()
+        foreign = saved_finding(db, {**seed, "repo": repo}, earlier)
+        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=foreign.id, outcome="present", snapshot={}))
+        scan.report = {"findings": [{"title": "Original report"}]}
+    path = f"/api/v1/security/scans/{scan_id}/findings"
+    page = client.get(path).json()
+    assert page["total"] == 31 and len(page["items"]) == 20
+    assert page["result_counts"] == expected
+    for outcome, ids in identities.items():
+        page = client.get(path, params={"outcome": outcome}).json()
+        assert page["total"] == len(ids) and page["result_counts"] == expected
+        rows = page["items"] + client.get(path, params={"outcome": outcome, "page": 2}).json()["items"]
+        assert {row["id"] for row in rows} == set(ids)
+    response = client.get(path + "?outcome=new&outcome=open_repeat&severity=medium&kind=infrastructure&search=Earlier")
+    assert response.status_code == 200 and response.json()["total"] == 1
+    assert response.json()["items"][0]["id"] == identities["open_repeat"][-1]
+    assert response.json()["result_counts"] == expected
+    assert client.get(path + "?outcome=invalid").status_code == 422
+    with transaction() as db:
+        db.get(SecurityFinding, identities["resolved_repeat"][0]).state = "open"
+    page = client.get(path, params={"outcome": "resolved_repeat"}).json()
+    assert page["total"] == 0 and page["result_counts"]["open_repeat"] == 22
+    with transaction() as db:
+        assert db.get(SecurityScan, scan_id).report == {"findings": [{"title": "Original report"}]}
+        assert db.scalar(select(SecurityOccurrence.snapshot).where(SecurityOccurrence.finding_id == identities["new"][0])) == {"title": "Original evidence"}
+
+
 @pytest.mark.parametrize(("severity", "grade"), [(None, "A"), ("low", "B"), ("medium", "C"), ("high", "D"), ("critical", "F"), ("unknown", None)])
 def test_rating_uses_highest_unresolved_severity(severity, grade):
     rows = [SimpleNamespace(state="open", severity=severity)] if severity else []
