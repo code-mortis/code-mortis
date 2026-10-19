@@ -7,7 +7,16 @@ export function resultDeliveryFeedback(error: string) {
       : /did not include the required DONE state and result object/.test(error)
         ? "The AI completion call omitted the required DONE state or structured result."
         : "The AI completion call did not match the required result format.";
-  return { title: "AI result delivery failed", message: `${message} The affected check was not accepted.` };
+  const summary = error.split(/; response=| Technical details:/, 1)[0];
+  const origin = /The gateway returned incomplete or malformed completion arguments\.$/.test(summary)
+    ? "The gateway response already contained incomplete or malformed arguments."
+    : /OCR's parsed completion differs from the gateway response\.$/.test(summary)
+      ? "OCR changed or lost data from the gateway's completion."
+      : /The gateway and OCR recorded identical completion arguments\.$/.test(summary)
+        ? "The gateway and OCR recorded identical arguments."
+        : /Gateway\/OCR comparison was unavailable; the origin could not be determined\.$/.test(summary)
+          ? "Gateway/OCR comparison was unavailable, so the origin is unknown." : "";
+  return { title: "AI result delivery failed", message: `${message}${origin ? ` ${origin}` : ""} The affected check was not accepted.` };
 }
 
 export function errorFeedback(error: unknown) {

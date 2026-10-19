@@ -404,10 +404,13 @@ def test_legacy_citation_failure_explains_mismatch_without_rewriting_saved_evide
 
 
 @pytest.mark.parametrize("task", ["analysis", "assessment"])
-def test_delivery_failure_names_the_completion_contract_without_rewriting_history(seed, task):
+@pytest.mark.parametrize("origin", [None, "gateway_incomplete", "ocr_mismatch", "unavailable"])
+def test_delivery_failure_names_the_completion_contract_without_rewriting_history(seed, task, origin):
     path = "src/scriptSchemaValidator.ts"
     error = ("Proposed finding" if task == "assessment" else "Source analysis") + f" could not be validated: {path}."
     feedback = {"kind": "delivery", "reason": "task_done did not include the required DONE state and result object."}
+    if origin:
+        feedback["transport"] = {"origin": origin}
     with transaction() as db:
         scan = saved_scan(db, seed, "partial", error=error)
         scan.report = {"problems": [error]}
@@ -415,7 +418,10 @@ def test_delivery_failure_names_the_completion_contract_without_rewriting_histor
         scan.progress = {"tasks": {key: {"status": "failed", "proposal": {"path": path}, "validation_feedback": feedback}}}
         public = security.public_scan(scan)
         assert public.error == security.validation_problem(path, feedback, task=task)
-        assert public.error == f"AI result delivery failed for {path}: {feedback['reason']}"
+        expected = f"AI result delivery failed for {path}: {feedback['reason']}"
+        if origin:
+            expected += " " + security.result_diagnostics.explanation(feedback["transport"])
+        assert public.error == expected
         assert public.report["problems"] == [public.error]
         assert scan.error == error and scan.status == "partial" and scan.report["problems"] == [error]
 

@@ -74,6 +74,15 @@ def test_ocr_success_never_substitutes_for_a_complete_result(transport, argument
     assert caught.value.feedback["received"]["result_type"] == type(arguments.get("result")).__name__
 
 
+def test_long_diagnostics_cannot_replace_the_delivery_error(transport):
+    transport.rows[0]["tool_calls"][0]["arguments"] = "{}"
+    transport.report["summary"]["extra"] = "x" * 5000
+    with pytest.raises(verification.VerificationOutputError, match="AI result delivery failed") as caught:
+        transport.invoke()
+    assert caught.value.usage == {"tokens": 7}
+    assert caught.value.feedback["transport"] == {"origin": "unavailable"}
+
+
 @pytest.mark.parametrize("malformed", [None, [], "invalid", 7])
 def test_corrupt_session_rows_preserve_known_usage(transport, malformed):
     transport.rows.insert(0, malformed)

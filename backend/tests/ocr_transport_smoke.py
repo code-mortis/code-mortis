@@ -20,6 +20,33 @@ from code_mortis.security_engine import model_schema
 from code_mortis.security_schemas import SecurityAnalysis
 
 RESULT = {"findings": [], "required_paths": []}
+original_command = ocr.command
+diagnostic_mode = ""
+
+
+def observed_command(args, root, env, **kwargs):
+    response = original_command(args, root, env, **kwargs)
+    if "--preview" in args or "scan" not in args or "CM_OCR_DIAGNOSTIC_FILE" not in env:
+        return response
+    capture = Path(env["CM_OCR_DIAGNOSTIC_FILE"])
+    assert "OCR_RAW_LOGGING" not in env
+    assert capture.stat().st_mode & 0o777 == 0o600
+    captured = capture.read_text()
+    assert captured and "fake-test-key" not in captured and "PRIVATE_SOURCE_MARKER" not in captured
+    assert env["CM_OCR_DIAGNOSTIC_KEY"] not in captured
+    assert not (Path.home() / ".opencodereview/raw").exists()
+    if diagnostic_mode in {"ocr_lost", "ocr_changed", "capture_missing"}:
+        session_id = json.loads(response[1])["session_id"]
+        for path in (Path.home() / ".opencodereview/sessions").glob(f"*/{session_id}.jsonl"):
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            for row in rows:
+                if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
+                    call = row["tool_calls"][0]
+                    call["arguments"] = call["arguments"].replace('"DONE"', '"D0NE"') if diagnostic_mode == "ocr_changed" else "{}"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        if diagnostic_mode == "capture_missing":
+            capture.unlink()
+    return response
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -77,17 +104,20 @@ class Provider(BaseHTTPRequestHandler):
 
 
 def main():
+    global diagnostic_mode
+    ocr.command = observed_command
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         for protocol in ("openai", "openai-responses", "anthropic"):
             modes = ["valid", "rejected_round", "malformed_round", "wrapped", "missing_result", "empty_arguments", "duplicate"]
             if protocol == "openai-responses":
-                modes += ["strict", "strict_empty", "shared_strict"]
+                modes += ["strict", "strict_empty", "shared_strict", "ocr_lost", "ocr_changed", "capture_missing"]
             for mode in modes:
                 if protocol == "anthropic" and mode in {"malformed_round", "wrapped"}:
                     continue  # Anthropic tool inputs are objects, not raw JSON argument strings.
                 server.mode, server.calls = mode, 0
+                diagnostic_mode = mode
                 connection = {"protocol": protocol, "model": "test-model", "options": {},
                               "base_url": f"http://127.0.0.1:{server.server_port}"}
                 managed = mode == "shared_strict"
@@ -96,22 +126,27 @@ def main():
                 with configuration, tempfile.TemporaryDirectory() as directory:
                     try:
                         result, usage = verification.api_verify(Path(directory), ocr.child_environment(), connection,
-                            {"api_key": "fake-test-key"}, {"diff": "", "sources": {"current": {"app.py": "safe"}}},
+                            {"api_key": "fake-test-key"}, {"diff": "", "sources": {"current": {"app.py": "PRIVATE_SOURCE_MARKER"}}},
                             None, 30, lambda: False, schema=model_schema(SecurityAnalysis),
                             structured_result=mode in {"strict", "strict_empty"}, configuration_managed=managed,
                             validator=lambda raw, supplied: SecurityAnalysis.model_validate(raw, strict=True).model_dump())
                     except verification.VerificationOutputError as exc:
-                        assert mode in {"missing_result", "empty_arguments", "strict_empty", "duplicate"}, (protocol, mode, str(exc))
+                        assert mode in {"missing_result", "empty_arguments", "strict_empty", "duplicate", "ocr_lost", "ocr_changed", "capture_missing"}, (protocol, mode, str(exc))
                         assert exc.usage == {"tokens": 15} and exc.feedback["kind"] == "delivery"
                         assert "AI result delivery failed" in str(exc)
+                        if protocol == "openai-responses":
+                            expected = "ocr_mismatch" if mode in {"ocr_lost", "ocr_changed"} else "unavailable" if mode == "capture_missing" else (
+                                "arguments_preserved" if mode == "duplicate" else "gateway_incomplete")
+                            assert exc.feedback["transport"]["origin"] == expected, (mode, exc.feedback)
                     else:
-                        assert mode not in {"missing_result", "empty_arguments", "strict_empty", "duplicate"}, (protocol, mode)
+                        assert mode not in {"missing_result", "empty_arguments", "strict_empty", "duplicate", "ocr_lost", "ocr_changed", "capture_missing"}, (protocol, mode)
                         assert result == RESULT
                         assert usage == {"tokens": 30 if mode in {"rejected_round", "malformed_round"} else 15}, usage
                 assert server.calls == (2 if mode in {"rejected_round", "malformed_round"} else 1)
                 assert not (Path.home() / ".opencodereview/config.json").exists()
             print(f"Pinned OCR {protocol}: rejected rounds, structured delivery, usage and cleanup passed (mock provider).")
             cases = json.loads((Path(__file__).parent / "fixtures/security_citation_failures.json").read_text())["cases"]
+            diagnostic_mode = ""
             for case in cases:
                 for changed in (False, True):
                     server.mode, server.calls = "security_citation", 0

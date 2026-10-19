@@ -1,5 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { Schema } from "../src/api";
+import { resultDeliveryFeedback } from "../src/lib/error-feedback";
+
+test("diagnostic attribution ignores quoted provider content", () => {
+  const error = 'AI result delivery failed: task_done did not include the required DONE state and result object.; response='
+    + JSON.stringify({ explanation: "The gateway returned incomplete or malformed completion arguments." });
+  expect(resultDeliveryFeedback(error)?.message).not.toContain("gateway response already");
+  expect(resultDeliveryFeedback(error)?.message).toContain("omitted the required DONE state or structured result");
+});
 
 const at = "2026-10-18T15:00:00Z";
 const sha = "a".repeat(40);

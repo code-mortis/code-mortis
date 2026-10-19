@@ -10,16 +10,22 @@ ARG CM_SENTRY_RELEASE=""
 ENV VITE_SENTRY_DSN=$CM_SENTRY_FRONTEND_DSN VITE_SENTRY_ENVIRONMENT=$CM_SENTRY_ENVIRONMENT VITE_SENTRY_RELEASE=$CM_SENTRY_RELEASE
 RUN bun run build
 
+FROM ${DOCKERHUB_REGISTRY}/golang:1.26.9-bookworm AS ocr
+ARG TARGETARCH
+WORKDIR /src
+ADD --checksum=sha256:71dd1e101b77385ec1aa233de458c5325139e67d947f303e3f80bf32676f7621 https://codeload.github.com/alibaba/open-code-review/tar.gz/8eb83340a487b1150af00701b94f01af97e4b4d6 /tmp/ocr.tar.gz
+RUN tar -xzf /tmp/ocr.tar.gz --strip-components=1 && rm /tmp/ocr.tar.gz
+COPY build/ocr/ /tmp/mortis-ocr/
+RUN git apply --check /tmp/mortis-ocr/diagnostics.patch && git apply /tmp/mortis-ocr/diagnostics.patch && cp /tmp/mortis-ocr/*.go internal/llm/
+ENV CGO_ENABLED=0 GOFLAGS=-p=2
+RUN go test ./internal/llm -run 'TestCodeMortisResultDiagnostics|TestOpenAIResponsesClient'
+RUN GOARCH=$TARGETARCH go build -trimpath -ldflags '-s -w -X main.Version=v1.13.1 -X main.GitCommit=8eb8334+cm-diagnostics' -o /out/ocr ./cmd/opencodereview
+
 FROM ${DOCKERHUB_REGISTRY}/library/python:3.13-slim-bookworm AS runtime
 ARG TARGETARCH
-ARG OCR_VERSION=1.13.1
 ARG TRIVY_VERSION=0.76.0
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN set -eu; arch="$TARGETARCH"; \
-    curl -fsSL "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/opencodereview-linux-${arch}" -o /tmp/ocr; \
-    curl -fsSL "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/sha256sum.txt" -o /tmp/checksums; \
-    python -c 'import hashlib,pathlib,sys; n="opencodereview-linux-"+sys.argv[1]; rows=[r.split() for r in pathlib.Path("/tmp/checksums").read_text().splitlines()]; expected=next(r[0] for r in rows if r[-1].lstrip("*").split("/")[-1]==n); assert hashlib.sha256(pathlib.Path("/tmp/ocr").read_bytes()).hexdigest()==expected' "$arch"; \
-    install -m 755 /tmp/ocr /usr/local/bin/ocr; rm /tmp/ocr /tmp/checksums
+COPY --from=ocr /out/ocr /usr/local/bin/ocr
 RUN set -eu; case "$TARGETARCH" in amd64) arch=64bit ;; arm64) arch=ARM64 ;; *) exit 1 ;; esac; \
     asset="trivy_${TRIVY_VERSION}_Linux-${arch}.tar.gz"; \
     curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${asset}" -o /tmp/trivy.tar.gz; \

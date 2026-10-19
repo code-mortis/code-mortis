@@ -13,7 +13,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from . import assessment, github, ocr, runner_client, security_engine, verification
+from . import assessment, github, ocr, result_diagnostics, runner_client, security_engine, verification
 from .config import settings
 from .db import now, transaction, uid
 from .models import (
@@ -169,7 +169,8 @@ def grade_for(findings):
 
 def validation_problem(path, feedback, *, task="analysis"):
     if (feedback or {}).get("kind") == "delivery":
-        return f"AI result delivery failed for {path}: {feedback['reason']}"
+        return f"AI result delivery failed for {path}: {feedback['reason']}" + (
+            " " + result_diagnostics.explanation(feedback["transport"]) if feedback.get("transport") else "")
     if (feedback or {}).get("kind") == "citation_selection":
         path = feedback.get("path", path)
         return f"AI source selection is invalid in {path}: {feedback.get('reason', 'source reference or line range was not supplied')}."
