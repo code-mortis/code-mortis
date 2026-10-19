@@ -144,7 +144,7 @@ def summaries(db, repository_ids):
                     setattr(data, name, datetime.fromisoformat(fresh[name]) if name == "checked_at" else fresh[name])
             if grade:
                 data.grade, data.grade_scan_id, data.grade_sha, data.graded_at = grade.grade, grade.id, grade.head_sha, grade.finished_at
-            data.state = "current" if grade and scan.id == grade.id else "incomplete"
+            data.state = "current" if grade and scan.id == grade.id and scan.status == "completed" else "incomplete"
             current_counts = counts.get(identity, {})
             observed_grade = next((value for severity, value in [("critical", "F"), ("high", "D"), ("medium", "C"), ("low", "B")]
                                    if current_counts.get(severity)), "A")
@@ -165,6 +165,12 @@ def grade_for(findings):
         return None
     return next((grade for severity, grade in [("critical", "F"), ("high", "D"), ("medium", "C"), ("low", "B")]
                  if severity in severities), "A")
+
+
+def analysis_problem(path, feedback):
+    if (feedback or {}).get("reason") in {"quote is not verbatim text within the cited source lines", "invalid source line range"}:
+        return f"AI citation mismatch in {path}: the quoted text or line numbers do not match the supplied source."
+    return f"Source analysis could not be validated: {path}."
 
 
 def redact_finding_text(db, finding, text):
@@ -576,7 +582,7 @@ def perform(scan_id, claim):
                         except verification.VerificationOutputError as exc:
                             if exc.feedback and type(exc.usage.get("tokens")) is int:
                                 failed += 1
-                                problems.append(f"Source analysis could not be validated: {path}.")
+                                problems.append(analysis_problem(path, exc.feedback))
                             else:
                                 fatal = fatal or exc
                                 stop_workers.set()
@@ -754,7 +760,7 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         scan.error = "; ".join(str(problem) for problem in problems)[:2000] or None
         scan.progress = {**scan.progress, "freshness": freshness}
         findings = list(db.scalars(select(SecurityFinding).where(SecurityFinding.repository_id == scan.repository_id)))
-        if complete and current:
+        if supported:
             scan.grade = grade_for(findings)
         scan.stages = {**scan.stages, "report": {"status": "completed"}}
         scan.report = report_data(db, scan, problems)
@@ -822,6 +828,14 @@ def public_scan(scan):
     result = SecurityScanOut.model_validate(scan)
     # Checkpoints are internal result transports; the report and counters are the public history.
     tasks = result.progress.get("tasks", {})
+    for key, task in tasks.items():
+        if key.startswith("analysis:") and "quote" in (task.get("validation_feedback") or {}):
+            path = key.removeprefix("analysis:")
+            old, message = f"Source analysis could not be validated: {path}.", analysis_problem(path, task["validation_feedback"])
+            result.error = result.error.replace(old, message) if result.error else None
+            if "problems" in result.report:
+                result.report = {**result.report, "problems": [problem.replace(old, message) if isinstance(problem, str) else problem
+                                                             for problem in result.report["problems"]]}
     result.progress = {key: value for key, value in result.progress.items() if key not in {"tasks", "execution"}}
     result.progress["work"] = {state: sum(task["status"] == state for task in tasks.values())
                                 for state in ("running", "completed", "failed", "interrupted")}

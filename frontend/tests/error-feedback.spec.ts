@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 import { errorFeedback } from "../src/lib/error-feedback";
 
 for (const [raw, title] of [
-  ['OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[]}', "Evidence could not be verified"],
+  ['OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[]}', "AI citation mismatch"],
+  ['AI citation mismatch in docker-compose.yml: the quoted text or line numbers do not match the supplied source.', "AI citation mismatch"],
+  ['Security evidence does not match its cited source lines. {"reason":"unavailable source"}', "Evidence could not be verified"],
   ['The native security result failed source validation: Security evidence cites source that was not supplied.', "Evidence could not be verified"],
   ['Required security evidence is unavailable or exceeds its limit.', "Supporting evidence unavailable"],
   ['Required security evidence could not be supplied: guard.py. This path is not in the prepared snapshot at the scanned commit.', "Supporting evidence unavailable"],

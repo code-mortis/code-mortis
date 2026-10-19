@@ -12,6 +12,11 @@ export function errorFeedback(error: unknown) {
       ? "Supporting source could not be supplied. This older record did not save the requested path or distinguish missing source from an evidence limit."
       : message.replace(/^Required security evidence could not be supplied:\s*/i, ""));
   }
+  if (/AI citation mismatch|(?:Security|Verification|Assessment) evidence does not match/i.test(message)
+    && !/"reason"\s*:\s*"unavailable source"/.test(message)) {
+    const path = /^AI citation mismatch in (.+?): /.exec(message)?.[1];
+    return explain("AI citation mismatch", `The AI's quote or cited line numbers do not match ${path ?? "the supplied source"}. The source was read; this is not a missing-file error. Unverified results were not accepted.`);
+  }
   if (/(?:Security|Verification|Assessment) evidence|source validation|source citation|cited source lines/i.test(message)) {
     return explain("Evidence could not be verified", "The AI returned source evidence that did not match the supplied code. Review the technical details and retry the run. Unverified results were not accepted.");
   }

@@ -76,7 +76,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   if (options.longPath) current.path = `services/${"long-directory-name/".repeat(10)}account-order-ownership-with-a-very-long-filename.ts`;
   if (options.secret) current = { ...current, kind: "secret", title: "Exposed credential material", evidence: { ...current.evidence, identity: "keyed-digest" } };
   if (options.issue) current.issue = options.issue;
-  const state = { ...(options.partial ? { ...summary, state: "incomplete", latest_status: "partial", counts: { critical: 1 } } : summary),
+  const state = { ...(options.partial ? { ...summary, state: "incomplete", grade_scan_id: "previous", latest_status: "partial", counts: { critical: 1 } } : summary),
     ...(options.latestStatus ? { latest_status: options.latestStatus } : {}), ...options.summary };
   const saved = { ...scan, report: { commit: sha, grade: "D", status: "completed", findings: [{ ...current, finding_id: current.id, outcome: "present" }], problems: [] } };
   if (options.running) Object.assign(saved, { status: "running", grade: null, report: {},
@@ -160,13 +160,13 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await mock(page, { scanError: error });
   await page.goto("/security/scans/scan");
   const alert = page.getByRole("alert").first();
-  await expect(alert.getByText("Evidence could not be verified", { exact: true })).toBeVisible();
-  await expect(alert).toContainText("Review the technical details and retry the run.");
+  await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
+  await expect(alert).toContainText("The source was read; this is not a missing-file error.");
   const widths = await alert.locator("p.leading-relaxed").evaluate((node) => ({
     message: node.getBoundingClientRect().width, available: node.parentElement!.getBoundingClientRect().width,
   }));
   expect(Math.abs(widths.message - widths.available)).toBeLessThan(1);
-  const details = alert.getByRole("region", { name: "Evidence could not be verified technical details", includeHidden: true });
+  const details = alert.getByRole("region", { name: "AI citation mismatch technical details", includeHidden: true });
   await expect(details).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("security-readable-error.png"), fullPage: true });
@@ -176,14 +176,42 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await expect(details).toHaveText(error);
   await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
     value: { writeText: async (value: string) => { document.body.dataset.copiedError = value; } } }));
-  await alert.getByRole("button", { name: "Copy Evidence could not be verified details", exact: true }).click();
+  await alert.getByRole("button", { name: "Copy AI citation mismatch details", exact: true }).click();
   await expect(page.locator("body")).toHaveAttribute("data-copied-error", error);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
   await page.getByText("Analysis work units", { exact: true }).click();
   const work = page.getByRole("tabpanel").getByRole("alert");
-  await expect(work.getByText("Evidence could not be verified", { exact: true })).toBeVisible();
+  await expect(work.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
+});
+
+for (const grade of ["A", "D"]) test(`finished partial reports show grade ${grade} with incomplete coverage`, async ({ page }, info) => {
+  const error = "AI citation mismatch in docker-compose.yml: the quoted text or line numbers do not match the supplied source.";
+  await mock(page, { partial: true, summary: { grade, grade_scan_id: "scan", counts: grade === "D" ? { high: 1 } : {} } });
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: { ...scan, status: "partial", grade, error,
+      progress: { tokens: 4500, work: { completed: 80, failed: 1, analysis_total: 58, analysis_completed: 57 } },
+      stages: { ...scan.stages, analysis: { status: "partial", total: 58, completed: 57, failed: 1 } },
+      report: { ...scan.report, grade, status: "partial", findings: grade === "D" ? [{ ...finding, finding_id: finding.id, outcome: "present" }] : [], problems: [error] } },
+    can_write: true, finding_count: grade === "D" ? 1 : 0, activity_count: 0, activity: [],
+  } }));
+  await page.goto("/security");
+  const badge = page.getByRole("link", { name: `${grade} · Incomplete`, exact: true });
+  await expect(badge).toBeVisible();
+  await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-status-good/);
+  await badge.click();
+  await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toBeVisible();
+  await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toBeVisible();
+  await page.goto("/security/scans/scan");
+  await expect(page.getByText(`${grade} · Incomplete`, { exact: true })).toBeVisible();
+  const alert = page.getByRole("alert").first();
+  await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
+  await expect(alert).toContainText("docker-compose.yml");
+  await expect(alert).toContainText("not a missing-file error");
+  await expect(page.getByRole("group", { name: "Analysis stage" })).toContainText("57 / 58 files");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-partial-grade-${grade}-${info.project.name}.png`, fullPage: true });
 });
 
 test("security overview keeps historical grades qualified and filters in the URL", async ({ page }, info) => {
@@ -1276,7 +1304,7 @@ test("security assessment result filters and failed diagnostics preserve separat
   await expect(page.getByRole("tab", { name: "Assessment 7", exact: true })).toBeVisible();
   await list.getByRole("button", { name: /Security candidate 3/ }).click();
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
-  await expect(drawer.getByText("Evidence could not be verified", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(drawer.getByText("Token usage not recorded.")).toBeVisible();
   await drawer.getByRole("tab", { name: "Evidence 0", exact: true }).click();
   await expect(drawer.getByText("No supporting evidence was recorded.")).toBeVisible();

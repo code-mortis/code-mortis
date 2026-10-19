@@ -243,7 +243,7 @@ def test_resolution_requires_complete_current_evidence(seed, security_github, co
     with transaction() as db:
         scan, finding = db.get(SecurityScan, scan_id), db.get(SecurityFinding, finding_id)
         assert (finding.state == "resolved") == resolved
-        assert scan.grade == ("A" if resolved else None)
+        assert scan.grade == ("A" if resolved else "D")
         assert scan.report["commit"] == SHA
 
 
@@ -269,6 +269,36 @@ def test_summaries_keep_historical_grade_neutral_after_partial_scan(seed):
         assert security.summaries(db, [22])[22].state == "outdated"
         latest.progress = {"freshness": {"checked_at": now().isoformat(), "error": "Unavailable"}}
         assert security.summaries(db, [22])[22].state == "unavailable"
+
+
+def test_finished_partial_report_is_graded_without_claiming_complete_coverage(seed, security_github):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        saved_finding(db, seed, scan, severity="high")
+        identity = scan.id
+    security.finish(identity, {}, ["Source analysis could not be validated: docker-compose.yml."], freshness(), True)
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.grade == scan.report["grade"] == "D"
+        assert scan.status == scan.report["status"] == "partial"
+        assert scan.stages["report"]["status"] == "completed"
+        assert "docker-compose.yml" in scan.error
+        summary = security.summaries(db, [22])[22]
+        assert summary.grade == "D" and summary.state == "incomplete"
+        assert summary.grade_scan_id == summary.latest_scan_id == identity
+
+
+def test_legacy_citation_failure_explains_mismatch_without_rewriting_saved_evidence(seed):
+    error = "Source analysis could not be validated: docker-compose.yml."
+    with transaction() as db:
+        scan = saved_scan(db, seed, "partial", error=error)
+        scan.report = {"problems": [error]}
+        scan.progress = {"tasks": {"analysis:docker-compose.yml": {"status": "failed", "error": "Invalid citation",
+            "validation_feedback": {"quote": "synthetic", "reason": "quote is not verbatim text within the cited source lines"}}}}
+        public = security.public_scan(scan)
+        assert public.error.startswith("AI citation mismatch in docker-compose.yml:")
+        assert public.report["problems"] == [public.error]
+        assert scan.error == error and scan.report["problems"] == [error]
 
 
 def test_finding_recurrence_reuses_identity_and_invalidates_rotation(seed):
@@ -472,7 +502,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
             assert len(calls) == (3 if concurrency == 3 else 2)
         else:
             assert scan.status == ("partial" if failure else "completed"), scan.error
-            assert scan.grade == (None if failure else "A")
+            assert scan.grade == "A"
             assert scan.progress["tokens"] == (84 if failure == "evidence" else 72) and len(calls) == 6
             assert scan.stages["analysis"]["completed"] == (5 if failure else 6)
             assert scan.stages["analysis"]["failed"] == (1 if failure else 0)
@@ -532,7 +562,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     security.perform(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
-        assert scan.status == "partial" and scan.grade is None, scan.error
+        assert scan.status == "partial" and scan.grade == "B", scan.error
         assert scan.progress["tokens"] == 36
         assert scan.stages["assessment"]["completed"] == scan.stages["assessment"]["failed"] == 1
         assert scan.progress["tasks"]["assessment:0"]["validation_feedback"]["errors"] == [{"reason": "invented quote"}]
@@ -617,8 +647,8 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
             assert len(calls) == (4 if concurrency == 4 else 2)
         else:
             assert scan.status == ("partial" if failure else "completed"), scan.error
-            assert (scan.grade is None) is bool(failure)
-            assert scan.progress["tokens"] == 192 and len(calls) == 8
+            assert scan.grade == "B"
+            assert scan.progress["tokens"] == (204 if failure == "evidence" else 192) and len(calls) == 8
             assert scan.stages["assessment"]["completed"] == (7 if failure else 8)
             assert scan.stages["assessment"]["failed"] == (1 if failure else 0)
             assert len(scan.report["findings"]) == (7 if failure else 8)
@@ -754,6 +784,31 @@ def test_security_citations_reanchor_only_unchanged_unique_source_text(revision,
     citation = {"revision": revision, "path": "app.py", "start_line": 1, "end_line": 3, "quote": quote}
     assert security_engine.validate_citations([citation], {revision: {"app.py": source}}) == {revision}
     assert citation["start_line"] == 2 and citation["end_line"] == 4 and citation["quote"] == quote
+
+
+@pytest.mark.parametrize("revision", ["original", "current"])
+@pytest.mark.parametrize(("claimed", "expected"), [(75, 74), (56, 55), (34, 33), (44, None)])
+def test_security_recovers_repeated_exact_quotes_only_at_a_unique_nearest_line(revision, claimed, expected):
+    lines = ["# filler"] * 91
+    for number in (33, 55, 74):
+        lines[number - 1:number + 1] = ["    volumes:", "      - .:/app"]
+    source = "\n".join(lines)
+    quote = "    volumes:\n      - .:/app"
+    citation = {"revision": revision, "path": "docker-compose.yml", "start_line": claimed, "end_line": claimed + 1, "quote": quote}
+    if expected is None:
+        with pytest.raises(security_engine.verification.ResultValidationError):
+            security_engine.validate_citations([citation], {revision: {"docker-compose.yml": source}})
+        assert citation["start_line"] == claimed
+    else:
+        assert security_engine.validate_citations([citation], {revision: {"docker-compose.yml": source}}) == {revision}
+        assert citation["start_line"] == expected and citation["end_line"] == expected + 1
+    assert citation["quote"] == quote
+
+
+def test_security_recovers_multiple_exact_matches_on_the_same_source_line():
+    citation = {"revision": "current", "path": "app.py", "start_line": 2, "end_line": 2, "quote": "safe"}
+    assert security_engine.validate_citations([citation], {"current": {"app.py": "safe safe\nother"}}) == {"current"}
+    assert citation["start_line"] == citation["end_line"] == 1
 
 
 @pytest.mark.parametrize("quote", ["invented", "safe", 'value = \\"synthetic\\"', "safe\n...\nsafe"])
@@ -909,12 +964,121 @@ def test_unavailable_security_evidence_reports_path_reason_and_usage(tmp_path, m
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
         security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
             {"assigned_path": "app.py", "sources": {"current": sources}, "diff": ""}, 100, 60, lambda: False, uid())
-    assert len(calls) == (4 if failure == "pass_limit" else 2 if failure == "supplied" else 1)
+    assert len(calls) == (4 if failure == "pass_limit" else 1 if failure in {"protected", "file_limit"} else 2)
     assert error.value.usage == {"tokens": 7 * len(calls)}
     assert path in str(error.value) and reason in str(error.value)
     assert error.value.feedback["kind"] == "evidence"
     assert error.value.feedback["required_paths"] == [path]
     assert reason in error.value.feedback["reason"]
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+@pytest.mark.parametrize("case", ["corrected", "mixed", "repeat", "uncertain", "after_schema_error"])
+def test_security_missing_evidence_can_use_real_inventory_before_failing(tmp_path, monkeypatch, kind, task, case):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {} for path in ["app.py", "conf/settings.py", "README.md", "AGENTS.md",
+        ".codex/config.toml", ".agents/skills/test/SKILL.md", ".aws/credentials"]}
+    calls, contexts, reads, clock = [], [], [], [0]
+    missing = ["config/settings.py", "api-collection/README.md"]
+    bundle = security_engine.verification.evidence_bundle
+    monkeypatch.setattr(security_engine, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def read(path, sha=None):
+        assert path in {"conf/settings.py", "README.md"}
+        reads.append((path, sha))
+        return "safe guard"
+
+    def evidence_bundle(context):
+        contexts.append(json.loads(json.dumps(context)))
+        return bundle(context)
+
+    def response():
+        clock[0] += 10
+        step = len(calls) - int(case == "after_schema_error")
+        paths = missing if step == 1 or case == "repeat" else ["conf/settings.py"] if step == 2 and case != "uncertain" else []
+        if case == "mixed" and step == 1:
+            paths = [*paths, "README.md", "README.md"]
+        raw = {"findings": [], "required_paths": paths} if task == "analysis" else {
+            "verdict": "uncertain", "explanation": "Required evidence is unavailable; no issue or fix is confirmed.",
+            "evidence": [], "required_paths": paths,
+            **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": False})}
+        if case == "after_schema_error" and len(calls) == 1:
+            raw["unexpected_field"] = True
+        return raw
+
+    def api(*args, **kwargs):
+        evidence_bundle(args[4])
+        calls.append((args[5], args[6]))
+        try:
+            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+        except security_engine.verification.ResultValidationError as exc:
+            raise security_engine.verification.VerificationOutputError("Invalid schema", {"tokens": 7}, feedback=exc.feedback) from exc
+
+    def native(connection, identity, payload, stopped):
+        calls.append((payload["token_budget"], payload["timeout"]))
+        return response(), {"tokens": 7}
+
+    item.read = read
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": "", "original_sha": OLD,
+               "available_paths": ["invented.py"]}
+    connection = {"id": "connection", "kind": kind, "model": "test"}
+    if case == "repeat":
+        with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+            security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        assert error.value.usage == {"tokens": 14}
+        assert error.value.feedback["required_paths"] == missing
+    else:
+        result, usage = security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        assert result["required_paths"] == [] and usage == {"tokens": 7 * len(calls)}
+        if task != "analysis":
+            assert result["verdict"] == "uncertain"
+    expected_calls = 4 if case == "after_schema_error" else 2 if case in {"repeat", "uncertain"} else 3
+    assert calls == [(100 - 7 * step, 60 - 10 * step) for step in range(expected_calls)]
+    assert all(context["available_paths"] == ["README.md", "app.py", "conf/settings.py"] for context in contexts)
+    correction = contexts[2 if case == "after_schema_error" else 1]["validation_feedback"]
+    assert correction["kind"] == "evidence" and correction["required_paths"] == missing
+    assert "prepared snapshot" in correction["reason"]
+    expected_reads = [("README.md", None)] if case == "mixed" else []
+    if case == "mixed" and task == "verification":
+        expected_reads.append(("README.md", OLD))
+    if case not in {"repeat", "uncertain"}:
+        expected_reads.append(("conf/settings.py", None))
+        if task == "verification":
+            expected_reads.append(("conf/settings.py", OLD))
+    assert reads == expected_reads
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("limit", ["budget", "timeout", "cancel", "unknown_usage"])
+def test_security_missing_path_correction_respects_execution_limits(tmp_path, monkeypatch, kind, limit):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    calls, clock = [], [0]
+    monkeypatch.setattr(security_engine, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def response(*args, **kwargs):
+        calls.append(1)
+        if limit == "timeout":
+            clock[0] = 60
+        return {"verdict": "uncertain", "finding_id": None, "explanation": "Need settings", "evidence": [],
+                "required_paths": ["config/settings.py"]}, {"tokens": None if limit == "unknown_usage" else 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", response)
+    monkeypatch.setattr(security_engine.runner_client, "review", response)
+    context = {"sources": {"current": {}}, "diff": ""}
+    connection = {"id": "connection", "kind": kind, "model": "test"}
+    def stopped():
+        return bool(calls) and limit == "cancel"
+
+    error_type = security_engine.ocr.ReviewStopped if limit == "cancel" else security_engine.verification.VerificationOutputError
+    with pytest.raises(error_type) as error:
+        security_engine.ask(item, connection, {}, "assessment", context, 7 if limit == "budget" else 100, 60, stopped, uid())
+    assert calls == [1]
+    if limit != "cancel":
+        assert error.value.usage == {"tokens": None if limit == "unknown_usage" else 7}
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
@@ -1178,7 +1342,7 @@ def test_security_citation_recovery_is_bounded_and_never_repeats_unknown_usage(
 
 def test_security_citation_feedback_keeps_missing_source_ranges_and_quote_mismatches_distinct():
     evidence = [{"revision": "current", "path": "app.py", "start_line": start, "end_line": start, "quote": quote}
-                for start, quote in [(1, "safe}"), (5, "safe"), (1, " ")]]
+                for start, quote in [(1, "safe}"), (5, "missing"), (1, " ")]]
     evidence.append({**evidence[0], "path": "missing.py"})
     with pytest.raises(security_engine.verification.ResultValidationError) as error:
         security_engine.validate_citations(evidence, {"current": {"app.py": "safe\nsafe"}})
@@ -1311,6 +1475,34 @@ def test_security_migration_preserves_existing_workspace(seed):
     command.upgrade(Config("alembic.ini"), "head")
     with transaction() as db:
         assert (db.get(User, 7).access_token, db.get(Connection, "connection").secret, db.get(PullRequest, "pr").title) == original
+
+
+def test_finished_report_grades_migration_uses_saved_findings_and_preserves_failures(seed):
+    from alembic import command
+    from alembic.config import Config
+
+    command.downgrade(Config("alembic.ini"), "20261020_security_scans")
+    cases = [("partial", "high", True, None, "D"), ("completed", "medium", True, None, "C"),
+             ("partial", "unknown", True, None, None), ("partial", "high", False, None, None),
+             ("cancelled", "high", True, None, None), ("partial", "high", True, "B", "B"),
+             ("partial", None, True, None, "A")]
+    identities = []
+    with transaction() as db:
+        for status, severity, supported, grade, expected in cases:
+            scan = saved_scan(db, seed, status, grade=grade, finished_at=now(), error="Saved failure")
+            scan.stages = {"report": {"status": "completed"}}
+            scan.coverage = {"inventory": {"app.py": {"code": True}}} if supported else {}
+            scan.report = {"schema_version": security_engine.POLICY, "grade": grade, "problems": ["Saved failure"],
+                "findings": [{"state": "open", "severity": severity}] if severity else []}
+            identities.append((scan.id, status, expected))
+        saved_finding(db, seed, scan, severity="critical")  # Current state must not replace historical report evidence.
+    command.upgrade(Config("alembic.ini"), "head")
+    with transaction() as db:
+        for identity, status, expected in identities:
+            scan = db.get(SecurityScan, identity)
+            assert scan.grade == scan.report["grade"] == expected
+            assert scan.status == status and scan.error == "Saved failure"
+            assert scan.report["problems"] == ["Saved failure"]
 
 
 @pytest.mark.parametrize("lost_response", [False, True])

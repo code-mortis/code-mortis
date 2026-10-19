@@ -40,8 +40,11 @@ INSTRUCTIONS = (
     "do not infer exploitability from an isolated dangerous function. Never reproduce secrets or private "
     "reasoning. Evidence quotes use the source line numbers before |. When supporting source is necessary, "
     "request exact repository-relative required_paths and remain uncertain. Source blocks are complete files, "
-    "including empty files. Request only paths absent from sources.current. For validation_feedback kind evidence, "
-    "use the supplied source blocks and remove already supplied paths from required_paths. Use the requested language for "
+    "including empty files. available_paths lists real current-commit paths permitted for supporting source. "
+    "Request only paths from available_paths that are absent from sources.current. For validation_feedback kind evidence, "
+    "correct unavailable paths using available_paths and use source blocks already supplied. If necessary evidence is "
+    "unavailable, explain the gap and return uncertain for assessment or verification; never invent source or confirm "
+    "an issue or fix without evidence. Use the requested language for "
     "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
     "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
     "match the requested schema. For citation feedback, correct every listed citation using the exact "
@@ -402,10 +405,20 @@ def validate_citations(evidence, sources, *, field="evidence"):
             start, end = citation["start_line"], citation["end_line"]
             quote = citation["quote"]
             if quote.strip() and quote not in "".join(lines[max(0, start - 1):end]):
-                # Correct location drift only when the unchanged quote has one exact source match.
+                nearest, ambiguous, line, previous = None, False, 1, 0
                 offset = text.find(quote)
-                if offset >= 0 and text.find(quote, offset + 1) < 0:
-                    start = text.count("\n", 0, offset) + 1
+                while offset >= 0:
+                    line += text.count("\n", previous, offset)
+                    distance = abs(line - start)
+                    if nearest is None or distance < nearest[0]:
+                        nearest, ambiguous = (distance, line), False
+                    elif distance == nearest[0] and line != nearest[1]:
+                        ambiguous = True
+                    previous = offset
+                    offset = text.find(quote, offset + 1)
+                # Repeated text is recoverable only when one exact match is nearest to the cited line.
+                if nearest is not None and not ambiguous:
+                    start = nearest[1]
                     end = start + quote.count("\n") - int(quote.endswith("\n"))
                     citation.update(start_line=start, end_line=end)
                     problem.update(start_line=start, end_line=end)
@@ -427,6 +440,9 @@ def validate_citations(evidence, sources, *, field="evidence"):
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, configuration_managed=False):
+    context = {**context, "available_paths": sorted(path for path in item.inventory
+        if not any(part in PROTECTED for part in PurePosixPath(path).parts)
+        and PurePosixPath(path).name not in INSTRUCTION_FILES)}
     model = {"analysis": SecurityAnalysis, "assessment": SecurityAssessment, "verification": SecurityFix}[task]
     schema = model_schema(model)
     instructions = INSTRUCTIONS + {
@@ -479,6 +495,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         return result
 
     used, feedback, corrected = 0, None, False
+    evidence_corrected = False
 
     def evidence_unavailable(paths, reason):
         raise verification.VerificationOutputError(
@@ -533,21 +550,16 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             return json.loads(item.redact(json.dumps(result))), {"tokens": used}
         if attempt == 3:
             break
-        repeated = [path for path in dict.fromkeys(result["required_paths"]) if path in context["sources"]["current"]]
-        if repeated:
-            reason = "These complete source files are already supplied, including empty files. Use their source blocks and remove them from required_paths."
-            if corrected:
-                evidence_unavailable(repeated, reason)
-            feedback = {"kind": "evidence", "task": task, "required_paths": repeated, "reason": reason}
-            corrected = True
+        unavailable = {}
         for path in dict.fromkeys(result["required_paths"]):
             if path in context["sources"]["current"]:
+                unavailable[path] = "These complete source files are already supplied, including empty files. Use their source blocks and remove them from required_paths."
                 continue
             if path not in item.inventory:
-                reason = next((entry["reason"] for entry in [*item.excluded, *item.problems]
+                unavailable[path] = next((entry["reason"] for entry in [*item.excluded, *item.problems]
                                if isinstance(entry, dict) and entry.get("path") == path),
                               "This path is not in the prepared snapshot at the scanned commit.")
-                evidence_unavailable([path], reason)
+                continue
             if len(context["sources"]["current"]) >= 100:
                 evidence_unavailable([path], "The 100-source-file evidence limit was reached; this is separate from time and token budgets.")
             try:
@@ -559,4 +571,11 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                     context["sources"].setdefault("original", {})[path] = item.source(path, context["original_sha"])
                 except ValueError:
                     pass
+        if unavailable:
+            paths = list(unavailable)
+            reason = "; ".join(f"{path}: {message}" for path, message in unavailable.items())
+            if evidence_corrected:
+                evidence_unavailable(paths, reason)
+            feedback = {"kind": "evidence", "task": task, "required_paths": paths, "reason": reason}
+            evidence_corrected = True
     evidence_unavailable(result["required_paths"], "Additional source was still required after four evidence passes.")
