@@ -1252,6 +1252,17 @@ def test_github_issue_creation_is_explicit_and_reconciles_unknown_delivery(seed,
     monkeypatch.setattr(github, "request", request)
     security_issues.publish(identity)
     assert len(posted) == 1
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [])
+    security_issues.sync(identity)
+    with transaction() as db:
+        issue = db.get(SecurityFinding, identity).issue
+        assert issue["started"] is True and issue["sync_status"] == "uncertain"
+    path = f"/api/v1/security/findings/{identity}/github-issue"
+    assert client.get(path).status_code == 409
+    assert client.post(path, json={"title": "Another issue", "body": draft["body"], "version": 0, "public": True}).status_code == 409
+    assert client.post(path + "/sync").status_code == 202
+    security_issues.sync(identity)
+    assert len(posted) == 1
     remote = {"id": 99, "node_id": "issue-node", "number": 9, "state": "open",
               "html_url": "https://github.com/team/project/issues/9", "repository_url": "https://api.github.com/repos/team/project",
               "user": {"login": "mortis-test[bot]", "type": "Bot"}, "body": posted[0]["body"]}
