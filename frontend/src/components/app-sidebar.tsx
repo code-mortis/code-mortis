@@ -75,16 +75,16 @@ export function AppSidebar({ user, onLogout, signingOut }: {
               {openPrs !== undefined && <SidebarMenuBadge id="inbox-open-count" className="right-2 h-6 min-w-6 rounded-md border border-sidebar-border bg-sidebar px-1.5 text-xs font-normal peer-data-[size=default]/menu-button:top-2">{openPrs}<span className="sr-only"> open pull {openPrs === 1 ? "request" : "requests"}</span></SidebarMenuBadge>}
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={route.pathname === "/analytics"} className="h-10">
-                <Link to="/analytics" aria-current={route.pathname === "/analytics" ? "page" : undefined} onClick={closeMobile}><ChartNoAxesCombined aria-hidden="true" /><span>Analytics</span></Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={route.pathname.startsWith("/security")} className="h-10">
                 <Link to="/security" aria-label={securityRunning ? "Security, scan running" : undefined} aria-current={route.pathname.startsWith("/security") ? "page" : undefined} onClick={closeMobile}>
                   <ShieldCheck aria-hidden="true" /><span className="flex-1">Security</span>
                   {securityRunning && <span className="shrink-0 text-primary"><LoaderCircle aria-hidden="true" className="size-3 motion-safe:animate-spin" /></span>}
                 </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={route.pathname === "/analytics"} className="h-10">
+                <Link to="/analytics" aria-current={route.pathname === "/analytics" ? "page" : undefined} onClick={closeMobile}><ChartNoAxesCombined aria-hidden="true" /><span>Analytics</span></Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
