@@ -167,10 +167,12 @@ def grade_for(findings):
                  if severity in severities), "A")
 
 
-def analysis_problem(path, feedback):
+def validation_problem(path, feedback, *, task="analysis"):
     if (feedback or {}).get("reason") in {"quote is not verbatim text within the cited source lines", "invalid source line range"}:
+        path = feedback.get("path", path)
         return f"AI citation mismatch in {path}: the quoted text or line numbers do not match the supplied source."
-    return f"Source analysis could not be validated: {path}."
+    label = "Proposed finding" if task == "assessment" else "Source analysis"
+    return f"{label} could not be validated: {path}."
 
 
 def redact_finding_text(db, finding, text):
@@ -495,7 +497,8 @@ def perform(scan_id, claim):
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
                                                 **({"configuration_managed": True} if parallel else {}))
-            checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"])
+            checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
+                       **({"citation_recoveries": usage["citation_recoveries"]} if usage.get("citation_recoveries") else {}))
             return result
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
@@ -582,7 +585,7 @@ def perform(scan_id, claim):
                         except verification.VerificationOutputError as exc:
                             if exc.feedback and type(exc.usage.get("tokens")) is int:
                                 failed += 1
-                                problems.append(analysis_problem(path, exc.feedback))
+                                problems.append(validation_problem(path, exc.feedback))
                             else:
                                 fatal = fatal or exc
                                 stop_workers.set()
@@ -631,7 +634,7 @@ def perform(scan_id, claim):
                         except verification.VerificationOutputError as exc:
                             if exc.feedback and type(exc.usage.get("tokens")) is int:
                                 assessment_failed += 1
-                                problems.append(f"Proposed finding could not be validated: {candidate.proposal['path']}.")
+                                problems.append(validation_problem(candidate.proposal["path"], exc.feedback, task="assessment"))
                             else:
                                 fatal = fatal or exc
                                 stop_workers.set()
@@ -831,9 +834,14 @@ def public_scan(scan):
     # Checkpoints are internal result transports; the report and counters are the public history.
     tasks = result.progress.get("tasks", {})
     for key, task in tasks.items():
-        if key.startswith("analysis:") and "quote" in (task.get("validation_feedback") or {}):
-            path = key.removeprefix("analysis:")
-            old, message = f"Source analysis could not be validated: {path}.", analysis_problem(path, task["validation_feedback"])
+        if key.startswith(("analysis:", "assessment:")) and "quote" in (task.get("validation_feedback") or {}):
+            assessment = key.startswith("assessment:")
+            path = task.get("proposal", {}).get("path", "") if assessment else key.removeprefix("analysis:")
+            if not path:
+                continue
+            label = "Proposed finding" if assessment else "Source analysis"
+            old = f"{label} could not be validated: {path}."
+            message = validation_problem(path, task["validation_feedback"], task="assessment" if assessment else "analysis")
             result.error = result.error.replace(old, message) if result.error else None
             if "problems" in result.report:
                 result.report = {**result.report, "problems": [problem.replace(old, message) if isinstance(problem, str) else problem

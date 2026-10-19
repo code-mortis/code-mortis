@@ -2,10 +2,12 @@ import json
 import subprocess
 from contextlib import contextmanager, nullcontext
 from datetime import timedelta
+from pathlib import Path
 from threading import Barrier, Lock
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from code_mortis import github, jobs, native_runner, security_engine, security_issues
@@ -25,6 +27,7 @@ from code_mortis.security_schemas import SecurityScanInput
 
 SHA = "a" * 40
 OLD = "b" * 40
+SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation_indentation.json").read_text())["cases"]
 
 
 @pytest.fixture
@@ -97,6 +100,51 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
     assert len(detail["activity"]) == 200
     page = client.get(f"/api/v1/security/scans/{scan_id}/findings").json()
     assert page["total"] == 21 and len(page["items"]) == 20
+
+
+def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, security_github, client, monkeypatch):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan)
+        rows = [{"id": finding.id if index == 0 else uid(), "finding_id": finding.id if index == 0 else uid(),
+                 "title": f"Original source {index}", "path": "query%_test.py" if index == 5 else f"src/{index}.py",
+                 "outcome": "present" if index < 21 else "fixed" if index < 23 else "not_observed" if index == 23 else None,
+                 "severity": "high" if index < 21 else "medium" if index < 23 else "low" if index == 23 else None,
+                 "kind": "code" if index < 21 else "infrastructure" if index < 23 else "custom_policy" if index == 23 else None,
+                 "evidence": {"explanation": f"Saved evidence {index}"}} for index in range(25)]
+        scan.report = {"findings": rows, "problems": ["Saved warning"]}
+        finding.title, finding.state = "Changed live title", "false_positive"
+        scan_id, finding_id = scan.id, finding.id
+    path = f"/api/v1/security/scans/{scan_id}/report/findings"
+    first = client.get(path).json()
+    second = client.get(path, params={"page": 2}).json()
+    assert first["total"] == first["registered_total"] == 25 and first["page_size"] == 20
+    assert len(first["items"]) == 20 and len(second["items"]) == 5
+    assert first["items"] + second["items"] == rows
+    filtered = client.get(path, params={"kind": "infrastructure", "severity": "medium", "outcome": "fixed"}).json()
+    assert filtered["items"] == rows[21:23] and filtered["total"] == 2
+    assert filtered["registered_total"] == 25 and filtered["outcome_counts"] == first["outcome_counts"]
+    assert filtered["kind_counts"] == {"code": 21, "infrastructure": 2, "custom_policy": 1, "unknown": 1}
+    assert client.get(path, params=[("outcome", "present"), ("outcome", "fixed")]).json()["total"] == 23
+    assert client.get(path, params={"outcome": "present", "page": 2}).json()["items"] == rows[20:21]
+    assert client.get(path, params={"q": "%_"}).json()["items"] == rows[5:6]
+    assert client.get(path, params={"q": "SAVED EVIDENCE 24"}).json()["items"] == rows[24:]
+    assert client.get(path, params={"outcome": "unknown", "severity": "unknown", "kind": "unknown"}).json()["items"] == rows[24:]
+    assert client.get(path, params={"finding_id": finding_id}).json()["items"] == rows[:1]
+    assert client.get(path, params={"finding_id": uid()}).json()["items"] == []
+    assert client.get(path, params={"page": 3}).json()["items"] == []
+    for params in ({"page": 0}, {"q": "x" * 257}, {"severity": "invalid"}, {"kind": "x" * 51}):
+        assert client.get(path, params=params).status_code == 422
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["report_count"] == 25 and "findings" not in detail["scan"]["report"]
+    assert detail["scan"]["report"]["problems"] == ["Saved warning"]
+    assert client.get(f"/api/v1/security/scans/{scan_id}/report").json()["findings"] == rows
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Repository access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    assert client.get(path, params={"page": 2}).status_code == 403
 
 
 def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pagination(seed, security_github, client):
@@ -340,12 +388,14 @@ def test_finished_partial_report_is_graded_without_claiming_complete_coverage(se
         assert summary.grade_scan_id == summary.latest_scan_id == identity
 
 
-def test_legacy_citation_failure_explains_mismatch_without_rewriting_saved_evidence(seed):
-    error = "Source analysis could not be validated: docker-compose.yml."
+@pytest.mark.parametrize("task", ["analysis", "assessment"])
+def test_legacy_citation_failure_explains_mismatch_without_rewriting_saved_evidence(seed, task):
+    error = ("Proposed finding" if task == "assessment" else "Source analysis") + " could not be validated: docker-compose.yml."
     with transaction() as db:
         scan = saved_scan(db, seed, "partial", error=error)
         scan.report = {"problems": [error]}
-        scan.progress = {"tasks": {"analysis:docker-compose.yml": {"status": "failed", "error": "Invalid citation",
+        key = "assessment:2" if task == "assessment" else "analysis:docker-compose.yml"
+        scan.progress = {"tasks": {key: {"status": "failed", "error": "Invalid citation", "proposal": {"path": "docker-compose.yml"},
             "validation_feedback": {"quote": "synthetic", "reason": "quote is not verbatim text within the cited source lines"}}}}
         public = security.public_scan(scan)
         assert public.error.startswith("AI citation mismatch in docker-compose.yml:")
@@ -951,6 +1001,133 @@ def test_security_citations_never_reanchor_invented_escaped_or_ambiguous_quotes(
     with pytest.raises(security_engine.verification.ResultValidationError):
         security_engine.validate_citations([citation], {"current": {"app.py": 'safe\nvalue = "synthetic"\nsafe'}})
     assert citation["start_line"] == citation["end_line"] == 2
+
+
+@pytest.mark.parametrize("case", SCAN_CITATIONS, ids=lambda case: case["task"])
+@pytest.mark.parametrize("revision", ["original", "current"])
+def test_security_recovers_the_exact_last_scan_indentation_errors(case, revision):
+    citation = {**case["citation"], "revision": revision}
+    source = "\n" * (citation["start_line"] - 1) + case["source_lines"]
+    recoveries = []
+    assert security_engine.validate_citations([citation], {revision: {citation["path"]: source}}, recoveries=recoveries) == {revision}
+    assert citation == {**case["citation"], "revision": revision, "quote": case["source_lines"]}
+    assert recoveries == [{"field": "evidence[0]", "revision": revision, "path": citation["path"],
+                          "start_line": citation["start_line"], "end_line": citation["end_line"],
+                          "reason": "Python indentation restored"}]
+
+
+@pytest.mark.parametrize(("source", "quote", "path"), [
+    ('if a:\n    if b:\n        allow()\n    deny()\n', 'if a:\n    if b:\n        allow()\n        deny()', "app.py"),
+    ('message = """first\n    allowed\nlast"""\n', 'message = """first\n allowed\nlast"""', "app.py"),
+    ('message = f"""first\n    {value}\nlast"""\n', 'message = f"""first\n {value}\nlast"""', "app.py"),
+    ('value = " allowed"\n', '    value = "allowed"', "app.py"),
+    ('value = 150\n', '    value = 151', "app.py"),
+    ('if a:\n    allow()\n', 'if not a:\n    allow()', "app.py"),
+    ('if a:\n    allow()  # authenticated\n', 'if a:\n        allow()  # unauthenticated', "app.py"),
+    ('value = "quoted"\n', '    value = \\"quoted\\"', "app.py"),
+    ('    elif allowed:\n        run()\n', 'elif allowed:\n    run()', "app.py"),
+    ('    a:\n        b: true\n', 'a:\n    b: true', "config.yml"),
+    ('{\n  "a": "b"\n}\n', '{\n"a": "b"\n}', "config.json"),
+    ('value = "' + "x" * 19990 + '"\n', '    value = "' + "x" * 19990 + '"', "app.py"),
+], ids=["block-structure", "multiline-string", "f-string", "string-value", "number", "condition", "comment", "escaping",
+        "invalid-fragment", "yaml", "json", "source-limit"])
+def test_security_indentation_recovery_rejects_changed_code_literals_comments_and_other_languages(source, quote, path):
+    citation = {"revision": "current", "path": path, "start_line": 1, "end_line": len(source.splitlines()), "quote": quote}
+    original = citation.copy()
+    with pytest.raises(security_engine.verification.ResultValidationError):
+        security_engine.validate_citations([citation], {"current": {path: source}})
+    assert citation == original
+
+
+@pytest.mark.parametrize("case", SCAN_CITATIONS, ids=lambda case: case["task"])
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+def test_security_indentation_recovery_covers_every_stage_and_transport(tmp_path, monkeypatch, case, kind, task):
+    citation, calls = case["citation"], []
+    source = "\n" * (citation["start_line"] - 1) + case["source_lines"]
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    proposal = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": citation["path"],
+        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+        "verification": "Test", "evidence": [citation]}
+    response = {"findings": [proposal], "required_paths": []} if task == "analysis" else {
+        "verdict": "confirmed" if task == "assessment" else "fixed", "explanation": "Checked", "required_paths": [],
+        "evidence": [citation, {**citation, "revision": "original"}],
+        **({"finding_id": "history_1"} if task == "assessment" else {"original_issue_present": True, "change_explanation": "Changed"})}
+
+    def api(*args, **kwargs):
+        calls.append(1)
+        return kwargs["validator"](response, args[4]), {"tokens": 7}
+
+    def native(*args):
+        calls.append(1)
+        return response, {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+        {"assigned_path": citation["path"], "diff": "a source change", "history": [{"id": "stored-finding"}],
+         "sources": {revision: {citation["path"]: source} for revision in ("current", "original")}},
+        100, 60, lambda: False, uid())
+    assert calls == [1] and usage["tokens"] == 7
+    evidence = result["findings"][0]["evidence"] if task == "analysis" else result["evidence"]
+    assert all(value["quote"] == case["source_lines"] for value in evidence)
+    assert len(usage["citation_recoveries"]) == len(evidence)
+    assert all(value["reason"] == "Python indentation restored" for value in usage["citation_recoveries"])
+    assert citation["quote"] != case["source_lines"]  # Never mutate the provider's response.
+    if task == "assessment":
+        assert result["finding_id"] == "stored-finding"
+    elif task == "verification":
+        assert result["verdict"] == "fixed"
+
+
+@pytest.mark.parametrize("concurrency", [1, 2])
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_security_scan_persists_recovered_citations_and_finishes_without_extra_inference(
+    seed, security_github, tmp_path, monkeypatch, concurrency, uncertain,
+):
+    cases = {case["citation"]["path"]: case for case in SCAN_CITATIONS}
+    sources = {path: "\n" * (case["citation"]["start_line"] - 1) + case["source_lines"] for path, case in cases.items()}
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(source), "lines": len(source.splitlines())}
+                                      for path, source in sources.items()},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: sources[path],
+        redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+    calls = []
+
+    def api(*args, **kwargs):
+        context = args[4]
+        path = context.get("assigned_path") or context["proposal"]["path"]
+        calls.append(path)
+        citation = cases[path]["citation"]
+        response = {"findings": [{"title": path, "category": "test", "severity": "low", "path": path,
+            "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+            "verification": "Test", "evidence": [citation]}], "required_paths": []} if "assigned_path" in context else {
+                "verdict": "uncertain" if uncertain and cases[path]["task"] == "assessment" else "confirmed",
+                "finding_id": None, "explanation": "Checked", "evidence": [citation], "required_paths": []}
+        return kwargs["validator"](response, context), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=concurrency)).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == ("partial" if uncertain else "completed"), scan.error
+        assert scan.report["problems"] == (["A proposed security finding requires additional verification."] if uncertain else [])
+        assert scan.grade == "B"
+        assert all(scan.stages[name]["status"] == ("partial" if uncertain and name == "assessment" else "completed") for name in security.STAGES)
+        assert scan.stages["assessment"]["completed"] == 2 and scan.stages["assessment"]["failed"] == 0
+        assert len(calls) == 4 and scan.progress["tokens"] == 28
+        assert len(scan.report["findings"]) == (1 if uncertain else 2)
+        assert len(scan.report["unsettled_candidates"]) == int(uncertain)
+        if uncertain:
+            assert scan.report["unsettled_candidates"][0]["assessment"]["verdict"] == "uncertain"
+        for finding in scan.report["findings"]:
+            assert finding["evidence"]["evidence"][0]["quote"] == cases[finding["path"]]["source_lines"]
+        assert all(unit["citation_recoveries"][0]["reason"] == "Python indentation restored" for unit in scan.coverage["units"])
 
 
 def test_github_issue_creation_is_explicit_and_reconciles_unknown_delivery(seed, security_github, monkeypatch, client):

@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import Field
 from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -26,6 +27,7 @@ from .security_schemas import (
     SecurityIssueCandidatePage,
     SecurityIssueInput,
     SecurityIssuePreview,
+    SecurityReportPage,
     SecurityRepositoryOut,
     SecurityRotation,
     SecurityScanDetail,
@@ -95,10 +97,13 @@ def start_scan(repository_id: int, body: SecurityScanInput, db: DB, user: USER):
 def scan_detail(scan_id: str, db: DB, user: USER):
     scan, repo, remote = scan_access(db, user, scan_id)
     _, assessment = security_assessments.read(db, scan)
-    return SecurityScanDetail(repository=repo_out(db, repo), scan=repository_security.public_scan(scan),
+    public = repository_security.public_scan(scan)
+    public.report = {key: value for key, value in public.report.items() if key != "findings"}
+    return SecurityScanDetail(repository=repo_out(db, repo), scan=public,
         can_write=bool(remote.get("permissions", {}).get("push")),
         assessment=assessment,
         finding_count=db.scalar(select(func.count()).select_from(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id)),
+        report_count=len(scan.report.get("findings", [])),
         activity_count=db.scalar(select(func.count()).select_from(SecurityActivity).where(SecurityActivity.scan_id == scan.id)),
         activity=[SecurityActivityOut.model_validate(row) for row in db.scalars(select(SecurityActivity).where(
             SecurityActivity.scan_id == scan.id).order_by(SecurityActivity.created_at.desc()).limit(200))])
@@ -163,6 +168,30 @@ def report(scan_id: str, db: DB, user: USER, format: Literal["json", "markdown"]
     extension = "json" if format == "json" else "md"
     return Response(content, media_type="application/json" if format == "json" else "text/markdown",
                     headers={"Content-Disposition": f'attachment; filename="security-{scan.id}.{extension}"'})
+
+
+@router.get("/scans/{scan_id}/report/findings", response_model=SecurityReportPage)
+def report_findings(scan_id: str, db: DB, user: USER,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+    q: Annotated[str, Query(max_length=256)] = "",
+    outcome: Annotated[list[Literal["present", "fixed", "not_observed", "uncertain", "unknown"]] | None, Query(max_length=100)] = None,
+    severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
+    kind: Annotated[list[Annotated[str, Field(min_length=1, max_length=50)]] | None, Query(max_length=100)] = None,
+    finding_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+):
+    scan, _, _ = scan_access(db, user, scan_id)
+    rows = scan.report.get("findings", [])
+    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("outcome", "severity", "kind")}
+    query = q.strip().casefold()
+    items = [row for row in rows if (not finding_id or row.get("finding_id") == finding_id)
+        and (not outcome or (row.get("outcome") or "unknown") in outcome)
+        and (not severity or (row.get("severity") or "unknown") in severity)
+        and (not kind or (row.get("kind") or "unknown") in kind)
+        and (not query or any(query in str(value or "").casefold() for value in
+             (row.get("title"), row.get("path"), row.get("kind"), row.get("evidence", {}).get("explanation"))))]
+    return SecurityReportPage(items=items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], total=len(items),
+        registered_total=len(rows), outcome_counts=counts["outcome"], severity_counts=counts["severity"],
+        kind_counts=counts["kind"], page=page, page_size=PAGE_SIZE)
 
 
 def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None):

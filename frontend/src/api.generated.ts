@@ -1118,6 +1118,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/scans/{scan_id}/report/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report Findings */
+        get: operations["report_findings_api_v1_security_scans__scan_id__report_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/security/repositories/{repository_id}/findings": {
         parameters: {
             query?: never;
@@ -2775,6 +2792,33 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** SecurityReportPage */
+        SecurityReportPage: {
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Kind Counts */
+            kind_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
         /** SecurityRepositoryOut */
         SecurityRepositoryOut: {
             repository: components["schemas"]["RepositoryOut"];
@@ -2802,6 +2846,11 @@ export interface components {
             assessment?: components["schemas"]["SecurityAssessmentSummary"];
             /** Finding Count */
             finding_count: number;
+            /**
+             * Report Count
+             * @default 0
+             */
+            report_count: number;
             /** Activity Count */
             activity_count: number;
             /** Activity */
@@ -5434,6 +5483,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_findings_api_v1_security_scans__scan_id__report_findings_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                q?: string;
+                outcome?: ("present" | "fixed" | "not_observed" | "uncertain" | "unknown")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
+                kind?: string[] | null;
+                finding_id?: string | null;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityReportPage"];
                 };
             };
             /** @description Validation Error */

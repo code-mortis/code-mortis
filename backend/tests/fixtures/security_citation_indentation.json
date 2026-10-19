@@ -1,0 +1,28 @@
+{
+  "scan_id": "b33d3f95-2410-4c29-880a-ba9cdda28f61",
+  "commit": "b1c2c0920057c83bfd25e023d1cbb6a8e69f411c",
+  "cases": [
+    {
+      "task": "assessment",
+      "citation": {
+        "revision": "current",
+        "path": "backend/code_mortis/assessment.py",
+        "start_line": 307,
+        "end_line": 312,
+        "quote": "def check_context_size(context, options):\n    size = len(json.dumps(context).encode())\n    limit = 1_500_000\n    if size > limit:\n        raise ValueError(f\"Assessment evidence requires {size:,} bytes; context limit is {limit:,} bytes. \"\n                          \"Necessary evidence was not truncated.\")"
+      },
+      "source_lines": "def check_context_size(context, options):\n    size = len(json.dumps(context).encode())\n    limit = 1_500_000\n    if size > limit:\n        raise ValueError(f\"Assessment evidence requires {size:,} bytes; context limit is {limit:,} bytes. \"\n                         \"Necessary evidence was not truncated.\")\n"
+    },
+    {
+      "task": "analysis",
+      "citation": {
+        "revision": "current",
+        "path": "backend/code_mortis/schemas.py",
+        "start_line": 64,
+        "end_line": 66,
+        "quote": "    for key in (\"aws_region\", \"aws_profile\", \"auth_header\"):\n        if key in value and (not isinstance(value[key], str) or len(value[key]) > 150):\n            raise ValueError(f\"{key} must be text no longer than 150 characters.\")"
+      },
+      "source_lines": "        for key in (\"aws_region\", \"aws_profile\", \"auth_header\"):\n            if key in value and (not isinstance(value[key], str) or len(value[key]) > 150):\n                raise ValueError(f\"{key} must be text no longer than 150 characters.\")\n"
+    }
+  ]
+}

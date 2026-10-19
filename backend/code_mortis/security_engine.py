@@ -1,5 +1,6 @@
 """Inert repository snapshots, Trivy results and existing structured AI transports."""
 
+import ast
 import base64
 import hashlib
 import hmac
@@ -8,8 +9,10 @@ import re
 import sys
 import tempfile
 import time
+import tokenize
 from contextlib import contextmanager
 from datetime import datetime
+from io import StringIO
 from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
@@ -392,7 +395,32 @@ def model_schema(model):
     return schema
 
 
-def validate_citations(evidence, sources, *, field="evidence"):
+def same_python_indentation(quote, source):
+    if len(source) > 20000 or [line.lstrip(" \t") for line in quote.splitlines()] != [
+        line.lstrip(" \t") for line in source.splitlines()
+    ]:
+        return False
+    signatures = []
+    for text in (quote, source):
+        text = text.rstrip("\r\n") + "\n"
+        nested = text.startswith((" ", "\t"))
+        wrapped = ("if True:\n" if nested else "") + text
+        try:
+            ast.parse(wrapped)
+            tokens = list(tokenize.generate_tokens(StringIO(wrapped).readline))
+        except (SyntaxError, ValueError, UnicodeError, RecursionError, tokenize.TokenError):
+            return False
+        if nested:
+            if tokens[4].type != tokenize.INDENT or tokens[-2].type != tokenize.DEDENT:
+                return False
+            tokens = tokens[5:-2]
+        # Keep block boundaries and literal/comment bytes; only indentation widths may differ.
+        signatures.append([(token.type, "" if token.type == tokenize.INDENT else token.string)
+                           for token in tokens if token.type != tokenize.ENDMARKER])
+    return signatures[0] == signatures[1]
+
+
+def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
     revisions, problems = set(), []
     for index, citation in enumerate(evidence):
         path, revision = relative_path(citation["path"]), citation["revision"]
@@ -422,10 +450,19 @@ def validate_citations(evidence, sources, *, field="evidence"):
                     end = start + quote.count("\n") - int(quote.endswith("\n"))
                     citation.update(start_line=start, end_line=end)
                     problem.update(start_line=start, end_line=end)
+                    if recoveries is not None:
+                        recoveries.append({"field": problem["field"], "revision": revision, "path": path,
+                                           "start_line": start, "end_line": end, "reason": "exact quote relocated"})
             if not 1 <= start <= end <= len(lines):
                 problem["reason"] = "invalid source line range"
             else:
                 source_lines = "".join(lines[start - 1:end])
+                if (quote.strip() and quote not in source_lines and PurePosixPath(path).suffix in {".py", ".pyi"}
+                    and same_python_indentation(quote, source_lines)):
+                    citation["quote"] = source_lines
+                    if recoveries is not None:
+                        recoveries.append({"field": problem["field"], "revision": revision, "path": path,
+                                           "start_line": start, "end_line": end, "reason": "Python indentation restored"})
                 if not citation["quote"].strip() or citation["quote"] not in source_lines:
                     problem.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
         if "reason" in problem:
@@ -465,7 +502,10 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
     }[task]
 
+    citation_recoveries = []
+
     def validate(raw, supplied):
+        recoveries = []
         try:
             result = model.model_validate(raw, strict=True).model_dump()
         except ValidationError as exc:
@@ -489,14 +529,15 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                         "expected": supplied["assigned_path"]}]}
                     raise verification.ResultValidationError("Security analysis returned a finding outside its assigned file.", feedback)
                 try:
-                    validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
+                    validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence",
+                                       recoveries=recoveries)
                 except verification.ResultValidationError as exc:
                     problems.extend(exc.feedback["errors"])
             if problems:
                 feedback = {**problems[0], "errors": problems}
                 raise verification.ResultValidationError("Security evidence does not match its cited source lines. " + json.dumps(feedback), feedback)
         else:
-            revisions = validate_citations(evidence, supplied["sources"])
+            revisions = validate_citations(evidence, supplied["sources"], recoveries=recoveries)
             if task == "assessment":
                 if result["finding_id"] is not None and result["finding_id"] not in history_ids:
                     feedback = {"kind": "history_selection", "field": "finding_id", "allowed_values": [*history_ids, None]}
@@ -513,6 +554,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 or not result["original_issue_present"] or not result["change_explanation"].strip() or result["required_paths"]
             ):
                 result["verdict"] = "uncertain"
+        citation_recoveries[:] = recoveries
         return result
 
     used, feedback, corrected = 0, None, False
@@ -570,7 +612,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         if not result["required_paths"]:
             if task == "assessment" and result["finding_id"] is not None:
                 result["finding_id"] = history_ids[result["finding_id"]]
-            return json.loads(item.redact(json.dumps(result))), {"tokens": used}
+            return json.loads(item.redact(json.dumps(result))), {"tokens": used,
+                **({"citation_recoveries": citation_recoveries} if citation_recoveries else {})}
         if attempt == 3:
             break
         unavailable = {}

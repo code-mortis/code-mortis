@@ -158,6 +158,7 @@ class SecurityScanDetail(StrictModel):
     can_write: bool
     assessment: SecurityAssessmentSummary = Field(default_factory=SecurityAssessmentSummary)
     finding_count: int = Field(ge=0)
+    report_count: int = Field(default=0, ge=0)
     activity_count: int = Field(ge=0)
     activity: list[SecurityActivityOut]
 
@@ -183,6 +184,17 @@ class SecurityFindingPage(StrictModel):
     page: int
     page_size: int
     result_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class SecurityReportPage(StrictModel):
+    items: list[dict[str, Any]]
+    total: int
+    registered_total: int
+    outcome_counts: dict[str, int]
+    severity_counts: dict[str, int]
+    kind_counts: dict[str, int]
+    page: int
+    page_size: int
 
 
 class SecurityTriage(StrictModel):
