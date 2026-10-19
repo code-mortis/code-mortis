@@ -121,6 +121,21 @@ def test_subprocess_credentials_limits_and_cancellation(tmp_path, monkeypatch):
         ocr.command([sys.executable, "-c", "print('x'*100)"], tmp_path, os.environ.copy())
 
 
+@pytest.mark.parametrize("protocol", ["openai", "openai-responses", "anthropic", "anthropic-bedrock"])
+@pytest.mark.parametrize("structured", [True, False])
+def test_structured_responses_enforces_schema_without_changing_saved_options(protocol, structured, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    options = {"extra_body": {"keep": "value", "tools.0.strict": False}}
+    connection = {"protocol": protocol, "model": "model", "base_url": "https://example.com/v1", "options": options}
+    with ocr.configuration(connection, {}, {}, structured_result=structured):
+        data = json.loads((tmp_path / ".opencodereview/config.json").read_text())
+        body = data["custom_providers"]["mortis"]["extra_body"]
+        assert body == {"keep": "value", "tools.0.strict": structured and protocol == "openai-responses"}
+    assert options == {"extra_body": {"keep": "value", "tools.0.strict": False}}
+
+
 @pytest.mark.parametrize(
     "url,is_go",
     [

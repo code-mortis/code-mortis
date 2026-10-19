@@ -211,6 +211,20 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
 });
 
+for (const error of [
+  "AI result delivery failed for src/scriptSchemaValidator.ts: task_done did not include the required DONE state and result object.",
+  'The AI did not finish checking this finding. Technical details: {"status":"success","result_error":"task_done did not include the required DONE state and result object."}',
+]) test(`security errors explain incomplete completion calls: ${error.slice(0, 30)}`, async ({ page }) => {
+  await mock(page, { scanError: error });
+  await page.goto("/security/scans/scan");
+  const alert = page.getByRole("alert").first();
+  await expect(alert.getByText("AI result delivery failed", { exact: true })).toBeVisible();
+  await expect(alert).toContainText("The AI completion call omitted the required DONE state or structured result.");
+  await expect(alert).toContainText("The affected check was not accepted.");
+  await alert.getByText("Technical details", { exact: true }).click();
+  await expect(alert.getByRole("region")).toHaveText(error);
+});
+
 for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} without an incomplete badge suffix`, async ({ page }, info) => {
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const error = "AI citation mismatch in docker-compose.yml: the quoted text or line numbers do not match the supplied source.";

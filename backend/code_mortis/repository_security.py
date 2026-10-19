@@ -168,6 +168,8 @@ def grade_for(findings):
 
 
 def validation_problem(path, feedback, *, task="analysis"):
+    if (feedback or {}).get("kind") == "delivery":
+        return f"AI result delivery failed for {path}: {feedback['reason']}"
     if (feedback or {}).get("kind") == "citation_selection":
         path = feedback.get("path", path)
         return f"AI source selection is invalid in {path}: {feedback.get('reason', 'source reference or line range was not supplied')}."
@@ -564,7 +566,7 @@ def perform(scan_id, claim):
                 return ai(item, "analysis", context, "analysis:" + path, allowance, parallel=parallel)
 
             parallel = concurrency > 1 and len(code_paths) > 1
-            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True)
+            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
                              if parallel else nullcontext())
             with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
                 for offset in range(0, len(code_paths), concurrency):
@@ -606,7 +608,7 @@ def perform(scan_id, claim):
             stage(scan_id, "assessment", "running", total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
-            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True)
+            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
                              if parallel else nullcontext())
             with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
                 while remaining:
@@ -837,7 +839,8 @@ def public_scan(scan):
     # Checkpoints are internal result transports; the report and counters are the public history.
     tasks = result.progress.get("tasks", {})
     for key, task in tasks.items():
-        if key.startswith(("analysis:", "assessment:")) and "quote" in (task.get("validation_feedback") or {}):
+        feedback = task.get("validation_feedback") or {}
+        if key.startswith(("analysis:", "assessment:")) and ("quote" in feedback or feedback.get("kind") == "delivery"):
             assessment = key.startswith("assessment:")
             path = task.get("proposal", {}).get("path", "") if assessment else key.removeprefix("analysis:")
             if not path:

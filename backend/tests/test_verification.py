@@ -1059,7 +1059,7 @@ def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, ba
             raise ValueError("Expected exactly one terminal result.")
         return {"verdict": "bad"} if bad == "malformed" else RESULT
     monkeypatch.setattr(verification, "terminal_result", terminal)
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
     def command(args, *a, **k):
         if "--preview" in args:
@@ -1080,7 +1080,7 @@ def test_api_process_failure_preserves_redacted_diagnostics(tmp_path, monkeypatc
     api_secret, header_secret = 'provider-"secret', "header-\nsecret"
     active, calls = [], []
     @contextmanager
-    def configuration(*args):
+    def configuration(*args, **kwargs):
         active.append(True)
         try:
             yield
@@ -1547,7 +1547,7 @@ def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, mo
     from contextlib import nullcontext
 
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
     def command(args, *a, **k):
         assert args[args.index("--max-tokens") + 1] == str(ceiling)
@@ -1569,7 +1569,7 @@ def test_failed_scan_prompt_limit_requires_matching_pre_request_session(tmp_path
 
     session_id = "00000000-0000-4000-8000-000000000001"
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     calls = []
     def command(args, root, *a, **k):
         calls.append(args)
@@ -1620,7 +1620,7 @@ def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, m
     from contextlib import nullcontext
 
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: RESULT)
     calls = []
     def command(args, root, *a, **k):
@@ -1649,7 +1649,7 @@ def test_api_adapter_retains_structured_citation_feedback_before_truncation(tmp_
            "suggestion_supported": False, "evidence": copy.deepcopy(RESULT["evidence"]), "required_paths": []}
     raw["evidence"].append({**raw["evidence"][-1], "quote": "invented"})
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: raw)
     def command(args, *a, **k):
         if "--preview" in args:

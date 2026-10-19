@@ -598,7 +598,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             if connection["kind"] == "api":
                 result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
                     remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
-                    configuration_managed=configuration_managed, delivery=verification.STRUCTURED_RESULT_DELIVERY +
+                    configuration_managed=configuration_managed, structured_result=True, delivery=verification.STRUCTURED_RESULT_DELIVERY +
                     " Select evidence using only source_id, start_line and end_line from citation_sources. "
                     "Do not copy or generate quote, path or revision fields in evidence; Code Mortis supplies them from the snapshot.")
             else:

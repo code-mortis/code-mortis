@@ -512,7 +512,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
                *, instructions=INSTRUCTIONS, schema=None, validator=validate_response, configuration_managed=False,
-               delivery=RESULT_DELIVERY):
+               delivery=RESULT_DELIVERY, structured_result=False):
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -568,7 +568,9 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
         dispatched = False
         try:
-            with nullcontext() if configuration_managed else ocr.configuration(connection, credentials, {}, before_dispatch):
+            with nullcontext() if configuration_managed else ocr.configuration(
+                connection, credentials, {}, before_dispatch, structured_result=structured_result,
+            ):
                 if before_dispatch():
                     raise ocr.ReviewStopped("Verification stopped before provider analysis.")
                 allowance = remaining_time()
@@ -624,7 +626,10 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
                                  "warnings": data.get("warnings"), "result_error": result_error,
                                  "diagnostics": diagnostics})[:4000]
-            raise VerificationOutputError("The AI did not finish checking this finding. Technical details: " + detail,
+            message = ("AI result delivery failed: " + result_feedback["reason"]
+                       if complete and result_feedback and result_feedback.get("kind") == "delivery"
+                       else "The AI did not finish checking this finding.")
+            raise VerificationOutputError(message + " Technical details: " + detail,
                                           {"tokens": usage}, feedback=result_feedback if complete else None)
         try:
             validated = validator(raw, context)

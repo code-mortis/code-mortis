@@ -1,13 +1,19 @@
 import type { Run } from "../api";
+import { resultDeliveryFeedback } from "./error-feedback";
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
-export function assessmentFeedback(error: string, stage: "assessment" | "verification" | "review" = "assessment") {
+export function assessmentFeedback(error: string, stage: "assessment" | "verification" | "review" = "assessment"): { title: string; message: string; citation?: string } {
   const message = error.split("; response=", 1)[0];
   const name = stage[0].toUpperCase() + stage.slice(1);
+  if (/Token usage is unavailable or invalid|did not report valid token usage/.test(message)) {
+    return { title: "Token usage could not be verified", message: `The AI's token usage was unavailable, so this ${stage} could not continue. Check the technical details before starting another review.` };
+  }
+  const delivery = resultDeliveryFeedback(error);
+  if (delivery) return delivery;
   const budget = /used (\d+) tokens \+ next-file estimate exceeds budget (\d+)/.exec(message);
   if (budget && [budget[1], budget[2]].every((value) => Number.isSafeInteger(Number(value)))) {
     const used = Number(budget[1]);
@@ -61,9 +67,6 @@ export function assessmentFeedback(error: string, stage: "assessment" | "verific
     const limit = message.split(" Technical details:", 1)[0];
     return { title: `${name} limit reached`, message: limit.length <= 240 && !/[{}]/.test(limit)
       ? limit : `The ${stage} could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review.` };
-  }
-  if (/Token usage is unavailable or invalid|did not report valid token usage/.test(message)) {
-    return { title: "Token usage could not be verified", message: `The AI's token usage was unavailable, so this ${stage} could not continue. Check the technical details before starting another review.` };
   }
   if (/Assessment timed out|Time limit reached/.test(message)) {
     return { title: `${name} timed out`, message: `The time limit was reached before this ${stage} finished. Review the run's timeout before starting another review.` };

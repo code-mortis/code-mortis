@@ -1,12 +1,25 @@
+export function resultDeliveryFeedback(error: string) {
+  if (!/AI result delivery failed|The AI did not submit a complete structured result|task_done did not include|"kind"\s*:\s*"delivery"/.test(error)) return undefined;
+  const message = /exactly one complete task_done/.test(error)
+    ? "The AI did not submit exactly one complete structured result."
+    : /arguments (?:are not valid JSON|must contain JSON text)/.test(error)
+      ? "The AI completion call contained invalid JSON arguments."
+      : /did not include the required DONE state and result object/.test(error)
+        ? "The AI completion call omitted the required DONE state or structured result."
+        : "The AI completion call did not match the required result format.";
+  return { title: "AI result delivery failed", message: `${message} The affected check was not accepted.` };
+}
+
 export function errorFeedback(error: unknown) {
   const raw = (error instanceof Error ? error.message : typeof error === "string" ? error : "").trim();
   if (!raw) return { title: undefined, message: "This action could not be completed. Refresh the page and try again.", details: "" };
   const message = raw.split(/; response=| Technical details:| Result details:/, 1)[0].trim();
   const explain = (title: string, message: string) => ({ title, message, details: raw });
-
   if (/token (?:consumption|usage) is unknown|token usage.*(?:unavailable|invalid)|did not report valid token usage/i.test(message)) {
     return explain("AI usage could not be verified", "The AI service did not report reliable token usage. Further requests were stopped. Check the connection and technical details before retrying.");
   }
+  const delivery = resultDeliveryFeedback(raw);
+  if (delivery) return { ...delivery, details: raw };
   if (/Required security evidence|Required supporting source cannot be supplied safely|AI requested evidence it already received|Security analysis could not settle its required evidence/i.test(message)) {
     return explain("Supporting evidence unavailable", message.includes("unavailable or exceeds its limit")
       ? "Supporting source could not be supplied. This older record did not save the requested path or distinguish missing source from an evidence limit."

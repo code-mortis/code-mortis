@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,9 @@ class Provider(BaseHTTPRequestHandler):
         definitions = [tool.get("function", tool) for tool in data["tools"]]
         assert {tool["name"] for tool in definitions} == {"task_done"}
         mode = self.server.mode
+        if mode in {"strict", "strict_empty", "shared_strict"}:
+            assert definitions[0]["strict"] is True
+            assert definitions[0]["parameters"]["required"] == ["state", "result"]
         if mode == "security_citation":
             schema = definitions[0].get("parameters", definitions[0].get("input_schema"))
             selection = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
@@ -43,6 +47,8 @@ class Provider(BaseHTTPRequestHandler):
             value = {"state": "INVALID"}
         if mode == "missing_result":
             value = {"state": "DONE"}
+        if mode in {"empty_arguments", "strict_empty"}:
+            value = {}
         arguments = json.dumps(value)
         if mode == "malformed_round" and not continuing:
             arguments = '{"state":'
@@ -75,23 +81,31 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         for protocol in ("openai", "openai-responses", "anthropic"):
-            for mode in ("valid", "rejected_round", "malformed_round", "wrapped", "missing_result", "duplicate"):
+            modes = ["valid", "rejected_round", "malformed_round", "wrapped", "missing_result", "empty_arguments", "duplicate"]
+            if protocol == "openai-responses":
+                modes += ["strict", "strict_empty", "shared_strict"]
+            for mode in modes:
                 if protocol == "anthropic" and mode in {"malformed_round", "wrapped"}:
                     continue  # Anthropic tool inputs are objects, not raw JSON argument strings.
                 server.mode, server.calls = mode, 0
                 connection = {"protocol": protocol, "model": "test-model", "options": {},
                               "base_url": f"http://127.0.0.1:{server.server_port}"}
-                with tempfile.TemporaryDirectory() as directory:
+                managed = mode == "shared_strict"
+                configuration = ocr.configuration(connection, {"api_key": "fake-test-key"}, {},
+                    session_per_task=True, structured_result=True) if managed else nullcontext()
+                with configuration, tempfile.TemporaryDirectory() as directory:
                     try:
                         result, usage = verification.api_verify(Path(directory), ocr.child_environment(), connection,
                             {"api_key": "fake-test-key"}, {"diff": "", "sources": {"current": {"app.py": "safe"}}},
                             None, 30, lambda: False, schema=model_schema(SecurityAnalysis),
+                            structured_result=mode in {"strict", "strict_empty"}, configuration_managed=managed,
                             validator=lambda raw, supplied: SecurityAnalysis.model_validate(raw, strict=True).model_dump())
                     except verification.VerificationOutputError as exc:
-                        assert mode in {"missing_result", "duplicate"}, (protocol, mode, str(exc))
+                        assert mode in {"missing_result", "empty_arguments", "strict_empty", "duplicate"}, (protocol, mode, str(exc))
                         assert exc.usage == {"tokens": 15} and exc.feedback["kind"] == "delivery"
+                        assert "AI result delivery failed" in str(exc)
                     else:
-                        assert mode not in {"missing_result", "duplicate"}, (protocol, mode)
+                        assert mode not in {"missing_result", "empty_arguments", "strict_empty", "duplicate"}, (protocol, mode)
                         assert result == RESULT
                         assert usage == {"tokens": 30 if mode in {"rejected_round", "malformed_round"} else 15}, usage
                 assert server.calls == (2 if mode in {"rejected_round", "malformed_round"} else 1)

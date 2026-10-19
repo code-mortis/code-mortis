@@ -137,7 +137,7 @@ def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
 
 @contextmanager
 def configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False,
-                  *, session_per_task=False):
+                  *, session_per_task=False, structured_result=False):
     if not settings().ocr_isolated_runtime:
         raise ValueError("OCR execution requires the isolated Docker worker (CM_OCR_ISOLATED_RUNTIME=true).")
     folder = Path.home() / ".opencodereview"
@@ -174,6 +174,9 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
             )})
         entry = dict(connection["options"])
         entry.pop("prompt_token_ceiling", None)
+        if structured_result and connection["protocol"] == "openai-responses":
+            # OCR 1.13.1 otherwise forces strict=false, even for our required result schema.
+            entry["extra_body"] = {**entry.get("extra_body", {}), "tools.0.strict": True}
         entry.update(
             {
                 "protocol": connection["protocol"],
