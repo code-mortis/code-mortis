@@ -361,7 +361,8 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
   rows.push({ repository: { ...repository, id: 27, full_name: "acme/unscanned" }, summary: { ...summary, state: "not_scanned", grade: null,
     grade_scan_id: null, latest_scan_id: null, latest_status: null, latest_at: null, counts: {} } },
     { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated" } },
-    { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } });
+    { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } },
+    { repository: { ...repository, id: 30, full_name: "acme/running-scan" }, summary: { ...summary, state: "incomplete", latest_status: "running", grade_scan_id: "previous" } });
   await page.route("**/api/v1/security/repositories", (route) => route.fulfill({ json: rows }));
   await page.goto("/security");
   for (const grade of grades) {
@@ -389,7 +390,11 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
   await expect(unscanned.locator("svg")).toHaveCount(1);
   await expect(unscanned.locator(".lucide-shield-question")).toBeVisible();
   const historical = page.getByRole("link", { name: "Historical security grade D, outdated", exact: true });
-  await expect(historical.locator("svg")).toHaveClass(/text-muted-foreground/);
+  await expect(historical.locator("svg")).toHaveClass(/text-red-700.*dark:text-red-300/);
+  const running = page.locator('[data-slot="security-repository-row"]').filter({ hasText: "acme/running-scan" });
+  await expect(running.locator('[data-slot="security-grade-shield"]')).toHaveText("D");
+  await expect(running.locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700.*dark:text-red-300/);
+  await expect(running.locator('[data-slot="status-group"]')).toHaveText("running");
   const partial = page.locator('[data-slot="security-repository-row"]').filter({ hasText: "acme/partial-report" });
   await expect(partial.locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
   await expect(partial.locator('[data-slot="status-group"] [data-slot="badge"]')).toHaveText("Completed");
