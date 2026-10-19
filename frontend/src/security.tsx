@@ -11,7 +11,7 @@ import { FilterBar } from "./components/filter-bar";
 import { LoadMoreFooter } from "./components/load-more-footer";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
-import { SecurityGrade, securityStates } from "./components/security-grade";
+import { SecurityGrade, SecurityGradeShield, securityStates } from "./components/security-grade";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
@@ -21,7 +21,7 @@ import { Input } from "./components/ui/input";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
-import { SecurityBadge, SecurityScanBadge, SecurityStatus } from "./components/security-badge";
+import { SecurityBadge, SecurityScanBadge, SecurityScanStatus, SecurityStatus } from "./components/security-badge";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
@@ -117,17 +117,18 @@ export function SecurityOverview({ user }: { user: User }) {
         ]} /></div>
       {query.isPending ? <Loading /> : !rows.length ? <Empty title={query.data?.length ? "No matching repositories" : "No repositories available"}>{query.data?.length ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
         <div className="overflow-hidden rounded-lg border bg-card">
-          <div aria-hidden="true" data-slot="security-repository-heading" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Repository</span><span>Grade / scan status</span><span>Open findings</span><span>Latest scan</span><span /></div>
+          <div aria-hidden="true" data-slot="security-repository-heading" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Repository</span><span>Scan status</span><span>Open findings</span><span>Latest scan</span><span /></div>
           {rows.map(({ repository: repo, summary }) => {
             const Visibility = repo.private ? LockKeyhole : Globe;
             const slash = repo.full_name.lastIndexOf("/");
             const counts = summary.counts ?? {};
+            const hasGrade = summary.grade && (summary.state === "current" || (summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id));
             return <article key={repo.id} data-slot="security-repository-row" className="inbox-row-grid group relative grid gap-y-3 border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 md:items-center md:px-5 md:py-3">
-              <div className="flex min-w-0 items-start gap-3 pr-12 sm:items-center md:pr-0"><Shield aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary sm:mt-0" /><div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-3 pr-12 md:pr-0"><SecurityGrade shield repositoryId={repo.id} summary={summary} /><div className="min-w-0">
                 <Link className="break-words font-medium group-hover:text-primary after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring [overflow-wrap:anywhere]" to={`/security/repositories/${repo.id}`}><span className="font-normal text-muted-foreground group-hover:text-primary">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</Link>
                 <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private" : "Public"}</div>
               </div></div>
-              <div className="relative z-10 w-fit min-w-0"><StatusGroup><SecurityGrade repositoryId={repo.id} summary={summary} />{summary.latest_scan_id && <SecurityScanBadge status={summary.latest_status ?? "unknown"} scanId={summary.latest_scan_id} />}</StatusGroup></div>
+              <div className="relative z-10 w-fit min-w-0"><StatusGroup>{!hasGrade && <SecurityGrade repositoryId={repo.id} summary={summary} />}{summary.latest_scan_id && <SecurityScanBadge status={summary.latest_status ?? "unknown"} scanId={summary.latest_scan_id} />}</StatusGroup></div>
               <div><FindingCount count={Object.values(counts).reduce((sum, value) => sum + value, 0)} /><span className="sr-only">{Object.entries(counts).filter(([, value]) => value > 0).map(([severity, value]) => `${value} ${severity}`).join(", ")}</span></div>
               {summary.latest_at ? <ListDate value={summary.latest_at} /> : <span className="text-xs text-muted-foreground">Not scanned</span>}
               <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><SecurityRepositoryActions repository={repo} summary={summary} admin={user.role === "admin"} onRun={(trigger) => { scanTrigger.current = trigger; setSelected(repo.id); }} /></div>
@@ -243,8 +244,8 @@ export function SecurityRepository({ user }: { user: User }) {
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues…</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </div>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><SecurityGrade repositoryId={repo.id} summary={summary} /><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
-      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `${summary.state === "current" || (summary.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id) ? "Grade" : "Historical grade"} ${summary.grade ?? ""} saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id && " Based on confirmed findings; coverage is incomplete."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><SecurityGrade showLabel repositoryId={repo.id} summary={summary} /><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
+      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `${summary.state === "current" || (summary.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id) ? "Saved" : "Historical report saved"} ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
     </PageTitle>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
     {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
@@ -252,7 +253,10 @@ export function SecurityRepository({ user }: { user: User }) {
         <span className="font-medium">Latest scan</span><SecurityStatus value={summary.latest_status ?? "unknown"} />
         <Link className={`inline-flex min-h-6 items-center gap-1 text-xs ${metadataLink}`} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>
       </div>
-      {summary.latest_at && <time dateTime={summary.latest_at} className="mt-2 block text-xs text-muted-foreground">{date(summary.latest_at)}</time>}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}
+        {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
+      </div>
     </section>}
     <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count ?? "…"}</span></TabsTrigger><TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><Findings repositoryId={repo.id} /></TabsContent>
@@ -315,11 +319,11 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
   if (denied) return <ErrorNotice error={query.error} />;
   if (query.isPending) return <Loading />;
   return !items.length && !query.error ? <Empty title="No security scans yet">Run a scan to save findings, coverage, and a repository grade.</Empty> : <div className="pt-4"><div className="divide-y overflow-hidden rounded-lg border bg-card">
-    <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] gap-6 bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Security scan</span><span>Duration</span><span>Saved grade</span><span>Status</span><span /></div>
+    <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] gap-6 bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Security scan</span><span>Duration</span><span>Grade</span><span>Status</span><span /></div>
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
       <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ScanDuration scan={scan} /></span>
-      <span><Badge variant="outline" className={scan.grade ? undefined : "text-muted-foreground"}>{scan.grade || "Unrated"}</Badge></span><SecurityStatus value={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+      <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
     </Link>)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="scan history" /></div></div>;
 }
 

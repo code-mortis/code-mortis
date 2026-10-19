@@ -162,7 +162,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
           </h1>
           {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-            <SecurityGrade repositoryId={selected.id} summary={selected.security} />
+            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
             <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
           </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
         </div>
@@ -329,7 +329,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
-    : running ? null : pr.state !== "open" ? "Reviews can only run on open pull requests."
+    : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {

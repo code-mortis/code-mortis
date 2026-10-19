@@ -197,18 +197,21 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
     can_write: true, finding_count: grade === "D" ? 1 : 0, activity_count: 0, activity: [],
   } }));
   await page.goto("/security");
-  const badge = page.getByRole("link", { name: grade, exact: true });
+  const badge = page.getByRole("link", { name: `Security grade ${grade}`, exact: true });
   await expect(badge).toBeVisible();
-  await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-status-good/);
+  await expect(badge.locator('[data-slot="security-grade-shield"]')).toHaveText(grade);
   await badge.click();
-  await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toBeVisible();
-  await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toBeVisible();
+  await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toHaveCount(0);
+  await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toHaveCount(0);
+  await expect(page.getByText(/^Saved .* for aaaaaaa\. Freshness checked/)).toBeVisible();
+  await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
+  await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
     items: [{ ...scan, status: "partial", grade }], total: 1, page: 1, page_size: 20,
   } }));
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
-  await expect(row.locator('[data-slot="badge"]').first()).toHaveText(grade);
+  await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveText(grade);
   await expect(row).not.toContainText("Incomplete");
   await page.goto("/security/scans/scan");
   await expect(page.getByText(grade, { exact: true })).toBeVisible();
@@ -246,17 +249,116 @@ for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"
   test(`repository grade badge uses one label for ${state}`, async ({ page }) => {
     await mock(page, { summary: { state, ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
     await page.goto("/security");
-    const badge = page.getByRole("link", { name: badgeLabel, exact: true });
+    const badge = page.getByRole("link", { name: state === "current" ? `Security grade ${badgeLabel}` : badgeLabel, exact: true });
     await expect(badge).toHaveText(badgeLabel);
     await badge.focus();
     await expect(badge).not.toHaveAttribute("data-state");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
       await page.goto("/security/repositories/22");
-      await expect(page.getByText(/Historical grade D saved/)).toBeVisible();
+      await expect(page.getByText(/Historical report saved/)).toBeVisible();
     }
   });
 }
+
+test("repository security badges put the state shield before Security and the grade", async ({ page }, info) => {
+  const writes = await mock(page);
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  let current = { ...summary };
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repository, security: current }] }));
+  await page.route("**/api/v1/repositories/22/pulls?**", (route) => route.fulfill({ json: {
+    page_size: 10, groups: [], total: 0, registered_total: 0, repository_count: 1, repositories: [], authors: [], state_counts: {},
+  } }));
+  await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: { repository, summary: current, can_write: true, finding_count: 1, scan_count: 1 } }));
+  const cases: { change: Partial<Schema["SecuritySummary"]>; label: string; icon: string }[] = [
+    { change: {}, label: "D", icon: "shield-check" },
+    { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
+    { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned", icon: "shield-question" },
+    { change: { state: "outdated" }, label: "Outdated", icon: "shield-ellipsis" },
+    { change: { state: "unavailable" }, label: "Unverified", icon: "shield-question" },
+    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "Incomplete",
+      icon: ["shield-x", "shield-off", "shield-ellipsis", "shield-ellipsis", "shield-alert", "shield-alert"][index] })),
+  ];
+  for (const [index, item] of cases.entries()) {
+    current = { ...summary, ...item.change };
+    await page.goto("/repositories/22?state=open");
+    const name = item.label === "Unscanned" ? item.label : `Security ${item.label}`;
+    const badge = page.getByRole("link", { name, exact: true });
+    await expect(badge).toHaveAttribute("href", "/security/repositories/22");
+    await expect(badge.locator("svg")).toHaveCount(1);
+    await expect(badge.locator(`.lucide-${item.icon}`)).toBeVisible();
+    if (item.label === "D") await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
+    else await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-(red|amber|emerald)-/);
+    const beforeText = await badge.evaluate((element) => {
+      const content = element.querySelector('[data-slot="badge"]')!;
+      const text = [...content.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())!;
+      const range = document.createRange(); range.selectNodeContents(text);
+      const icon = content.querySelector("svg")!.getBoundingClientRect();
+      return icon.right <= range.getBoundingClientRect().left;
+    });
+    expect(beforeText).toBe(true);
+    if (index < 3) await badge.screenshot({ path: `/private/tmp/code-mortis-security-label-${index}-${info.project.name}.png` });
+    if (index < 3) {
+      await badge.click();
+      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
+      await expect(page.getByRole("link", { name, exact: true }).locator(`.lucide-${item.icon}`)).toBeVisible();
+      if (item.label === "D") await expect(page.getByRole("link", { name: "Security D", exact: true }).locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
+    }
+  }
+  expect(writes).toHaveLength(0);
+});
+
+for (const theme of ["light", "dark"] as const) test(`repository grade shields retain badge colors and compact sizing (${theme})`, async ({ page }, info) => {
+  await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
+  const writes = await mock(page);
+  const grades = ["A", "B", "C", "D", "F"];
+  const rows: Schema["SecurityRepositoryOut"][] = grades.map((grade, index) => ({ repository: { ...repository, id: 22 + index, full_name: `acme/service-${grade.toLowerCase()}` },
+    summary: { ...summary, grade, counts: { high: grade === "A" ? 0 : 1 } } }));
+  rows.push({ repository: { ...repository, id: 27, full_name: "acme/unscanned" }, summary: { ...summary, state: "not_scanned", grade: null,
+    grade_scan_id: null, latest_scan_id: null, latest_status: null, latest_at: null, counts: {} } },
+    { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated" } },
+    { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } });
+  await page.route("**/api/v1/security/repositories", (route) => route.fulfill({ json: rows }));
+  await page.goto("/security");
+  for (const grade of grades) {
+    const row = page.locator('[data-slot="security-repository-row"]').filter({ has: page.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }) });
+    const link = row.getByRole("link", { name: `Security grade ${grade}`, exact: true });
+    const svg = link.locator('[data-slot="security-grade-shield"]');
+    await expect(svg.locator("text")).toHaveText(grade);
+    await expect(svg).toHaveCSS("width", "24px");
+    await expect(svg).toHaveCSS("height", "24px");
+    await expect(svg).toHaveClass(grade === "A" ? /text-emerald-800.*dark:text-emerald-300/ : ["D", "F"].includes(grade) ? /text-red-700.*dark:text-red-300/ : /text-amber-800.*dark:text-amber-300/);
+    const color = await svg.evaluate((element) => getComputedStyle(element).color);
+    await expect(svg.locator("path")).toHaveCSS("stroke", color);
+    await expect(svg.locator("text")).toHaveCSS("fill", color);
+    await expect(svg.locator("text")).toHaveCSS("fill-opacity", "1");
+    await expect(row.locator('[data-slot="status-group"]')).toHaveText("completed");
+    const shieldBox = await svg.boundingBox();
+    const repositoryBox = await row.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }).boundingBox();
+    expect(shieldBox!.x + shieldBox!.width).toBeLessThan(repositoryBox!.x);
+  }
+  const unknown = page.getByRole("link", { name: "Security grade unknown", exact: true });
+  await expect(unknown).toHaveAttribute("href", "/security/repositories/27");
+  await expect(unknown.locator("text")).toHaveText("?");
+  await expect(unknown.locator("svg")).toHaveClass(/text-muted-foreground/);
+  const unscanned = page.getByRole("link", { name: "Unscanned", exact: true });
+  await expect(unscanned.locator("svg")).toHaveCount(1);
+  await expect(unscanned.locator(".lucide-shield-question")).toBeVisible();
+  const historical = page.getByRole("link", { name: "Historical security grade D, outdated", exact: true });
+  await expect(historical.locator("svg")).toHaveClass(/text-muted-foreground/);
+  const partial = page.locator('[data-slot="security-repository-row"]').filter({ hasText: "acme/partial-report" });
+  await expect(partial.locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
+  await expect(partial.locator('[data-slot="status-group"] [data-slot="badge"]')).toHaveText("Completed");
+  await expect(partial.getByRole("link", { name: "View latest scan: completed with warnings", exact: true }).locator('[data-slot="badge"]')).toHaveClass(/text-amber-800.*dark:text-amber-300/);
+  await unknown.focus();
+  await expect(unknown).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-grade-shields-${theme}-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("link", { name: "Security grade A", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/security\/repositories\/22$/);
+  expect(writes).toHaveLength(0);
+});
 
 test("scan dialog uses existing connection and configurable concurrency without enabling PR reviews", async ({ page }, info) => {
   const writes = await mock(page);
@@ -758,6 +860,22 @@ for (const status of ["queued", "running", "blocked", "completed", "partial", "f
   });
 }
 
+for (const head of ["b".repeat(40), null]) test(`latest scan metadata uses the current commit when ${head ? "known" : "unavailable"}`, async ({ page }, info) => {
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page, { summary: { state: head ? "outdated" : "unavailable", head_sha: head } });
+  await page.goto("/security/repositories/22");
+  const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
+  await expect(latest.locator("time")).toHaveAttribute("datetime", at);
+  if (head) {
+    await expect(latest.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
+    await expect(latest.locator("code")).toHaveAttribute("title", head);
+    await expect(latest.locator("code")).toHaveCSS("font-size", "12px");
+    await latest.screenshot({ path: `/private/tmp/code-mortis-latest-scan-commit-${info.project.name}.png` });
+  } else await expect(latest.locator("code")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
 test("repository without a scan does not show an inspection link", async ({ page }) => {
   const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null } });
   await page.goto("/security/repositories/22");
@@ -790,12 +908,24 @@ test("running scan stages explain validated file progress without changing the s
   expect(writes).toHaveLength(0);
 });
 
-for (const status of ["queued", "running", "completed", "partial", "failed", "cancelled", "blocked"]) {
+for (const [status, icon] of [["queued", "loader-circle"], ["running", "loader-circle"], ["completed", "shield-check"],
+  ["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"], ["blocked", "shield-alert"], ["unknown", "shield-question"]]) {
   test(`latest scan ${status} badge has no tooltip or underline on hover or focus`, async ({ page }, info) => {
-    if (status === "running" || status === "failed") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+    if (info.project.name === "mobile" || status === "running" || status === "failed") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
     const writes = await mock(page, { latestStatus: status });
     await page.goto("/security");
-    const badge = page.getByRole("link", { name: `View latest scan: ${status}`, exact: true });
+    const badge = page.getByRole("link", { name: `View latest scan: ${status === "partial" ? "completed with warnings" : status}`, exact: true });
+    await expect(badge.locator('[data-slot="badge"]')).toHaveText(status === "partial" ? "Completed" : status);
+    await expect(badge.locator("svg")).toHaveCount(1);
+    await expect(badge.locator(`.lucide-${icon}`)).toBeVisible();
+    expect(await badge.evaluate((element) => {
+      const content = element.querySelector('[data-slot="badge"]')!;
+      const text = [...content.childNodes].find((node) => node.nodeType === Node.TEXT_NODE)!;
+      const range = document.createRange(); range.selectNodeContents(text);
+      return content.querySelector("svg")!.getBoundingClientRect().left >= range.getBoundingClientRect().right;
+    })).toBe(true);
+    if (["completed", "partial"].includes(status)) await badge.screenshot({ path: `/private/tmp/code-mortis-scan-status-${status}-${info.project.name}.png` });
+    if (status === "partial") await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/bg-amber-700\/8.*text-amber-800/);
     const background = await badge.evaluate((element) => getComputedStyle(element).backgroundColor);
     if (info.project.name === "desktop") await badge.hover();
     else await badge.focus();
@@ -925,7 +1055,8 @@ test("security list and repository badges stay informational while scan stages r
   await expect(sheet).toBeHidden();
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const history = page.locator('[data-slot="security-scan-row"]');
-  await expect(history.locator('[data-slot="badge"]')).toHaveCount(2);
+  await expect(history.locator('[data-slot="badge"]')).toHaveCount(1);
+  await expect(history.getByRole("img", { name: "Saved security grade D", exact: true })).toBeVisible();
   await expect(history.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
     for (const badge of await history.locator('[data-slot="badge"]').all()) {
@@ -1016,22 +1147,50 @@ test("security finding sheet hides evidence and mutations after access is denied
 });
 
 test("scan history fills missing grades without substituting a previous grade", async ({ page }, info) => {
-  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page);
-  const statuses = ["partial", "failed", "cancelled", "blocked", "running", "queued"];
+  const statuses = [["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"],
+    ["blocked", "shield-alert"], ["running", "loader-circle"], ["queued", "loader-circle"]];
+  const otherGrades = ["A", "B", "C", "F"];
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: [...statuses.map((status) => ({ ...scan, id: status, status, grade: null })), scan], total: 7, page: 1, page_size: 20,
+    items: [...statuses.map(([status]) => ({ ...scan, id: status, status, grade: null })), { ...scan, id: "warnings", status: "partial" }, scan,
+      ...otherGrades.map((grade) => ({ ...scan, id: `grade-${grade}`, grade }))], total: 12, page: 1, page_size: 20,
   } }));
   await page.goto("/security/repositories/22?tab=history");
-  for (const status of statuses) {
+  for (const [status, icon] of statuses) {
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${status}"]`);
     await expect(row.locator('[data-slot="badge"]').first()).toHaveText("Unrated");
-    await expect(row.locator('[data-slot="badge"]').last()).toHaveText(status);
+    await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
+    const badge = row.locator('[data-slot="badge"]').last();
+    await expect(badge).toHaveText(status === "partial" ? "Completed" : status);
+    await expect(badge.locator("svg")).toHaveCount(1);
+    await expect(badge.locator(`.lucide-${icon}`)).toBeVisible();
     await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
+    await expect(row.locator("a")).toHaveCount(0);
   }
-  await expect(page.locator('[data-slot="security-scan-row"][href="/security/scans/scan"] [data-slot="badge"]').first()).toHaveText("D");
+  const completed = page.locator('[data-slot="security-scan-row"][href="/security/scans/scan"]');
+  for (const grade of ["A", "B", "C", "D", "F"]) {
+    const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${grade === "D" ? "scan" : `grade-${grade}`}"]`);
+    const shield = row.getByRole("img", { name: `Saved security grade ${grade}`, exact: true }).locator('[data-slot="security-grade-shield"]');
+    await expect(shield).toHaveText(grade);
+    await expect(shield).toHaveCSS("width", "24px");
+    await expect(shield).toHaveCSS("height", "24px");
+    await expect(shield).toHaveClass(grade === "A" ? /text-emerald-800/ : ["D", "F"].includes(grade) ? /text-red-700/ : /text-amber-800/);
+    await expect(row.locator("a")).toHaveCount(0);
+  }
+  await expect(completed.locator('[data-slot="badge"]').last()).toHaveClass(/text-emerald-800/);
+  await expect(completed.locator(".lucide-shield-check")).toBeVisible();
+  const warning = page.locator('[data-slot="security-scan-row"][href="/security/scans/warnings"]');
+  await expect(warning.getByRole("img", { name: "Saved security grade D", exact: true }).locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
+  await expect(warning.locator('[data-slot="badge"]').last()).toHaveText("Completed");
+  await expect(warning.locator('[data-slot="badge"]').last()).toHaveClass(/text-amber-800/);
+  await expect(warning.locator(".lucide-shield-alert")).toBeVisible();
+  await expect(warning).toContainText("with warnings");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: info.outputPath("security-history-unrated.png"), fullPage: true });
+  await page.screenshot({ path: `/private/tmp/code-mortis-security-history-badges-${info.project.name}.png`, fullPage: true });
+  await completed.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/security\/scans\/scan$/);
   expect(writes).toHaveLength(0);
 });
 
