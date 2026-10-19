@@ -148,7 +148,7 @@ def test_optional_diagnostics_cannot_replace_the_original_failure(tmp_path, fail
 def test_semantic_validation_is_corrected_once_without_aborting_other_work(
     transport, tmp_path, monkeypatch, kind, failure, corrected,
 ):
-    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "safe"}
+    citation = {"source_id": "source_1", "start_line": 1, "end_line": 1}
     finding = {"title": "Synthetic", "category": "test", "severity": "low", "path": "app.py",
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
         "verification": "Test", "evidence": [citation]}

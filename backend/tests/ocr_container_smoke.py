@@ -101,8 +101,7 @@ class Provider(BaseHTTPRequestHandler):
                 assessment_barrier.wait(timeout=15)
                 assert "history_1" in text
                 value = {"verdict": "confirmed", "finding_id": "history_1", "explanation": "Confirmed in " + path,
-                         "evidence": [{"revision": "current", "path": path, "start_line": 1, "end_line": 1,
-                                       "quote": "for attempt in range(3): retry()"}], "required_paths": []}
+                         "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": []}
             if verification_mode.startswith("assessment_"):
                 assert verification.RESULT_DELIVERY in text
                 value = {

@@ -383,11 +383,14 @@ def evidence_bundle(context):
     return "\n\n".join(parts)
 
 
-RESULT_DELIVERY = (
+STRUCTURED_RESULT_DELIVERY = (
     " Submit exactly one task_done call with state DONE and the complete structured result in result. "
     "The state field alone never submits a result; result must be an object matching the requested schema. "
     "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
     "This terminal call submits the result and ends the task. Do not use code_comment. "
+)
+
+RESULT_DELIVERY = STRUCTURED_RESULT_DELIVERY + (
     "Evidence must cite paths and line numbers from the supplied source blocks, never evidence.py. "
     "Copy source text verbatim after the line-number delimiter, preserving indentation, case and literals. "
 )

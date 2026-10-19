@@ -27,7 +27,7 @@ from code_mortis.security_schemas import SecurityScanInput
 
 SHA = "a" * 40
 OLD = "b" * 40
-SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation_indentation.json").read_text())["cases"]
+SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation_failures.json").read_text())["cases"]
 
 
 @pytest.fixture
@@ -505,6 +505,7 @@ def test_citations_and_native_task_boundaries():
     for task in ("security_analysis", "security_verification"):
         instructions = native_runner.task_instructions(SimpleNamespace(task=task))
         assert "untrusted data" in instructions and "Do not execute code" in instructions
+        assert "source_id" in instructions and "application supplies exact quotes" in instructions
     assert native_runner.CODEX_CONFIG["features.shell_tool"] is False
     assert native_runner.CODEX_CONFIG["permissions.mortis-review.network.enabled"] is False
 
@@ -649,7 +650,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     def api(*args, **kwargs):
         try:
             return kwargs["validator"]({"verdict": "confirmed", "finding_id": "history_999", "explanation": "Confirmed",
-                "evidence": [citation], "required_paths": []}, args[4]), {"tokens": 12}
+                "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": []}, args[4]), {"tokens": 12}
         except security_engine.verification.ResultValidationError as exc:
             raise security_engine.verification.VerificationOutputError("Invalid history selection", {"tokens": 12}, feedback=exc.feedback) from exc
 
@@ -1005,15 +1006,12 @@ def test_security_citations_never_reanchor_invented_escaped_or_ambiguous_quotes(
 
 @pytest.mark.parametrize("case", SCAN_CITATIONS, ids=lambda case: case["task"])
 @pytest.mark.parametrize("revision", ["original", "current"])
-def test_security_recovers_the_exact_last_scan_indentation_errors(case, revision):
+def test_legacy_citation_validation_keeps_recorded_nonverbatim_quotes_invalid(case, revision):
     citation = {**case["citation"], "revision": revision}
     source = "\n" * (citation["start_line"] - 1) + case["source_lines"]
-    recoveries = []
-    assert security_engine.validate_citations([citation], {revision: {citation["path"]: source}}, recoveries=recoveries) == {revision}
-    assert citation == {**case["citation"], "revision": revision, "quote": case["source_lines"]}
-    assert recoveries == [{"field": "evidence[0]", "revision": revision, "path": citation["path"],
-                          "start_line": citation["start_line"], "end_line": citation["end_line"],
-                          "reason": "Python indentation restored"}]
+    with pytest.raises(security_engine.verification.ResultValidationError):
+        security_engine.validate_citations([citation], {revision: {citation["path"]: source}})
+    assert citation == {**case["citation"], "revision": revision}
 
 
 @pytest.mark.parametrize(("source", "quote", "path"), [
@@ -1031,7 +1029,7 @@ def test_security_recovers_the_exact_last_scan_indentation_errors(case, revision
     ('value = "' + "x" * 19990 + '"\n', '    value = "' + "x" * 19990 + '"', "app.py"),
 ], ids=["block-structure", "multiline-string", "f-string", "string-value", "number", "condition", "comment", "escaping",
         "invalid-fragment", "yaml", "json", "source-limit"])
-def test_security_indentation_recovery_rejects_changed_code_literals_comments_and_other_languages(source, quote, path):
+def test_legacy_citation_validation_rejects_changed_code_literals_comments_and_formatting(source, quote, path):
     citation = {"revision": "current", "path": path, "start_line": 1, "end_line": len(source.splitlines()), "quote": quote}
     original = citation.copy()
     with pytest.raises(security_engine.verification.ResultValidationError):
@@ -1042,16 +1040,17 @@ def test_security_indentation_recovery_rejects_changed_code_literals_comments_an
 @pytest.mark.parametrize("case", SCAN_CITATIONS, ids=lambda case: case["task"])
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
-def test_security_indentation_recovery_covers_every_stage_and_transport(tmp_path, monkeypatch, case, kind, task):
+def test_security_source_selections_cover_recorded_failures_in_every_stage_and_transport(tmp_path, monkeypatch, case, kind, task):
     citation, calls = case["citation"], []
     source = "\n" * (citation["start_line"] - 1) + case["source_lines"]
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    selected = {"source_id": "source_1", "start_line": citation["start_line"], "end_line": citation["end_line"]}
     proposal = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": citation["path"],
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
-        "verification": "Test", "evidence": [citation]}
+        "verification": "Test", "evidence": [selected]}
     response = {"findings": [proposal], "required_paths": []} if task == "analysis" else {
         "verdict": "confirmed" if task == "assessment" else "fixed", "explanation": "Checked", "required_paths": [],
-        "evidence": [citation, {**citation, "revision": "original"}],
+        "evidence": [selected, {**selected, "source_id": "source_2"}],
         **({"finding_id": "history_1"} if task == "assessment" else {"original_issue_present": True, "change_explanation": "Changed"})}
 
     def api(*args, **kwargs):
@@ -1071,9 +1070,9 @@ def test_security_indentation_recovery_covers_every_stage_and_transport(tmp_path
     assert calls == [1] and usage["tokens"] == 7
     evidence = result["findings"][0]["evidence"] if task == "analysis" else result["evidence"]
     assert all(value["quote"] == case["source_lines"] for value in evidence)
-    assert len(usage["citation_recoveries"]) == len(evidence)
-    assert all(value["reason"] == "Python indentation restored" for value in usage["citation_recoveries"])
-    assert citation["quote"] != case["source_lines"]  # Never mutate the provider's response.
+    assert usage == {"tokens": 7}
+    assert all(set(value) == {"source_id", "start_line", "end_line"} for value in (response["findings"][0]["evidence"] if task == "analysis" else response["evidence"]))
+    assert [value["revision"] for value in evidence] == (["current"] if task == "analysis" else ["current", "original"])
     if task == "assessment":
         assert result["finding_id"] == "stored-finding"
     elif task == "verification":
@@ -1082,7 +1081,7 @@ def test_security_indentation_recovery_covers_every_stage_and_transport(tmp_path
 
 @pytest.mark.parametrize("concurrency", [1, 2])
 @pytest.mark.parametrize("uncertain", [False, True])
-def test_security_scan_persists_recovered_citations_and_finishes_without_extra_inference(
+def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_rejected_results(
     seed, security_github, tmp_path, monkeypatch, concurrency, uncertain,
 ):
     cases = {case["citation"]["path"]: case for case in SCAN_CITATIONS}
@@ -1098,11 +1097,14 @@ def test_security_scan_persists_recovered_citations_and_finishes_without_extra_i
         path = context.get("assigned_path") or context["proposal"]["path"]
         calls.append(path)
         citation = cases[path]["citation"]
+        reference = next(key for key, value in context["citation_sources"].items() if value["path"] == path and value["revision"] == "current")
+        selected = {"source_id": reference, "start_line": citation["start_line"], "end_line": citation["end_line"]}
         response = {"findings": [{"title": path, "category": "test", "severity": "low", "path": path,
             "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
-            "verification": "Test", "evidence": [citation]}], "required_paths": []} if "assigned_path" in context else {
-                "verdict": "uncertain" if uncertain and cases[path]["task"] == "assessment" else "confirmed",
-                "finding_id": None, "explanation": "Checked", "evidence": [citation], "required_paths": []}
+            "verification": "Test", "evidence": [selected]}], "required_paths": []} if "assigned_path" in context else {
+                "verdict": "rejected" if cases[path].get("verdict") == "rejected" else
+                    "uncertain" if uncertain and cases[path].get("verdict") == "uncertain" else "confirmed",
+                "finding_id": None, "explanation": "Checked", "evidence": [selected], "required_paths": []}
         return kwargs["validator"](response, context), {"tokens": 7}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
@@ -1119,15 +1121,114 @@ def test_security_scan_persists_recovered_citations_and_finishes_without_extra_i
         assert scan.report["problems"] == (["A proposed security finding requires additional verification."] if uncertain else [])
         assert scan.grade == "B"
         assert all(scan.stages[name]["status"] == ("partial" if uncertain and name == "assessment" else "completed") for name in security.STAGES)
-        assert scan.stages["assessment"]["completed"] == 2 and scan.stages["assessment"]["failed"] == 0
-        assert len(calls) == 4 and scan.progress["tokens"] == 28
+        assert scan.stages["assessment"]["completed"] == 3 and scan.stages["assessment"]["failed"] == 0
+        assert len(calls) == 6 and scan.progress["tokens"] == 42
         assert len(scan.report["findings"]) == (1 if uncertain else 2)
         assert len(scan.report["unsettled_candidates"]) == int(uncertain)
         if uncertain:
             assert scan.report["unsettled_candidates"][0]["assessment"]["verdict"] == "uncertain"
         for finding in scan.report["findings"]:
             assert finding["evidence"]["evidence"][0]["quote"] == cases[finding["path"]]["source_lines"]
-        assert all(unit["citation_recoveries"][0]["reason"] == "Python indentation restored" for unit in scan.coverage["units"])
+        assert all(unit["citation_contract"] == security_engine.CITATION_CONTRACT for unit in scan.coverage["units"])
+        rejected = next(task for key, task in scan.progress["tasks"].items() if key.startswith("assessment:") and task["proposal"]["path"] == "frontend/src/reviews.tsx")
+        assert rejected["status"] == "completed" and rejected["result"]["verdict"] == "rejected"
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("invalid", ["unknown", "zero", "reversed", "overflow", "string_line", "boolean_line",
+    "quote", "path", "revision", "empty", "blank", "oversized"])
+def test_security_source_selection_cannot_forge_evidence(tmp_path, monkeypatch, kind, invalid):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    sources = {"app.tsx": "line one\nline two\n", "long.tsx": "more\n" * 10}
+    if invalid in {"empty", "blank", "oversized"}:
+        sources["app.tsx"] = {"empty": "", "blank": " \t\n", "oversized": "x" * 20001}[invalid]
+    selected = {"source_id": "source_1", "start_line": 1, "end_line": 1}
+    selected.update({"unknown": {"source_id": "source_999"}, "zero": {"start_line": 0},
+        "reversed": {"start_line": 2, "end_line": 1}, "overflow": {"end_line": 3}, "string_line": {"start_line": "1"},
+        "boolean_line": {"start_line": True}, "quote": {"quote": "invented"}, "path": {"path": "../private"},
+        "revision": {"revision": "original"}}.get(invalid, {}))
+    response = {"verdict": "confirmed", "finding_id": None, "explanation": "Untrusted", "evidence": [selected], "required_paths": []}
+    calls = []
+
+    def api(*args, **kwargs):
+        calls.append(1)
+        try:
+            return kwargs["validator"](response, args[4]), {"tokens": 7}
+        except security_engine.verification.ResultValidationError as exc:
+            raise security_engine.verification.VerificationOutputError("Invalid selection", {"tokens": 7}, feedback=exc.feedback) from exc
+
+    def native(*args):
+        calls.append(1)
+        return response, {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    with pytest.raises(security_engine.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
+            {"diff": "", "history": [], "sources": {"current": sources}}, 100, 60, lambda: False, uid())
+    assert calls == [1, 1] and error.value.usage == {"tokens": 14}
+    assert error.value.feedback["kind"] == ("schema" if invalid in {"zero", "string_line", "boolean_line", "quote", "path", "revision"} else "citation_selection")
+    if invalid == "overflow":
+        assert error.value.feedback["line_count"] == 2
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+def test_security_source_ids_stay_bound_when_evidence_expands(tmp_path, monkeypatch, kind, task):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"z.tsx": {}, "a.tsx": {}}
+    item.read = lambda path, sha=None: "original helper" if sha else "current helper"
+    calls, contexts = [], []
+    bundle = security_engine.verification.evidence_bundle
+
+    def evidence_bundle(context):
+        contexts.append(json.loads(json.dumps(context)))
+        return bundle(context)
+
+    def response(context):
+        selected = [{"source_id": "source_1", "start_line": 1, "end_line": 1}]
+        if task == "analysis":
+            return {"findings": [] if len(calls) == 1 else [{"title": "Synthetic", "category": "test", "severity": "low", "path": "z.tsx",
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix", "verification": "Test",
+                "evidence": selected}], "required_paths": ["a.tsx"] if len(calls) == 1 else []}
+        return {"verdict": "uncertain", "explanation": "Checked", "evidence": selected, "required_paths": ["a.tsx"] if len(calls) == 1 else [],
+            **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": True})}
+
+    def api(*args, **kwargs):
+        evidence_bundle(args[4])
+        calls.append(1)
+        return kwargs["validator"](response(args[4]), args[4]), {"tokens": 7}
+
+    def native(*args):
+        calls.append(1)
+        return response(contexts[-1]), {"tokens": 7}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    context = {"assigned_path": "z.tsx", "original_sha": OLD, "diff": "", "history": [], "sources": {"current": {"z.tsx": "preserve this"}}}
+    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+        context, 100, 60, lambda: False, uid())
+    assert usage == {"tokens": 14} and calls == [1, 1]
+    assert contexts[0]["citation_sources"]["source_1"] == contexts[1]["citation_sources"]["source_1"] == {
+        "revision": "current", "path": "z.tsx", "line_count": 1}
+    assert contexts[1]["citation_sources"]["source_2"]["path"] == "a.tsx"
+    evidence = result["findings"][0]["evidence"] if task == "analysis" else result["evidence"]
+    assert evidence == [{"revision": "current", "path": "z.tsx", "start_line": 1, "end_line": 1, "quote": "preserve this"}]
+    assert "citation_sources" not in context
+
+
+@pytest.mark.parametrize("size", [19999, 20000])
+def test_selected_citations_preserve_exact_content_revision_redaction_and_limit(size):
+    current, original = "x" * (size - 1) + "\n", "old [redacted]\t\r\n"
+    context = {"sources": {"current": {"app.yaml": current}, "original": {"app.yaml": original}},
+        "citation_sources": {"source_1": {"revision": "current", "path": "app.yaml"},
+                             "source_2": {"revision": "original", "path": "app.yaml"}}}
+    selected = [{"source_id": source, "start_line": 1, "end_line": 1} for source in ("source_1", "source_2")]
+    result = security_engine.selected_citations(selected, context)
+    assert [value["quote"] for value in result] == [current, original]
+    assert [value["revision"] for value in result] == ["current", "original"]
+    assert all("quote" not in value for value in selected)
 
 
 def test_github_issue_creation_is_explicit_and_reconciles_unknown_delivery(seed, security_github, monkeypatch, client):
@@ -1219,7 +1320,7 @@ def test_security_assessment_selects_history_references_and_server_assigns_uuid(
             selected = 1
         expand = case == "expand" and len(calls) == 1
         return {"verdict": "uncertain" if expand else "confirmed", "finding_id": selected, "explanation": "Checked source",
-                "evidence": [citation], "required_paths": ["guard.py"] if expand else []}
+                "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": ["guard.py"] if expand else []}
 
     def api(*args, **kwargs):
         evidence_bundle(args[4])
@@ -1546,7 +1647,7 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
         return bundle(context)
 
     def response():
-        evidence = [citation]
+        evidence = [{"source_id": "source_1", "start_line": 1, "end_line": 1}]
         if task == "analysis":
             finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
                        "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1654,16 +1755,14 @@ def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
-def test_security_corrects_citations_once_with_exact_feedback_and_known_usage(tmp_path, monkeypatch, kind, task):
+def test_security_corrects_invalid_source_selections_once_with_known_usage(tmp_path, monkeypatch, kind, task):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     source = 'url = "synthetic"'
-    citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1,
-                "quote": source.replace('"', '\\"')}
     calls, identities, clock = [], [], [0]
     monkeypatch.setattr(security_engine, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     def response():
-        evidence = [{**citation, "quote": citation["quote"] if len(calls) == 1 else source}]
+        evidence = [{"source_id": "invented" if len(calls) == 1 else "source_1", "start_line": 1, "end_line": 1}]
         if task == "analysis":
             finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
                        "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1696,13 +1795,14 @@ def test_security_corrects_citations_once_with_exact_feedback_and_known_usage(tm
     assert [call[1:] for call in calls] == [(100, 60), (93, 50)]
     if kind == "api":
         feedback = calls[1][0]["validation_feedback"]
-        assert feedback["source_lines"] == source and feedback["quote"] == citation["quote"]
+        assert feedback["kind"] == "citation_selection" and feedback["allowed_sources"] == ["source_1"]
+        assert feedback["source_id"] == "invented"
         if task == "analysis":
             assert [error["field"] for error in feedback["errors"]] == ["findings[0].evidence[0]", "findings[1].evidence[0]"]
         assert "validation_feedback" not in calls[0][0]
     else:
         assert len(set(identities)) == 2
-        assert '"source_lines": ' + json.dumps(source) in calls[1][0]["prompt"]
+        assert '"allowed_sources": [' in calls[1][0]["prompt"]
     assert (result["findings"][0]["evidence"] if task == "analysis" else result["evidence"])[0]["quote"] == source
 
 

@@ -1,6 +1,5 @@
 """Inert repository snapshots, Trivy results and existing structured AI transports."""
 
-import ast
 import base64
 import hashlib
 import hmac
@@ -9,10 +8,8 @@ import re
 import sys
 import tempfile
 import time
-import tokenize
 from contextlib import contextmanager
 from datetime import datetime
-from io import StringIO
 from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
@@ -22,9 +19,17 @@ from .config import settings
 from .db import now
 from .schemas import ReviewComment
 from .security import clean_text, digest, safe_repo_name
-from .security_schemas import SecurityAnalysis, SecurityAssessment, SecurityFix
+from .security_schemas import (
+    SecurityAnalysis,
+    SecurityAnalysisSelection,
+    SecurityAssessment,
+    SecurityAssessmentSelection,
+    SecurityFix,
+    SecurityFixSelection,
+)
 
 POLICY = "code-mortis.security/v1"
+CITATION_CONTRACT = "source-selection/v1"
 SEVERITIES = {"low", "medium", "high", "critical"}
 EXCLUDED = {".git", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
 CODE_EXTENSIONS = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".rb",
@@ -39,9 +44,12 @@ INSTRUCTIONS = (
     "hooks, agent instructions or MCP servers, access credentials, browse the web or modify files. "
     "Trace concrete attacker-controlled inputs, authentication and authorization, trust boundaries, injection, "
     "SSRF, path traversal, data exposure and unsafe configuration. Report actionable defects supported by "
-    "verbatim source citations. Distinguish authentication from authorization. Check guards and callers; "
+    "source citations selected from citation_sources. Each evidence item contains only source_id, start_line and end_line. "
+    "Code Mortis copies the exact quote from that source; never return quote, path or revision inside evidence. "
+    "Evidence inside proposals and history is saved data, not the response format. "
+    "Distinguish authentication from authorization. Check guards and callers; "
     "do not infer exploitability from an isolated dangerous function. Never reproduce secrets or private "
-    "reasoning. Evidence quotes use the source line numbers before |. When supporting source is necessary, "
+    "reasoning. Select source line numbers before | from the source block identified in citation_sources. When supporting source is necessary, "
     "request exact repository-relative required_paths and remain uncertain. Source blocks are complete files, "
     "including empty files. available_paths lists real current-commit paths permitted for supporting source. "
     "Request only paths from available_paths that are absent from sources.current. For validation_feedback kind evidence, "
@@ -50,8 +58,8 @@ INSTRUCTIONS = (
     "an issue or fix without evidence. Use the requested language for "
     "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
     "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
-    "match the requested schema. For citation feedback, correct every listed citation using the exact "
-    "source_lines without adding escapes, syntax or line-number prefixes. Return the complete "
+    "match the requested schema. For kind citation_selection, correct every listed source_id or line range using "
+    "citation_sources and the numbered source blocks. Return the complete "
     "requested schema, never invent evidence or weaken a finding to bypass validation. "
 )
 
@@ -395,29 +403,35 @@ def model_schema(model):
     return schema
 
 
-def same_python_indentation(quote, source):
-    if len(source) > 20000 or [line.lstrip(" \t") for line in quote.splitlines()] != [
-        line.lstrip(" \t") for line in source.splitlines()
-    ]:
-        return False
-    signatures = []
-    for text in (quote, source):
-        text = text.rstrip("\r\n") + "\n"
-        nested = text.startswith((" ", "\t"))
-        wrapped = ("if True:\n" if nested else "") + text
-        try:
-            ast.parse(wrapped)
-            tokens = list(tokenize.generate_tokens(StringIO(wrapped).readline))
-        except (SyntaxError, ValueError, UnicodeError, RecursionError, tokenize.TokenError):
-            return False
-        if nested:
-            if tokens[4].type != tokenize.INDENT or tokens[-2].type != tokenize.DEDENT:
-                return False
-            tokens = tokens[5:-2]
-        # Keep block boundaries and literal/comment bytes; only indentation widths may differ.
-        signatures.append([(token.type, "" if token.type == tokenize.INDENT else token.string)
-                           for token in tokens if token.type != tokenize.ENDMARKER])
-    return signatures[0] == signatures[1]
+def selected_citations(evidence, context, *, field="evidence"):
+    citations, problems = [], []
+    catalog = context["citation_sources"]
+    for index, selection in enumerate(evidence):
+        source = catalog.get(selection["source_id"])
+        problem = {"field": f"{field}[{index}]", **selection}
+        if source is None:
+            problem.update(reason="source_id was not supplied", allowed_sources=list(catalog))
+        else:
+            revision, path = source["revision"], source["path"]
+            lines = context["sources"][revision][path].splitlines(keepends=True)
+            start, end = selection["start_line"], selection["end_line"]
+            problem.update(revision=revision, path=path, line_count=len(lines))
+            if not 1 <= start <= end <= len(lines):
+                problem["reason"] = "invalid source line range"
+            else:
+                quote = "".join(lines[start - 1:end])
+                if not quote.strip():
+                    problem["reason"] = "selected source lines are empty"
+                elif len(quote) > 20000:
+                    problem["reason"] = "selected source lines exceed the 20000-character citation limit"
+                else:
+                    citations.append({"revision": revision, "path": path, "start_line": start, "end_line": end, "quote": quote})
+        if "reason" in problem:
+            problems.append(problem)
+    if problems:
+        feedback = {"kind": "citation_selection", **problems[0], "errors": problems}
+        raise verification.ResultValidationError("Security citation selection is invalid. " + json.dumps(feedback), feedback)
+    return citations
 
 
 def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
@@ -457,12 +471,6 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
                 problem["reason"] = "invalid source line range"
             else:
                 source_lines = "".join(lines[start - 1:end])
-                if (quote.strip() and quote not in source_lines and PurePosixPath(path).suffix in {".py", ".pyi"}
-                    and same_python_indentation(quote, source_lines)):
-                    citation["quote"] = source_lines
-                    if recoveries is not None:
-                        recoveries.append({"field": problem["field"], "revision": revision, "path": path,
-                                           "start_line": start, "end_line": end, "reason": "Python indentation restored"})
                 if not citation["quote"].strip() or citation["quote"] not in source_lines:
                     problem.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
         if "reason" in problem:
@@ -480,8 +488,10 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
     context = {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
         and PurePosixPath(path).name not in INSTRUCTION_FILES)}
-    model = {"analysis": SecurityAnalysis, "assessment": SecurityAssessment, "verification": SecurityFix}[task]
-    schema = model_schema(model)
+    model, selection_model = {"analysis": (SecurityAnalysis, SecurityAnalysisSelection),
+        "assessment": (SecurityAssessment, SecurityAssessmentSelection), "verification": (SecurityFix, SecurityFixSelection)}[task]
+    schema = model_schema(selection_model)
+    source_ids = {}
     history_ids = {}
     if task == "assessment":
         history = context.get("history", [])
@@ -491,7 +501,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         schema["properties"]["finding_id"]["description"] = "Select a supplied history entry reference, or null for a new finding."
     instructions = INSTRUCTIONS + {
         "analysis": ("Audit the assigned file and report all evidenced security defects. Context files are supporting evidence. "
-                     "Put start_line, end_line and quote only inside evidence citations, never directly on a finding."),
+                     "Put source_id, start_line and end_line only inside evidence selections, never directly on a finding."),
         "assessment": ("Independently test the proposed security finding against protections and history. Confirm only a concrete "
                        "cause, reachable trigger and impact. Select finding_id from the history entry references in the schema enum "
                        "only for the same established defect; Code Mortis assigns its stored UUID. Never return a UUID. "
@@ -502,12 +512,9 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
     }[task]
 
-    citation_recoveries = []
-
     def validate(raw, supplied):
-        recoveries = []
         try:
-            result = model.model_validate(raw, strict=True).model_dump()
+            result = selection_model.model_validate(raw, strict=True).model_dump()
         except ValidationError as exc:
             feedback = {"kind": "schema", "errors": exc.errors(include_url=False, include_context=False, include_input=False)}
             raise verification.ResultValidationError(
@@ -529,15 +536,16 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                         "expected": supplied["assigned_path"]}]}
                     raise verification.ResultValidationError("Security analysis returned a finding outside its assigned file.", feedback)
                 try:
-                    validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence",
-                                       recoveries=recoveries)
+                    proposed["evidence"] = selected_citations(proposed["evidence"], supplied, field=f"findings[{index}].evidence")
+                    validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
                 except verification.ResultValidationError as exc:
                     problems.extend(exc.feedback["errors"])
             if problems:
-                feedback = {**problems[0], "errors": problems}
-                raise verification.ResultValidationError("Security evidence does not match its cited source lines. " + json.dumps(feedback), feedback)
+                feedback = {"kind": "citation_selection", **problems[0], "errors": problems}
+                raise verification.ResultValidationError("Security citation selection is invalid. " + json.dumps(feedback), feedback)
         else:
-            revisions = validate_citations(evidence, supplied["sources"], recoveries=recoveries)
+            result["evidence"] = evidence = selected_citations(evidence, supplied)
+            revisions = validate_citations(evidence, supplied["sources"])
             if task == "assessment":
                 if result["finding_id"] is not None and result["finding_id"] not in history_ids:
                     feedback = {"kind": "history_selection", "field": "finding_id", "allowed_values": [*history_ids, None]}
@@ -554,8 +562,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 or not result["original_issue_present"] or not result["change_explanation"].strip() or result["required_paths"]
             ):
                 result["verdict"] = "uncertain"
-        citation_recoveries[:] = recoveries
-        return result
+        return model.model_validate(result, strict=True).model_dump()
 
     used, feedback, corrected = 0, None, False
     evidence_corrected = False
@@ -576,12 +583,24 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         remaining_time = max(0, int(deadline - time.monotonic())) if deadline is not None else None
         if remaining_time is not None and remaining_time <= 0:
             raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
-        request_context = {**context, "validation_feedback": feedback} if feedback else context
+        catalog = {}
+        for revision, sources in sorted(context["sources"].items()):
+            for path, source in sorted(sources.items()):
+                reference = source_ids.setdefault((revision, path), f"source_{len(source_ids) + 1}")
+                catalog[reference] = {"revision": revision, "path": path, "line_count": len(source.splitlines())}
+        selection_schema = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
+        selection_schema["source_id"]["enum"] = list(catalog) or ["unavailable"]
+        selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
+        for name in ("start_line", "end_line"):
+            selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
+        request_context = {**context, "citation_sources": catalog, **({"validation_feedback": feedback} if feedback else {})}
         try:
             if connection["kind"] == "api":
                 result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
                     remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
-                    configuration_managed=configuration_managed)
+                    configuration_managed=configuration_managed, delivery=verification.STRUCTURED_RESULT_DELIVERY +
+                    " Select evidence using only source_id, start_line and end_line from citation_sources. "
+                    "Do not copy or generate quote, path or revision fields in evidence; Code Mortis supplies them from the snapshot.")
             else:
                 result, usage = runner_client.review(connection["id"], f"{identity}-{attempt}", {
                     "task": "security_verification" if task == "verification" else "security_analysis",
@@ -612,8 +631,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         if not result["required_paths"]:
             if task == "assessment" and result["finding_id"] is not None:
                 result["finding_id"] = history_ids[result["finding_id"]]
-            return json.loads(item.redact(json.dumps(result))), {"tokens": used,
-                **({"citation_recoveries": citation_recoveries} if citation_recoveries else {})}
+            return json.loads(item.redact(json.dumps(result))), {"tokens": used}
         if attempt == 3:
             break
         unavailable = {}

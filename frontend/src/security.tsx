@@ -123,13 +123,12 @@ export function SecurityOverview({ user }: { user: User }) {
             const Visibility = repo.private ? LockKeyhole : Globe;
             const slash = repo.full_name.lastIndexOf("/");
             const counts = summary.counts ?? {};
-            const hasGrade = summary.grade && (summary.state === "current" || (summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id));
             return <article key={repo.id} data-slot="security-repository-row" className="inbox-row-grid group relative grid gap-y-3 border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 md:items-center md:px-5 md:py-3">
               <div className="flex min-w-0 items-center gap-3 pr-12 md:pr-0"><SecurityGrade shield repositoryId={repo.id} summary={summary} /><div className="min-w-0">
                 <Link className="break-words font-medium group-hover:text-primary after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring [overflow-wrap:anywhere]" to={`/security/repositories/${repo.id}`}><span className="font-normal text-muted-foreground group-hover:text-primary">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</Link>
                 <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private" : "Public"}</div>
               </div></div>
-              <div className="relative z-10 w-fit min-w-0"><StatusGroup>{!hasGrade && <SecurityGrade repositoryId={repo.id} summary={summary} />}{summary.latest_scan_id && <SecurityScanBadge status={summary.latest_status ?? "unknown"} scanId={summary.latest_scan_id} />}</StatusGroup></div>
+              <div className="relative z-10 w-fit min-w-0"><StatusGroup>{summary.latest_scan_id ? <SecurityScanBadge status={summary.latest_status ?? "unknown"} scanId={summary.latest_scan_id} /> : <SecurityGrade repositoryId={repo.id} summary={summary} />}</StatusGroup></div>
               <div><FindingCount count={Object.values(counts).reduce((sum, value) => sum + value, 0)} /><span className="sr-only">{Object.entries(counts).filter(([, value]) => value > 0).map(([severity, value]) => `${value} ${severity}`).join(", ")}</span></div>
               {summary.latest_at ? <ListDate value={summary.latest_at} /> : <span className="text-xs text-muted-foreground">Not scanned</span>}
               <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><SecurityRepositoryActions repository={repo} summary={summary} admin={user.role === "admin"} onRun={(trigger) => { scanTrigger.current = trigger; setSelected(repo.id); }} /></div>

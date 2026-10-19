@@ -271,7 +271,9 @@ test("security overview keeps historical grades qualified and filters in the URL
   await mock(page, { partial: true });
   await page.goto("/security");
   await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
-  await expect(page.getByText("Incomplete", { exact: true })).toBeVisible();
+  await expect(page.getByText("Incomplete", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Historical security grade D, incomplete", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "View latest scan: completed with warnings", exact: true })).toBeVisible();
   await expect(page.getByText("1 unresolved", { exact: false })).toBeVisible();
   await expect(page.getByText("1 critical", { exact: true })).toHaveClass("sr-only");
   await page.getByRole("textbox", { name: "Search repositories" }).fill("payments");
@@ -288,16 +290,16 @@ test("security overview keeps historical grades qualified and filters in the URL
 });
 
 for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"], ["outdated", "Outdated"], ["not_scanned", "Unscanned"], ["unavailable", "Unverified"]] as const) {
-  test(`repository grade badge uses one label for ${state}`, async ({ page }) => {
+  test(`repository detail grade badge uses one label for ${state}`, async ({ page }) => {
     await mock(page, { summary: { state, ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
-    await page.goto("/security");
-    const badge = page.getByRole("link", { name: state === "current" ? `Security grade ${badgeLabel}` : badgeLabel, exact: true });
-    await expect(badge).toHaveText(badgeLabel);
+    await page.goto("/security/repositories/22");
+    const label = badgeLabel === "Unscanned" ? badgeLabel : `Security ${badgeLabel}`;
+    const badge = page.getByRole("link", { name: label, exact: true });
+    await expect(badge).toHaveText(label);
     await badge.focus();
     await expect(badge).not.toHaveAttribute("data-state");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
-      await page.goto("/security/repositories/22");
       await expect(page.getByText(/Historical report saved/)).toBeVisible();
     }
   });
@@ -898,7 +900,7 @@ test(`security repository rows share hover feedback and keyboard-accessible grad
     await expect(owner).toHaveCSS("color", await repository.evaluate((element) => getComputedStyle(element).color));
     await page.screenshot({ path: info.outputPath("security-repository-name-hover.png"), fullPage: true });
   }
-  const grade = page.getByRole("link", { name: "Incomplete", exact: true });
+  const grade = page.getByRole("link", { name: "Historical security grade D, incomplete", exact: true });
   await expect(grade).not.toHaveAttribute("title");
   await grade.focus();
   await expect(grade).not.toHaveAttribute("data-state");
@@ -1103,7 +1105,7 @@ for (const [name, counts, total, breakdown] of [
   ["mixed severities", { high: 1, low: 3 }, 4, "1 high, 3 low"],
   ["no findings", {}, 0, ""],
 ] as const) {
-  test(`overview separates ${name} from the grade and scan capsule like Inbox`, async ({ page }, info) => {
+  test(`overview separates ${name} from the grade and single scan status`, async ({ page }, info) => {
     await page.addInitScript(() => localStorage.setItem("theme", "dark"));
     const writes = await mock(page, { partial: true, latestStatus: "running", summary: { grade: "A", counts } });
     await page.goto("/security");
@@ -1111,9 +1113,9 @@ for (const [name, counts, total, breakdown] of [
     const badge = page.getByRole("link", { name: "View latest scan: running", exact: true });
     const capsule = row.locator('[data-slot="status-group"]');
     const segments = capsule.locator('[data-slot="badge"]');
-    await expect(segments).toHaveCount(2);
-    await expect(segments.first()).toHaveText("Incomplete");
-    await expect(segments.last()).toHaveText("running");
+    await expect(segments).toHaveCount(1);
+    await expect(segments).toHaveText("running");
+    await expect(row.getByText("Incomplete", { exact: true })).toHaveCount(0);
     await expect(capsule.getByRole("link", { name: "A", exact: true })).toHaveCount(0);
     const findings = row.locator(':scope > div > [data-slot="badge"]');
     await expect(findings).toHaveText(`${total} unresolved findings`);
@@ -1124,15 +1126,10 @@ for (const [name, counts, total, breakdown] of [
       await expect(segment).toHaveCSS("border-top-width", "0px");
       await expect(segment).toHaveCSS("border-top-left-radius", "0px");
     }
-    const first = await segments.first().boundingBox();
-    const last = await segments.last().boundingBox();
-    expect(first?.y).toBe(last?.y);
-    expect(Math.abs(first!.x + first!.width - last!.x)).toBeLessThanOrEqual(1);
+    const status = await segments.boundingBox();
     const findingsBox = await findings.boundingBox();
-    expect(findingsBox!.x).toBeGreaterThan(last!.x + last!.width);
-    expect(Math.abs(findingsBox!.y + findingsBox!.height / 2 - first!.y - first!.height / 2)).toBeLessThan(1);
-    expect(await segments.first().evaluate((element) => getComputedStyle(element).backgroundColor))
-      .not.toBe(await segments.last().evaluate((element) => getComputedStyle(element).backgroundColor));
+    expect(findingsBox!.x).toBeGreaterThan(status!.x + status!.width);
+    expect(Math.abs(findingsBox!.y + findingsBox!.height / 2 - status!.y - status!.height / 2)).toBeLessThan(1);
     if (info.project.name === "desktop") await badge.hover();
     else await badge.focus();
     await expect(badge).not.toHaveAttribute("data-state");

@@ -168,6 +168,9 @@ def grade_for(findings):
 
 
 def validation_problem(path, feedback, *, task="analysis"):
+    if (feedback or {}).get("kind") == "citation_selection":
+        path = feedback.get("path", path)
+        return f"AI source selection is invalid in {path}: {feedback.get('reason', 'source reference or line range was not supplied')}."
     if (feedback or {}).get("reason") in {"quote is not verbatim text within the cited source lines", "invalid source line range"}:
         path = feedback.get("path", path)
         return f"AI citation mismatch in {path}: the quoted text or line numbers do not match the supplied source."
@@ -498,7 +501,7 @@ def perform(scan_id, claim):
                                                 remaining, timeout(), stopped, uid(),
                                                 **({"configuration_managed": True} if parallel else {}))
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
-                       **({"citation_recoveries": usage["citation_recoveries"]} if usage.get("citation_recoveries") else {}))
+                       citation_contract=security_engine.CITATION_CONTRACT)
             return result
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")

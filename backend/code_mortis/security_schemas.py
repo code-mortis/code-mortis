@@ -62,6 +62,28 @@ class SecurityFix(StrictModel):
     required_paths: list[str] = Field(max_length=10)
 
 
+class SecurityEvidenceSelection(StrictModel):
+    source_id: str = Field(min_length=1, max_length=40)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class SecurityProposalSelection(SecurityProposal):
+    evidence: list[SecurityEvidenceSelection] = Field(min_length=1, max_length=20)
+
+
+class SecurityAnalysisSelection(SecurityAnalysis):
+    findings: list[SecurityProposalSelection] = Field(max_length=100)
+
+
+class SecurityAssessmentSelection(SecurityAssessment):
+    evidence: list[SecurityEvidenceSelection] = Field(max_length=20)
+
+
+class SecurityFixSelection(SecurityFix):
+    evidence: list[SecurityEvidenceSelection] = Field(max_length=20)
+
+
 class SecurityScanOut(ORMModel):
     id: str
     repository_id: int

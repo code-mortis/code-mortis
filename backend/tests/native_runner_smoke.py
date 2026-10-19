@@ -24,7 +24,7 @@ from code_mortis.native_runner import (
     run_codex,
 )
 from code_mortis.security_engine import model_schema
-from code_mortis.security_schemas import SecurityAnalysis, SecurityFix
+from code_mortis.security_schemas import SecurityAnalysisSelection, SecurityFixSelection
 
 
 async def codex_review_smoke(client, identity, model, task="review"):
@@ -55,10 +55,14 @@ async def codex_review_smoke(client, identity, model, task="review"):
     client.call = checked_call
     try:
         with tempfile.TemporaryDirectory(prefix="mortis-context-") as temporary:
+            schema = model_schema(SecurityFixSelection if task == "security_verification" else SecurityAnalysisSelection) if task.startswith("security_") else output_schema()
+            if task.startswith("security_"):
+                selection = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
+                selection["source_id"]["enum"] = ["source_1"]
+                selection["start_line"]["maximum"] = selection["end_line"]["maximum"] = 1
             body = ReviewBody(
                 task=task, kind="chatgpt", model=model, effort="low", prompt="Validate task startup only.",
-                output_schema=(model_schema(SecurityFix if task == "security_verification" else SecurityAnalysis)
-                               if task.startswith("security_") else output_schema()), timeout=30,
+                output_schema=schema, timeout=30,
             )
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait_for(run_codex(identity, body, Path(temporary), {"tokens": None}), 35)
