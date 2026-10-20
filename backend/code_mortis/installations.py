@@ -210,6 +210,7 @@ def uninstall(payload):
         job = db.get(Job, payload["_job_id"])
         remote = remote_installation(db, identity)
         if remote is None:
+            installation.uninstalled = True
             deactivate(db, installation, "The GitHub App installation was removed.")
             return
         user = db.get(User, payload["actor_id"])
@@ -233,3 +234,4 @@ def uninstall(payload):
     with transaction() as db:
         if remote_installation(db, identity) is not None:
             raise github.GitHubError(503, "GitHub has not confirmed uninstall yet. Reviews remain paused; retry to check again.")
+        db.get(Installation, identity).uninstalled = True
