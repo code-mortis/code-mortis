@@ -162,8 +162,8 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
             {selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
           </h1>
           {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
             <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
+            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
             <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
           </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
         </div>

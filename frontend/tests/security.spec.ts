@@ -43,7 +43,7 @@ async function mockReportFindings(page: Page, rows: Record<string, unknown>[]) {
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
     if (state.failure) return route.fulfill({ status: state.failure, json: { detail: state.failure === 403 ? "Access denied" : "Report temporarily unavailable" } });
-    const projected = rows.map((row) => ({ ...row, state: ["open", "resolved", "false_positive", "accepted_risk"].includes(String(row.state)) ? row.state : "unknown" }));
+    const projected: Record<string, unknown>[] = rows.map((row) => ({ ...row, state: ["open", "resolved", "false_positive", "accepted_risk"].includes(String(row.state)) ? row.state : "unknown" }));
     const counts = Object.fromEntries(["state", "outcome", "severity", "kind"].map((key) => [key, Object.fromEntries(
       [...new Set(projected.map((row) => String(row[key] || "unknown")))].map((value) => [value, projected.filter((row) => String(row[key] || "unknown") === value).length]))]));
     const term = (params.get("q") ?? "").trim().toLowerCase();
@@ -325,7 +325,7 @@ test("security overview keeps historical grades qualified and filters in the URL
   await page.screenshot({ path: `/private/tmp/code-mortis-security-overview-${info.project.name}.png`, fullPage: true });
 });
 
-for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"], ["outdated", "Outdated"], ["not_scanned", "Unscanned"], ["unavailable", "Unverified"]] as const) {
+for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"], ["outdated", "D"], ["not_scanned", "Unscanned"], ["unavailable", "D"]] as const) {
   test(`repository detail grade badge uses one label for ${state}`, async ({ page }) => {
     await mock(page, { summary: { state, ...(["outdated", "unavailable"].includes(state) ? { latest_status: "partial" } : {}), ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
     await page.goto("/security/repositories/22");
@@ -333,8 +333,15 @@ for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"
     const badge = page.getByRole("link", { name: label, exact: true });
     await expect(badge).toHaveText(label);
     await badge.focus();
-    await expect(badge).not.toHaveAttribute("data-state");
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const explanation = { current: "current default-branch commit", incomplete: "latest assessment is incomplete", outdated: "Current changes have not been scanned", not_scanned: "No security scan has been recorded", unavailable: "freshness could not be verified" }[state];
+    await expect(page.getByRole("tooltip")).toContainText(explanation);
+    if (["outdated", "unavailable"].includes(state)) {
+      await expect(badge.locator(state === "outdated" ? ".lucide-history" : ".lucide-shield-question")).toBeVisible();
+      await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
+      await expect(page.getByText(state === "outdated" ? "Security Outdated" : "Security Unverified", { exact: true })).toHaveCount(0);
+    }
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toBeHidden();
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
       await expect(page.getByText(/Historical report saved/)).toBeVisible();
     }
@@ -354,8 +361,8 @@ test("repository security badges put the state shield before Security and the gr
     { change: {}, label: "D", icon: "shield-check" },
     { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
     { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned", icon: "shield-question" },
-    { change: { state: "outdated" }, label: "Outdated", icon: "shield-ellipsis" },
-    { change: { state: "unavailable" }, label: "Unverified", icon: "shield-question" },
+    { change: { state: "outdated" }, label: "D", icon: "history" },
+    { change: { state: "unavailable" }, label: "D", icon: "shield-question" },
     ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "Incomplete",
       icon: ["shield-x", "shield-off", "shield-ellipsis", "shield-ellipsis", "shield-alert", "shield-alert"][index] })),
   ];
@@ -377,6 +384,27 @@ test("repository security badges put the state shield before Security and the gr
       return icon.right <= range.getBoundingClientRect().left;
     });
     expect(beforeText).toBe(true);
+    if (item.icon === "history") {
+      await badge.hover();
+      await expect(page.getByRole("tooltip")).toContainText("The report covers an earlier commit or default branch.");
+      await expect(page.getByRole("tooltip")).toContainText("Grade D:");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `/private/tmp/code-mortis-outdated-grade-${info.project.name}.png` });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toBeHidden();
+    }
+    if (item.change.state === "unavailable") {
+      await badge.hover();
+      await expect(page.getByRole("tooltip")).toContainText("Grade D:");
+      await expect(page.getByRole("tooltip")).toContainText("freshness could not be verified");
+      await expect(page.getByRole("tooltip")).toHaveCSS("opacity", "1");
+      await page.screenshot({ path: `/private/tmp/code-mortis-unverified-grade-${info.project.name}.png` });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toBeHidden();
+      await badge.click();
+      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
+      await expect(page.getByRole("link", { name: "Security D", exact: true }).locator(".lucide-shield-question")).toBeVisible();
+    }
     if (index < 3) await badge.screenshot({ path: `/private/tmp/code-mortis-security-label-${index}-${info.project.name}.png` });
     if (index < 3) {
       await badge.click();
@@ -414,6 +442,10 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
     await expect(svg.locator("text")).toHaveCSS("fill", color);
     await expect(svg.locator("text")).toHaveCSS("fill-opacity", "1");
     await expect(row.locator('[data-slot="status-group"]')).toHaveText("completed");
+    await link.focus();
+    await expect(page.getByRole("tooltip")).toContainText(`Grade ${grade}:`);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toBeHidden();
     const shieldBox = await svg.boundingBox();
     const repositoryBox = await row.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }).boundingBox();
     expect(shieldBox!.x + shieldBox!.width).toBeLessThan(repositoryBox!.x);
@@ -1003,8 +1035,7 @@ test(`security repository rows share hover feedback and keyboard-accessible grad
   const grade = page.getByRole("link", { name: "Historical security grade D, incomplete", exact: true });
   await expect(grade).not.toHaveAttribute("title");
   await grade.focus();
-  await expect(grade).not.toHaveAttribute("data-state");
-  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(page.getByRole("tooltip")).toContainText("The latest assessment is incomplete.");
   expect(await grade.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe("solid");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toBeHidden();
@@ -2413,4 +2444,11 @@ for (const scope of ["repository", "scan", "report"] as const) test(`${scope} fi
   await page.screenshot({ path: `/private/tmp/code-mortis-finding-groups-${scope}-${info.project.name}.png` });
   await panel.getByRole("button", { name: "Remove State filter", exact: true }).click();
   await expect(panel.getByRole("region", { name: `False positive${suffix} findings`, exact: true })).toContainText("false_positive defect 0");
+});
+
+for (const state of ["current", "unavailable"] as const) test(`unrated security badge explains that no grade is available for ${state}`, async ({ page }) => {
+  await mock(page, { summary: { state, grade: null } });
+  await page.goto("/security/repositories/22");
+  await page.getByRole("link", { name: "Security Unrated", exact: true }).focus();
+  await expect(page.getByRole("tooltip")).toHaveText("No security grade is available.");
 });
