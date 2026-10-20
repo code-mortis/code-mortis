@@ -1754,3 +1754,38 @@ def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario,
     assert not run.cancel_requested
     assert row.resolution == "superseded" and finding.status == "open" and not finding.desired_status
     assert scenario["mutations"] == []
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_fix_verification_validates_against_redacted_request_context(scenario, monkeypatch, kind):
+    from code_mortis.security import seal
+
+    credential = "synthetic-credential"
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        connection.secret = seal(json.dumps({"api_key": credential}))
+        if kind != "api":
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+            db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
+            run = db.get(ReviewRun, scenario["run"])
+            run.owner_id = 7
+            run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
+    original = copy.deepcopy(CONTEXT)
+    for sources in original["sources"].values():
+        sources["src/retry.py"] = sources["src/retry.py"].replace("\n", f" # {credential}\n", 1)
+    monkeypatch.setattr(verification, "build_context", lambda *a: copy.deepcopy(original))
+    calls = []
+    def response(supplied):
+        result = copy.deepcopy(RESULT)
+        for evidence in result["evidence"]:
+            evidence["quote"] = supplied["sources"][evidence["revision"]][evidence["path"]].splitlines()[0]
+            assert credential not in evidence["quote"] and "[redacted]" in evidence["quote"]
+        calls.append(supplied)
+        return result, {"tokens": 50}
+    monkeypatch.setattr(verification, "api_verify", lambda *args: response(args[4]))
+    monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped:
+        response(payload["_evidence_context"]))
+    row, finding, _ = perform(scenario)
+    assert row.status == "completed" and row.verdict == "fixed" and row.usage == {"tokens": 50}
+    assert len(calls) == 1 and finding.desired_status == "resolved"
+    assert credential not in json.dumps(row.context) and credential in json.dumps(original)

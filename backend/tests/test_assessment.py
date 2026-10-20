@@ -1669,3 +1669,44 @@ def test_context_limit_is_not_a_correctable_assessment_failure(pipeline):
         row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert row.status == "skipped" and row.usage == {"tokens": 0}
     assert pipeline["calls"] == 1 and not pipeline["reviews"]
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_assessment_validates_against_redacted_request_context(pipeline, monkeypatch, kind):
+    credential = "synthetic-credential"
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        connection.secret = seal(json.dumps({"api_key": credential}))
+        if kind != "api":
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    build = assessment.build_context
+    def context(*args):
+        supplied = build(*args)
+        path = supplied["finding"]["path"]
+        supplied["sources"]["current"][path] = SOURCE.replace("while True:", f"while True: # {credential}")
+        return supplied
+    monkeypatch.setattr(assessment, "build_context", context)
+    calls = []
+    def respond(supplied):
+        quote = supplied["sources"]["current"][supplied["finding"]["path"]].splitlines()[6]
+        assert credential not in quote and "[redacted]" in quote
+        calls.append(quote)
+        return verdict(supplied, evidence=[{"revision": "current", "path": supplied["finding"]["path"],
+            "start_line": 7, "end_line": 7, "quote": quote}])
+    pipeline["respond"] = respond
+    if kind != "api":
+        monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped:
+            (respond(payload["_evidence_context"]), {"tokens": 25}))
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert row.status == "completed" and row.result["verdict"] == "confirmed"
+        assert row.usage == {"tokens": 25} and "[redacted]" in row.result["evidence"][0]["quote"]
+    assert len(calls) == 1 and len(pipeline["reviews"]) == 1
+    assert credential in pipeline["context"]["sources"]["current"][COMMENT["path"]]
+    repeated = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == repeated))
+        assert row.status == "completed" and row.result["relationship"] == "duplicate"
+        assert row.usage == {"tokens": 0}
+    assert len(calls) == 1 and len(pipeline["reviews"]) == 1

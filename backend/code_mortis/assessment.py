@@ -370,7 +370,7 @@ def validate_result(value, context):
             reason = "invalid source line range"
         elif not evidence["quote"].strip():
             reason = "empty quote"
-        elif evidence["quote"] not in "".join(source.splitlines(keepends=True)[evidence["start_line"] - 1:evidence["end_line"]]):
+        elif not review_context.quote_matches(source, evidence["start_line"], evidence["end_line"], evidence["quote"]):
             reason = "quote is not verbatim text within the cited source lines"
         if reason:
             feedback = {"field": f"evidence[{index}]", "reason": reason,
@@ -544,7 +544,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             if context is None:
                 context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
             context = {**context, "review_sensitivity": options.get("review_sensitivity")}
-            result = exact_repeat(context)
+            result = exact_repeat(review_context.sanitize(context, credentials, stopped))
             unit = "tokens"
             consumed = 0
             feedback, corrected = None, False
@@ -609,7 +609,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             }, stopped)
                             consumed += spent["tokens"]
                             usage = {unit: consumed}
-                            result = validate_response(raw, context)
+                            result = validate_response(raw, request_context)
                     except runner_client.RunnerBlocked as exc:
                         spent = exc.usage["tokens"]
                         usage = {"tokens": consumed + spent if type(spent) is int and spent >= 0 else None}
@@ -648,7 +648,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     feedback = exc.feedback
                     corrected |= exc.feedback.get("kind") == "evidence"
                 result = None
-            result = review_context.sanitize(validate_result(result, context), credentials, stopped, usage=usage)
+            result = review_context.sanitize(validate_result(result, request_context), credentials, stopped, usage=usage)
             status, error = "completed", None
         except Exception as exc:
             result, status = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"

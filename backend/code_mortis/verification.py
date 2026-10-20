@@ -190,7 +190,7 @@ def validate_result(value, context):
                 feedback["reason"] = "invalid source line range"
             else:
                 source_lines = "\n".join(lines[item["start_line"] - 1:item["end_line"]])
-                if not item["quote"].strip() or item["quote"] not in "".join(source.splitlines(keepends=True)[item["start_line"] - 1:item["end_line"]]):
+                if not item["quote"].strip() or not review_context.quote_matches(source, item["start_line"], item["end_line"], item["quote"]):
                     feedback.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
         if "reason" in feedback:
             problems.append({**feedback, "quote": item["quote"]})
@@ -937,7 +937,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         raise
                     feedback = exc.feedback
                     corrected |= exc.feedback.get("kind") == "evidence"
-            result = validate_result(result, context)
+            result = validate_result(result, request_context)
             result = review_context.sanitize(result, credentials, stopped, usage=usage)
             outcome, error = "completed", None
         except Exception as exc:

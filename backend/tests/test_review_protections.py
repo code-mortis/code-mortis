@@ -158,3 +158,24 @@ def test_rejected_candidate_history_follows_renames_and_connects_secondary_citat
         findings, prior = assessment.related_history(Path("/tmp"), {}, {}, "b" * 40,
             {"path": path, "existing_code": "different", "content": "current defect"}, previous, lambda: False)
         assert findings == [] and [item["id"] for item in prior] == ["rejected"]
+
+
+@pytest.mark.parametrize("stage", ["assessment", "verification"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("rendered", [False, True])
+def test_citations_accept_compatible_line_endings_without_changing_quotes(stage, ending, rendered):
+    from test_assessment import verdict
+    from test_review_flow import COMMENT
+    from test_verification import RESULT
+
+    source = ending.join(['first("雪")', 'second("literal")', 'third()']) + ending
+    quote = '\n'.join(source.splitlines()[:2]) if rendered else ''.join(source.splitlines(keepends=True)[:2])
+    context = {"head_sha": "b" * 40, "original_sha": "a" * 40, "finding": COMMENT,
+               "history": [], "sources": {"current": {COMMENT["path"]: source}}, "diff": "changed"}
+    evidence = [{"revision": "current", "path": COMMENT["path"], "start_line": 1, "end_line": 2, "quote": quote}]
+    result = verdict(context, evidence=evidence) if stage == "assessment" else {**RESULT, "verdict": "uncertain", "evidence": evidence}
+    validator = assessment.validate_result if stage == "assessment" else verification.validate_result
+    assert validator(result, context)["evidence"][0]["quote"] == quote
+    for changed in (quote.replace("literal", "different"), quote.replace("second", "SECOND")):
+        with pytest.raises(verification.ResultValidationError):
+            validator({**result, "evidence": [{**evidence[0], "quote": changed}]}, context)

@@ -45,6 +45,13 @@ def source_id(revision, path):
     return "source_" + digest(revision + "\0" + path)[:32]
 
 
+def quote_matches(source, start_line, end_line, quote):
+    # Selections retain original endings; legacy quoted responses use the rendered LF source view.
+    original = "".join(source.splitlines(keepends=True)[start_line - 1:end_line])
+    rendered = "\n".join(source.splitlines()[start_line - 1:end_line])
+    return quote in original or quote in rendered
+
+
 def selection_context(context, schema):
     from .security_engine import model_schema
     from .security_schemas import SecurityEvidenceSelection
