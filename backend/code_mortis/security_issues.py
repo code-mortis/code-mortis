@@ -8,7 +8,16 @@ from sqlalchemy import select
 
 from . import github, repository_security
 from .db import now, transaction, uid
-from .models import AppConfig, Installation, Membership, Repository, SecurityFinding, SecurityScan, User
+from .models import (
+    AppConfig,
+    Installation,
+    Membership,
+    Repository,
+    SecurityFinding,
+    SecurityOccurrence,
+    SecurityScan,
+    User,
+)
 from .reviews import enqueue
 from .security import clean_text
 from .security_engine import secure_digest
@@ -205,7 +214,14 @@ def sync(finding_id):
                 saved, state, version = dict(finding.issue), finding.state, finding.version
                 scan = db.get(SecurityScan, saved.get("verification_scan_id")) if saved.get("verification_scan_id") else None
                 scan_sha, scan_branch = (scan.head_sha, scan.branch) if scan else (None, None)
-                scan_status = scan.status if scan else None
+                scan_verified = scan is not None and scan.status == "completed"
+                if scan and scan.status == "partial" and saved.get("desired_state") == "closed":
+                    observation = db.scalar(select(SecurityOccurrence).where(
+                        SecurityOccurrence.scan_id == scan.id, SecurityOccurrence.finding_id == finding.id,
+                        SecurityOccurrence.outcome == "fixed"))
+                    proof = observation.snapshot if observation else {}
+                    scan_verified = (proof.get("version") == version and proof.get("state") == "resolved"
+                                     and proof.get("verification", {}).get("verdict") == "fixed")
                 issue_marker = marker(finding, saved["operation_id"])
         if publish_pending:
             publish(finding_id)
@@ -219,8 +235,8 @@ def sync(finding_id):
             if saved.get("intent_version") != version or (desired == "closed" and state != "resolved") or (desired == "open" and state != "open"):
                 raise ValueError("The finding changed after issue synchronization was queued.")
             fresh = repository_security.branch_head(full_name, token)
-            if scan_status != "completed" or fresh["head_sha"] != scan_sha or fresh["default_branch"] != scan_branch:
-                raise ValueError("Issue synchronization requires a complete scan of the current default branch.")
+            if not scan_verified or fresh["head_sha"] != scan_sha or fresh["default_branch"] != scan_branch:
+                raise ValueError("Issue synchronization requires verified evidence for this finding on the current default branch.")
             operation_marker = f"<!-- code-mortis-security-state:{saved['operation_id']}:{version}:{desired} -->"
             if remote["state"] == desired and saved.get("state_started") == operation_marker:
                 if desired == "open" or (remote.get("closed_by") or {}).get("login") == login:

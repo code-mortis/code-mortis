@@ -400,7 +400,10 @@ def deterministic_fix(item, old, trivy_result):
         if any(p["version"] == evidence["installed_version"] for p in packages):
             return {"verdict": "uncertain", "explanation": "The affected package version is still present."}
         if packages and any(not safe_dependency_version(p["version"], evidence.get("fixed_version", "")) for p in packages):
-            return {"verdict": "uncertain", "explanation": "The new version is not an independently established safe version for the original advisory."}
+            reason = "The new version is not an independently established safe version for the original advisory."
+            if not evidence.get("fixed_version"):
+                reason += " No fixed version was reported. Review the advisory or record a justified triage decision."
+            return {"verdict": "uncertain", "explanation": reason}
     elif evidence["kind"] == "infrastructure":
         checks = trivy_result["targets"].get(current_path, {}).get("checks", [])
         if exists and not any(check["id"] == evidence["rule_id"] and check["status"] == "PASS"
@@ -692,7 +695,6 @@ def perform(scan_id, claim):
                     stage(scan_id, "assessment", "running", completed=assessment_completed)
                     remaining = [row for row in remaining if row not in batch]
             stage(scan_id, "assessment", "completed" if len(problems) == assessment_problem_count else "partial")
-            verification_problem_count = len(problems)
             stage(scan_id, "verification", "running", total=sum(old["id"] not in observed and
                 (old["state"] in {"open", "accepted_risk"} or old["pending_close"]) for old in previous), completed=0)
             for old in previous:
@@ -713,9 +715,7 @@ def perform(scan_id, claim):
                     verdict = {"verdict": "uncertain", "explanation": item.redact(str(exc))[:1000]}
                 verdicts[old["id"]] = {**verdict, "finding_version": old["version"]}
                 stage(scan_id, "verification", "running", completed=len(verdicts))
-                if verdict["verdict"] == "uncertain":
-                    problems.append(f"An earlier finding could not be verified: {old['id']}.")
-            stage(scan_id, "verification", "completed" if len(problems) == verification_problem_count else "partial", findings=len(verdicts))
+            stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values()) else "completed", findings=len(verdicts))
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]))
     except ocr.ReviewStopped:
@@ -756,18 +756,20 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         if db.scalar(select(SecurityFinding.id).where(SecurityFinding.repository_id == scan.repository_id,
             SecurityFinding.state.in_(["open", "accepted_risk"]), SecurityFinding.severity.not_in(security_engine.SEVERITIES)).limit(1)):
             problems.append("An unresolved finding has unclassified severity; the repository cannot be graded.")
-        if any(row["verdict"] == "uncertain" for row in verdicts.values()):
-            problems.append("Previous findings still require verification.")
-        complete = not problems
+        # Coverage failures still block resolution; another finding's uncertainty or stale version does not.
+        resolution_ready = not problems
         for identity, verdict in verdicts.items():
             finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == identity).with_for_update())
             if finding.version != verdict["finding_version"]:
-                problems.append("Finding state changed during verification.")
-                complete = False
+                problems.append(f"Finding state changed during verification: {finding.title} ({finding.path}).")
+            if verdict["verdict"] == "uncertain":
+                problems.append(f"Fix verification remains uncertain for {finding.title} ({finding.path}): {verdict['explanation']}")
+        complete = not problems
         for identity, verdict in verdicts.items():
             finding = db.get(SecurityFinding, identity)
             outcome = {"fixed": "fixed", "still_present": "present", "uncertain": "uncertain"}[verdict["verdict"]]
-            if complete and current and verdict["verdict"] == "fixed" and finding.state in {"open", "accepted_risk"}:
+            verified = resolution_ready and current and finding.version == verdict["finding_version"] and verdict["verdict"] == "fixed"
+            if verified and finding.state in {"open", "accepted_risk"}:
                 finding.state, finding.updated_at = "resolved", now()
                 finding.version += 1
                 if finding.issue.get("number"):
@@ -775,7 +777,7 @@ def finish(scan_id, verdicts, problems, freshness, supported):
                                      "intent_version": finding.version, "verification_scan_id": scan.id}
                     enqueue(db, "security_issue_sync", {"finding_id": finding.id})
                 activity(db, "finding_resolved", scan=scan, finding=finding, verification=verdict)
-            elif complete and current and verdict["verdict"] == "fixed" and finding.state == "resolved" and finding.issue.get("desired_state") == "closed":
+            elif verified and finding.state == "resolved" and finding.issue.get("desired_state") == "closed":
                 finding.issue = {**finding.issue, "sync_status": "pending", "intent_version": finding.version,
                                  "verification_scan_id": scan.id}
                 enqueue(db, "security_issue_sync", {"finding_id": finding.id})
@@ -822,6 +824,8 @@ def markdown_report(report):
         lines.extend([f"## {item['title']}", "", f"{item['severity'].title()} | {item['outcome']} | {item['path']}", "",
                       evidence.get("explanation", ""), "", "### Remediation", "", evidence.get("remediation", ""),
                       "", "### Verification", "", evidence.get("verification", ""), ""])
+        if verification := item.get("verification"):
+            lines.extend(["### Fix verification", "", verification["verdict"], "", verification["explanation"], ""])
     for candidate in report.get("unsettled_candidates", []):
         proposal = candidate["proposal"]
         lines.extend([f"## Requires verification: {proposal.get('title', 'Security candidate')}", "",

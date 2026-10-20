@@ -698,6 +698,26 @@ test("saved report details preserve original evidence separately from current st
   expect(writes).toHaveLength(0);
 });
 
+test("saved uncertain verification explains the blocker separately from remediation", async ({ page }, info) => {
+  const writes = await mock(page);
+  const explanation = "No independently established safe version is reported for this advisory. Review the advisory or record a triage decision.";
+  await mockReportFindings(page, [{ ...finding, finding_id: finding.id, outcome: "uncertain",
+    verification: { verdict: "uncertain", explanation } }]);
+  await page.goto("/security/scans/scan");
+  await page.getByRole("region", { name: "Findings at this scan", exact: true }).getByRole("button").click();
+  const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+  const verification = sheet.getByRole("region", { name: "Fix verification", exact: true });
+  await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
+  await expect(sheet.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-security-verification-reason-${info.project.name}.png`, fullPage: true });
+  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await expect(sheet.getByText(explanation, { exact: true })).toHaveCount(0);
+  await sheet.getByRole("tab", { name: "At this scan", exact: true }).click();
+  await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
+  expect(writes).toHaveLength(0);
+});
+
 test("uncertain security candidates keep their assessment and evidence in a disclosure", async ({ page }) => {
   const writes = await mock(page);
   await mockReportFindings(page, []);
