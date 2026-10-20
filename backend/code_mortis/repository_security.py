@@ -482,11 +482,15 @@ def perform(scan_id, claim):
 
     def ai(item, task, context, key, allowance=None, *, parallel=False):
         context["language"] = config.get("language", "English")
+        if task == "assessment":
+            context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS)
         cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
         cached = saved.get(key, {})
-        if cached.get("status") == "completed" and cached.get("input_hash") == identity:
+        if (cached.get("status") == "completed" and cached.get("input_hash") == identity
+                and cached.get("result", {}).get("verdict") != "uncertain"):
             checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
+                       **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
                        **({"proposal": context["proposal"]} if task == "assessment" else {}))
             return cached["result"]
         with transaction() as db:
