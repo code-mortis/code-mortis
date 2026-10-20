@@ -70,7 +70,9 @@ async def codex_review_smoke(client, identity, model, task="review"):
     finally:
         client.call = call
         if turn is not None:
-            await call("turn/interrupt", {"threadId": thread["thread"]["id"], "turnId": turn})
+            # The unauthenticated turn may already have ended; main still closes the client.
+            with contextlib.suppress(NativeError):
+                await call("turn/interrupt", {"threadId": thread["thread"]["id"], "turnId": turn})
         if thread is not None:
             with contextlib.suppress(NativeError):
                 await call("thread/archive", {"threadId": thread["thread"]["id"]})
