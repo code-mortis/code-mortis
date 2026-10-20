@@ -3218,3 +3218,43 @@ def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(s
     monkeypatch.setattr(github, "authorize_repo", denied)
     for path in paths:
         assert client.get(path, params={"page": 2}).status_code == 403
+
+
+def test_security_repository_ordering_uses_latest_security_changes_before_pagination(seed, security_github, client, monkeypatch):
+    base = now() - timedelta(days=10)
+    with transaction() as db:
+        scans = []
+        for index in range(25):
+            repo = Repository(id=100 + index, installation_id=10, full_name=f"team/app-{index:02}", enabled=True)
+            db.add(repo)
+            db.flush()
+            scan = saved_scan(db, {**seed, "repo": repo}, status="completed")
+            scan.created_at = base + timedelta(hours=index)
+            scans.append(scan)
+        scans[0].finished_at = base + timedelta(hours=30)
+        finding = saved_finding(db, {**seed, "repo": db.get(Repository, 101)}, scans[1])
+        finding.updated_at = base + timedelta(hours=31)
+        db.add(SecurityActivity(scan_id=scans[2].id, action="scan_stage", created_at=base + timedelta(hours=32)))
+        finding = saved_finding(db, {**seed, "repo": db.get(Repository, 103)}, scans[3])
+        finding.updated_at = base + timedelta(hours=3)
+        db.add(SecurityActivity(finding_id=finding.id, action="issue_state_synced", created_at=base + timedelta(hours=33)))
+        scans[4].created_at = base + timedelta(hours=33)
+        scans[5].progress = {"tasks": {}, "freshness": freshness()}
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository))))
+    path = "/api/v1/security/repositories"
+
+    def identities(params=None):
+        first = client.get(path, params=params or {}).json()
+        second = client.get(path, params={**(params or {}), "page": 2}).json()
+        assert first["total"] == second["total"] == 26
+        assert len(first["items"]) == 20 and len(second["items"]) == 6
+        return [row["repository"]["id"] for row in first["items"] + second["items"]]
+
+    expected = [103, 104, 102, 101, 100, *range(124, 104, -1), 22]
+    assert identities() == expected
+    assert identities({"ordering": "-updated_at"}) == expected
+    assert identities({"ordering": "updated_at"}) == [*range(105, 125), 100, 101, 102, 103, 104, 22]
+    assert identities({"ordering": "repository"}) == [*range(100, 125), 22]
+    assert identities({"ordering": "-repository"}) == [22, *range(124, 99, -1)]
+    assert client.get(path, params={"search": "app-0", "ordering": "-updated_at"}).json()["items"][0]["repository"]["id"] == 103
+    assert client.get(path, params={"ordering": "invalid"}).status_code == 422

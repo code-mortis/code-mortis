@@ -5360,6 +5360,7 @@ export interface operations {
                 search?: string;
                 grade?: ("A" | "B" | "C" | "D" | "F" | "unrated")[] | null;
                 status?: ("not_scanned" | "current" | "incomplete" | "unavailable" | "outdated")[] | null;
+                ordering?: "updated_at" | "-updated_at" | "repository" | "-repository";
             };
             header?: never;
             path?: never;

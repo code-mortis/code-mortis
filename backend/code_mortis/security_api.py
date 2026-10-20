@@ -70,6 +70,7 @@ def repositories(db: DB, user: USER,
     search: Annotated[str, Query(max_length=200)] = "",
     grade: Annotated[list[Literal["A", "B", "C", "D", "F", "unrated"]] | None, Query(max_length=100)] = None,
     status: Annotated[list[Literal["not_scanned", "current", "incomplete", "unavailable", "outdated"]] | None, Query(max_length=100)] = None,
+    ordering: Literal["updated_at", "-updated_at", "repository", "-repository"] = "-updated_at",
 ):
     repos = github.visible_repositories(db, user)
     summaries = repository_security.summaries(db, [repo.id for repo in repos])
@@ -79,6 +80,21 @@ def repositories(db: DB, user: USER,
     rows = sorted((repo for repo in repos if (not term or term in repo.full_name.casefold())
         and (not grade or (summaries[repo.id].grade or "unrated") in grade)
         and (not status or summaries[repo.id].state in status)), key=lambda repo: (repo.full_name.casefold(), repo.id))
+    if ordering.removeprefix("-") == "updated_at":
+        activity_repository = func.coalesce(SecurityScan.repository_id, SecurityFinding.repository_id)
+        changes = select(SecurityScan.repository_id.label("repository_id"),
+            func.greatest(SecurityScan.created_at, SecurityScan.started_at, SecurityScan.finished_at).label("updated_at")).union_all(
+            select(SecurityFinding.repository_id, SecurityFinding.updated_at),
+            select(activity_repository, SecurityActivity.created_at).select_from(SecurityActivity)
+                .outerjoin(SecurityScan, SecurityActivity.scan_id == SecurityScan.id)
+                .outerjoin(SecurityFinding, SecurityActivity.finding_id == SecurityFinding.id),
+        ).subquery()
+        updated = dict(db.execute(select(changes.c.repository_id, func.max(changes.c.updated_at))
+            .where(changes.c.repository_id.in_([repo.id for repo in rows])).group_by(changes.c.repository_id)).all())
+        direction = -1 if ordering.startswith("-") else 1
+        rows.sort(key=lambda repo: (repo.id not in updated, direction * updated[repo.id].timestamp() if repo.id in updated else 0))
+    elif ordering.startswith("-"):
+        rows.reverse()
     return SecurityRepositoryPage(items=[SecurityRepositoryOut(repository=RepositoryOut.model_validate(repo),
         summary=summaries[repo.id]) for repo in rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]],
         total=len(rows), registered_total=len(repos), grade_counts=dict(grade_counts), status_counts=dict(status_counts),

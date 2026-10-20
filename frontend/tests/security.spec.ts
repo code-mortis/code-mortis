@@ -2174,3 +2174,53 @@ test("security finding histories use independent backend pages and hide both his
   await expect(drawer.getByText("Private activity 1", { exact: true })).toHaveCount(0);
   await expect(drawer.getByRole("link", { name: "Not observed", exact: true })).toHaveCount(0);
 });
+
+test("security repository ordering is backend driven, defaults to updated descending, and resets pages", async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  const rows = ["alpha", "bravo", "charlie"].map((name, index) => ({ repository: { ...repository, id: 22 + index, full_name: `team/${name}` }, summary }));
+  await page.route("**/api/v1/security/repositories?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const ordering = params.get("ordering");
+    const ordered = ordering === "updated_at" ? [rows[2], rows[0], rows[1]] : ordering === "repository" ? rows
+      : ordering === "-repository" ? [...rows].reverse() : [rows[1], rows[2], rows[0]];
+    const pageNumber = Number(params.get("page"));
+    return route.fulfill({ json: { items: ordered.slice(pageNumber - 1, pageNumber), total: 3, registered_total: 3,
+      grade_counts: { D: 3 }, status_counts: { current: 3 }, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security?search=team&grade=D&grade=unrated");
+  const list = page.locator('[data-slot="security-repository-row"]');
+  await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toBeVisible();
+  await expect(list).toHaveCount(1);
+  await expect(list.first()).toContainText("team/bravo");
+  expect(requests.at(-1)?.get("ordering")).toBe("-updated_at");
+  await page.getByRole("button", { name: "Load more repositories", exact: true }).click();
+  await expect(list).toHaveCount(2);
+  await expect(list.nth(1)).toContainText("team/charlie");
+  await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await expect(page).toHaveURL(/ordering=updated_at/);
+  await expect(list).toHaveCount(1);
+  await expect(list.first()).toContainText("team/charlie");
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  expect(requests.at(-1)?.getAll("grade")).toEqual(["D", "unrated"]);
+  expect(requests.at(-1)?.get("search")).toBe("team");
+  await page.getByRole("button", { name: "Sort by Updated", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Repository", exact: true }).click();
+  await expect(list.first()).toContainText("team/alpha");
+  await expect(page).toHaveURL(/ordering=repository/);
+  await page.getByRole("button", { name: "Sort descending", exact: true }).click();
+  await expect(list.first()).toContainText("team/charlie");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Sort by Repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toBeVisible();
+  await expect(list.first()).toContainText("team/charlie");
+  expect(requests.at(-1)?.get("ordering")).toBe("-repository");
+  await page.screenshot({ path: info.outputPath("security-ordering.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.goto("/security?ordering=invalid");
+  await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeVisible();
+  await expect(list.first()).toContainText("team/bravo");
+  expect(requests.at(-1)?.get("ordering")).toBe("-updated_at");
+});

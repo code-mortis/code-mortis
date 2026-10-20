@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { AssessmentStatus } from "./components/assessment-status";
@@ -16,7 +16,7 @@ import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
@@ -98,7 +98,7 @@ function useFilters() {
     const next = new URLSearchParams(params);
     next.delete(key);
     for (const item of Array.isArray(value) ? value : [value]) if (item) next.append(key, item);
-    if (["search", "state", "severity", "kind", "grade", "status", "outcome"].includes(key)) next.delete("page");
+    if (["search", "state", "severity", "kind", "grade", "status", "outcome", "ordering"].includes(key)) next.delete("page");
     setParams(next);
   }
   return { params, change, setParams };
@@ -109,8 +109,14 @@ export function SecurityOverview({ user }: { user: User }) {
   const [selected, setSelected] = useState<number>();
   const scanTrigger = useRef<HTMLButtonElement | null>(null);
   const search = params.get("search") ?? "";
+  const requestedOrdering = params.get("ordering") ?? "-updated_at";
+  const ordering = ["updated_at", "-updated_at", "repository", "-repository"].includes(requestedOrdering) ? requestedOrdering : "-updated_at";
+  const field = ordering.replace(/^-/, "");
+  const descending = ordering.startsWith("-");
+  const orderings: Record<string, string> = { updated_at: "Updated", repository: "Repository" };
   const request = new URLSearchParams();
   for (const key of ["search", "grade", "status"]) for (const value of params.getAll(key)) request.append(key, value);
+  request.set("ordering", ordering);
   const { query, items: rows, total, denied } = useSecurityPages<SecurityRepo>(`/security/repositories?${request}`);
   const data = query.data?.pages[0];
   return <>
@@ -123,7 +129,19 @@ export function SecurityOverview({ user }: { user: User }) {
         onSearch={(value) => change("search", value)} onChange={change} filters={[
           { key: "grade", label: "Grade", values: params.getAll("grade"), choices: ["A", "B", "C", "D", "F", "unrated"].map((value) => ({ value, name: value === "unrated" ? "Not rated" : value, count: data?.grade_counts?.[value] ?? 0 })) },
           { key: "status", label: "Scan status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
-        ]} /></div>
+        ]}>
+        <div className="flex shrink-0 items-center gap-2" role="group" aria-label="Ordering">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="outline" className="bg-card" aria-label={`Sort by ${orderings[field]}`}><ArrowUpDown className="text-muted-foreground" />{orderings[field]}</Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]">
+              <DropdownMenuRadioGroup value={field} onValueChange={(value) => { if (value !== field) change("ordering", value === "updated_at" ? `-${value}` : value); }}>
+                {Object.entries(orderings).map(([value, name]) => <DropdownMenuRadioItem key={value} value={value}>{name}</DropdownMenuRadioItem>)}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="outline" size="icon" className="bg-card" title={field === "updated_at" ? descending ? "Newest first" : "Oldest first" : descending ? "Z to A" : "A to Z"} aria-label={descending ? "Sort ascending" : "Sort descending"} onClick={() => change("ordering", descending ? field : `-${field}`)}>{descending ? <ArrowDown /> : <ArrowUp />}</Button>
+        </div>
+      </FilterBar></div>
       {query.isPending ? <Loading /> : !rows.length && !query.error ? <Empty title={data?.registered_total ? "No matching repositories" : "No repositories available"}>{data?.registered_total ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
         <div className="overflow-hidden rounded-lg border bg-card">
           <div aria-hidden="true" data-slot="security-repository-heading" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Repository</span><span>Scan status</span><span>Open findings</span><span>Latest scan</span><span /></div>
