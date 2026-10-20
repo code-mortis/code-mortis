@@ -76,7 +76,7 @@ export function Inbox({ admin }: { admin: boolean }) {
         <h1 data-pull-list-focus tabIndex={-1} className="text-2xl font-semibold tracking-tight sm:text-3xl">Inbox</h1>
         <span role="status" aria-live="polite" className="text-sm tabular-nums text-muted-foreground">{data ? <>{data.total}<span className="sr-only"> pull {data.total === 1 ? "request" : "requests"} · {data.repository_count} {data.repository_count === 1 ? "repository" : "repositories"}</span></> : query.error ? "Pull requests unavailable" : "Loading pull requests…"}{query.isPlaceholderData && <span className="sr-only"> · Updating pull requests…</span>}</span>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Pull requests across your repositories.</p>
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Pull requests across your repositories.</p>
     </header>
     <div className="mb-6"><InboxFilters params={params} data={data} onChange={change} onSearch={search} /></div>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}

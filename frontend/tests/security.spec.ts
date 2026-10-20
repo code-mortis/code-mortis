@@ -94,9 +94,10 @@ async function mockSecurityAssessments(page: Page) {
       && (!url.searchParams.has("outcome") || url.searchParams.getAll("outcome").includes(row.outcome))
       && (!url.searchParams.has("severity") || url.searchParams.getAll("severity").includes(String(row.proposal.severity))) );
     const size = Number(url.searchParams.get("page_size") ?? 20);
-    return route.fulfill({ json: { items: rows.slice(0, size).map((row) => ({ ...row, revision: String(state.revision) })), total: rows.length,
+    const pageNumber = Number(url.searchParams.get("page") ?? 1);
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * size, pageNumber * size).map((row) => ({ ...row, revision: String(state.revision) })), total: rows.length,
       registered_total: state.rows.length, outcome_counts: summary().outcome_counts, severity_counts: { high: state.rows.length },
-      category_counts: { "Access Control": state.rows.length }, revision: String(state.revision), page: 1, page_size: size } });
+      category_counts: { "Access Control": state.rows.length }, revision: String(state.revision), page: pageNumber, page_size: size } });
   });
   return { state, writes };
 }
@@ -135,15 +136,25 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
     } else if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
     else if (path === "/repositories") json = [{ ...repository, security: state }];
-    else if (path === "/security/repositories") json = [{ repository, summary: state }];
+    else if (path === "/security/repositories") json = { items: [{ repository, summary: state }], total: 1, registered_total: 1, grade_counts: { [state.grade ?? "unrated"]: 1 }, status_counts: { [state.state]: 1 }, page: 1, page_size: 20 };
     else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, scan_count: 1 };
     else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 20 };
     else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") json = { items: [current], total: 1, page: 1, page_size: 20 };
     else if (path === "/security/scans/scan" || path === "/security/scans/queued") json = { repository, scan: path.endsWith("queued") ? { ...scan, id: "queued", status: "queued", grade: null, report: {} }
-      : { ...saved, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
+      : { ...saved, coverage: { ...saved.coverage, inventory_count: Object.keys(saved.coverage.inventory as object).length }, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
       report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
     else if (path === "/security/findings/finding") json = { repository, finding: current, can_write: options.canWrite ?? true,
       observations: [{ scan_id: "scan", outcome: "present", created_at: at, snapshot: {} }], activity: options.activity ?? [] };
+    else if (path === "/security/scans/scan/activity") json = { items: [], total: 0, page: 1, page_size: 20 };
+    else if (path.startsWith("/security/scans/scan/coverage/")) {
+      const section = path.split("/").at(-1)!;
+      const coverage = saved.coverage as Record<string, unknown>;
+      const rows = section === "inventory" ? Object.keys(saved.coverage.inventory as object).sort().map((path) => ({ path })) : (coverage[section] ?? []) as Record<string, unknown>[];
+      const pageNumber = Number(url.searchParams.get("page") ?? 1);
+      json = { items: rows.map((row, index) => ({ ...row, id: String(index) })).slice((pageNumber - 1) * 20, pageNumber * 20), total: rows.length, page: pageNumber, page_size: 20 };
+    }
+    else if (path === "/security/findings/finding/observations") json = { items: [{ id: "observation", scan_id: "scan", outcome: "present", created_at: at }], total: 1, page: 1, page_size: 20 };
+    else if (path === "/security/findings/finding/activity") json = { items: options.activity ?? [], total: options.activity?.length ?? 0, page: 1, page_size: 20 };
     else if (path === "/security/findings/finding/github-issue") json = { title: "[Security] Order lookup does not verify ownership", body: "## Evidence\n\nThe lookup lacks an ownership check.\n\n## Remediation\n\nConstrain access to the authenticated account.", repository: repository.full_name, public: true, version: current.version };
     else if (path === "/connections") json = [{ id: "connection", name: "Team API", kind: "api", model: "test-model", provider: "openai" }];
     else if (path === "/connections/connection/models") json = { status: "ready", source: "provider", models: [{ id: "test-model", name: "Test model" }] };
@@ -302,8 +313,8 @@ test("security overview keeps historical grades qualified and filters in the URL
   await expect(page).toHaveURL(/search=payments/);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Grade", exact: true }).click();
-  await page.getByRole("checkbox", { name: "D", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "D", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^D(?: |$)/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^D(?: |$)/ })).toBeChecked();
   await expect(page).toHaveURL(/search=payments&grade=D/);
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Search repositories" })).toHaveValue("payments");
@@ -385,7 +396,7 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
     { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated", latest_status: "partial" } },
     { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } },
     { repository: { ...repository, id: 30, full_name: "acme/running-scan" }, summary: { ...summary, state: "incomplete", latest_status: "running", grade_scan_id: "previous" } });
-  await page.route("**/api/v1/security/repositories", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/v1/security/repositories?**", (route) => route.fulfill({ json: { items: rows, total: rows.length, registered_total: rows.length, grade_counts: {}, status_counts: {}, page: 1, page_size: 20 } }));
   await page.goto("/security");
   for (const grade of grades) {
     const row = page.locator('[data-slot="security-repository-row"]').filter({ has: page.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }) });
@@ -1570,6 +1581,7 @@ test("scan activity shows past stage transitions separately from the current sta
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository,
     scan: { ...scan, status: "running", grade: null, stages: { ...scan.stages, analysis: { status: "running" } } },
     can_write: true, finding_count: 1, activity_count: activity.length, activity } }));
+  await page.route("**/api/v1/security/scans/scan/activity?**", (route) => route.fulfill({ json: { items: activity, total: activity.length, page: 1, page_size: 20 } }));
   await page.goto("/security/scans/scan?tab=activity");
   await expect(page.getByRole("group", { name: "Trivy stage", exact: true })).toContainText("completed");
   const panel = page.getByRole("tabpanel");
@@ -1603,6 +1615,10 @@ test("security scan tabs count saved report observations separately from current
     const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
     return route.fulfill({ json: { items: findings.slice((pageNumber - 1) * 20, pageNumber * 20), total: 23, page: pageNumber, page_size: 20 } });
   });
+  await page.route("**/api/v1/security/scans/scan/activity?**", (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    return route.fulfill({ json: { items: activity.slice((pageNumber - 1) * 20, pageNumber * 20), total: 201, page: pageNumber, page_size: 20 } });
+  });
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Findings at this scan", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(3);
@@ -1620,7 +1636,7 @@ test("security scan tabs count saved report observations separately from current
   await expect(page.getByRole("tab", { name: "Findings 23", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Activity 201", exact: true }).click();
-  await expect(page.getByText("Showing the latest 200 of 201 activities.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Load more activities", exact: true })).toBeVisible();
 });
 
 test("scan findings filter new and repeated observations like review runs without changing saved reports", async ({ page }, info) => {
@@ -1673,8 +1689,8 @@ test("scan findings filter new and repeated observations like review runs withou
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Medium(?: |$)/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Medium(?: |$)/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Filter by Severity", exact: true })).toBeHidden();
   await expect(page.getByRole("heading", { name: "No findings match these filters", exact: true })).toBeVisible();
@@ -2000,4 +2016,161 @@ test("security assessment result filters and failed diagnostics preserve separat
   await drawer.getByText("Original proposal", { exact: true }).click();
   await expect(drawer.getByText("return orders.find(id);", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("security overview uses backend multiselect counts and pages and resets previously loaded filters", async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  await page.route("**/api/v1/security/repositories?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const filtered = params.has("grade") || params.has("status") || params.has("search");
+    const pageNumber = Number(params.get("page"));
+    const rows = Array.from({ length: filtered ? 3 : 5 }, (_, index) => ({ repository: { ...repository, id: 22 + index, full_name: `team/server-result-${index}` }, summary }));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 2, pageNumber * 2), total: rows.length, registered_total: 505,
+      grade_counts: { A: 400, D: 100, unrated: 5 }, status_counts: { current: 500, not_scanned: 5 }, page: pageNumber, page_size: 2 } });
+  });
+  await page.goto("/security");
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Load more repositories", exact: true }).click();
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(4);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Grade", exact: true }).click();
+  await expect(page.getByRole("dialog").getByText("400", { exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: /^A(?: |$)/ }).click();
+  await page.getByRole("checkbox", { name: /^D(?: |$)/ }).click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => requests.at(-1)?.getAll("grade")).toEqual(["A", "D"]);
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Scan status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Current(?: |$)/ }).click();
+  await page.getByRole("checkbox", { name: /^Not scanned(?: |$)/ }).click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => requests.at(-1)?.getAll("status")).toEqual(["current", "not_scanned"]);
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await page.screenshot({ path: info.outputPath("security-multiselect-overview.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Remove Grade filter", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Scan status filter", exact: true }).click();
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  expect(requests.at(-1)?.get("page")).toBe("1");
+});
+
+for (const scope of ["repository", "scan"] as const) test(`${scope} security findings send every selected severity and type to backend pages`, async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  const path = scope === "scan" ? "/security/scans/scan/findings" : "/security/repositories/22/findings";
+  await page.route(`**/api/v1${path}?**`, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const pageNumber = Number(params.get("page"));
+    const rows = Array.from({ length: 3 }, (_, index) => ({ ...finding, id: String(index), title: `Backend finding ${index}` }));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 2, pageNumber * 2), total: 3, registered_total: 900,
+      result_counts: { new: 3 }, state_counts: { open: 700, resolved: 200 }, severity_counts: { high: 700, medium: 200 }, kind_counts: { code: 700, secret: 200 },
+      page: pageNumber, page_size: 2 } });
+  });
+  await page.goto(scope === "scan" ? "/security/scans/scan?tab=findings" : "/security/repositories/22");
+  await page.getByRole("button", { name: "Load more findings", exact: true }).click();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
+  for (const [filter, values] of [["Severity", ["High", "Medium"]], ["Type", ["Code", "Secret"]], ...(scope === "repository" ? [["State", ["Open", "Resolved"]]] : [])] as [string, string[]][]) {
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
+    await page.getByRole("menuitem", { name: filter, exact: true }).click();
+    await page.getByRole("checkbox", { name: new RegExp(`^${values[0]}(?: |$)`) }).click();
+    await page.getByRole("checkbox", { name: new RegExp(`^${values[1]}(?: |$)`) }).click();
+    await page.keyboard.press("Escape");
+  }
+  await expect.poll(() => requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
+  await expect.poll(() => requests.at(-1)?.getAll("kind")).toEqual(["code", "secret"]);
+  if (scope === "repository") await expect.poll(() => requests.at(-1)?.getAll("state")).toEqual(["open", "resolved"]);
+  expect(requests.at(-1)?.get("page")).toBe("1");
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(2);
+  await page.screenshot({ path: info.outputPath(`security-${scope}-multiselect.png`), fullPage: true });
+  await page.getByRole("button", { name: "Load more findings", exact: true }).click();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
+  expect(requests.at(-1)?.get("page")).toBe("2");
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
+});
+
+test("security assessments load backend pages beyond one hundred and keep rows on next-page failure", async ({ page }) => {
+  const { state } = await mockSecurityAssessments(page);
+  state.rows = Array.from({ length: 105 }, (_, index) => securityAssessment(String(index)));
+  await page.goto("/security/scans/scan?tab=assessment");
+  const list = page.getByRole("region", { name: "Security assessments" });
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  state.fail = 503;
+  await list.getByRole("button", { name: "Load more assessments", exact: true }).click();
+  await expect(list.getByRole("button", { name: "Retry assessments", exact: true })).toBeVisible();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  state.fail = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(40);
+  for (const count of [60, 80, 100, 105]) {
+    await list.getByRole("button", { name: "Load more assessments", exact: true }).click();
+    await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(count);
+  }
+  expect(state.requests.some((path) => path.includes("page=6"))).toBe(true);
+  expect(state.requests.some((path) => path.includes("page_size="))).toBe(false);
+  await expect(list.getByRole("button", { name: "Load more assessments", exact: true })).toHaveCount(0);
+});
+
+test("security coverage and scan activity append backend pages and hide them on access loss", async ({ page }) => {
+  await mock(page);
+  const requests: string[] = [];
+  let denied = false;
+  await page.route("**/api/v1/security/scans/scan/coverage/inventory?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params.toString());
+    if (denied) return route.fulfill({ status: 403, json: { detail: "Access denied" } });
+    const pageNumber = Number(params.get("page"));
+    return route.fulfill({ json: { items: [{ id: String(pageNumber), path: `private/source-${pageNumber}.ts` }], total: 2, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security/scans/scan?tab=coverage");
+  await page.getByText("Prepared source inventory", { exact: true }).click();
+  await expect(page.getByText("private/source-1.ts", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Load more prepared files", exact: true }).click();
+  await expect(page.getByText("private/source-2.ts", { exact: true })).toBeVisible();
+  expect(requests).toContain("page=2");
+  await page.route("**/api/v1/security/scans/scan/activity?**", (route) => {
+    if (denied) return route.fulfill({ status: 403, json: { detail: "Access denied" } });
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    return route.fulfill({ json: { items: [{ id: String(pageNumber), scan_id: "scan", finding_id: null, actor_id: null, action: `recorded_event_${pageNumber}`, detail: {}, created_at: at }], total: 2, page: pageNumber, page_size: 1 } });
+  });
+  await page.getByRole("tab", { name: /Activity/ }).click();
+  await expect(page.getByText("Recorded event 1", { exact: true })).toBeVisible();
+  denied = true;
+  await page.getByRole("button", { name: "Load more activities", exact: true }).click();
+  await expect(page.getByRole("tabpanel").getByRole("alert")).toBeVisible();
+  await expect(page.getByText("Recorded event 1", { exact: true })).toHaveCount(0);
+});
+
+test("security finding histories use independent backend pages and hide both histories after access loss", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/security/findings/finding", (route) => route.fulfill({ json: { repository, finding, can_write: true,
+    observations: [], activity: [], observation_count: 125, activity_count: 205 } }));
+  let denied = false;
+  const requests: string[] = [];
+  for (const section of ["observations", "activity"]) await page.route(`**/api/v1/security/findings/finding/${section}?**`, (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url.pathname + url.search);
+    if (denied) return route.fulfill({ status: 403, json: { detail: "Access denied" } });
+    const pageNumber = Number(url.searchParams.get("page"));
+    const item = section === "observations" ? { id: String(pageNumber), scan_id: `scan-${pageNumber}`, outcome: pageNumber === 1 ? "present" : "not_observed", created_at: at }
+      : { id: String(pageNumber), scan_id: "scan", finding_id: "finding", actor_id: null, action: `private_activity_${pageNumber}`, detail: {}, created_at: at };
+    return route.fulfill({ json: { items: [item], total: 2, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security/repositories/22?finding=finding&finding_tab=activity");
+  const drawer = page.getByRole("dialog", { name: "Finding details" });
+  await expect(drawer.getByRole("tab", { name: "Activity 330", exact: true })).toBeVisible();
+  await expect(drawer.getByText("Private activity 1", { exact: true })).toBeVisible();
+  await drawer.getByRole("button", { name: "Load more observations", exact: true }).click();
+  await expect(drawer.getByRole("link", { name: "Not observed", exact: true })).toBeVisible();
+  expect(requests.some((path) => path.endsWith("/observations?page=2"))).toBe(true);
+  expect(requests.some((path) => path.endsWith("/activity?page=2"))).toBe(false);
+  denied = true;
+  await drawer.getByRole("button", { name: "Load more finding activity", exact: true }).click();
+  await expect(drawer.getByRole("alert")).toBeVisible();
+  await expect(drawer.getByText("Private activity 1", { exact: true })).toHaveCount(0);
+  await expect(drawer.getByRole("link", { name: "Not observed", exact: true })).toHaveCount(0);
 });

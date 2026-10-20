@@ -3115,3 +3115,106 @@ def test_issue_visibility_is_bound_to_the_reviewed_preview(seed, security_github
         assert "visibility changed" in finding.issue["error"]
     assert client.get(path).json()["public"] is True
     assert client.post(path, json={**body, "public": True}).status_code == 202
+
+
+def test_security_overview_filters_all_visible_repositories_before_pagination(seed, security_github, client, monkeypatch):
+    with transaction() as db:
+        db.add_all([Repository(id=100 + index, installation_id=10, full_name=f"team/app-{index:02}", enabled=True)
+                    for index in range(25)])
+        db.add(Repository(id=999, installation_id=10, full_name="private/hidden", enabled=True))
+        scan = saved_scan(db, seed, status="completed", grade="A", finished_at=now())
+        scan.progress = {"tasks": {}, "freshness": freshness()}
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository).where(Repository.id != 999))))
+    path = "/api/v1/security/repositories"
+    first = client.get(path).json()
+    second = client.get(path, params={"page": 2}).json()
+    assert first["total"] == first["registered_total"] == 26
+    assert len(first["items"]) == first["page_size"] == 20 and len(second["items"]) == 6
+    assert len({row["repository"]["id"] for row in first["items"] + second["items"]}) == 26
+    assert first["grade_counts"] == {"A": 1, "unrated": 25}
+    assert first["status_counts"] == {"current": 1, "not_scanned": 25}
+    union = client.get(path, params=[("grade", "A"), ("grade", "unrated"), ("status", "current"), ("status", "not_scanned")]).json()
+    assert union["total"] == 26
+    filtered = client.get(path, params={"search": "APP-24", "grade": "unrated", "status": "not_scanned"}).json()
+    assert filtered["total"] == 1 and filtered["items"][0]["repository"]["id"] == 124
+    assert filtered["grade_counts"] == first["grade_counts"] and filtered["registered_total"] == 26
+    assert client.get(path, params={"page": 3}).json()["items"] == []
+    for params in ({"page": 0}, {"grade": "Z"}, {"status": "invalid"}, {"search": "x" * 201}):
+        assert client.get(path, params=params).status_code == 422
+
+
+def test_security_finding_multiselect_uses_union_within_filters_and_intersection_between_filters(seed, security_github, client, monkeypatch):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        scan_id = scan.id
+        for index in range(26):
+            severity, kind, state = (("high", "code", "open") if index < 21 else
+                ("medium", "secret", "resolved") if index < 23 else
+                ("low", "infrastructure", "accepted_risk") if index < 25 else ("unknown", "dependency", "false_positive"))
+            finding = saved_finding(db, seed, scan, severity=severity, kind=kind, state=state)
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+        unrelated = saved_scan(db, seed, status="completed")
+        saved_finding(db, seed, unrelated, severity="critical", kind="dependency")
+    repository_path = "/api/v1/security/repositories/22/findings"
+    scan_path = f"/api/v1/security/scans/{scan_id}/findings"
+    filters = [("severity", "high"), ("severity", "medium"), ("kind", "code"), ("kind", "secret")]
+    for path in (repository_path, scan_path):
+        params = filters + ([("state", "open"), ("state", "resolved")] if path == repository_path else [("outcome", "new")])
+        first = client.get(path, params=params).json()
+        second = client.get(path, params=params + [("page", "2")]).json()
+        assert first["total"] == second["total"] == 23
+        assert len(first["items"]) == 20 and len(second["items"]) == 3
+        assert len({row["id"] for row in first["items"] + second["items"]}) == 23
+        assert first["severity_counts"]["low"] == 2 and first["kind_counts"]["infrastructure"] == 2
+        assert first["registered_total"] == (27 if path == repository_path else 26)
+        assert second["severity_counts"] == first["severity_counts"]
+        assert client.get(path, params=filters + [("page", "3")]).json()["items"] == []
+        for invalid in ([("severity", "high"), ("severity", "invalid")], [("kind", "code"), ("kind", "invalid")], [("page", "0")]):
+            assert client.get(path, params=invalid).status_code == 422
+    assert client.get(repository_path, params=[("state", "open"), ("state", "resolved")]).json()["total"] == 24
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    assert client.get(scan_path, params=filters + [("page", "2")]).status_code == 403
+    assert client.get(repository_path, params=filters).status_code == 403
+
+
+def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(seed, security_github, client, monkeypatch):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        scan.coverage = {"inventory": {f"src/{index:03}.py": {} for index in range(25)},
+            "excluded": [{"path": f"dist/{index}.js", "reason": "Generated"} for index in range(25)],
+            "units": [{"task": f"analysis:{index}", "status": "completed"} for index in range(25)],
+            "problems": [{"path": f"source/{index}.py", "reason": "Unsupported"} for index in range(25)]}
+        finding = saved_finding(db, seed, scan)
+        scan_id, finding_id = scan.id, finding.id
+        for index in range(25):
+            observation_scan = scan if index == 0 else saved_scan(db, seed, status="completed")
+            db.add(SecurityOccurrence(scan_id=observation_scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+            db.add(SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="finding_observed", created_at=now() - timedelta(seconds=index)))
+        other = saved_scan(db, seed, status="completed")
+        db.add(SecurityActivity(scan_id=other.id, action="scan_created"))
+    paths = [f"/api/v1/security/scans/{scan_id}/activity", f"/api/v1/security/findings/{finding_id}/activity",
+             f"/api/v1/security/findings/{finding_id}/observations",
+             *[f"/api/v1/security/scans/{scan_id}/coverage/{section}" for section in ("inventory", "excluded", "units", "problems")]]
+    for path in paths:
+        first, second = client.get(path).json(), client.get(path, params={"page": 2}).json()
+        assert first["total"] == second["total"] == 25
+        assert len(first["items"]) == first["page_size"] == 20 and len(second["items"]) == 5
+        assert len({row["id"] for row in first["items"] + second["items"]}) == 25
+        assert client.get(path, params={"page": 3}).json()["items"] == []
+        assert client.get(path, params={"page": 0}).status_code == 422
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["scan"]["coverage"]["inventory_count"] == 25
+    assert not {"inventory", "excluded", "units", "problems"}.intersection(detail["scan"]["coverage"])
+    detail = client.get(f"/api/v1/security/findings/{finding_id}").json()
+    assert detail["observation_count"] == detail["activity_count"] == 25
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    for path in paths:
+        assert client.get(path, params={"page": 2}).status_code == 403

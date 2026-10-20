@@ -191,6 +191,8 @@ class SecurityFindingDetail(StrictModel):
     repository: RepositoryOut
     finding: SecurityFindingOut
     can_write: bool
+    observation_count: int = 0
+    activity_count: int = 0
     observations: list[dict[str, Any]]
     activity: list[SecurityActivityOut]
 
@@ -202,12 +204,40 @@ class SecurityScanPage(StrictModel):
     page_size: int
 
 
+class SecurityRepositoryPage(StrictModel):
+    items: list[SecurityRepositoryOut]
+    total: int
+    registered_total: int
+    grade_counts: dict[str, int]
+    status_counts: dict[str, int]
+    page: int
+    page_size: int
+
+
+class SecurityActivityPage(StrictModel):
+    items: list[SecurityActivityOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityRecordPage(StrictModel):
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+
+
 class SecurityFindingPage(StrictModel):
     items: list[SecurityFindingOut]
     total: int
     page: int
     page_size: int
     result_counts: dict[str, int] = Field(default_factory=dict)
+    registered_total: int = 0
+    state_counts: dict[str, int] = Field(default_factory=dict)
+    severity_counts: dict[str, int] = Field(default_factory=dict)
+    kind_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class SecurityReportPage(StrictModel):
