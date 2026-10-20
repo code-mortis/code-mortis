@@ -4395,6 +4395,20 @@ const citationError = "OCR returned an invalid verification verdict: Assessment 
   + "; response=" + JSON.stringify({ verdict: "confirmed", explanation: "A long saved response. ".repeat(260) });
 
 const assessmentErrors = [
+  { name: "gateway already omitted arguments", error: "AI result delivery failed: task_done did not include the required DONE state and result object. The gateway returned incomplete or malformed completion arguments.",
+    title: "AI result delivery failed", message: "The gateway response already contained incomplete or malformed arguments." },
+  { name: "OCR changed gateway arguments", error: "AI result delivery failed: task_done did not include the required DONE state and result object. OCR's parsed completion differs from the gateway response.",
+    title: "AI result delivery failed", message: "OCR changed or lost data from the gateway's completion." },
+  { name: "gateway comparison unavailable", error: "AI result delivery failed: task_done did not include the required DONE state and result object. Gateway/OCR comparison was unavailable; the origin could not be determined.",
+    title: "AI result delivery failed", message: "Gateway/OCR comparison was unavailable, so the origin is unknown." },
+  { name: "incomplete completion call", error: 'The AI did not finish checking this finding. Technical details: {"status":"success","result_error":"The AI did not submit a complete structured result. task_done did not include the required DONE state and result object."}',
+    title: "AI result delivery failed", message: "The AI completion call omitted the required DONE state or structured result." },
+  { name: "multiple completion calls", error: 'AI result delivery failed: The response must submit exactly one complete task_done result. Technical details: {"result_count":2}',
+    title: "AI result delivery failed", message: "The AI did not submit exactly one complete structured result." },
+  { name: "malformed completion arguments", error: "AI result delivery failed: task_done arguments are not valid JSON.",
+    title: "AI result delivery failed", message: "The AI completion call contained invalid JSON arguments." },
+  { name: "unknown usage after incomplete delivery", error: 'The review engine did not report valid token usage. Technical details: {"result_error":"task_done did not include the required DONE state and result object."}',
+    title: "Token usage could not be verified", message: "The AI's token usage was unavailable" },
   { name: "citation mismatch", error: citationError, title: "Evidence could not be verified",
     message: "The AI's evidence quote did not exactly match the cited source.",
     citation: "Citation 3 · Current source: frontend/src/settings.tsx:682–687" },

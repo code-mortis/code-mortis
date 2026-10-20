@@ -403,6 +403,29 @@ def test_legacy_citation_failure_explains_mismatch_without_rewriting_saved_evide
         assert scan.error == error and scan.report["problems"] == [error]
 
 
+@pytest.mark.parametrize("task", ["analysis", "assessment"])
+@pytest.mark.parametrize("origin", [None, "gateway_incomplete", "ocr_mismatch", "unavailable"])
+def test_delivery_failure_names_the_completion_contract_without_rewriting_history(seed, task, origin):
+    path = "src/scriptSchemaValidator.ts"
+    error = ("Proposed finding" if task == "assessment" else "Source analysis") + f" could not be validated: {path}."
+    feedback = {"kind": "delivery", "reason": "task_done did not include the required DONE state and result object."}
+    if origin:
+        feedback["transport"] = {"origin": origin}
+    with transaction() as db:
+        scan = saved_scan(db, seed, "partial", error=error)
+        scan.report = {"problems": [error]}
+        key = "assessment:82" if task == "assessment" else "analysis:" + path
+        scan.progress = {"tasks": {key: {"status": "failed", "proposal": {"path": path}, "validation_feedback": feedback}}}
+        public = security.public_scan(scan)
+        assert public.error == security.validation_problem(path, feedback, task=task)
+        expected = f"AI result delivery failed for {path}: {feedback['reason']}"
+        if origin:
+            expected += " " + security.result_diagnostics.explanation(feedback["transport"])
+        assert public.error == expected
+        assert public.report["problems"] == [public.error]
+        assert scan.error == error and scan.status == "partial" and scan.report["problems"] == [error]
+
+
 def test_finding_recurrence_reuses_identity_and_invalidates_rotation(seed):
     with transaction() as db:
         scan = saved_scan(db, seed)
@@ -626,7 +649,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
             if len(calls) > concurrency:
                 assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 12 * concurrency
     assert active[1] == concurrency
-    assert configurations == ([{"session_per_task": True}] if concurrency > 1 else [])
+    assert configurations == ([{"session_per_task": True, "structured_result": True}] if concurrency > 1 else [])
 
 
 @pytest.mark.parametrize("value", [0, 9, 1.5, True, "4"])
@@ -850,7 +873,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
             if len(calls) > concurrency:
                 assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 96 - 12 * concurrency
     assert active[1] == concurrency
-    assert configurations == ([{"session_per_task": True}] * 2 if concurrency > 1 else [])
+    assert configurations == ([{"session_per_task": True, "structured_result": True}] * 2 if concurrency > 1 else [])
 
 
 def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
@@ -1781,7 +1804,7 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
         return response(), {"tokens": 7}
 
     monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine.ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "terminal_result", lambda *a: response())
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
@@ -1838,7 +1861,7 @@ def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_
             "warnings": ["incomplete"] if case == "warning" else None}), ""
 
     monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a: nullcontext())
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine.ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": ""}

@@ -2,6 +2,7 @@
 
 import json
 import re
+import secrets
 import tempfile
 import time
 from contextlib import nullcontext
@@ -11,7 +12,7 @@ from typing import Literal
 from pydantic import Field, ValidationError
 from sqlalchemy import or_, select
 
-from . import github, ocr, runner_client
+from . import github, ocr, result_diagnostics, runner_client
 from .db import now, transaction, uid
 from .models import (
     Activity,
@@ -512,7 +513,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
                *, instructions=INSTRUCTIONS, schema=None, validator=validate_response, configuration_managed=False,
-               delivery=RESULT_DELIVERY):
+               delivery=RESULT_DELIVERY, structured_result=False):
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -532,6 +533,11 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
     with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
         root = Path(temp)
+        capture = root / "delivery.jsonl"
+        capture.touch(mode=0o600)
+        diagnostic_key = secrets.token_bytes(32)
+        if connection.get("protocol") == "openai-responses":
+            env = {**env, "CM_OCR_DIAGNOSTIC_FILE": str(capture), "CM_OCR_DIAGNOSTIC_KEY": diagnostic_key.hex()}
         ocr.git(root, env, "init", "--quiet", stopped=stopped)
         evidence = root / "evidence.py"
         bundle = evidence_bundle(context)
@@ -568,7 +574,9 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
         dispatched = False
         try:
-            with nullcontext() if configuration_managed else ocr.configuration(connection, credentials, {}, before_dispatch):
+            with nullcontext() if configuration_managed else ocr.configuration(
+                connection, credentials, {}, before_dispatch, structured_result=structured_result,
+            ):
                 if before_dispatch():
                     raise ocr.ReviewStopped("Verification stopped before provider analysis.")
                 allowance = remaining_time()
@@ -596,6 +604,9 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
                     result_error = str(exc) or "The AI did not return a final assessment."
                     result_feedback = exc.feedback if isinstance(exc, ResultValidationError) else None
+                    if result_feedback and result_feedback.get("kind") == "delivery":
+                        result_feedback = {**result_feedback, "transport": result_diagnostics.compare(
+                            root, data.get("session_id"), capture, diagnostic_key)}
         except (ValueError, OSError, TimeoutError, ocr.ReviewStopped, github.GitHubError) as exc:
             if dispatched:
                 raise
@@ -621,10 +632,15 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                     and (warnings is None or isinstance(warnings, list)) and not warnings
                     and (comments is None or isinstance(comments, list)) and not comments)
         if not complete or result_error:
-            detail = json.dumps({"exit_code": code, "status": data.get("status"), "summary": summary,
-                                 "warnings": data.get("warnings"), "result_error": result_error,
-                                 "diagnostics": diagnostics})[:4000]
-            raise VerificationOutputError("The AI did not finish checking this finding. Technical details: " + detail,
+            detail = {"exit_code": code, "status": data.get("status"), "summary": summary,
+                      "warnings": data.get("warnings"), "result_error": result_error, "diagnostics": diagnostics}
+            message = ("AI result delivery failed: " + result_feedback["reason"]
+                       if complete and result_feedback and result_feedback.get("kind") == "delivery"
+                       else "The AI did not finish checking this finding.")
+            if result_feedback and result_feedback.get("transport"):
+                message += " " + result_diagnostics.explanation(result_feedback["transport"])
+                detail = {"delivery": result_feedback["transport"], "ocr": detail}
+            raise VerificationOutputError(message + " Technical details: " + json.dumps(detail)[:4000],
                                           {"tokens": usage}, feedback=result_feedback if complete else None)
         try:
             validated = validator(raw, context)
