@@ -1257,6 +1257,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/findings/{finding_id}/github-issue/reapprove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reapprove Issue */
+        post: operations["reapprove_issue_api_v1_security_findings__finding_id__github_issue_reapprove_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/live": {
         parameters: {
             query?: never;
@@ -2799,6 +2816,17 @@ export interface components {
             version: number;
             /** Recovery Token */
             recovery_token?: string | null;
+        };
+        /** SecurityIssueReapproval */
+        SecurityIssueReapproval: {
+            /** Version */
+            version: number;
+            /** Operation Id */
+            operation_id: string;
+            /** Approval Revision */
+            approval_revision: number;
+            /** Reason */
+            reason: string;
         };
         /** SecurityReportPage */
         SecurityReportPage: {
@@ -5861,6 +5889,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reapprove_issue_api_v1_security_findings__finding_id__github_issue_reapprove_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityIssueReapproval"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {

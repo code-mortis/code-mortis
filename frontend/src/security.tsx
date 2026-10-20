@@ -590,6 +590,7 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
   const [state, setState] = useState<"open" | "false_positive" | "accepted_risk">("false_positive");
   const [reason, setReason] = useState("");
   const [issueOpen, setIssueOpen] = useState(false);
+  const [syncApprovalOpen, setSyncApprovalOpen] = useState(false);
   const issue = finding.issue;
   const hasIssue = Object.keys(issue).length > 0;
   const sourcePath = tab === "snapshot" && snapshot ? text(snapshot.path) || finding.path : finding.path;
@@ -631,6 +632,7 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
           {canWrite && !hasIssue && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Create GitHub issue</Button>}
           {canWrite && hasIssue && !issue.number && (!issue.started || ["failed", "uncertain"].includes(text(issue.sync_status))) && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Review issue again</Button>}
           {canWrite && hasIssue && ["failed", "uncertain"].includes(text(issue.sync_status)) && <Button variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/github-issue/sync` })}>Retry issue synchronization</Button>}
+          {canWrite && !!issue.number && !!issue.operation_id && ["failed", "uncertain"].includes(text(issue.sync_status)) && <Button variant="outline" className="min-h-11 h-auto whitespace-normal sm:min-h-9" onClick={() => setSyncApprovalOpen(true)}>Review sync approval</Button>}
           {canWrite ? <Button variant="outline" className="min-h-11 sm:min-h-9" aria-expanded={triaging} onClick={() => setTriaging(!triaging)}>Triage</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
         </div>
       </div>
@@ -643,7 +645,43 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
       </form>}
     </SheetFooter>
     {issueOpen && <IssueDialog findingId={finding.id} onClose={() => setIssueOpen(false)} />}
+    {syncApprovalOpen && canWrite && <SyncApprovalDialog finding={finding} repository={repo.full_name} onClose={() => setSyncApprovalOpen(false)} />}
   </div>;
+}
+
+function issueDraftError(title: string, body: string) {
+  if (!title.trim()) return "Enter an issue title.";
+  if (Array.from(title).length > 200) return "Issue titles must be 200 characters or fewer.";
+  if (!body.trim()) return "Enter an issue body.";
+  if (Array.from(body).length > 50000) return "Issue bodies must be 50,000 characters or fewer. Shorten the draft before publishing.";
+  return null;
+}
+
+function SyncApprovalDialog({ finding, repository, onClose }: { finding: Finding; repository: string; onClose: () => void }) {
+  const focus = useReturnFocus();
+  const action = useAction<Finding>();
+  const [reason, setReason] = useState("");
+  const issue = finding.issue;
+  const approval = object(issue.sync_approval);
+  return <Dialog open onOpenChange={(open) => { if (!open && !action.isPending) onClose(); }}><DialogContent {...focus} className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+    <DialogHeader><DialogTitle>Approve issue synchronization</DialogTitle><DialogDescription>Review this existing issue before taking responsibility for its automatic status updates.</DialogDescription></DialogHeader>
+    <form className="space-y-5" onSubmit={(event) => {
+      event.preventDefault();
+      if (!reason.trim() || Array.from(reason).length > 4000 || action.isPending) return;
+      const body: Schema["SecurityIssueReapproval"] = { version: finding.version, operation_id: text(issue.operation_id),
+        approval_revision: typeof approval.revision === "number" ? approval.revision : 0, reason };
+      action.mutate({ path: `/security/findings/${finding.id}/github-issue/reapprove`, body }, { onSuccess: onClose });
+    }}>
+      <div className="space-y-2 text-sm"><p className="break-words">Repository: <strong>{repository}</strong></p>
+        <a href={text(issue.url)} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4">View issue #{count(issue.number)}<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+        <p className="text-muted-foreground">Original publication approved by member #{count(issue.actor_id)}. Current synchronization approval: member #{count(approval.actor_id ?? issue.actor_id)}.</p></div>
+      <p className="text-sm leading-relaxed">Your current repository write access will authorize synchronization. Code Mortis can close this issue after a verified fix and reopen it after a verified recurrence. Human closure overrides and current-branch verification still apply.</p>
+      {text(issue.desired_state) && <p className="text-sm">Pending issue state: <strong>{text(issue.desired_state)}</strong>.</p>}
+      <Field label="Reason for taking responsibility">{(id) => <Textarea id={id} value={reason} required maxLength={4000} disabled={action.isPending} onChange={(event) => setReason(event.target.value)} />}</Field>
+      <ErrorNotice error={action.error} />
+      <DialogFooter><Button type="button" variant="outline" disabled={action.isPending} onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !reason.trim() || Array.from(reason).length > 4000}>{action.isPending ? "Queuing synchronization…" : "Approve synchronization"}</Button></DialogFooter>
+    </form>
+  </DialogContent></Dialog>;
 }
 
 function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: number; onClose: () => void; onQueued: (total: number) => void }) {
@@ -656,7 +694,8 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
   const drafts = Object.values(selected);
   const preview = query.data?.pages[0] as Schema["SecurityIssueCandidatePage"] | undefined;
   const isPublic = drafts[0]?.public ?? preview?.public;
-  const invalid = drafts.some((draft) => !draft.title.trim() || !draft.body.trim() || draft.public !== isPublic);
+  const draftError = drafts.map((draft) => issueDraftError(draft.title, draft.body)).find(Boolean);
+  const invalid = !!draftError || drafts.some((draft) => draft.public !== isPublic);
   function choose(item: IssueCandidate, checked: boolean) {
     setSelected((current) => {
       const next = { ...current };
@@ -678,7 +717,7 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
       <p role="note" className={isPublic ? "rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive" : "text-muted-foreground"}>{isPublic ? "These issues will be public. Review the evidence and details before publishing." : "These issues will be private, visible to people with repository access."}</p>
       <p role="status" className="tabular-nums">{drafts.length} {drafts.length === 1 ? "issue" : "issues"} selected{reviewing ? " for creation" : ` · ${total} eligible findings`}</p>
     </div>}
-    <ErrorNotice error={query.error || action.error} />
+    <ErrorNotice error={query.error || action.error || (reviewing ? draftError : null)} />
     <div className="min-h-0 flex-1 overflow-y-auto">
       {query.isPending ? <Loading /> : denied ? null : reviewing ? <div className="space-y-3">{drafts.map((draft, index) => <details key={draft.id} open={index === 0} className={disclosure}>
         <summary className={disclosureSummary}><span className="min-w-0 break-words">{draft.title || "Untitled issue"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0" /></summary>
@@ -722,13 +761,14 @@ function IssueForm({ preview, findingId, onClose }: { preview: Schema["SecurityI
   const [title, setTitle] = useState(preview.title);
   const [body, setBody] = useState(preview.body);
   const [recoveryApproved, setRecoveryApproved] = useState(false);
-  return <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); if (preview.recovery_token && !recoveryApproved) return; action.mutate({ path: `/security/findings/${findingId}/github-issue`, body: { title, body, version: preview.version, public: preview.public, ...(preview.recovery_token ? { recovery_token: preview.recovery_token } : {}) } }, { onSuccess: onClose }); }}>
+  const draftError = issueDraftError(title, body);
+  return <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); if (action.isPending || draftError || (preview.recovery_token && !recoveryApproved)) return; action.mutate({ path: `/security/findings/${findingId}/github-issue`, body: { title, body, version: preview.version, public: preview.public, ...(preview.recovery_token ? { recovery_token: preview.recovery_token } : {}) } }, { onSuccess: onClose }); }}>
     <p className="break-words text-sm">Destination: <strong>{preview.repository}</strong></p>
     {preview.public && <div role="note" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">This issue will be public. Check the evidence and details before posting.</div>}
     {preview.recovery_token && <div role="note" className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><p>The previous request has an unknown outcome. Retry synchronization and check GitHub first. Another attempt may create a duplicate if the earlier issue appears later.</p><label className="flex min-h-11 cursor-pointer items-start gap-3"><Checkbox className="mt-0.5" checked={recoveryApproved} onCheckedChange={(checked) => setRecoveryApproved(checked === true)} /><span>I checked GitHub and approve another attempt despite the risk of a duplicate issue.</span></label></div>}
     <Field label="Issue title">{(id) => <Input id={id} value={title} maxLength={200} required onChange={(event) => setTitle(event.target.value)} />}</Field>
     <Tabs defaultValue="preview"><TabsList><TabsTrigger value="preview">Preview</TabsTrigger><TabsTrigger value="edit">Edit</TabsTrigger></TabsList><TabsContent value="preview"><div className="max-h-80 overflow-y-auto rounded-md border p-4"><Markdown>{body}</Markdown></div></TabsContent><TabsContent value="edit"><Field label="Issue body">{(id) => <Textarea id={id} className="min-h-64" value={body} maxLength={50000} required onChange={(event) => setBody(event.target.value)} />}</Field></TabsContent></Tabs>
     <p className="text-xs leading-relaxed text-muted-foreground">Code Mortis will close its linked issue after a verified fix and reopen it if the same finding returns, provided no human override prevents synchronization.</p>
-    <ErrorNotice error={action.error} /><DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !title.trim() || !body.trim() || (!!preview.recovery_token && !recoveryApproved)}>{action.isPending ? "Queuing issue…" : preview.recovery_token ? "Approve another attempt" : "Create issue"}</Button></DialogFooter>
+    <ErrorNotice error={action.error || draftError} /><DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !!draftError || (!!preview.recovery_token && !recoveryApproved)}>{action.isPending ? "Queuing issue…" : preview.recovery_token ? "Approve another attempt" : "Create issue"}</Button></DialogFooter>
   </form>;
 }

@@ -571,7 +571,8 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             elif errors:
                 detail += " " + errors[-1500:]
             detail = clean_text(detail, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
-            raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped")
+            raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped",
+                feedback={"kind": "context_limit", "reason": "Necessary evidence exceeds the per-prompt limit"} if reason == "too_large" else None)
         dispatched = False
         try:
             with nullcontext() if configuration_managed else ocr.configuration(

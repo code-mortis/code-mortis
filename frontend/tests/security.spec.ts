@@ -737,6 +737,24 @@ test("GitHub publication requires a reviewed individual issue and explicit publi
   await expect(dialog).not.toBeVisible();
 });
 
+test("oversized initial issue drafts remain editable and cannot publish", async ({ page }) => {
+  const writes = await mock(page);
+  await page.route("**/api/v1/security/findings/finding/github-issue", (route) => route.request().method() === "GET"
+    ? route.fulfill({ json: { title: "Security finding", body: "x".repeat(50001), version: 0, public: true, repository: repository.full_name } })
+    : route.fallback());
+  await page.goto("/security/repositories/22?finding=finding");
+  await page.getByRole("button", { name: "Create GitHub issue", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create GitHub issue", exact: true });
+  await expect(dialog.getByRole("alert")).toContainText("50,000 characters or fewer");
+  await expect(dialog.getByRole("button", { name: "Create issue", exact: true })).toBeDisabled();
+  expect(writes).toHaveLength(0);
+  await dialog.getByRole("tab", { name: "Edit", exact: true }).click();
+  await dialog.getByRole("textbox", { name: "Issue body" }).fill("Reviewed shorter evidence.");
+  await expect(dialog.getByRole("button", { name: "Create issue", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Create issue", exact: true }).click();
+  expect(writes).toHaveLength(1);
+});
+
 async function mockBulkIssues(page: Page, isPublic = true) {
   const writes = await mock(page);
   const state = { previewError: 0, submissionError: 0, requests: 0, items: Array.from({ length: 21 }, (_, index): Schema["SecurityIssueCandidate"] => ({
@@ -762,6 +780,19 @@ async function mockBulkIssues(page: Page, isPublic = true) {
   });
   return { state, writes };
 }
+
+test("oversized bulk issue drafts cannot queue other selected issues", async ({ page }) => {
+  const { state, writes } = await mockBulkIssues(page);
+  state.items[0].body = "x".repeat(50001);
+  await page.goto("/security/repositories/22");
+  await page.getByRole("button", { name: "Create GitHub issues…", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
+  await dialog.getByRole("checkbox", { name: `Select ${state.items[0].title}`, exact: true }).check();
+  await dialog.getByRole("button", { name: "Review 1 issue", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("50,000 characters or fewer");
+  await expect(dialog.getByRole("button", { name: "Create 1 issue", exact: true })).toBeDisabled();
+  expect(writes).toHaveLength(0);
+});
 
 test("bulk GitHub issues require selection, review, count and public confirmation", async ({ page }, info) => {
   const { state, writes } = await mockBulkIssues(page);
@@ -1302,6 +1333,73 @@ test("security finding footer preserves linked issue failures and separate findi
   await footer.getByRole("button", { name: "Retry issue synchronization", exact: true }).click();
   expect(writes).toHaveLength(1);
   expect(writes[0].path).toBe("/security/findings/finding/github-issue/sync");
+});
+
+test("issue synchronization takeover requires explicit review and preserves failed approvals", async ({ page }, info) => {
+  const writes = await mock(page, { issue: { number: 42, actor_id: 99, operation_id: "publication-operation", url: "https://github.com/acme/payments/issues/42",
+    sync_status: "failed", error: "The user who approved this issue no longer has access.", sync_approval: { actor_id: 98, revision: 2 } } });
+  let stale = true;
+  await page.route("**/api/v1/security/findings/finding/github-issue/reapprove", async (route) => {
+    writes.push({ path: "/security/findings/finding/github-issue/reapprove", body: route.request().postDataJSON() });
+    await route.fulfill(stale ? { status: 409, json: { detail: "The synchronization approval changed. Refresh and review it again." } }
+      : { status: 202, json: { ...finding, issue: { sync_status: "pending" } } });
+  });
+  await page.goto("/security/repositories/22?finding=finding");
+  await page.getByRole("button", { name: "Review sync approval", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Approve issue synchronization", exact: true });
+  await expect(dialog.getByRole("link", { name: "View issue #42", exact: true })).toHaveAttribute("href", "https://github.com/acme/payments/issues/42");
+  await expect(dialog.getByText(/Original publication approved by member #99/)).toBeVisible();
+  await expect(dialog.getByText(/Human closure overrides/)).toBeVisible();
+  const approve = dialog.getByRole("button", { name: "Approve synchronization", exact: true });
+  await expect(approve).toBeDisabled();
+  expect(writes).toHaveLength(0);
+  await dialog.getByRole("textbox", { name: "Reason for taking responsibility" }).fill("I reviewed the linked issue and will manage status updates.");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-sync-approval-${info.project.name}.png`, fullPage: true });
+  await approve.click();
+  await expect(dialog.getByRole("alert")).toContainText("approval changed");
+  await expect(dialog.getByRole("textbox", { name: "Reason for taking responsibility" })).toHaveValue("I reviewed the linked issue and will manage status updates.");
+  stale = false;
+  await approve.click();
+  await expect(dialog).toBeHidden();
+  expect(writes[1]).toMatchObject({ path: "/security/findings/finding/github-issue/reapprove", body: {
+    version: 0, operation_id: "publication-operation", approval_revision: 2, reason: "I reviewed the linked issue and will manage status updates.",
+  } });
+});
+
+test("sync approval supports keyboard cancellation in dark narrow layouts", async ({ page }, info) => {
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  await page.setViewportSize({ width: info.project.name === "mobile" ? 320 : 1440, height: 900 });
+  const writes = await mock(page, { issue: { number: 42, actor_id: 99, operation_id: "publication-operation",
+    url: "https://github.com/acme/payments/issues/42", sync_status: "failed" } });
+  await page.goto("/security/repositories/22?finding=finding");
+  const trigger = page.getByRole("button", { name: "Review sync approval", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Approve issue synchronization", exact: true });
+  const reason = dialog.getByRole("textbox", { name: "Reason for taking responsibility" });
+  await reason.fill("I reviewed this issue.");
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Approve synchronization", exact: true })).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-sync-approval-dark-${info.project.name}.png`, fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(writes).toHaveLength(0);
+});
+
+test("read-only users cannot retry or reapprove linked issue synchronization", async ({ page }) => {
+  const writes = await mock(page, { canWrite: false, issue: { number: 42, actor_id: 99, operation_id: "publication-operation",
+    url: "https://github.com/acme/payments/issues/42", sync_status: "failed" } });
+  await page.goto("/security/repositories/22?finding=finding");
+  const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+  await expect(sheet.getByRole("link", { name: "View issue #42", exact: true })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Review sync approval", exact: true })).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: "Retry issue synchronization", exact: true })).toHaveCount(0);
+  expect(writes).toHaveLength(0);
 });
 
 test("uncertain issue creation needs an individually reviewed recovery approval", async ({ page }, info) => {

@@ -30,6 +30,7 @@ from .security_schemas import (
 
 POLICY = "code-mortis.security/v1"
 CITATION_CONTRACT = "source-selection/v1"
+TASK_CONTRACT = "security-task/v2"
 SEVERITIES = {"low", "medium", "high", "critical"}
 EXCLUDED = {".git", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
 CODE_EXTENSIONS = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".rb",
@@ -90,6 +91,56 @@ def secure_digest(value):
     return hmac.new(settings().encryption_key.encode(), (POLICY + "\0" + value).encode(), hashlib.sha256).hexdigest()
 
 
+def redact_secrets(text, values, rules=(), stopped=None):
+    groups = {}
+    for rule in rules:
+        name, size, identity = rule["rule_id"], rule["match_bytes"], rule["identity"]
+        if not isinstance(name, str) or type(size) is not int or size <= 0 or not re.fullmatch(r"[a-f0-9]{64}", identity):
+            raise ValueError("Historical secret metadata is invalid; source cannot be safely redacted.")
+        groups.setdefault((name, size), set()).add(identity)
+    data = text.encode()
+    for (name, size), identities in groups.items():
+        identities -= {secure_digest(name + "\0" + value) for value in set(values) if value}
+        if not identities:
+            continue
+        prefix = hmac.new(settings().encryption_key.encode(), (POLICY + "\0" + name + "\0").encode(), hashlib.sha256)
+        for offset in range(len(data) - size + 1):
+            if offset % 4096 == 0 and stopped and stopped():
+                raise ocr.ReviewStopped("Security redaction cancelled.")
+            candidate = prefix.copy()
+            candidate.update(data[offset:offset + size])
+            if candidate.hexdigest() in identities:
+                values.append(data[offset:offset + size].decode())
+                identities.discard(candidate.hexdigest())
+                if not identities:
+                    break
+    for value in sorted({value for value in values if value}, key=len, reverse=True):
+        replacement = "\n".join("[redacted]" for _ in value.split("\n"))
+        text = text.replace(value, replacement)
+        text = text.replace(json.dumps(value)[1:-1], json.dumps(replacement)[1:-1])
+    return clean_text(text)
+
+
+def redacted_context(item, value, *, structural=False):
+    if isinstance(value, str):
+        try:
+            sanitized = item.redact(value)
+        except (ValueError, KeyError, TypeError, TimeoutError) as exc:
+            raise verification.VerificationOutputError("Security context could not be safely redacted; this task was withheld.",
+                {"tokens": 0}, feedback={"kind": "redaction", "reason": "Sanitization failed or exceeded its deadline"}) from exc
+        if structural and sanitized != value:
+            raise verification.VerificationOutputError("Security context contains credential material in an identifier; this task was withheld.",
+                {"tokens": 0}, feedback={"kind": "redaction", "reason": "Credential material in a structural identifier"})
+        return sanitized
+    if isinstance(value, dict):
+        identifiers = {"path", "assigned_path", "head_sha", "original_sha", "id", "source_id", "revision", "finding_id", "available_paths", "required_paths"}
+        return {redacted_context(item, key, structural=True): redacted_context(item, child, structural=key in identifiers)
+                for key, child in value.items()}
+    if isinstance(value, list):
+        return [redacted_context(item, child, structural=structural) for child in value]
+    return value
+
+
 class Snapshot:
     def __init__(self, root, sha, env, stopped):
         self.root, self.sha, self.env, self.stopped = root, sha, env, stopped
@@ -98,6 +149,7 @@ class Snapshot:
         self.files.mkdir()
         self.inventory, self.excluded, self.problems = {}, [], []
         self.secret_values = []
+        self.secret_rules = []
         self.secret_lines = {}
         self.renames = {}
 
@@ -105,10 +157,7 @@ class Snapshot:
         return verification.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
 
     def redact(self, text):
-        for value in sorted(self.secret_values, key=len, reverse=True):
-            text = text.replace(json.dumps(value)[1:-1], "[redacted]")
-            text = text.replace(value, "\n".join("[redacted]" for _ in value.split("\n")))
-        return clean_text(text)
+        return redact_secrets(text, self.secret_values, self.secret_rules, self.stopped)
 
     def source(self, path, sha=None):
         if any(part in PROTECTED for part in PurePosixPath(path).parts) or PurePosixPath(path).name in INSTRUCTION_FILES:
@@ -168,8 +217,12 @@ class Snapshot:
     def renamed(self, original, path):
         if original in self.renames:
             return self.renames[original].get(path, path)
-        names = ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
-                        "--find-renames", original, self.sha, stopped=self.stopped).split("\0")
+        try:
+            names = ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+                            "--find-renames", original, self.sha, stopped=self.stopped).split("\0")
+        except ValueError:
+            self.renames[original] = {}
+            raise
         renames = {}
         i = 0
         while i < len(names) - 1:
@@ -272,6 +325,7 @@ def trivy(item, timeout, stopped):
                           "database_fresh": fresh, "database_update_succeeded": update_code == 0,
                           "scanners": scanners.split(","), "offline": True, "network_isolation": "seccomp socket denial",
                           "secret_policy": "all built-in rules; no path skipping; no repository configuration",
+                          "directory_summaries": json.loads(item.redact(json.dumps(result["directory_summaries"]))),
                           "inline_suppressions_disabled": policy_overrides}
     if re.search(r"\b(?:WARN|ERROR|FATAL)\b", errors):
         result["problems"].append("Trivy reported a warning or an analysis error; this scan cannot establish complete coverage.")
@@ -332,8 +386,25 @@ def secret_material(item, path, raw):
 
 
 def normalize_trivy(item, report):
-    findings, targets, problems = [], {}, []
+    findings, targets, problems, directories = [], {}, [], []
     for row in report.get("Results", []):
+        target = row["Target"]
+        if not isinstance(target, str):
+            raise ValueError("Invalid Trivy target")
+        path = "." if target == str(item.files) else target.removeprefix(str(item.files) + "/")
+        if path != ".":
+            relative_path(path)
+        checks = [{"id": check["ID"], "status": check.get("Status", "FAIL"),
+                   "resource": check.get("CauseMetadata", {}).get("Resource", "")}
+                  for check in row.get("Misconfigurations", [])]
+        if path not in item.inventory and row.get("Class") == "config" and row.get("Type") == "terraform":
+            if (not any(path == "." or candidate.startswith(path + "/") for candidate in item.inventory)
+                    or row.get("Secrets") or row.get("Vulnerabilities") or row.get("Packages")):
+                raise ValueError("Trivy returned an invalid configuration directory")
+            directories.append({"path": path, "type": "terraform", "summary": row.get("MisconfSummary", {}), "checks": checks})
+            if any(check["status"] != "PASS" for check in checks):
+                problems.append(f"Directory configuration findings could not be mapped to file evidence: {path}")
+            continue
         path = target_path(item, row["Target"])
         if row.get("Class") not in {"lang-pkgs", "config", "secret", None}:
             problems.append(f"Unsupported scanner result class for {path}")
@@ -341,8 +412,7 @@ def normalize_trivy(item, report):
         targets[path] = {"class": row.get("Class"), "type": row.get("Type"), "packages": [*prior_target.get("packages", []), *[
             {"name": p["Name"], "version": p["Version"], "id": p.get("Identifier", {}).get("PURL", "")}
             for p in row.get("Packages", [])]], "summary": row.get("MisconfSummary", prior_target.get("summary", {})),
-            "checks": [*prior_target.get("checks", []), *[{"id": check["ID"], "status": check.get("Status", "FAIL")}
-                       for check in row.get("Misconfigurations", [])]]}
+            "checks": [*prior_target.get("checks", []), *checks]}
         for raw in row.get("Secrets", []):
             start, end = raw["StartLine"], raw["EndLine"]
             if type(start) is not int or type(end) is not int or not (1 <= start <= end <= item.inventory[path]["lines"]):
@@ -405,7 +475,7 @@ def normalize_trivy(item, report):
             parent = PurePosixPath(path).parent
             if not any(PurePosixPath(target).parent == parent and target_row["packages"] for target, target_row in targets.items()):
                 problems.append(f"Dependency inventory is unavailable for {path}; a supported resolved dependency file is required.")
-    return {"findings": list(normalized.values()), "targets": targets, "problems": problems}
+    return {"findings": list(normalized.values()), "targets": targets, "problems": problems, "directory_summaries": directories}
 
 
 def model_schema(model):
@@ -501,9 +571,9 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, configuration_managed=False):
-    context = {**context, "available_paths": sorted(path for path in item.inventory
+    context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
-        and PurePosixPath(path).name not in INSTRUCTION_FILES)}
+        and PurePosixPath(path).name not in INSTRUCTION_FILES and redacted_context(item, path) == path)})
     model, selection_model = {"analysis": (SecurityAnalysis, SecurityAnalysisSelection),
         "assessment": (SecurityAssessment, SecurityAssessmentSelection), "verification": (SecurityFix, SecurityFixSelection)}[task]
     schema = model_schema(selection_model)
@@ -605,7 +675,12 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
         for name in ("start_line", "end_line"):
             selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
-        request_context = {**context, "citation_sources": catalog, **({"validation_feedback": feedback} if feedback else {})}
+        try:
+            request_context = redacted_context(item, {**context, "citation_sources": catalog,
+                **({"validation_feedback": feedback} if feedback else {})})
+        except verification.VerificationOutputError as exc:
+            exc.usage = {"tokens": used}
+            raise
         try:
             if connection["kind"] == "api":
                 result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
@@ -631,7 +706,11 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             known = type(tokens) is int and tokens >= 0
             used = used + tokens if known else None
             exc.usage = {**exc.usage, "tokens": used}
-            if isinstance(exc, verification.VerificationOutputError) and exc.feedback and known and not corrected and attempt < 3:
+            if isinstance(exc, runner_client.RunnerBlocked) and exc.reason == "prompt_limit" and known:
+                raise verification.VerificationOutputError("Necessary security context exceeds the connection's per-prompt limit; this task was withheld.",
+                    exc.usage, feedback={"kind": "context_limit", "reason": "Necessary source and related history exceed the per-prompt limit"}) from exc
+            if (isinstance(exc, verification.VerificationOutputError) and exc.feedback
+                    and exc.feedback.get("kind") not in {"context_limit", "redaction"} and known and not corrected and attempt < 3):
                 feedback, corrected = exc.feedback, True
                 continue
             raise
@@ -643,7 +722,11 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         if not result["required_paths"]:
             if task == "assessment" and result["finding_id"] is not None:
                 result["finding_id"] = history_ids[result["finding_id"]]
-            return json.loads(item.redact(json.dumps(result))), {"tokens": used}
+            try:
+                return redacted_context(item, result), {"tokens": used}
+            except verification.VerificationOutputError as exc:
+                exc.usage = {"tokens": used}
+                raise
         if attempt == 3:
             break
         unavailable = {}

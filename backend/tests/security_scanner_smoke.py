@@ -24,8 +24,20 @@ with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
         "trivy.yaml": "scan:\n  scanners: []\n",
         "trivy-secret.yaml": "disable-rules: [github-pat]\n",
         ".trivyignore": "DS002\nAVD-DS-0002\n",
+        "infra/main.tf": '''resource "aws_security_group" "unsafe" {
+  description = "Synthetic offline audit fixture"
+  ingress {
+    description = "Synthetic unrestricted rule"
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+''',
     }
     for path, content in fixtures.items():
+        (item.files / path).parent.mkdir(parents=True, exist_ok=True)
         (item.files / path).write_text(content)
         item.inventory[path] = {"hash": security_engine.digest(content), "lines": len(content.splitlines()), "code": False}
     item.read = lambda path, sha=None: fixtures[path]
@@ -38,6 +50,9 @@ with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
     if result["metadata"]["database_fresh"]:
         assert "dependency" in kinds, kinds
     assert "[redacted]" in item.source("app.py")
+    assert any(finding.get("resource") == "aws_security_group.unsafe" and finding["path"] == "infra/main.tf"
+               for finding in result["findings"])
+    assert result["metadata"]["directory_summaries"]
     print(json.dumps({"kinds": sorted(kinds), "metadata": result["metadata"], "problems": result["problems"]}, indent=2))
 
 process = subprocess.run(["python", "-c", "from code_mortis.security_scanner import deny_network; import socket; deny_network(); socket.socket()"], capture_output=True)

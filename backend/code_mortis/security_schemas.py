@@ -7,6 +7,8 @@ from pydantic import Field, field_validator
 
 from .schemas import ORMModel, RepositoryOut, ReviewComment, RunLimits, SecuritySummary, StrictModel
 
+ISSUE_BODY_LIMIT = 50000
+
 
 class SecurityScanInput(RunLimits):
     connection_id: str = Field(min_length=1, max_length=36)
@@ -232,7 +234,7 @@ class SecurityRotation(StrictModel):
 
 class SecurityIssueInput(StrictModel):
     title: str = Field(min_length=1, max_length=200)
-    body: str = Field(min_length=1, max_length=50000)
+    body: str = Field(min_length=1, max_length=ISSUE_BODY_LIMIT)
     version: int = Field(ge=0)
     public: bool
     recovery_token: str | None = Field(default=None, min_length=1, max_length=36)
@@ -240,11 +242,18 @@ class SecurityIssueInput(StrictModel):
 
 class SecurityIssuePreview(StrictModel):
     title: str
-    body: str
+    body: str = Field(max_length=ISSUE_BODY_LIMIT)
     repository: str
     public: bool
     version: int
     recovery_token: str | None = None
+
+
+class SecurityIssueReapproval(StrictModel):
+    version: int = Field(ge=0)
+    operation_id: str = Field(min_length=1, max_length=36)
+    approval_revision: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 class SecurityIssueCandidate(SecurityIssuePreview):
