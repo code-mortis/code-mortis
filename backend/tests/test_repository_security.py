@@ -33,6 +33,7 @@ from code_mortis.security_schemas import SecurityScanInput
 SHA = "a" * 40
 OLD = "b" * 40
 SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation_failures.json").read_text())["cases"]
+DEPENDENCY_ADVISORY = json.loads((Path(__file__).parent / "fixtures/security_dependency_advisory.json").read_text())
 
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
@@ -853,7 +854,8 @@ def test_resolution_requires_complete_current_evidence(seed, security_github, co
         assert scan.report["commit"] == SHA
 
 
-def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(seed, security_github, monkeypatch, tmp_path):
+@pytest.mark.parametrize("advisory_available", [False, True])
+def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(seed, security_github, monkeypatch, tmp_path, advisory_available):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {"bun.lock": {"code": False, "hash": digest("updated"), "lines": 1}}
     item.read = lambda path, sha=None: "original" if sha else "updated"
@@ -866,29 +868,50 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "problems": [], "metadata": {},
         "targets": {"bun.lock": {"packages": packages}}})
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Dependency verification must not dispatch inference"))
+    request = github.request
+    lookups = []
+
+    def advisory_request(method, path, token, **kwargs):
+        if path.startswith("/advisories?"):
+            lookups.append(path)
+            return [deepcopy(DEPENDENCY_ADVISORY)] if advisory_available else []
+        return request(method, path, token, **kwargs)
+
+    monkeypatch.setattr(github, "request", advisory_request)
     with transaction() as db:
         prior = saved_scan(db, seed, status="completed")
         fixed = [saved_finding(db, seed, prior, kind="dependency", path="bun.lock", package=p["name"],
             installed_version="1.0.0", fixed_version="1.1.0").id for p in packages[:-1]]
         unknown = saved_finding(db, seed, prior, kind="dependency", title="Disputed cache advisory", path="bun.lock",
-            package="http-cache-semantics", installed_version="4.2.0", fixed_version="").id
+            package="http-cache-semantics", installed_version="4.2.0", fixed_version="", package_type="bun", rule_id="CVE-2026-93748").id
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid())).id
     security.perform(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
-        assert scan.status == "partial" and scan.stages["verification"]["status"] == "partial"
+        assert scan.status == ("completed" if advisory_available else "partial")
+        assert scan.stages["verification"]["status"] == ("completed" if advisory_available else "partial")
         assert scan.stages["verification"]["completed"] == scan.stages["verification"]["total"] == 41
         assert all(db.get(SecurityFinding, key).state == "resolved" for key in fixed)
-        assert db.get(SecurityFinding, unknown).state == "open"
+        assert db.get(SecurityFinding, unknown).state == ("resolved" if advisory_available else "open")
         assert {row["outcome"] for row in scan.report["findings"] if row["finding_id"] in fixed} == {"fixed"}
-        assert "Disputed cache advisory" in scan.error and "bun.lock" in scan.error
-        assert "safe version" in scan.error and "Previous findings still require verification" not in scan.error
-        assert scan.report["problems"] == [scan.error] and scan.progress["tokens"] == 0
-        assert scan.grade == "D" and security.summaries(db, [22])[22].state == "incomplete"
-        assert len(list(db.scalars(select(SecurityActivity).where(SecurityActivity.action == "finding_resolved")))) == 40
+        if advisory_available:
+            assert scan.error is None and scan.report["problems"] == []
+            outcome = next(row for row in scan.report["findings"] if row["finding_id"] == unknown)
+            assert outcome["verification"]["advisory"]["affected_range"] == "<= 4.2.0"
+            assert outcome["verification"]["original_hash"] == digest("original")
+            assert outcome["verification"]["current_hash"] == digest("updated")
+        else:
+            assert "Disputed cache advisory" in scan.error and "bun.lock" in scan.error
+            assert "safe version" in scan.error and "Previous findings still require verification" not in scan.error
+            assert scan.report["problems"] == [scan.error]
+        assert scan.progress["tokens"] == 0
+        assert scan.grade == ("A" if advisory_available else "D")
+        assert security.summaries(db, [22])[22].state == ("current" if advisory_available else "incomplete")
+        assert len(list(db.scalars(select(SecurityActivity).where(SecurityActivity.action == "finding_resolved")))) == (41 if advisory_available else 40)
         markdown = security.markdown_report(scan.report)
-        assert "### Fix verification" in markdown and "safe version" in markdown
+        assert "### Fix verification" in markdown and ("affected range" if advisory_available else "safe version") in markdown
+    assert len(lookups) == 1
 
 
 @pytest.mark.parametrize("blocker", ["coverage", "outdated", "branch", "unsupported", "cancelled", "permission", "version", "triage"])
@@ -1045,6 +1068,85 @@ def test_reports_preserve_snapshots_after_triage(seed, security_github, client):
 ])
 def test_dependency_resolution_does_not_guess_version_schemes(current, fixed, safe):
     assert security.safe_dependency_version(current, fixed) == safe
+
+
+@pytest.mark.parametrize("case", ["valid", "other_package", "affected", "mixed", "prerelease", "original_unaffected",
+    "complex_range", "missing_range", "wrong_package", "wrong_cve", "withdrawn", "unreviewed", "wrong_url",
+    "missing_updated", "wrong_ecosystem", "unsupported_ecosystem", "malformed", "multiple", "short_version", "v_prefix", "leading_zero"])
+def test_dependency_advisory_range_requires_current_matching_reviewed_evidence(monkeypatch, case):
+    evidence = {"package_type": "bun", "rule_id": "CVE-2026-93748", "package": "http-cache-semantics", "installed_version": "4.2.0"}
+    advisory = deepcopy(DEPENDENCY_ADVISORY)
+    packages = [{"name": evidence["package"], "version": "4.3.0"}]
+    entry = advisory["vulnerabilities"][0]
+    if case == "other_package":
+        evidence["package"] = entry["package"]["name"] = packages[0]["name"] = "another-dependency"
+    if case == "affected":
+        packages[0]["version"] = "4.1.0"
+    if case == "mixed":
+        packages.append({"name": evidence["package"], "version": "4.2.0"})
+    if case == "prerelease":
+        packages[0]["version"] = "4.3.0-rc.1"
+    if case in {"short_version", "v_prefix", "leading_zero"}:
+        packages[0]["version"] = {"short_version": "4.3", "v_prefix": "v4.3.0", "leading_zero": "04.3.0"}[case]
+    if case == "original_unaffected":
+        evidence["installed_version"] = "4.3.0"
+    if case in {"complex_range", "missing_range"}:
+        entry["vulnerable_version_range"] = ">= 1.0.0, < 4.2.0 || >= 4.3.0" if case == "complex_range" else None
+    if case == "wrong_package":
+        entry["package"]["name"] = "different-package"
+    if case == "wrong_cve":
+        advisory["cve_id"] = "CVE-2026-12345"
+    if case == "withdrawn":
+        advisory["withdrawn_at"] = "2026-10-03T00:00:00Z"
+    if case == "unreviewed":
+        advisory["type"] = "unreviewed"
+    if case == "wrong_url":
+        advisory["html_url"] = "https://untrusted.example/advisory"
+    if case == "missing_updated":
+        advisory.pop("updated_at")
+    if case == "wrong_ecosystem":
+        entry["package"]["ecosystem"] = "pip"
+    if case == "unsupported_ecosystem":
+        evidence["package_type"] = "pip"
+    response = {} if case == "malformed" else [advisory, advisory] if case == "multiple" else [advisory]
+    calls = []
+
+    def request(method, path, token):
+        calls.append((method, path, token))
+        return response
+
+    monkeypatch.setattr(github, "request", request)
+    cache = {}
+    proof = security.dependency_advisory(evidence, packages, "token", lambda: False, cache)
+    assert bool(proof) == (case in {"valid", "other_package"})
+    if proof:
+        assert proof["affected_range"] == "<= 4.2.0" and proof["current_versions"] == ["4.3.0"]
+        assert proof["url"] == advisory["html_url"] and proof["updated_at"] == advisory["updated_at"]
+        assert security.dependency_advisory(evidence, packages, "token", lambda: False, cache) == proof
+    assert len(calls) == (0 if case == "unsupported_ecosystem" else 1)
+
+
+@pytest.mark.parametrize("failure", ["network", "cancel_before", "cancel_after", "timeout"])
+def test_dependency_advisory_lookup_stops_safely_without_manufacturing_a_fix(monkeypatch, failure):
+    evidence = {"package_type": "bun", "rule_id": "CVE-2026-93748", "package": "http-cache-semantics", "installed_version": "4.2.0"}
+    calls = []
+
+    def request(*args):
+        calls.append(1)
+        if failure == "network":
+            raise github.GitHubError(503, "Unavailable")
+        return []
+
+    def stopped():
+        if failure == "timeout":
+            raise TimeoutError("Deadline reached")
+        return failure == "cancel_before" or failure == "cancel_after" and bool(calls)
+
+    monkeypatch.setattr(github, "request", request)
+    error = ValueError if failure == "network" else TimeoutError if failure == "timeout" else security.ocr.ReviewStopped
+    with pytest.raises(error):
+        security.dependency_advisory(evidence, [{"name": evidence["package"], "version": "4.3.0"}], "token", stopped, {})
+    assert len(calls) == int(failure in {"network", "cancel_after"})
 
 
 def test_trivy_secret_values_are_hmac_identified_and_removed_from_evidence(tmp_path):

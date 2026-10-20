@@ -373,8 +373,63 @@ def safe_dependency_version(current, fixed):
     return actual >= max(branch or fixes)
 
 
-def deterministic_fix(item, old, trivy_result):
+def dependency_advisory(evidence, packages, token, stopped, cache):
+    rule = evidence.get("rule_id", "")
+    if evidence.get("package_type") not in {"bun", "npm", "yarn", "pnpm"} or not re.fullmatch(r"CVE-\d{4}-\d{4,}", rule):
+        return None
+    if stopped():
+        raise ocr.ReviewStopped("Security scan stopped before advisory verification.")
+    if rule not in cache:
+        try:
+            cache[rule] = (github.request("GET", f"/advisories?cve_id={rule}&type=reviewed&per_page=100", token), now().isoformat())
+        except github.GitHubError as exc:
+            cache[rule] = exc
+    if stopped():
+        raise ocr.ReviewStopped("Security scan stopped during advisory verification.")
+    if isinstance(cache[rule], github.GitHubError):
+        raise ValueError("GitHub advisory metadata could not be verified; no dependency fix was established.") from cache[rule]
+    rows, checked_at = cache[rule]
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    advisory = rows[0]
+    ghsa = advisory.get("ghsa_id", "")
+    if (not isinstance(ghsa, str) or not re.fullmatch(r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}", ghsa)
+        or advisory.get("cve_id") != rule or advisory.get("type") != "reviewed"
+        or "withdrawn_at" not in advisory or advisory["withdrawn_at"] is not None
+        or advisory.get("html_url") != f"https://github.com/advisories/{ghsa}"):
+        return None
+    try:
+        updated = datetime.fromisoformat(advisory["updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if updated.tzinfo is None or updated > datetime.fromisoformat(checked_at):
+        return None
+    entries = advisory.get("vulnerabilities")
+    if not isinstance(entries, list) or not all(isinstance(row, dict) and isinstance(row.get("package"), dict) for row in entries):
+        return None
+    entries = [row for row in entries if row["package"] == {"ecosystem": "npm", "name": evidence["package"]}]
+    if len(entries) != 1:
+        return None
+    affected = entries[0].get("vulnerable_version_range")
+    # shortcut: only a single inclusive upper bound on stable npm releases is supported; other ranges stay uncertain.
+    stable = r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}"
+    boundary = re.fullmatch(rf"<=\s*({stable})", affected) if isinstance(affected, str) else None
+    limit = stable_version(boundary[1]) if boundary else None
+    original = stable_version(evidence["installed_version"])
+    versions = sorted({p["version"] for p in packages})
+    if (not limit or not original or not re.fullmatch(stable, evidence["installed_version"]) or not versions
+        or any(p["name"] != evidence["package"] for p in packages) or original > limit
+        or any(not re.fullmatch(stable, version) or stable_version(version) <= limit for version in versions)):
+        return None
+    return {"schema_version": "code-mortis.dependency-advisory/v1", "ghsa_id": ghsa, "cve_id": rule,
+        "url": advisory["html_url"], "updated_at": advisory["updated_at"], "checked_at": checked_at,
+        "package": evidence["package"], "ecosystem": "npm", "affected_range": affected,
+        "original_version": evidence["installed_version"], "current_versions": versions}
+
+
+def deterministic_fix(item, old, trivy_result, *, advisory_lookup=None):
     evidence, path = old["evidence"], old["path"]
+    advisory = None
     original = evidence["source_sha"]
     current_path = item.renamed(original, path)
     original_source = item.read(path, original)
@@ -400,18 +455,25 @@ def deterministic_fix(item, old, trivy_result):
         if any(p["version"] == evidence["installed_version"] for p in packages):
             return {"verdict": "uncertain", "explanation": "The affected package version is still present."}
         if packages and any(not safe_dependency_version(p["version"], evidence.get("fixed_version", "")) for p in packages):
-            reason = "The new version is not an independently established safe version for the original advisory."
-            if not evidence.get("fixed_version"):
-                reason += " No fixed version was reported. Review the advisory or record a justified triage decision."
-            return {"verdict": "uncertain", "explanation": reason}
+            if not evidence.get("fixed_version") and advisory_lookup:
+                advisory = advisory_lookup(evidence, packages)
+            if not advisory:
+                reason = "The new version is not an independently established safe version for the original advisory."
+                if not evidence.get("fixed_version"):
+                    reason += " No fixed version was reported. Review the advisory or record a justified triage decision."
+                return {"verdict": "uncertain", "explanation": reason}
     elif evidence["kind"] == "infrastructure":
         checks = trivy_result["targets"].get(current_path, {}).get("checks", [])
         if exists and not any(check["id"] == evidence["rule_id"] and check["status"] == "PASS"
                               and check.get("resource", "") == evidence.get("resource", "") for check in checks):
             return {"verdict": "uncertain", "explanation": "The original configuration check did not explicitly pass."}
-    return {"verdict": "fixed", "explanation": "The original condition changed and the relevant scanner check confirms its removal.",
+    return {"verdict": "fixed", "explanation": (
+                "The lockfile changed, the original package version is absent, and every installed version is outside "
+                f"the GitHub-reviewed advisory's affected range ({advisory['affected_range']})."
+                if advisory else "The original condition changed and the relevant scanner check confirms its removal."),
             "original_sha": original, "current_sha": item.sha, "path": path, "current_path": current_path,
-            "original_hash": digest(original_source), "current_hash": digest(current_source) if current_source is not None else None}
+            "original_hash": digest(original_source), "current_hash": digest(current_source) if current_source is not None else None,
+            **({"advisory": advisory} if advisory else {})}
 
 
 def perform(scan_id, claim):
@@ -533,7 +595,7 @@ def perform(scan_id, claim):
             checkpoint(scan_id, key, "failed", error="AI analysis was interrupted; token consumption is unknown.", tokens=None)
             raise
 
-    problems, observed, verdicts = [], set(), {}
+    problems, observed, verdicts, advisories = [], set(), {}, {}
     item = None
     try:
         settings().work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -710,7 +772,8 @@ def perform(scan_id, claim):
                                        "current": {current_path: item.source(current_path)} if current_path in item.inventory else {}}}
                         verdict = ai(item, "verification", context, "verification:" + old["id"])
                     else:
-                        verdict = deterministic_fix(item, old, result)
+                        verdict = deterministic_fix(item, old, result, advisory_lookup=lambda evidence, packages:
+                            dependency_advisory(evidence, packages, token, stopped, advisories))
                 except (ValueError, KeyError) as exc:
                     verdict = {"verdict": "uncertain", "explanation": item.redact(str(exc))[:1000]}
                 verdicts[old["id"]] = {**verdict, "finding_version": old["version"]}

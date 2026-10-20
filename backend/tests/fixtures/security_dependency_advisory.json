@@ -1,0 +1,15 @@
+{
+  "ghsa_id": "GHSA-ch52-4w7c-c8xp",
+  "cve_id": "CVE-2026-93748",
+  "html_url": "https://github.com/advisories/GHSA-ch52-4w7c-c8xp",
+  "type": "reviewed",
+  "updated_at": "2026-10-02T22:36:44Z",
+  "withdrawn_at": null,
+  "vulnerabilities": [
+    {
+      "package": {"ecosystem": "npm", "name": "http-cache-semantics"},
+      "vulnerable_version_range": "<= 4.2.0",
+      "first_patched_version": null
+    }
+  ]
+}
