@@ -133,7 +133,7 @@ def redacted_context(item, value, *, structural=False):
                 {"tokens": 0}, feedback={"kind": "redaction", "reason": "Credential material in a structural identifier"})
         return sanitized
     if isinstance(value, dict):
-        identifiers = {"path", "assigned_path", "head_sha", "original_sha", "id", "source_id", "revision", "finding_id", "available_paths", "required_paths"}
+        identifiers = {"path", "assigned_path", "head_sha", "original_sha", "id", "source_id", "revision", "finding_id", "available_paths", "required_paths", "paths", "changed_paths", "current_path", "base_sha", "source_sha"}
         return {redacted_context(item, key, structural=True): redacted_context(item, child, structural=key in identifiers)
                 for key, child in value.items()}
     if isinstance(value, list):

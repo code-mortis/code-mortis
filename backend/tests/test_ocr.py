@@ -252,3 +252,18 @@ def test_provider_probe_does_not_claim_unverified_tools(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="400 MissingSessionID") as error:
         ocr.test_connection({}, {"api_key": "private-key", "extra_headers": {"X-Token": "private-header"}})
     assert "private-key" not in str(error.value) and "private-header" not in str(error.value)
+
+
+def test_private_redaction_material_refreshes_and_is_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    connection = {"protocol": "openai", "model": "test", "options": {}, "base_url": "https://provider.test"}
+    credentials = {"api_key": "synthetic-key", "redaction_values": []}
+    redaction = tmp_path / ".opencodereview/redaction.json"
+    with ocr.configuration(connection, credentials, {}) as refresh:
+        assert redaction.stat().st_mode & 0o777 == 0o600
+        credentials["redaction_values"].append("recovered-historical-value")
+        refresh()
+        assert "recovered-historical-value" in json.loads(redaction.read_text())
+    assert not redaction.exists()

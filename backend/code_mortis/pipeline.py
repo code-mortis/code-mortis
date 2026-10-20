@@ -161,7 +161,9 @@ def perform(payload):
         remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
         if remote["state"] != "open" or (remote["head"]["sha"], remote["base"]["sha"]) != (run.head_sha, run.base_sha):
             raise ocr.ReviewStopped("The pull request changed before this stage started.")
-        credentials = json.loads(unseal(connection.secret))
+        from .review_context import execution_credentials
+
+        credentials = execution_credentials(db, repo.id, json.loads(unseal(connection.secret)), token)
         update(run, stage, "running", execution=claim, started_at=now().isoformat(), error=None)
         options = dict(run.config["settings"])
         if stage == "summary":

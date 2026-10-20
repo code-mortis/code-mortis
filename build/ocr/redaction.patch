@@ -1,0 +1,43 @@
+--- a/internal/llm/client.go
++++ b/internal/llm/client.go
+@@ -650,6 +650,8 @@
+ // path including the streaming branch, the EOF recovery and a panic. Results are
+ // named so the defer can read the error actually returned.
+ func (c *OpenAIClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) (resp *ChatResponse, err error) {
++	req, err = SanitizeMortisRequest(ctx, req)
++	if err != nil { return nil, err }
+ 	defer func() {
+ 		// A panic still has to finalize, or the entry stays unfinalized and Freeze
+ 		// drops the whole run's report. The panic value itself is re-raised
+@@ -1460,6 +1462,8 @@
+ // named. A parameter-building failure returns before any HTTP attempt, so
+ // Finalize finds no entry and the request stays out of the report entirely.
+ func (c *AnthropicClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) (resp *ChatResponse, err error) {
++	req, err = SanitizeMortisRequest(ctx, req)
++	if err != nil { return nil, err }
+ 	defer func() {
+ 		if r := recover(); r != nil {
+ 			finalizeRequest(ctx, c.cfg.retryCollector, errRequestPanicked)
+--- a/internal/llm/responses_client.go
++++ b/internal/llm/responses_client.go
+@@ -116,6 +116,8 @@
+ // see the OpenAI Chat Completions counterpart for why it is deferred and why the
+ // results are named.
+ func (c *OpenAIResponsesClient) CompletionsWithCtx(ctx context.Context, req ChatRequest) (resp *ChatResponse, err error) {
++	req, err = SanitizeMortisRequest(ctx, req)
++	if err != nil { return nil, err }
+ 	defer func() {
+ 		if r := recover(); r != nil {
+ 			finalizeRequest(ctx, c.cfg.retryCollector, errRequestPanicked)
+--- a/internal/agent/agent.go
++++ b/internal/agent/agent.go
+@@ -1472,6 +1472,9 @@
+ 
+ 		confirmedText := buildConfirmedCommentsBlock(confirmed)
+ 		messages := a.buildMainTaskMessages(rule, changeFilesExcludingGroup, concatenatedDiffs, roundPlan, confirmedText)
++		sanitized, sanitizeErr := llm.SanitizeMortisRequest(ctx, llm.ChatRequest{Messages: messages, Tools: a.args.MainToolDefs})
++		if sanitizeErr != nil { return false, nil, sanitizeErr }
++		messages = sanitized.Messages
+ 
+ 		if stop := a.checkPromptBudget(ctx, messages, groupKey, round); stop != nil {
+ 			if round == 1 {

@@ -117,7 +117,8 @@ def create_run(
     if ignore_file_limit:
         options["max_files"] = None
     config = {"connection": connection_snapshot(connection), "settings": options,
-              "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2}
+              "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
+              "task_contract": "review-task/v2"}
     if options["model"]:
         config["connection"]["model"] = options["model"]
     if not config["connection"]["model"].strip():
@@ -444,6 +445,9 @@ def perform_review(run_id: str, claim: str | None = None):
             pipeline.start(db, run, claim)
         elif pipeline.enabled(run) and retry:
             pipeline.update(run, "assessment", "running", execution=claim, started_at=now().isoformat())
+        from .review_context import execution_credentials
+
+        credentials = execution_credentials(db, repo.id, credentials, token)
         args = (
             repo.full_name,
             pr.number,

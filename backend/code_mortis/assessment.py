@@ -9,7 +9,7 @@ from threading import Event
 from pydantic import Field, ValidationError
 from sqlalchemy import func, select
 
-from . import github, ocr, review_policy, runner_client, verification
+from . import github, ocr, review_context, review_policy, runner_client, verification
 from .db import now, transaction, uid
 from .models import (
     Activity,
@@ -102,7 +102,8 @@ def validate_response(value, context):
     except ValidationError as exc:
         problems = exc.errors(include_input=False, include_url=False)
         if any(not problem["loc"] or problem["loc"][0] not in {"finding_id", "evidence"} for problem in problems):
-            raise
+            raise verification.ResultValidationError("Assessment does not match the requested schema.",
+                {"kind": "schema", "errors": problems}) from exc
         problem = problems[0]
         location = problem["loc"]
         feedback = {"field": ".".join(map(str, location)), "reason": problem["type"]}
@@ -228,38 +229,57 @@ def history(db, run, *, lock=False):
 
 
 def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, renamed=None):
-    related = []
     if renamed is None:
         renamed = {}
-    anchor = snapshot.get("existing_code", "").strip()
-    for item in previous["findings"]:
-        path = item["snapshot"]["path"]
-        if path != snapshot["path"] and item["sha"] != head:
-            sha = item["sha"]
+
+    def keys(value, sha=None):
+        sha = sha or value.get("source_sha")
+        if stopped():
+            raise ocr.ReviewStopped("Review stopped while selecting related history.")
+        citations = value.get("evidence", [])
+        paths = {value["path"], *(citation["path"] for citation in citations)}
+        if sha and sha != head:
             if sha not in renamed:
                 try:
-                    ocr.git(repo, env, "cat-file", "-e", f"{sha}^{{commit}}", stopped=stopped)
+                    try:
+                        ocr.git(repo, env, "cat-file", "-e", f"{sha}^{{commit}}", stopped=stopped)
+                    except ValueError:
+                        ocr.git(repo, fetch_env, "fetch", "--no-tags", "origin", sha, stopped=stopped)
+                    rows = ocr.git(repo, env, "diff", "--find-renames", "--name-status", "-z",
+                                   sha, head, stopped=stopped).rstrip("\0").split("\0")
+                    mapping, index = {}, 0
+                    while index < len(rows) and rows[index]:
+                        status, old = rows[index:index + 2]
+                        index += 2
+                        if status.startswith(("R", "C")):
+                            target = rows[index]
+                            index += 1
+                            if status.startswith("R"):
+                                mapping[old] = target
+                    renamed[sha] = mapping
                 except ValueError:
-                    ocr.git(repo, fetch_env, "fetch", "--no-tags", "origin", sha, stopped=stopped)
-                rows = ocr.git(repo, env, "diff", "--find-renames", "--name-status", "-z",
-                               sha, head, stopped=stopped).rstrip("\0").split("\0")
-                mapping, index = {}, 0
-                while index < len(rows) and rows[index]:
-                    status, old = rows[index:index + 2]
-                    index += 2
-                    if status.startswith(("R", "C")):
-                        target = rows[index]
-                        index += 1
-                        if status.startswith("R"):
-                            mapping[old] = target
-                renamed[sha] = mapping
-            path = renamed[sha].get(path, path)
-        if path == snapshot["path"] or (anchor and anchor == item["snapshot"].get("existing_code", "").strip()):
-            related.append(item)
+                    renamed[sha] = {}  # Stored paths and citation anchors remain usable without the commit.
+            paths.update(renamed[sha].get(path, path) for path in list(paths))
+        anchors = {value.get("existing_code", "").strip(),
+                   *(citation.get("quote", "").strip() for citation in citations)} - {""}
+        return {("path", path) for path in paths} | {("anchor", anchor) for anchor in anchors}
+
+    entries = []
+    for item in previous["findings"]:
+        evidence = (item.get("assessment") or {}).get("evidence", [])
+        entries.append(("finding", item, keys({**item["snapshot"], "evidence": evidence}, item["sha"])))
+    for item in previous["prior_candidates"]:
+        entries.append(("candidate", item, keys({**item["snapshot"],
+            "evidence": (item.get("result") or {}).get("evidence", [])})))
+    connected = keys(snapshot, snapshot.get("source_sha"))
+    while True:
+        expanded = connected.union(*(group for _, _, group in entries if connected & group))
+        if expanded == connected:
+            break
+        connected = expanded
+    related = [item for kind, item, group in entries if kind == "finding" and connected & group]
     related.sort(key=lambda item: item["fingerprint"] != ocr.fingerprint(snapshot))
-    prior_candidates = [item for item in previous["prior_candidates"]
-                        if item["snapshot"]["path"] == snapshot["path"]
-                        or (anchor and anchor == item["snapshot"].get("existing_code", "").strip())]
+    prior_candidates = [item for kind, item, group in entries if kind == "candidate" and connected & group]
     return related, prior_candidates
 
 
@@ -315,20 +335,27 @@ def check_context_size(context, options):
 def expand_context(repo, env, run, context, paths, stopped):
     for path in paths:
         ocr.ReviewComment.relative_path(path)
+    repeated = set(paths) & context["sources"].get("current", {}).keys()
     requested = set(paths) - context["sources"].get("current", {}).keys()
     if not requested:
-        raise ValueError("The AI requested source files it had already received and could not finish checking this proposed finding. Start a new review or check the selected model.")
+        raise verification.ResultValidationError("The AI requested source files it had already received.",
+            review_context.evidence_feedback(paths, "required_paths"))
     allowed = verification.filter_context(repo, env, dict.fromkeys(requested, "# context\n"),
                                           run.config["settings"], stopped)
     if requested != allowed:
         raise ValueError("Necessary assessment evidence is excluded or unsupported by OCR: "
                          + ", ".join(sorted(requested - allowed)))
+    if len(requested | context["sources"].get("current", {}).keys()) > 100:
+        raise ValueError("Assessment exceeds its 100-source-file evidence limit.")
     for path in sorted(requested):
         source = verification.read_source(repo, env, run.head_sha, path, stopped)
         context["sources"].setdefault("current", {})[path] = source
         context["diff"] += ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
                                    f"{run.base_sha}...{run.head_sha}", "--", f":(literal){path}", stopped=stopped)
     check_context_size(context, run.config["settings"])
+    if repeated:
+        raise verification.ResultValidationError("Some requested files are already supplied.",
+            review_context.evidence_feedback(repeated, "required_paths"))
 
 
 def validate_result(value, context):
@@ -343,7 +370,7 @@ def validate_result(value, context):
             reason = "invalid source line range"
         elif not evidence["quote"].strip():
             reason = "empty quote"
-        elif evidence["quote"] not in "\n".join(source.splitlines()[evidence["start_line"] - 1:evidence["end_line"]]):
+        elif evidence["quote"] not in "".join(source.splitlines(keepends=True)[evidence["start_line"] - 1:evidence["end_line"]]):
             reason = "quote is not verbatim text within the cited source lines"
         if reason:
             feedback = {"field": f"evidence[{index}]", "reason": reason,
@@ -526,7 +553,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
                 allowance = None if budget is None else budget - consumed
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
-                request_context = {**context, "validation_feedback": feedback} if feedback else context
+                request_context = review_context.sanitize(
+                    {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
                 check_context_size(request_context, options)
                 prompt = instructions + "\n\n" + verification.evidence_bundle(request_context)
                 with transaction() as db:
@@ -574,6 +602,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             raw, spent = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
                                 "kind": connection["kind"], "task": "assessment", "model": connection["model"],
                                 "effort": options["effort"], "prompt": prompt,
+                                "_evidence_context": request_context, "_instructions": review_context.sanitize(instructions, credentials, stopped, usage={"tokens": consumed}),
                                 "output_schema": output_schema(context), "timeout": remaining,
                                 "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
                                 "token_budget": allowance,
@@ -594,7 +623,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                                 consumed += spent
                             exc.usage = {"tokens": consumed if known else None if run.config.get("pipeline_version") == 2 else budget}
                         usage = {unit: consumed} if known else {"tokens": None if run.config.get("pipeline_version") == 2 else budget}
-                        if exc.feedback and known and not corrected and attempt < 2:
+                        if review_context.correctable(exc.feedback) and known and not corrected and attempt < 2:
                             if stopped():
                                 raise ocr.ReviewStopped("The assessment stopped before its invalid response could be corrected.") from exc
                             feedback, corrected = exc.feedback, True
@@ -610,9 +639,16 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                               "explanation": "Assessment still needs additional evidence after three passes: "
                               + ", ".join(requested)}
                     break
-                expand_context(repo_path, env, run, context, requested, stopped)
+                try:
+                    expand_context(repo_path, env, run, context, requested, stopped)
+                    feedback = None
+                except verification.ResultValidationError as exc:
+                    if exc.feedback.get("kind") == "evidence" and corrected:
+                        raise
+                    feedback = exc.feedback
+                    corrected |= exc.feedback.get("kind") == "evidence"
                 result = None
-            result = validate_result(result, context)
+            result = review_context.sanitize(validate_result(result, context), credentials, stopped, usage=usage)
             status, error = "completed", None
         except Exception as exc:
             result, status = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
@@ -688,13 +724,15 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             if snapshot.get("source_sha", run.head_sha) != run.head_sha:
                                 contexts[row.id] = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
                                 related = contexts[row.id]["history"]
+                                related_prior = contexts[row.id]["prior_candidates"]
                                 current_path = contexts[row.id].get("current_path")
                                 if current_path:
                                     keys[row.id].add(("path", current_path))
                             else:
-                                related, _ = related_history(repo_path, env, fetch_env, run.head_sha, snapshot,
+                                related, related_prior = related_history(repo_path, env, fetch_env, run.head_sha, snapshot,
                                                              previous, stopped, renamed)
                             keys[row.id].update(("finding", item["id"]) for item in related)
+                            keys[row.id].update(("prior_candidate", item["id"]) for item in related_prior)
                         except Exception as exc:
                             contexts[row.id] = exc
                     batch = independent_batch(rows, keys, concurrency)

@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import Field, ValidationError
 from sqlalchemy import or_, select
 
-from . import github, ocr, result_diagnostics, runner_client
+from . import github, ocr, result_diagnostics, review_context, runner_client
 from .db import now, transaction, uid
 from .models import (
     Activity,
@@ -153,7 +153,11 @@ def output_schema():
 
 
 def validate_response(value, context):
-    response = VerificationResponse.model_validate(value, strict=True).model_dump()
+    try:
+        response = VerificationResponse.model_validate(value, strict=True).model_dump()
+    except ValidationError as exc:
+        raise ResultValidationError("Verification does not match the requested schema.",
+            {"kind": "schema", "errors": exc.errors(include_input=False, include_url=False, include_context=False)}) from exc
     requested = response.pop("required_sources")
     for item in requested:
         ocr.ReviewComment.relative_path(item["path"])
@@ -186,7 +190,7 @@ def validate_result(value, context):
                 feedback["reason"] = "invalid source line range"
             else:
                 source_lines = "\n".join(lines[item["start_line"] - 1:item["end_line"]])
-                if not item["quote"].strip() or item["quote"] not in source_lines:
+                if not item["quote"].strip() or item["quote"] not in "".join(source.splitlines(keepends=True)[item["start_line"] - 1:item["end_line"]]):
                     feedback.update(reason="quote is not verbatim text within the cited source lines", source_lines=source_lines)
         if "reason" in feedback:
             problems.append({**feedback, "quote": item["quote"]})
@@ -321,7 +325,8 @@ def expand_context(repo, env, context, requested, options, stopped):
     missing = {(item["revision"], item["path"]) for item in requested
                if item["path"] not in context["sources"].get(item["revision"], {})}
     if not missing:
-        raise ValueError("Verification requested source files it had already received.")
+        raise ResultValidationError("Verification requested source files it had already received.",
+            review_context.evidence_feedback([item["path"] for item in requested], "required_sources"))
     paths = {path for _, path in missing}
     for path in paths:
         ocr.ReviewComment.relative_path(path)
@@ -352,6 +357,10 @@ def expand_context(repo, env, context, requested, options, stopped):
         context["sources"].setdefault(revision, {})[path] = source
         check_context_size(context)
     context["diff_only_paths"] = sorted(set(context.get("diff_only_paths", [])) - paths)
+    repeated = [item["path"] for item in requested if (item["revision"], item["path"]) not in missing]
+    if repeated:
+        raise ResultValidationError("Some requested files are already supplied.",
+            review_context.evidence_feedback(repeated, "required_sources"))
 
 
 class ResultValidationError(ValueError):
@@ -513,7 +522,7 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
                *, instructions=INSTRUCTIONS, schema=None, validator=validate_response, configuration_managed=False,
-               delivery=RESULT_DELIVERY, structured_result=False):
+               delivery=RESULT_DELIVERY, structured_result=False, selection=False):
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -529,6 +538,18 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
     def before_dispatch():
         remaining_time()
         return stopped()
+
+    selection = selection or context.get("task_contract") == review_context.TASK_CONTRACT
+    context = review_context.sanitize(context, credentials, stopped)
+    instructions = review_context.sanitize(instructions, credentials, stopped)
+    if selection:
+        original_context, original_validator = context, validator
+        context, schema, history_ids = review_context.selection_context(context, schema or output_schema())
+        def validator(raw, supplied):
+            return original_validator(review_context.selected_result(raw, supplied, history_ids), original_context)
+        instructions += review_context.SELECTION_INSTRUCTIONS
+        structured_result = True
+        delivery = STRUCTURED_RESULT_DELIVERY
 
     # OCR remains the provider adapter. These internal envelopes never enter finding publication.
     with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
@@ -836,7 +857,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise ocr.ReviewStopped("Fix verification stopped because the run, permissions, or time limit changed.")
                 if reason := limit_error(options, allowance, remaining, True):
                     raise ocr.ReviewStopped(reason + " Fix verification stopped.")
-                request_context = {**context, "validation_feedback": feedback} if feedback else context
+                request_context = review_context.sanitize(
+                    {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
                 check_context_size(request_context)
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
@@ -859,7 +881,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         authorize_connection(db, selected, repo, current.trigger, actor)
                         if selected.kind != "api" and selected.auth_status != "connected":
                             raise ValueError("The selected personal connection is no longer authenticated.")
-                    saved.context = request_context
+                    saved.context = {key: value for key, value in request_context.items() if key != "task_contract"}
                     saved.usage = usage = {"tokens": None, "reserved_tokens": budget} if separate else {"tokens": budget}
                     record_summary(db, current)
                 known = False
@@ -869,6 +891,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     else:
                         raw, spent = runner_client.review(connection["id"], "verify-" + identity + (f"-{attempt}" if attempt else ""), {
                             "kind": connection["kind"], "task": "verification", "model": connection["model"],
+                            "_evidence_context": request_context, "_instructions": review_context.sanitize(INSTRUCTIONS + "\nLanguage: " + options["language"], credentials, stopped, usage={"tokens": consumed}),
                             "effort": options["effort"], "prompt": INSTRUCTIONS + "\nLanguage: " + options["language"] + "\n\n" + evidence_bundle(request_context),
                             "output_schema": output_schema(), "timeout": remaining,
                             "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
@@ -892,7 +915,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                             consumed += amount
                         exc.usage = {"tokens": consumed if known else None if separate else budget}
                         usage = exc.usage
-                    if exc.feedback and known and not corrected and attempt < 2:
+                    if review_context.correctable(exc.feedback) and known and not corrected and attempt < 2:
                         feedback, corrected = exc.feedback, True
                         continue
                     raise
@@ -910,10 +933,12 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     expand_context(repo_path, env, context, requested, options, stopped)
                     feedback = None
                 except ResultValidationError as exc:
+                    if exc.feedback.get("kind") == "evidence" and corrected:
+                        raise
                     feedback = exc.feedback
+                    corrected |= exc.feedback.get("kind") == "evidence"
             result = validate_result(result, context)
-            secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
-            result = json.loads(clean_text(json.dumps(result), secrets))
+            result = review_context.sanitize(result, credentials, stopped, usage=usage)
             outcome, error = "completed", None
         except Exception as exc:
             result, outcome = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"

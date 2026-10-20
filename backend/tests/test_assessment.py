@@ -627,7 +627,7 @@ def test_native_clients_use_the_same_gate(pipeline, monkeypatch, kind, budget, u
         calls.append(payload)
         assert payload["task"] == "assessment"
         assert payload["prompt_token_ceiling"] == 58888
-        assert verification.evidence_bundle(pipeline["context"]) in payload["prompt"]
+        assert verification.evidence_bundle(payload["_evidence_context"]) in payload["prompt"]
         assert payload["token_budget"] == (None if budget is None else budget - used)
         return verdict(pipeline["context"]), {"tokens": 25}
     monkeypatch.setattr(runner_client, "review", native)
@@ -1008,7 +1008,10 @@ def test_context_tracks_renames_and_preserves_literal_case(tmp_path, monkeypatch
          "snapshot": {**COMMENT, "path": "another.py", "existing_code": COMMENT["existing_code"].upper()}},
     ]
     context = assessment.build_context(repo, {}, {}, run, {**COMMENT, "path": "new.py", "source_sha": head}, previous, lambda: False)
-    assert [item["id"] for item in context["history"]] == ["moved-block"]
+    assert [item["id"] for item in context["history"]] == ["moved-block", "different-literal"]
+    # The second finding is connected through the first finding's path, despite its distinct literal.
+    assert assessment.related_history(repo, {}, {}, head, {**COMMENT, "path": "new.py"},
+        {"findings": previous["findings"][1:], "prior_candidates": []}, lambda: False)[0] == []
     previous["prior_candidates"], previous["findings"] = previous["findings"], []
     monkeypatch.setattr(verification, "filter_context", lambda repo, env, sources, options, stopped: set(sources) - {"another.py"})
     with pytest.raises(ValueError, match="history is excluded"):
@@ -1037,7 +1040,7 @@ def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pip
         return kwargs["validator"](respond(args[4]), args[4]), {"tokens": 25}
     def native(connection, identity, payload, stopped):
         identities.append(identity)
-        context = pipeline["context"]
+        context = payload["_evidence_context"]
         assert verification.evidence_bundle(context) in payload["prompt"]
         sizes.append(len(payload["prompt"].encode()) + 4096)
         assert "required_paths" in payload["output_schema"]["required"]
@@ -1634,3 +1637,35 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)))
         assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("repeat", [False, True])
+def test_repeated_supplied_evidence_gets_one_correction_without_resetting_usage(pipeline, kind, repeat):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    def respond(context):
+        if pipeline["calls"] == 1 or repeat:
+            return verdict(context, verdict="uncertain", required_paths=[COMMENT["path"]])
+        assert context["validation_feedback"]["kind"] == "evidence"
+        return verdict(context)
+    pipeline["respond"] = respond
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert row.status == ("failed" if repeat else "completed")
+        assert row.usage == {"tokens": 50}
+    assert pipeline["calls"] == 2
+    assert len(pipeline["reviews"]) == int(not repeat)
+
+
+def test_context_limit_is_not_a_correctable_assessment_failure(pipeline):
+    pipeline["failure"] = verification.VerificationOutputError("Necessary history exceeds prompt limit", {"tokens": 0},
+        "skipped", feedback={"kind": "context_limit"})
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert row.status == "skipped" and row.usage == {"tokens": 0}
+    assert pipeline["calls"] == 1 and not pipeline["reviews"]
