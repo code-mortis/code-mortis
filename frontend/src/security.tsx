@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
@@ -8,7 +8,7 @@ import { AssessmentStatus } from "./components/assessment-status";
 import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, StatusGroup, words } from "./components/common";
 import { ModelPicker } from "./components/model-picker";
 import { FilterBar } from "./components/filter-bar";
-import { LoadMoreFooter } from "./components/load-more-footer";
+import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
 import { SecurityGrade, SecurityGradeShield, securityStates } from "./components/security-grade";
@@ -60,37 +60,6 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
   };
 }
 
-function useSecurityPages<T extends { id?: string; repository?: { id: number } | string; finding_id?: unknown }>(path: string, live = true, revision?: string) {
-  const [scope, setScope] = useState({ path, revision: 0 });
-  // Returning to an earlier filter must start at its first page, even when cached.
-  if (scope.path !== path) setScope({ path, revision: scope.revision + 1 });
-  const query = useInfiniteQuery({
-    queryKey: ["security-pages", path, scope.revision],
-    queryFn: ({ pageParam, signal }) => api<{ items: T[]; total: number; page: number; page_size: number; result_counts?: Record<string, number>;
-      registered_total?: number; outcome_counts?: Record<string, number>; severity_counts?: Record<string, number>; kind_counts?: Record<string, number>;
-      state_counts?: Record<string, number>; grade_counts?: Record<string, number>; status_counts?: Record<string, number>; category_counts?: Record<string, number> }>(`${path}${path.includes("?") ? "&" : "?"}page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
-    refetchInterval: (query) => live && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
-    refetchOnWindowFocus: live,
-    retry: false,
-  });
-  const lastRevision = useRef(revision);
-  useEffect(() => {
-    if (lastRevision.current === revision) return;
-    lastRevision.current = revision;
-    void query.refetch();
-  }, [revision, query.refetch]);
-  const seen = new Set<unknown>();
-  const items = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((item) => {
-    const id = item.id ?? (typeof item.repository === "object" ? item.repository.id : undefined) ?? item.finding_id;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
-  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  return { query, items, denied, total: query.data?.pages.at(-1)?.total ?? 0, resultCounts: query.data?.pages[0]?.result_counts ?? {} };
-}
 
 function useFilters() {
   const [params, setParams] = useSearchParams();
@@ -117,8 +86,8 @@ export function SecurityOverview({ user }: { user: User }) {
   const request = new URLSearchParams();
   for (const key of ["search", "grade", "status"]) for (const value of params.getAll(key)) request.append(key, value);
   request.set("ordering", ordering);
-  const { query, items: rows, total, denied } = useSecurityPages<SecurityRepo>(`/security/repositories?${request}`);
-  const data = query.data?.pages[0];
+  const { query, items: rows, denied, pagination } = usePagedList<SecurityRepo>(`/security/repositories?${request}`);
+  const data = query.data;
   return <>
     <header className="mb-6">
       <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Security</h1>
@@ -160,7 +129,7 @@ export function SecurityOverview({ user }: { user: User }) {
               <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><SecurityRepositoryActions repository={repo} summary={summary} admin={user.role === "admin"} onRun={(trigger) => { scanTrigger.current = trigger; setSelected(repo.id); }} /></div>
             </article>;
           })}
-          <LoadMoreFooter query={query} shown={rows.length} total={total} label="repositories" />
+          <Pagination {...pagination} label="repositories" />
         </div>}
     </>}
     {selected !== undefined && <ScanDialog key={selected} repositoryId={selected} user={user} returnTo={scanTrigger.current} onClose={() => setSelected(undefined)} />}
@@ -309,9 +278,9 @@ function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: str
   for (const key of ["search", "severity", "kind", ...(!scanId ? ["state"] : [])]) for (const value of params.getAll(key)) queryParams.append(key, value);
   if (scanId) for (const value of params.getAll("outcome")) queryParams.append("outcome", value);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
-  const { query, items, total, denied, resultCounts } = useSecurityPages<Finding>(`${path}${queryParams.size ? `?${queryParams}` : ""}`);
+  const { query, items, total, denied, resultCounts, pagination } = usePagedList<Finding>(`${path}${queryParams.size ? `?${queryParams}` : ""}`);
   const registered = Math.max(total, Object.values(resultCounts).reduce((sum, value) => sum + value, 0));
-  const counts = query.data?.pages[0];
+  const counts = query.data;
   return <div className="pt-4">
     {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this scan. Repeats were observed again; their labels show the current status. Fix verification outcomes remain separate. Saved observations stay unchanged.</p>}
     <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
@@ -325,7 +294,7 @@ function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: str
       {scanId && registered ? <><p>Try another search, result, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["search", "outcome", "severity", "kind", "page"]) next.delete(key); setParams(next); searchInput.current?.focus(); }}>Clear filters</Button></> : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty> :
       <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((finding) => <FindingCard key={finding.id}
         evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
-        state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></section>
+        state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}</div><Pagination {...pagination} label="findings" /></section>
     }
   </div>;
 }
@@ -343,7 +312,7 @@ function ScanDuration({ scan }: { scan: Scan }) {
 }
 
 function ScanHistory({ repositoryId }: { repositoryId: number }) {
-  const { query, items, total, denied } = useSecurityPages<Scan>(`/security/repositories/${repositoryId}/scans`);
+  const { query, items, denied, pagination } = usePagedList<Scan>(`/security/repositories/${repositoryId}/scans`);
   if (denied) return <ErrorNotice error={query.error} />;
   if (query.isPending) return <Loading />;
   return !items.length && !query.error ? <Empty title="No security scans yet">Run a scan to save findings, coverage, and a repository grade.</Empty> : <div className="pt-4"><div className="divide-y overflow-hidden rounded-lg border bg-card">
@@ -352,7 +321,7 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
       <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ScanDuration scan={scan} /></span>
       <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
-    </Link>)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="scan history" /></div></div>;
+    </Link>)}</div><Pagination {...pagination} label="scan history" /></div></div>;
 }
 
 export function SecurityScan({ user }: { user: User }) {
@@ -417,8 +386,8 @@ function ReportFindings({ scanId, registeredTotal, onOpen }: { scanId: string; r
   const query = params.get("report_q") ?? "";
   const request = new URLSearchParams();
   for (const key of ["q", "outcome", "severity", "kind"]) for (const value of params.getAll(`report_${key}`)) request.append(key, value);
-  const { query: pages, items, total, denied } = useSecurityPages<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/report/findings?${request}`);
-  const data = pages.data?.pages[0];
+  const { query: pages, items, total, denied, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/report/findings?${request}`);
+  const data = pages.data;
   const filters = [{ key: "outcome", name: "Result", counts: data?.outcome_counts ?? {} },
     { key: "severity", name: "Severity", counts: data?.severity_counts ?? {} },
     { key: "kind", name: "Type", counts: data?.kind_counts ?? {} }].map(({ key, name, counts }) => {
@@ -440,7 +409,7 @@ function ReportFindings({ scanId, registeredTotal, onOpen }: { scanId: string; r
     </FilterBar>
     {pages.isPending ? <Loading /> : items.length ? <section aria-label="Findings at this scan" className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((row) => <FindingCard key={text(row.finding_id)}
       evidence={{ path: row.path, content: row.title, severity: row.severity, category: row.kind }}
-      state={<SecurityStatus value={text(row.outcome) || "unknown"} />} onClick={() => onOpen(text(row.finding_id))} />)}</div><LoadMoreFooter query={pages} shown={items.length} total={total} label="report findings" /></section>
+      state={<SecurityStatus value={text(row.outcome) || "unknown"} />} onClick={() => onOpen(text(row.finding_id))} />)}</div><Pagination {...pagination} label="report findings" /></section>
       : !pages.error && (registeredTotal ? <Empty title="No report findings match these filters"><p>Try another search, result, severity, or type.</p>
         <Button variant="outline" className="mt-4" onClick={() => {
           const next = new URLSearchParams(params);
@@ -473,7 +442,7 @@ function SecurityAssessments({ scan, summary, onOpen }: {
   const searchInput = useRef<HTMLInputElement>(null);
   const filters = new URLSearchParams();
   for (const key of ["q", "outcome", "severity", "category"]) for (const value of params.getAll(`assessment_${key}`)) filters.append(key, value);
-  const { query, items, total, denied } = useSecurityPages<SecurityAssessment>(
+  const { query, items, denied, pagination } = usePagedList<SecurityAssessment>(
     `/security/scans/${scan.id}/assessments?${filters}`, true, summary?.revision,
   );
   function change(key: string, values: string[]) {
@@ -483,7 +452,7 @@ function SecurityAssessments({ scan, summary, onOpen }: {
     setParams(next, { replace: key === "q" });
   }
   if (denied) return <ErrorNotice error={query.error} />;
-  const data = query.data?.pages[0];
+  const data = query.data;
   return <div className="mt-6 space-y-4">
     {summary && <p role="status" aria-label="Assessment progress" className="text-xs tabular-nums text-muted-foreground">{summary.status_counts?.queued ?? 0} queued · {summary.status_counts?.running ?? 0} running · {summary.status_counts?.completed ?? 0} completed · {summary.status_counts?.failed ?? 0} failed{(summary.status_counts?.interrupted ?? 0) > 0 && ` · ${summary.status_counts?.interrupted} interrupted`}</p>}
     <FilterBar query={filters.get("q") ?? ""} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput}
@@ -501,7 +470,7 @@ function SecurityAssessments({ scan, summary, onOpen }: {
         <p>{data?.registered_total ? "Try another search, result, severity, or type." : active(scan.status) ? "Candidates appear after file analysis finishes." : "No candidates were produced for assessment."}</p>
         {!!data?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["q", "outcome", "severity", "category"]) next.delete(`assessment_${key}`); setParams(next); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
-      <LoadMoreFooter query={query} shown={items.length} total={total} label="assessments" />
+      <Pagination {...pagination} label="assessments" />
     </section>
   </div>;
 }
@@ -566,19 +535,19 @@ function CoverageSection({ scanId, section, title }: { scanId: string; section: 
 }
 
 function CoverageRows({ scanId, section }: { scanId: string; section: string }) {
-  const { query, items, total, denied } = useSecurityPages<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/coverage/${section}`);
+  const { query, items, denied, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/coverage/${section}`);
   if (denied) return <ErrorNotice error={query.error} />;
   return <>{query.isPending ? <Loading /> : <ul className="max-h-80 space-y-3 overflow-auto text-xs">{items.map((row) => <li key={row.id} className="flex flex-wrap justify-between gap-2">
     {section === "problems" ? <ErrorNotice error={`${text(row.path)}: ${text(row.reason)}`} /> : <><span className="break-words font-mono [overflow-wrap:anywhere]">{text(row.path) || text(row.task)}</span>
       {text(row.status) && <SecurityStatus value={text(row.status)} />}{text(row.reason) && <span className="w-full text-muted-foreground">{text(row.reason)}</span>}
       {text(row.error) && <div className="w-full"><ErrorNotice error={text(row.error)} /></div>}</>}
-  </li>)}</ul>}<LoadMoreFooter query={query} shown={items.length} total={total} label={section === "inventory" ? "prepared files" : section === "units" ? "work units" : section === "excluded" ? "excluded files" : "coverage problems"} /></>;
+  </li>)}</ul>}<Pagination {...pagination} label={section === "inventory" ? "prepared files" : section === "units" ? "work units" : section === "excluded" ? "excluded files" : "coverage problems"} /></>;
 }
 
 function ScanActivity({ scanId }: { scanId: string }) {
-  const { query, items, total, denied } = useSecurityPages<Schema["SecurityActivityOut"]>(`/security/scans/${scanId}/activity`);
+  const { query, items, denied, pagination } = usePagedList<Schema["SecurityActivityOut"]>(`/security/scans/${scanId}/activity`);
   if (denied) return <ErrorNotice error={query.error} />;
-  return query.isPending ? <Loading /> : <><Activity rows={items} /><LoadMoreFooter query={query} shown={items.length} total={total} label="activities" /></>;
+  return query.isPending ? <Loading /> : <><Activity rows={items} /><Pagination {...pagination} label="activities" /></>;
 }
 
 function Activity({ rows }: { rows: Schema["SecurityActivityOut"][] }) {
@@ -592,13 +561,13 @@ function Activity({ rows }: { rows: Schema["SecurityActivityOut"][] }) {
 }
 
 function FindingHistory({ findingId }: { findingId: string }) {
-  const observations = useSecurityPages<Record<string, unknown> & { id: string }>(`/security/findings/${findingId}/observations`);
-  const activity = useSecurityPages<Schema["SecurityActivityOut"]>(`/security/findings/${findingId}/activity`);
+  const observations = usePagedList<Record<string, unknown> & { id: string }>(`/security/findings/${findingId}/observations`);
+  const activity = usePagedList<Schema["SecurityActivityOut"]>(`/security/findings/${findingId}/activity`);
   if (observations.denied || activity.denied) return <ErrorNotice error={observations.denied ? observations.query.error : activity.query.error} />;
   if (observations.query.isPending || activity.query.isPending) return <Loading />;
   return <>
-          <section className="space-y-3"><h3 className="text-sm font-semibold">Observations</h3>{observations.items.length ? <ol className="space-y-5">{observations.items.map((row, index) => <li key={index} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><Link className={`inline-flex min-h-6 items-center text-sm font-medium ${metadataLink}`} to={`/security/scans/${text(row.scan_id)}`}>{label(text(row.outcome))}<ChevronRight aria-hidden="true" className="size-3.5" /></Link><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{text(row.created_at) && date(text(row.created_at))}</p></li>)}</ol> : <p className="text-sm text-muted-foreground">No observations recorded.</p>}<LoadMoreFooter query={observations.query} shown={observations.items.length} total={observations.total} label="observations" /></section>
-          <section className="space-y-3"><h3 className="text-sm font-semibold">Activity</h3>{activity.items.length ? <ol className="space-y-5">{activity.items.map((row) => <li key={row.id} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><p className="text-sm font-medium">{label(row.action)}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{row.actor_id === null ? "Code Mortis" : `Member #${row.actor_id}`} · {date(row.created_at)}</p>{text(row.detail.reason) && <details className="mt-2 text-sm"><summary className="cursor-pointer text-xs text-primary">View reason</summary><p className="mt-2 break-words leading-relaxed">{text(row.detail.reason)}</p></details>}</li>)}</ol> : <p className="text-sm text-muted-foreground">No activity recorded.</p>}<LoadMoreFooter query={activity.query} shown={activity.items.length} total={activity.total} label="finding activity" /></section>
+          <section className="space-y-3"><h3 className="text-sm font-semibold">Observations</h3>{observations.items.length ? <ol className="space-y-5">{observations.items.map((row, index) => <li key={index} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><Link className={`inline-flex min-h-6 items-center text-sm font-medium ${metadataLink}`} to={`/security/scans/${text(row.scan_id)}`}>{label(text(row.outcome))}<ChevronRight aria-hidden="true" className="size-3.5" /></Link><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{text(row.created_at) && date(text(row.created_at))}</p></li>)}</ol> : <p className="text-sm text-muted-foreground">No observations recorded.</p>}<Pagination {...observations.pagination} label="observations" /></section>
+          <section className="space-y-3"><h3 className="text-sm font-semibold">Activity</h3>{activity.items.length ? <ol className="space-y-5">{activity.items.map((row) => <li key={row.id} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><p className="text-sm font-medium">{label(row.action)}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{row.actor_id === null ? "Code Mortis" : `Member #${row.actor_id}`} · {date(row.created_at)}</p>{text(row.detail.reason) && <details className="mt-2 text-sm"><summary className="cursor-pointer text-xs text-primary">View reason</summary><p className="mt-2 break-words leading-relaxed">{text(row.detail.reason)}</p></details>}</li>)}</ol> : <p className="text-sm text-muted-foreground">No activity recorded.</p>}<Pagination {...activity.pagination} label="finding activity" /></section>
   </>;
 }
 
@@ -734,11 +703,11 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
   const focus = useReturnFocus();
   const action = useAction<Finding[]>();
   const path = `/security/repositories/${repositoryId}/github-issues`;
-  const { query, items, total, denied } = useSecurityPages<IssueCandidate>(path, false);
+  const { query, items, total, denied, pagination } = usePagedList<IssueCandidate>(path, false);
   const [selected, setSelected] = useState<Record<string, IssueCandidate>>({});
   const [reviewing, setReviewing] = useState(false);
   const drafts = Object.values(selected);
-  const preview = query.data?.pages[0] as Schema["SecurityIssueCandidatePage"] | undefined;
+  const preview = query.data as Schema["SecurityIssueCandidatePage"] | undefined;
   const isPublic = drafts[0]?.public ?? preview?.public;
   const draftError = drafts.map((draft) => issueDraftError(draft.title, draft.body)).find(Boolean);
   const invalid = !!draftError || drafts.some((draft) => draft.public !== isPublic);
@@ -784,7 +753,7 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
         <div className="divide-y rounded-md border">{items.map((item) => <label key={item.id} className="flex min-h-11 cursor-pointer items-start gap-3 p-3">
           <Checkbox className="mt-0.5" aria-label={`Select ${item.title}`} checked={!!selected[item.id]} disabled={!selected[item.id] && drafts.length >= 100} onCheckedChange={(checked) => choose(item, checked === true)} />
           <span className="min-w-0 space-y-1"><span className="block break-words text-sm font-medium">{item.title}</span><span className="block break-words font-mono text-xs text-muted-foreground">{item.path}</span><SecurityStatus value={item.severity} /></span>
-        </label>)}<LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></div>
+        </label>)}<Pagination {...pagination} label="findings" /></div>
       </>}
     </div>
     <DialogFooter className="shrink-0 border-t pt-4"><Button type="button" variant="outline" disabled={action.isPending} onClick={reviewing ? () => setReviewing(false) : onClose}>{reviewing ? "Back to selection" : "Cancel"}</Button>

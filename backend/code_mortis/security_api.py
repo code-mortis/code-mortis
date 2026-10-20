@@ -42,7 +42,7 @@ from .security_schemas import (
 )
 
 router = APIRouter(prefix="/api/v1/security", tags=["Security"])
-PAGE_SIZE = 20
+PAGE_SIZE = 10
 
 
 def scan_access(db, user, identity, write=False):
@@ -175,7 +175,7 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
     outcome: Annotated[list[Literal["pending", "confirmed", "rejected", "uncertain", "failed", "interrupted", "withheld"]] | None, Query()] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low"]] | None, Query()] = None,
     category: Annotated[list[str] | None, Query(max_length=100)] = None,
-    page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = PAGE_SIZE,
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows, summary = security_assessments.read(db, scan)

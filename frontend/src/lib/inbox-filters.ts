@@ -8,7 +8,7 @@ export type OrderingField = keyof typeof orderings;
 export const label = (value: string) => value.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
 export const INBOX_QUERY_MAX_LENGTH = 256;
 export const INBOX_SEARCH_DEBOUNCE_MS = 300;
-export const INBOX_MAX_PAGES = 10;
+export const INBOX_MAX_PAGES = 1000000;
 const MAX_FILTER_VALUES = 100;
 const MAX_AUTHOR_LENGTH = 100;
 

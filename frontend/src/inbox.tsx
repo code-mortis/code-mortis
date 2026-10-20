@@ -1,14 +1,14 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { LoaderCircle } from "lucide-react";
 import { ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components/common";
 import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { Button } from "./components/ui/button";
-import { groups, INBOX_MAX_PAGES, normalizeFilters, withoutPages, type Property } from "./lib/inbox-filters";
+import { Pagination } from "./components/pagination";
+import { groups, normalizeFilters, withoutPages, type Property } from "./lib/inbox-filters";
 
 type InboxData = GroupedData<Schema["InboxOut"]>;
 
@@ -35,7 +35,8 @@ export function Inbox({ admin }: { admin: boolean }) {
     queryKey: ["inbox", filters, canonical],
     queryFn: ({ signal }) => fetchInbox(new URLSearchParams(canonical), signal),
     enabled: !legacy,
-    refetchInterval: params.has("all_pages") ? false : 5000,
+    staleTime: 0,
+    refetchInterval: 5000,
     retry: false,
     placeholderData: (previous) => previous,
   });
@@ -64,11 +65,13 @@ export function Inbox({ admin }: { admin: boolean }) {
     values.forEach((value) => next.append(key, value));
     setParams(normalizeFilters(next, "open"));
   }
-  if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
-  const data = query.error && [401, 403].includes(query.error.status) ? undefined : query.data;
+  const saved = useRef<InboxData>(undefined);
+  if (query.data) saved.current = query.data;
+  const denied = query.error && [401, 403].includes(query.error.status);
+  if (denied) saved.current = undefined;
+  const data = denied ? undefined : query.data ?? saved.current;
   const list = data?.groups[0];
-  const busy = query.isFetching && Number(params.get("all_pages") ?? 1) > (list?.page ?? 1);
-  const error = data?.errors.all;
+  if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
   const emptyTitle = data?.registered_total ? "No matching pull requests" : "Your inbox is empty";
   return <>
     <header className="mb-6">
@@ -79,7 +82,7 @@ export function Inbox({ admin }: { admin: boolean }) {
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Pull requests across your repositories.</p>
     </header>
     <div className="mb-6"><InboxFilters params={params} data={data} onChange={change} onSearch={search} /></div>
-    {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}
+    {query.error && !data && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}
     {query.isPending && <Loading />}
     {data && data.total === 0 && !query.isPlaceholderData && <Empty title={emptyTitle}>
       {!data.registered_total && <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
@@ -91,13 +94,12 @@ export function Inbox({ admin }: { admin: boolean }) {
         state={{ inbox: `${location.pathname}${location.search}` }}
         metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
         status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
-      {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry pull requests</Button></div>}
-      {(list.has_more || busy) && list.page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3"><Button variant="ghost" size="sm" disabled={busy || query.isPlaceholderData} onClick={() => {
-        const next = new URLSearchParams(params);
-        next.set("all_pages", String(list.page + 1));
-        setParams(normalizeFilters(next, "open"));
-      }}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> pull requests</span></Button><span className="text-xs tabular-nums text-muted-foreground">{list.items.length} of {list.total}</span></div>}
-      {list.has_more && list.page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining pull requests.</p>}
+      <Pagination page={list.page} pageSize={data.page_size} total={list.total} loading={query.isFetching && (query.isPlaceholderData || !!query.error)}
+        error={query.error} onRetry={query.refetch} label="pull requests" onPageChange={(page) => {
+          const next = new URLSearchParams(params);
+          if (page === 1) next.delete("all_pages"); else next.set("all_pages", String(page));
+          setParams(normalizeFilters(next, "open"));
+        }} />
     </section>}
   </>;
 }

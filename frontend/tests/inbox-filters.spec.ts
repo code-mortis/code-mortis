@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { getInboxReturn, INBOX_MAX_PAGES, INBOX_QUERY_MAX_LENGTH, normalizeFilters, selected, withoutPages } from "../src/lib/inbox-filters";
 
 test("filters canonicalize author handles and bound shared pagination", () => {
-  const params = normalizeFilters(new URLSearchParams("author=%20@@Alice%20&author=ALICE&author=@&active_pages=999999&reviewed_pages=3&all_pages=999999"));
+  const params = normalizeFilters(new URLSearchParams("author=%20@@Alice%20&author=ALICE&author=@&active_pages=99999999&reviewed_pages=3&all_pages=99999999"));
   expect(params.getAll("author")).toEqual(["alice"]);
   expect(params.get("active_pages")).toBe(String(INBOX_MAX_PAGES));
   expect(params.get("all_pages")).toBe(String(INBOX_MAX_PAGES));

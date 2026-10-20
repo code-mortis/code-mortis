@@ -606,7 +606,7 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
     assert detail["finding_count"] == 21 and detail["activity_count"] == 205
     assert len(detail["activity"]) == 200
     page = client.get(f"/api/v1/security/scans/{scan_id}/findings").json()
-    assert page["total"] == 21 and len(page["items"]) == 20
+    assert page["total"] == 21 and len(page["items"]) == 10
 
 
 def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, security_github, client, monkeypatch):
@@ -624,22 +624,23 @@ def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, se
         scan_id, finding_id = scan.id, finding.id
     path = f"/api/v1/security/scans/{scan_id}/report/findings"
     first = client.get(path).json()
-    second = client.get(path, params={"page": 2}).json()
-    assert first["total"] == first["registered_total"] == 25 and first["page_size"] == 20
-    assert len(first["items"]) == 20 and len(second["items"]) == 5
-    assert first["items"] + second["items"] == rows
+    second = client.get(path, params={"page": 3}).json()
+    middle = client.get(path, params={"page": 2}).json()
+    assert first["total"] == first["registered_total"] == 25 and first["page_size"] == 10
+    assert len(first["items"]) == 10 and len(second["items"]) == 5
+    assert first["items"] + middle["items"] + second["items"] == rows
     filtered = client.get(path, params={"kind": "infrastructure", "severity": "medium", "outcome": "fixed"}).json()
     assert filtered["items"] == rows[21:23] and filtered["total"] == 2
     assert filtered["registered_total"] == 25 and filtered["outcome_counts"] == first["outcome_counts"]
     assert filtered["kind_counts"] == {"code": 21, "infrastructure": 2, "custom_policy": 1, "unknown": 1}
     assert client.get(path, params=[("outcome", "present"), ("outcome", "fixed")]).json()["total"] == 23
-    assert client.get(path, params={"outcome": "present", "page": 2}).json()["items"] == rows[20:21]
+    assert client.get(path, params={"outcome": "present", "page": 3}).json()["items"] == rows[20:21]
     assert client.get(path, params={"q": "%_"}).json()["items"] == rows[5:6]
     assert client.get(path, params={"q": "SAVED EVIDENCE 24"}).json()["items"] == rows[24:]
     assert client.get(path, params={"outcome": "unknown", "severity": "unknown", "kind": "unknown"}).json()["items"] == rows[24:]
     assert client.get(path, params={"finding_id": finding_id}).json()["items"] == rows[:1]
     assert client.get(path, params={"finding_id": uid()}).json()["items"] == []
-    assert client.get(path, params={"page": 3}).json()["items"] == []
+    assert client.get(path, params={"page": 4}).json()["items"] == []
     for params in ({"page": 0}, {"q": "x" * 257}, {"severity": "invalid"}, {"kind": "x" * 51}):
         assert client.get(path, params=params).status_code == 422
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
@@ -685,12 +686,12 @@ def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pa
         scan.report = {"findings": [{"title": "Original report"}]}
     path = f"/api/v1/security/scans/{scan_id}/findings"
     page = client.get(path).json()
-    assert page["total"] == 31 and len(page["items"]) == 20
+    assert page["total"] == 31 and len(page["items"]) == 10
     assert page["result_counts"] == expected
     for outcome, ids in identities.items():
         page = client.get(path, params={"outcome": outcome}).json()
         assert page["total"] == len(ids) and page["result_counts"] == expected
-        rows = page["items"] + client.get(path, params={"outcome": outcome, "page": 2}).json()["items"]
+        rows = page["items"] + [row for number in (2, 3) for row in client.get(path, params={"outcome": outcome, "page": number}).json()["items"]]
         assert {row["id"] for row in rows} == set(ids)
     response = client.get(path + "?outcome=new&outcome=open_repeat&severity=medium&kind=infrastructure&search=Earlier")
     assert response.status_code == 200 and response.json()["total"] == 1
@@ -775,14 +776,15 @@ def test_security_assessment_history_is_live_scoped_filtered_and_read_only(seed,
     assert detail["assessment"]["status_counts"] == {"completed": 3, "failed": 1, "running": 2, "queued": 19}
     assert detail["finding_count"] == 1
     page = client.get(f"/api/v1/security/scans/{identity}/assessments").json()
-    assert page["total"] == page["registered_total"] == 25 and len(page["items"]) == 20
+    assert page["total"] == page["registered_total"] == 25 and len(page["items"]) == 10
     assert page["outcome_counts"] == {"confirmed": 1, "rejected": 1, "uncertain": 1, "failed": 1, "pending": 21}
     assert page["revision"] == detail["assessment"]["revision"]
     assert page["items"][0]["finding_id"] == finding_id
     assert page["items"][5]["progress_phase"] == "validating" and page["items"][5]["finding_id"] is None
     assert all(value not in json.dumps(page) for value in ("internal-secret", "internal-hash", "credentials"))
     second = client.get(f"/api/v1/security/scans/{identity}/assessments?page=2").json()
-    assert [row["id"] for row in second["items"]] == [str(number) for number in range(20, 25)]
+    assert second["page_size"] == 10
+    assert [row["id"] for row in second["items"]] == [str(number) for number in range(10, 20)]
     filtered = client.get(f"/api/v1/security/scans/{identity}/assessments?outcome=rejected&severity=high&category=Access%20Control&q=candidate%201").json()
     assert filtered["total"] == 1 and filtered["registered_total"] == 25 and filtered["items"][0]["id"] == "1"
     assert filtered["outcome_counts"] == page["outcome_counts"]
@@ -2987,10 +2989,11 @@ def test_bulk_issue_previews_exclude_ineligible_findings_and_do_not_approve_anyt
         # Saved visibility is deliberately stale; previews must use GitHub's current value.
         db.get(Repository, 22).private = False
     path = "/api/v1/security/repositories/22/github-issues"
-    first, second = client.get(path).json(), client.get(path + "?page=2").json()
+    first, second = client.get(path).json(), client.get(path + "?page=3").json()
+    middle = client.get(path + "?page=2").json()
     assert first["public"] is False and first["repository"] == "team/project"
-    assert first["total"] == second["total"] == 21 and len(first["items"]) == 20
-    assert {item["id"] for item in first["items"] + second["items"]} == set(eligible)
+    assert first["total"] == second["total"] == 21 and len(first["items"]) == 10
+    assert {item["id"] for item in first["items"] + middle["items"] + second["items"]} == set(eligible)
     assert all(item["public"] is False and item["version"] == 0 and item["body"] for item in first["items"])
     with transaction() as db:
         assert not db.scalar(select(Job.id)) and not db.scalar(select(SecurityActivity.id))
@@ -3127,10 +3130,11 @@ def test_security_overview_filters_all_visible_repositories_before_pagination(se
     monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository).where(Repository.id != 999))))
     path = "/api/v1/security/repositories"
     first = client.get(path).json()
-    second = client.get(path, params={"page": 2}).json()
+    second = client.get(path, params={"page": 3}).json()
+    middle = client.get(path, params={"page": 2}).json()
     assert first["total"] == first["registered_total"] == 26
-    assert len(first["items"]) == first["page_size"] == 20 and len(second["items"]) == 6
-    assert len({row["repository"]["id"] for row in first["items"] + second["items"]}) == 26
+    assert len(first["items"]) == first["page_size"] == 10 and len(second["items"]) == 6
+    assert len({row["repository"]["id"] for row in first["items"] + middle["items"] + second["items"]}) == 26
     assert first["grade_counts"] == {"A": 1, "unrated": 25}
     assert first["status_counts"] == {"current": 1, "not_scanned": 25}
     union = client.get(path, params=[("grade", "A"), ("grade", "unrated"), ("status", "current"), ("status", "not_scanned")]).json()
@@ -3138,7 +3142,7 @@ def test_security_overview_filters_all_visible_repositories_before_pagination(se
     filtered = client.get(path, params={"search": "APP-24", "grade": "unrated", "status": "not_scanned"}).json()
     assert filtered["total"] == 1 and filtered["items"][0]["repository"]["id"] == 124
     assert filtered["grade_counts"] == first["grade_counts"] and filtered["registered_total"] == 26
-    assert client.get(path, params={"page": 3}).json()["items"] == []
+    assert client.get(path, params={"page": 4}).json()["items"] == []
     for params in ({"page": 0}, {"grade": "Z"}, {"status": "invalid"}, {"search": "x" * 201}):
         assert client.get(path, params=params).status_code == 422
 
@@ -3161,14 +3165,15 @@ def test_security_finding_multiselect_uses_union_within_filters_and_intersection
     for path in (repository_path, scan_path):
         params = filters + ([("state", "open"), ("state", "resolved")] if path == repository_path else [("outcome", "new")])
         first = client.get(path, params=params).json()
-        second = client.get(path, params=params + [("page", "2")]).json()
+        second = client.get(path, params=params + [("page", "3")]).json()
+        middle = client.get(path, params=params + [("page", "2")]).json()
         assert first["total"] == second["total"] == 23
-        assert len(first["items"]) == 20 and len(second["items"]) == 3
-        assert len({row["id"] for row in first["items"] + second["items"]}) == 23
+        assert len(first["items"]) == 10 and len(second["items"]) == 3
+        assert len({row["id"] for row in first["items"] + middle["items"] + second["items"]}) == 23
         assert first["severity_counts"]["low"] == 2 and first["kind_counts"]["infrastructure"] == 2
         assert first["registered_total"] == (27 if path == repository_path else 26)
         assert second["severity_counts"] == first["severity_counts"]
-        assert client.get(path, params=filters + [("page", "3")]).json()["items"] == []
+        assert client.get(path, params=filters + [("page", "4")]).json()["items"] == []
         for invalid in ([("severity", "high"), ("severity", "invalid")], [("kind", "code"), ("kind", "invalid")], [("page", "0")]):
             assert client.get(path, params=invalid).status_code == 422
     assert client.get(repository_path, params=[("state", "open"), ("state", "resolved")]).json()["total"] == 24
@@ -3200,14 +3205,17 @@ def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(s
              f"/api/v1/security/findings/{finding_id}/observations",
              *[f"/api/v1/security/scans/{scan_id}/coverage/{section}" for section in ("inventory", "excluded", "units", "problems")]]
     for path in paths:
-        first, second = client.get(path).json(), client.get(path, params={"page": 2}).json()
+        first, second = client.get(path).json(), client.get(path, params={"page": 3}).json()
+        middle = client.get(path, params={"page": 2}).json()
         assert first["total"] == second["total"] == 25
-        assert len(first["items"]) == first["page_size"] == 20 and len(second["items"]) == 5
-        assert len({row["id"] for row in first["items"] + second["items"]}) == 25
-        assert client.get(path, params={"page": 3}).json()["items"] == []
+        assert len(first["items"]) == first["page_size"] == 10 and len(second["items"]) == 5
+        assert len({row["id"] for row in first["items"] + middle["items"] + second["items"]}) == 25
+        assert client.get(path, params={"page": 4}).json()["items"] == []
         assert client.get(path, params={"page": 0}).status_code == 422
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["scan"]["coverage"]["inventory_count"] == 25
+    history = client.get("/api/v1/security/repositories/22/scans").json()
+    assert history["page_size"] == len(history["items"]) == 10 and history["total"] == 26
     assert not {"inventory", "excluded", "units", "problems"}.intersection(detail["scan"]["coverage"])
     detail = client.get(f"/api/v1/security/findings/{finding_id}").json()
     assert detail["observation_count"] == detail["activity_count"] == 25
@@ -3245,10 +3253,11 @@ def test_security_repository_ordering_uses_latest_security_changes_before_pagina
 
     def identities(params=None):
         first = client.get(path, params=params or {}).json()
-        second = client.get(path, params={**(params or {}), "page": 2}).json()
+        second = client.get(path, params={**(params or {}), "page": 3}).json()
+        middle = client.get(path, params={**(params or {}), "page": 2}).json()
         assert first["total"] == second["total"] == 26
-        assert len(first["items"]) == 20 and len(second["items"]) == 6
-        return [row["repository"]["id"] for row in first["items"] + second["items"]]
+        assert len(first["items"]) == 10 and len(second["items"]) == 6
+        return [row["repository"]["id"] for row in first["items"] + middle["items"] + second["items"]]
 
     expected = [103, 104, 102, 101, 100, *range(124, 104, -1), 22]
     assert identities() == expected

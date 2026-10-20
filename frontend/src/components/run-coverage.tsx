@@ -4,7 +4,7 @@ import type { Run } from "../api";
 import { fileFeedback } from "../lib/run-feedback";
 import { errorFeedback } from "../lib/error-feedback";
 import { active, Code, Empty, Status, TechnicalDetails } from "./common";
-import { Button } from "./ui/button";
+import { Pagination } from "./pagination";
 
 const outcomes = {
   completed: { label: "Reviewed", value: "completed", reason: "Validated file result saved in this run." },
@@ -66,7 +66,8 @@ export function RunCoverage({ run }: { run: Run }) {
         {(["attention", "reviewed"] as const).map((group) => {
           const files = items.filter((item) => ["completed", "reused"].includes(item.outcome) === (group === "reviewed"));
           if (!files.length) return null;
-          const visible = files.slice(0, (pages[group] ?? 1) * 10);
+          const page = Math.min(pages[group] ?? 1, Math.ceil(files.length / 10));
+          const visible = files.slice((page - 1) * 10, page * 10);
           const heading = group === "attention" ? "Files not reviewed" : "Reviewed files";
           return <section key={group} aria-label={heading}>
             <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{heading}<span className="text-xs font-normal tabular-nums text-muted-foreground">{files.length}</span></h3>
@@ -81,10 +82,8 @@ export function RunCoverage({ run }: { run: Run }) {
               </div>
               <FileStatus file={file} />
             </li>; })}</ul>
-            {(visible.length < files.length || (pages[group] ?? 1) > 1) && <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
-              {visible.length < files.length && <Button variant="ghost" size="sm" onClick={() => setPages((current) => ({ ...current, [group]: (current[group] ?? 1) + 1 }))}>Load more<span className="sr-only"> {heading.toLowerCase()}</span></Button>}
-              <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{visible.length} of {files.length} shown</span>
-            </div>}
+            <Pagination page={page} pageSize={10} total={files.length} label={heading.toLowerCase()}
+              onPageChange={(next) => setPages((current) => ({ ...current, [group]: next }))} />
           </section>;
         })}
         {!items.length && <Empty title="No file coverage recorded">Inspect the saved report for scope and review details. No selected files does not imply a clean review.</Empty>}

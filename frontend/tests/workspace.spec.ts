@@ -954,11 +954,11 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("closed", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Draft", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Closed proposal/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("Fork · manual review");
-  await merged.getByRole("button", { name: "Load more merged" }).click();
-  await expect(merged.getByRole("link")).toHaveCount(12);
+  await merged.getByRole("button", { name: "Next merged" }).click();
+  await expect(merged.getByRole("link")).toHaveCount(2);
   await expect(page).toHaveURL(/merged_pages=2/);
   await page.reload();
-  await expect(merged.getByRole("link")).toHaveCount(12);
+  await expect(merged.getByRole("link")).toHaveCount(2);
   await expect(count).toHaveText("14 pull requests");
   await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -1026,7 +1026,7 @@ test("repository URLs strip inbox pagination and preserve grouped pages", async 
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22?state=all&all_pages=2&active_pages=2");
   await expect(page).toHaveURL(/\?state=all&active_pages=2$/);
-  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(12);
+  await expect(page.getByRole("region", { name: "Open", exact: true }).getByRole("link")).toHaveCount(2);
 });
 
 test("repository sensitivity preserves custom rules and saves all three policies", async ({ page }, info) => {
@@ -1877,9 +1877,9 @@ test("repository outdated reviews remain distinct from running reviews and page 
   await mockRepositoryPulls(page, 22, () => Array.from({ length: 101 }, (_, index) => ({ ...pr, id: `many-${index}`, number: index + 1, title: `Change ${index + 1}`, latest_run: null })));
   await page.goto("/repositories/22?active_pages=999999");
   const open = page.getByRole("region", { name: "Open", exact: true });
-  await expect(open.getByRole("link")).toHaveCount(100);
-  await expect(open.getByText("Use filters to narrow the remaining pull requests.")).toBeVisible();
-  await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await expect(open.getByRole("link")).toHaveCount(1);
+  await expect(open.getByRole("status")).toHaveText("Page 11 of 11 · 101 total");
+  await expect(open.getByRole("button", { name: /Next/ })).toBeDisabled();
   await page.getByLabel("Search pull requests").fill("#101");
   await expect(open.getByRole("link")).toHaveCount(1);
   await expect(open.getByRole("link")).toContainText("Change 101");
@@ -2280,18 +2280,18 @@ test("late resolutions refresh loaded pages without resetting resolved filters",
   const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
   const cards = list.locator("[data-slot=finding-card]");
   await expect(cards).toHaveCount(10);
-  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
-  await expect(cards).toHaveCount(20);
+  await list.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(10);
   resolved.push({ ...finding, id: "new-resolution", path: "src/sync-new.ts", created_at: "2026-10-06T13:20:00Z", status: "resolved", sync_intent: null });
   resolved.push({ ...finding, id: "unmatched-resolution", path: "src/other.ts", severity: "low", status: "resolved", sync_intent: null });
   await page.clock.runFor(5500);
   await expect(page.getByRole("tab", { name: "Resolved 25", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.clock.runFor(5500);
-  await expect(cards).toHaveCount(20);
-  await expect(cards.first()).toContainText("src/sync-new.ts");
-  await expect(list.getByRole("status")).toHaveText("20 of 24 shown");
+  await expect(cards).toHaveCount(10);
+  await expect(cards.first()).not.toContainText("src/sync-new.ts");
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 24 total");
   await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("sync");
-  expect(requests.at(-1)?.get("page_size")).toBe("20");
+  expect(requests.at(-1)?.get("page")).toBe("2");
   expect(requests).toHaveLength(3);
   expect(requests.every((params) => params.get("q") === "sync" && params.get("severity") === "high")).toBe(true);
   const settledReads = requests.length;
@@ -2329,16 +2329,16 @@ test("resolved findings use independent backend filters and reset pagination", a
   await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   await expect(cards).toHaveCount(10);
-  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
-  await expect(cards).toHaveCount(20);
-  await expect(list.getByRole("status")).toHaveText("20 of 23 shown");
-  expect(requests.at(-1)?.get("page_size")).toBe("20");
+  await list.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+  expect(requests.at(-1)?.get("page")).toBe("2");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Low/ }).click();
   await page.keyboard.press("Escape");
   await expect(cards).toHaveCount(10);
-  await expect(list.getByRole("status")).toHaveText("10 of 11 shown");
+  await expect(list.getByRole("status")).toHaveText("Page 1 of 2 · 11 total");
   expect(requests.at(-1)?.get("page")).toBe("1");
   await page.getByLabel("Search resolved findings", { exact: true }).fill("not-found");
   await expect(page.getByRole("heading", { name: "No resolved findings match these filters", exact: true })).toBeVisible();
@@ -2373,21 +2373,21 @@ test("resolved pages preserve loaded cards on failure and hide them on access de
   let failure = 500;
   await page.route("**/api/v1/runs/run/resolved?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
-    return failure && Number(params.get("page_size")) > 10 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
+    return failure && Number(params.get("page")) > 1 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
       : route.fulfill({ json: resolvedPage(resolved, params) });
   });
   await page.goto("/runs/run?tab=resolved");
   const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
   const cards = list.locator("[data-slot=finding-card]");
   await expect(cards).toHaveCount(10);
-  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await list.getByRole("button", { name: "Next resolved findings", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Resolved page unavailable" })).toBeVisible();
   await expect(cards).toHaveCount(10);
   failure = 0;
   await list.getByRole("button", { name: "Retry resolved findings", exact: true }).click();
-  await expect(cards).toHaveCount(20);
+  await expect(cards).toHaveCount(10);
   failure = 403;
-  await list.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
+  await list.getByRole("button", { name: "Next resolved findings", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Resolved page unavailable" })).toBeVisible();
   await expect(cards).toHaveCount(0);
 });
@@ -2682,9 +2682,9 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   await expect(reviewed.getByText("Validated file result saved in this run.", { exact: true })).toHaveCount(0);
   await expect(gaps.getByRole("listitem").filter({ hasText: failed.path })).toContainText(failed.reason);
   await expect(gaps.getByRole("listitem").filter({ hasText: "README.md" })).toContainText("Outside scope");
-  await reviewed.getByRole("button", { name: "Load more reviewed files" }).click();
-  await expect(reviewed.getByRole("listitem")).toHaveCount(12);
-  await expect(reviewed.getByRole("status").last()).toHaveText("12 of 12 shown");
+  await reviewed.getByRole("button", { name: "Next reviewed files" }).click();
+  await expect(reviewed.getByRole("listitem")).toHaveCount(2);
+  await expect(reviewed.getByRole("status").last()).toHaveText("Page 2 of 2 · 12 total");
   await expect(reviewed.getByText(completed[10].path, { exact: true })).toBeVisible();
   await expect(reviewed.getByRole("listitem").filter({ hasText: reused.path })).toContainText("Reused");
   await expect(gaps.getByRole("listitem")).toHaveCount(4);
@@ -4627,12 +4627,12 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await expect(list.getByRole("heading", { name: "Candidate assessment", exact: true })).toHaveCount(0);
   await expect(list).toContainText("Proposed findings are checked against evidence and earlier reviews before becoming new comments.");
   await expect(list.getByText("23 of 23 assessments", { exact: true })).toHaveClass("sr-only");
-  await list.getByRole("button", { name: "Load more assessments" }).scrollIntoViewIfNeeded();
+  await list.getByRole("button", { name: "Next assessments" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `../.impeccable/review/assessment-pagination-${info.project.name}.png`, animations: "disabled" });
-  await list.getByRole("button", { name: "Load more assessments" }).click();
-  await expect(cards).toHaveCount(20);
-  await expect(list.getByText("20 of 23 shown", { exact: true })).toBeVisible();
-  expect(requests.some((params) => params.get("page_size") === "20")).toBe(true);
+  await list.getByRole("button", { name: "Next assessments" }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(list.getByText("Page 2 of 3 · 23 total", { exact: true })).toBeVisible();
+  expect(requests.some((params) => params.get("page") === "2")).toBe(true);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
   await page.getByLabel("Search type options", { exact: true }).fill("custom");
@@ -4672,8 +4672,8 @@ test("assessments paginate on the backend and reset pages when filters change", 
   await expect(page.getByRole("checkbox", { name: /^High/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(list.getByText("12 of 23 assessments", { exact: true })).toHaveClass("sr-only");
-  await list.getByRole("button", { name: "Load more assessments" }).click();
-  await expect(cards).toHaveCount(12);
+  await list.getByRole("button", { name: "Next assessments" }).click();
+  await expect(cards).toHaveCount(2);
   expect(requests.at(-1)?.getAll("severity")).toEqual(["high"]);
   await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
   await expect(cards).toHaveCount(10);
@@ -4706,14 +4706,14 @@ test("assessment pages preserve loaded cards on failure and hide them on access 
   await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
   await expect(cards).toHaveCount(10);
   failure = 502;
-  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await list.getByRole("button", { name: "Next assessments" }).click();
   await expect(list.getByRole("button", { name: "Retry assessments", exact: true })).toBeVisible();
   await expect(cards).toHaveCount(10);
   failure = 0;
   await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
-  await expect(cards).toHaveCount(20);
+  await expect(cards).toHaveCount(10);
   failure = 403;
-  await list.getByRole("button", { name: "Load more assessments" }).click();
+  await list.getByRole("button", { name: "Next assessments" }).click();
   await expect(list.getByRole("alert")).toHaveText("Repository access revoked");
   await expect(cards).toHaveCount(0);
 });
@@ -8159,7 +8159,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
     await page.getByRole("tab", { name: "Run history" }).click();
     await expect(page.getByRole("link", { name: /automatic.*ccccccc/ })).toContainText("GitHub: Published");
     await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Load more run history" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next run history" })).toHaveCount(0);
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/pull-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
   }
@@ -8267,24 +8267,24 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   await page.getByRole("tab", { name: "Run history 23" }).click();
   const history = page.getByRole("tabpanel");
   await expect(history.getByRole("link")).toHaveCount(10);
-  await expect(history.getByRole("status")).toHaveText("10 of 23");
+  await expect(history.getByRole("status")).toHaveText("Page 1 of 3 · 23 total");
   expect(requests).toEqual([1]);
   await noOverflow(page);
   await mkdir("../.impeccable/review", { recursive: true });
   await page.screenshot({ path: `../.impeccable/review/run-history-pagination-${info.project.name}.png`, fullPage: true });
   await page.clock.fastForward(5000);
   await expect.poll(() => requests.length).toBe(2);
-  await history.getByRole("button", { name: "Load more run history" }).click();
-  await expect(history.getByRole("link")).toHaveCount(20);
-  await expect(history.getByRole("status")).toHaveText("20 of 23");
+  await history.getByRole("button", { name: "Next run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(10);
+  await expect(history.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
   const expandedRequests = requests.length;
   await page.clock.fastForward(15000);
-  expect(requests.length).toBe(expandedRequests);
-  await history.getByRole("button", { name: "Load more run history" }).click();
-  await expect(history.getByRole("link")).toHaveCount(23);
-  await expect(history.getByRole("status")).toHaveText("23 of 23");
-  await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
-  expect(requests).toEqual([1, 1, 2, 3]);
+  await expect.poll(() => requests.length).toBeGreaterThan(expandedRequests);
+  await history.getByRole("button", { name: "Next run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(3);
+  await expect(history.getByRole("status")).toHaveText("Page 3 of 3 · 23 total");
+  await expect(history.getByRole("button", { name: /Next/ })).toBeDisabled();
+  expect(requests).toContain(3);
   await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
   await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
 });
@@ -8308,17 +8308,17 @@ test("run history load more stays available during polling and waits for the nex
   await page.goto("/pulls/pr");
   await page.getByRole("tab", { name: /Run history/ }).click();
   const history = page.getByRole("tabpanel");
-  const more = history.getByRole("button", { name: "Load more run history" });
+  const more = history.getByRole("button", { name: "Next run history" });
   await expect(history.getByRole("link")).toHaveCount(10);
   hold = true;
   await page.clock.fastForward(5000);
   await expect.poll(() => waiting).toBe(1);
   await expect(more).toBeEnabled();
   await more.click();
-  await expect(history.getByRole("button", { name: "Loading… run history" })).toBeDisabled();
+  await expect(history.getByRole("button", { name: "Next run history" })).toBeDisabled();
   hold = false;
   release();
-  await expect(history.getByRole("link")).toHaveCount(20);
+  await expect(history.getByRole("link")).toHaveCount(10);
   await expect(more).toBeEnabled();
 });
 
@@ -8339,20 +8339,20 @@ test("run history retries failed pages and hides loaded runs when access is revo
   await history.getByRole("button", { name: "Retry run history" }).click();
   await expect(history.getByRole("link")).toHaveCount(10);
   failure = 502;
-  await history.getByRole("button", { name: "Load more run history" }).click();
+  await history.getByRole("button", { name: "Next run history" }).click();
   await expect(history.getByRole("button", { name: "Retry run history" })).toBeVisible();
   await expect(history.getByRole("link")).toHaveCount(10);
-  await expect(history.getByRole("status")).toHaveText("10 of 23");
+  await expect(history.getByRole("status")).toHaveText("Page 1 of 3 · 23 total");
   failure = 0;
   await history.getByRole("button", { name: "Retry run history" }).click();
-  await expect(history.getByRole("link")).toHaveCount(20);
+  await expect(history.getByRole("link")).toHaveCount(10);
   failure = 403;
-  await history.getByRole("button", { name: "Load more run history" }).click();
+  await history.getByRole("button", { name: "Next run history" }).click();
   await expect(history.getByText("Repository access revoked")).toBeVisible();
   await expect(history.getByRole("link")).toHaveCount(0);
 });
 
-test("run history deduplicates shifted pages without changing the server total or cursor", async ({ page }) => {
+test("run history replaces shifted pages and preserves the server total and cursor", async ({ page }) => {
   await mock(page);
   const runs = Array.from({ length: 23 }, (_, index) => ({ ...run, id: `history-${index}` }));
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings: [] }));
@@ -8361,13 +8361,13 @@ test("run history deduplicates shifted pages without changing the server total o
   const history = page.getByRole("tabpanel");
   await expect(history.getByRole("link")).toHaveCount(10);
   runs.unshift({ ...run, id: "new-run" });
-  await history.getByRole("button", { name: "Load more run history" }).click();
-  await expect(history.getByRole("link")).toHaveCount(19);
-  await expect(history.getByRole("status")).toHaveText("19 of 24");
-  await history.getByRole("button", { name: "Load more run history" }).click();
-  await expect(history.getByRole("link")).toHaveCount(23);
-  await expect(history.getByRole("status")).toHaveText("23 of 24");
-  await expect(history.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await history.getByRole("button", { name: "Next run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(10);
+  await expect(history.getByRole("status")).toHaveText("Page 2 of 3 · 24 total");
+  await history.getByRole("button", { name: "Next run history" }).click();
+  await expect(history.getByRole("link")).toHaveCount(4);
+  await expect(history.getByRole("status")).toHaveText("Page 3 of 3 · 24 total");
+  await expect(history.getByRole("button", { name: /Next/ })).toBeDisabled();
 });
 
 test("pull detail paginates each finding status independently and resets pages with filters", async ({ page }, info) => {
@@ -8395,31 +8395,31 @@ test("pull detail paginates each finding status independently and resets pages w
   await expect(rows(resolved)).toHaveCount(10);
   await expect(dismissed).toHaveCount(0);
   expect(requests[0].getAll("status")).toEqual(["open", "resolved"]);
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
-  await expect(rows(open)).toHaveCount(20);
-  expect(requests.some((params) => params.get("status") === "open" && params.get("group") === "open" && params.get("page") === "2")).toBe(true);
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(rows(open)).toHaveCount(10);
+  await expect.poll(() => requests.some((params) => params.get("status") === "open" && params.get("group") === "open" && params.get("page") === "2")).toBe(true);
   await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   for (const section of [open, resolved, dismissed]) {
     await expect(rows(section)).toHaveCount(10);
     await expect(section.getByRole("heading")).toContainText("21");
-    await expect(section.getByText("10 of 21", { exact: true })).toBeVisible();
+    await expect(section.getByText("Page 1 of 3 · 21 total", { exact: true })).toBeVisible();
   }
   await noOverflow(page);
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).scrollIntoViewIfNeeded();
+  await open.getByRole("button", { name: "Next open findings", exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `../.impeccable/review/finding-pagination-${info.project.name}.png`, animations: "disabled" });
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).press("Enter");
-  await expect(rows(open)).toHaveCount(20);
+  await open.getByRole("button", { name: "Next open findings", exact: true }).press("Enter");
+  await expect(rows(open)).toHaveCount(10);
   await expect(rows(resolved)).toHaveCount(10);
   await expect(rows(dismissed)).toHaveCount(10);
-  await resolved.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
-  await expect(rows(resolved)).toHaveCount(20);
-  await dismissed.getByRole("button", { name: "Load more dismissed findings", exact: true }).click();
-  await expect(rows(dismissed)).toHaveCount(20);
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
-  await expect(rows(open)).toHaveCount(21);
+  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(rows(resolved)).toHaveCount(10);
+  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
+  await expect(rows(dismissed)).toHaveCount(10);
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(rows(open)).toHaveCount(1);
   for (const status of ["open", "resolved", "dismissed"]) expect(requests.some((params) => params.get("group") === status && params.get("page") === "2")).toBe(true);
   expect(requests.some((params) => params.get("group") === "open" && params.get("page") === "3")).toBe(true);
-  await expect(open.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await expect(open.getByRole("button", { name: /Next/ })).toBeDisabled();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
@@ -8440,7 +8440,7 @@ test("pull detail paginates each finding status independently and resets pages w
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: "High", exact: true }).click();
@@ -8450,11 +8450,11 @@ test("pull detail paginates each finding status independently and resets pages w
     await expect(rows(section)).toHaveCount(10);
     await expect(section.getByRole("heading")).toContainText("11");
   }
-  await resolved.getByRole("button", { name: "Load more resolved findings", exact: true }).click();
-  await expect(rows(resolved)).toHaveCount(11);
+  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(rows(resolved)).toHaveCount(1);
   await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
   await expect(rows(resolved)).toHaveCount(10);
-  await open.getByRole("button", { name: "Load more open findings", exact: true }).click();
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Open/ }).click();
@@ -8534,15 +8534,16 @@ for (const kind of ["repository", "findings"] as const) {
     const group = page.getByRole("region", { name: kind === "repository" ? "Open" : "Open findings", exact: true });
     const rows = group.getByRole(kind === "repository" ? "link" : "button", { name: /Test (finding|pull request)/ });
     await expect(rows).toHaveCount(10);
-    await group.getByRole("button", { name: /Load more/ }).click();
+    await group.getByRole("button", { name: /Next/ }).click();
     await expect(group.getByRole("alert")).toContainText("Page unavailable");
     await expect(rows).toHaveCount(10);
     expect(requests.some((params) => params.get("page") === "2")).toBe(true);
     failure = 0;
     await group.getByRole("button", { name: /Retry/ }).click();
-    await expect(rows).toHaveCount(20);
+    await expect(rows).toHaveCount(10);
+    await expect(group.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
     failure = 403;
-    await group.getByRole("button", { name: /Load more/ }).click();
+    await group.getByRole("button", { name: /Next/ }).click();
     await expect(page.getByRole("alert")).toContainText("Access denied");
     await expect(rows).toHaveCount(0);
   });
@@ -8583,13 +8584,13 @@ test("live refresh updates all loaded assessment cards with the summary",async({
   await page.goto("/runs/run?tab=assessment");
   const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
   await expect(list.locator("[data-slot=finding-card]")).toHaveCount(10);
-  await list.getByRole("button",{name:"Load more assessments"}).click();
-  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(11);
+  await list.getByRole("button",{name:"Next assessments"}).click();
+  await expect(list.locator("[data-slot=finding-card]")).toHaveCount(1);
   const before=reads;
   candidates.forEach(finish);assessment.pending=0;assessment.rejected_candidates=11;
   await ticks(page);
   expect(reads).toBe(before + 1);
-  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(11);
+  await expect(list.getByText("Not supported",{exact:true})).toHaveCount(1);
   await expect(list.locator("dl div").filter({hasText:"not supported"})).toContainText("11");
   expect(writes).toEqual([]);
 });
@@ -8632,14 +8633,14 @@ test("live refresh recovers the open assessment drawer from a transient error",a
 
 test("live refresh checks the backend when opening a stale terminal assessment",async({page})=>{
   await page.clock.install();const candidates=Array.from({length:11},(_,i)=>auditCandidate(i));
-  candidates[0].status="failed";candidates[0].error="Old failure";candidates[0].retryable=true;
+  candidates[10].status="failed";candidates[10].error="Old failure";candidates[10].retryable=true;
   const assessment=auditSummary(11);
   await mock(page,{candidates,assessment,run:{status:"running"}});
-  let reads=0;await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return r.fallback();});
-  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:"Load more assessments"}).click();
-  await expect(page.locator("[data-slot=finding-card]")).toHaveCount(11);
-  finish(candidates[0]);candidates[0].error=null;candidates[0].retryable=false;
-  await page.getByRole("button",{name:/Audit proposal 0/}).click();
+  let reads=0;await page.route("**/api/v1/runs/run/candidates/audit-10",r=>{reads++;return r.fallback();});
+  await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:"Next assessments"}).click();
+  await expect(page.locator("[data-slot=finding-card]")).toHaveCount(1);
+  finish(candidates[10]);candidates[10].error=null;candidates[10].retryable=false;
+  await page.getByRole("button",{name:/Audit proposal 10/}).click();
   const sheet=page.getByRole("dialog",{name:"Assessment details"});
   await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
   await ticks(page,4);
@@ -8672,10 +8673,10 @@ test("live refresh recovers Resolved from an error after completion",async({page
 test("live refresh: late resolutions update two loaded pages after completion",async({page})=>{
   await page.clock.install();const resolved=Array.from({length:11},(_,i)=>({...structuredClone(finding),id:`resolved-${i}`,status:"resolved",content:`Resolved item ${i}`}));
   await mock(page,{resolved,run:{status:"completed"}});
-  await page.goto("/runs/run?tab=resolved");await page.getByRole("button",{name:"Load more resolved findings"}).click();
-  const cards=page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]");await expect(cards).toHaveCount(11);
+  await page.goto("/runs/run?tab=resolved");await page.getByRole("button",{name:"Next resolved findings"}).click();
+  const cards=page.getByRole("region",{name:"Findings resolved by this run"}).locator("[data-slot=finding-card]");await expect(cards).toHaveCount(1);
   resolved.push({...structuredClone(finding),id:"new-resolution",status:"resolved",content:"Late confirmation"});
-  await ticks(page);await expect(cards).toHaveCount(12);await expect(page.getByRole("button",{name:/Late confirmation/})).toBeVisible();
+  await ticks(page);await expect(cards).toHaveCount(2);await expect(page.getByRole("button",{name:/Late confirmation/})).toBeVisible();
 });
 
 for(const tab of ["findings","coverage","details"]) {
@@ -8724,7 +8725,7 @@ test("live refresh: open finding drawer follows status and verification changes"
   await ticks(page,1);await expect(sheet).toContainText("Automatic audit confirmation");await expect(sheet.getByText("Resolved",{exact:true}).first()).toBeVisible();
 });
 
-for (const count of [10, 50, 100]) {
+for (const count of [10, 50, 110]) {
   test(`live refresh batches ${count} assessments and stays idle without changes`, async ({ page }, info) => {
     await page.clock.install();
     const candidates = Array.from({ length: count }, (_, index) => auditCandidate(index));
@@ -8739,8 +8740,9 @@ for (const count of [10, 50, 100]) {
     const cards = list.locator("[data-slot=finding-card]");
     await expect(cards).toHaveCount(10);
     for (let loaded = 20; loaded <= count; loaded += 10) {
-      await list.getByRole("button", { name: "Load more assessments" }).click();
-      await expect(cards).toHaveCount(loaded);
+      await list.getByRole("button", { name: "Next assessments" }).click();
+      await expect(cards).toHaveCount(10);
+      await expect(list.getByRole("navigation").getByRole("status")).toHaveText(`Page ${loaded / 10} of ${count / 10} · ${count} total`);
     }
     const initial = requests.length;
     await ticks(page);
@@ -8749,7 +8751,7 @@ for (const count of [10, 50, 100]) {
     await ticks(page, 1);
     await expect(cards.last()).toContainText("Validating");
     expect(requests).toHaveLength(initial + 1);
-    expect(requests.at(-1)!.searchParams.get("page_size")).toBe(String(count));
+    expect(requests.at(-1)!.searchParams.get("page")).toBe(String(count / 10));
     const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));
     await cards.last().click();
     await (await openResponse).finished();
@@ -8797,7 +8799,7 @@ test("live refresh discards a late assessment response after filters change", as
   let held = false;
   await page.route("**/api/v1/runs/run/candidates?**", async (route) => {
     const params = new URL(route.request().url()).searchParams;
-    if (params.get("page_size") === "20" && !params.has("q")) {
+    if (params.get("page") === "2" && !params.has("q")) {
       held = true;
       const old = candidatePage(candidates, params);
       await pending;
@@ -8805,7 +8807,7 @@ test("live refresh discards a late assessment response after filters change", as
     } else await route.fallback();
   });
   await page.goto("/runs/run?tab=assessment");
-  await page.getByRole("button", { name: "Load more assessments" }).click();
+  await page.getByRole("button", { name: "Next assessments" }).click();
   await expect.poll(() => held).toBe(true);
   await page.getByLabel("Search assessments", { exact: true }).fill("proposal 10");
   await page.clock.fastForward(400);
@@ -8887,8 +8889,8 @@ test("live refresh coalesces in-flight changes and updates filtered rows after c
   await page.goto("/runs/run?tab=assessment&assessment_outcome=pending");
   const cards = page.locator("[data-slot=finding-card]");
   await expect(cards).toHaveCount(10);
-  await page.getByRole("button", { name: "Load more assessments" }).click();
-  await expect(cards).toHaveCount(20);
+  await page.getByRole("button", { name: "Next assessments" }).click();
+  await expect(cards).toHaveCount(10);
   await page.getByLabel("Search assessments", { exact: true }).focus();
   const before = reads;
   hold = true;
@@ -8900,10 +8902,10 @@ test("live refresh coalesces in-flight changes and updates filtered rows after c
   await ticks(page, 2);
   expect(reads).toBe(before + 1);
   release();
-  await expect(cards).toHaveCount(19);
+  await expect(cards).toHaveCount(9);
   await ticks(page, 1);
   await expect(cards).toHaveCount(0);
-  expect(reads).toBe(before + 2);
+  expect(reads).toBe(before + 3);
   candidates[1] = auditCandidate(1);
   await ticks(page, 1);
   await expect(cards).toHaveCount(1);
@@ -8928,17 +8930,17 @@ for (const resource of ["candidates", "resolved"] as const) {
     let nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
     await page.route(`**/api/v1/runs/run/${resource}?**`, async (route) => {
       const params = new URL(route.request().url()).searchParams;
-      const size = Number(params.get("page_size"));
+      const size = Number(params.get("page"));
       sizes.push(size);
       const data = resource === "candidates" ? candidatePage(candidates, params) : resolvedPage(resolved, params);
       if (failNext) {
         failNext = false;
         return route.fulfill({ status: 503, json: { detail: "Temporary list failure" } });
       }
-      if (holdBackground && size === 10) {
+      if (holdBackground && size === 1) {
         holdBackground = false;
         await background;
-      } else if (holdPage && size === 20) {
+      } else if (holdPage && size === 2) {
         holdPage = false;
         await nextPage;
       }
@@ -8956,16 +8958,16 @@ for (const resource of ["candidates", "resolved"] as const) {
     holdBackground = true;
     changeRevision();
     await ticks(page, 1);
-    await expect.poll(() => sizes).toEqual([10, 10]);
-    const loadMore = list.getByRole("button", { name: `Load more ${suffix}` });
+    await expect.poll(() => sizes).toEqual([1, 1]);
+    const loadMore = list.getByRole("button", { name: `Next ${suffix}` });
     await expect(loadMore).toBeEnabled();
     await loadMore.click();
-    await expect.poll(() => sizes).toEqual([10, 10, 20]);
-    await expect(list.getByRole("button", { name: `Loading… ${suffix}` })).toBeDisabled();
+    await expect.poll(() => sizes).toEqual([1, 1, 2]);
+    await expect(list.getByRole("button", { name: `Next ${suffix}` })).toBeDisabled();
     await expect(cards).toHaveCount(10);
     releaseBackground();
     releasePage();
-    await expect(cards).toHaveCount(20);
+    await expect(list.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
 
     failNext = true;
     changeRevision();
@@ -8976,12 +8978,12 @@ for (const resource of ["candidates", "resolved"] as const) {
     holdPage = true;
     const retry = list.getByRole("button", { name: `Retry ${suffix}` });
     await retry.click();
-    await expect.poll(() => sizes).toEqual([10, 10, 20, 20, 20]);
+    await expect.poll(() => sizes).toEqual([1, 1, 2, 2, 2]);
     await expect(retry).toBeDisabled();
-    await expect(cards).toHaveCount(20);
+    await expect(cards).toHaveCount(10);
     releasePage();
     await expect(loadMore).toBeEnabled();
     await expect(failure).toHaveCount(0);
-    await expect(cards).toHaveCount(20);
+    await expect(cards).toHaveCount(10);
   });
 }

@@ -1,10 +1,10 @@
 import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useRunResource } from "./hooks/use-run-resource";
+import { useQuery } from "@tanstack/react-query";
+import { useRunPages, useRunResource } from "./hooks/use-run-resource";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
-import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
+import { getInboxReturn } from "./lib/inbox-filters";
 import {
   Link,
   Navigate,
@@ -33,7 +33,6 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
-  LoaderCircle,
 } from "lucide-react";
 import {
   ApiError,
@@ -86,7 +85,8 @@ import { RunCoverage } from "./components/run-coverage";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { SecurityGrade } from "./components/security-grade";
-import { LoadMoreFooter } from "./components/load-more-footer";
+import { Pagination } from "./components/pagination";
+import { usePagedList } from "./hooks/use-paged-list";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
 import { runDuration } from "./lib/run-duration";
@@ -201,24 +201,10 @@ function RunList({ prId }: { prId: string }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
-  const query = useInfiniteQuery({
-    queryKey: ["pull-runs", prId],
-    queryFn: ({ pageParam, signal }) => api<Schema["RunPage"]>(`/pulls/${prId}/runs?page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last) => last.has_more ? last.page + 1 : undefined,
-    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
-    retry: false,
-  });
+  const { query, items: runs, pagination, denied } = usePagedList<Run>(`/pulls/${prId}/runs`);
   if (query.isPending) return <Loading />;
-  if (query.error instanceof ApiError && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  if (!query.data || (query.error && query.data.pages[0].total === 0)) return <div className="space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button></div>;
-  const seen = new Set<string>();
-  const runs = query.data.pages.flatMap((page) => page.items).filter((run) => {
-    if (seen.has(run.id)) return false;
-    seen.add(run.id);
-    return true;
-  });
-  const total = query.data.pages.at(-1)!.total;
+  if (denied) return <ErrorNotice error={query.error} />;
+  if (!query.data || (query.error && query.data.total === 0)) return <div className="space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button></div>;
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -263,7 +249,7 @@ function RunList({ prId }: { prId: string }) {
           </Link>
         );
       })}
-      <LoadMoreFooter query={query} shown={runs.length} total={total} label="run history" />
+      <Pagination {...pagination} label="run history" />
     </div>
   );
 }
@@ -312,7 +298,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
     queryKey: ["pull-findings", id, filters.canonical, pagination.pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
     enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
-    refetchInterval: Object.values(pagination.pages).some((page) => page! > 1) ? false : 5000,
+    staleTime: 0,
+    refetchInterval: 5000,
     retry: false,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id ? previous : undefined,
   });
@@ -416,8 +403,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
         {findings && (findings.total > 0 ? <section aria-label="Findings" className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
-          {sections.map(({ group: status, items, page, total: groupTotal, has_more }) => {
-            const busy = findingsQuery.isFetching && (pagination.pages[status] ?? 1) > page;
+          {sections.map(({ group: status, items, page, total: groupTotal }) => {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
               <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
@@ -428,12 +414,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
                     <Status value={item.status} icon={item.status === "resolved" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />
                     {item.desired_status && <span className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</span>}
                   </span>} />)}
-                {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
-                {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
-                {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
-                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters: filterKey, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
-                  <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
-                </div>}
+                <Pagination page={page} pageSize={findings.page_size} total={groupTotal} loading={findingsQuery.isFetching && (findingsQuery.isPlaceholderData || !!error)}
+                  error={error ? new Error(error) : null} onRetry={findingsQuery.refetch} label={`${status} findings`}
+                  onPageChange={(next) => setPagination({ filters: filterKey, pages: { ...pagination.pages, [status]: next } })} />
               </div>
             </section>;
           })}
@@ -609,18 +592,13 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
 }) {
   const filters = useReviewFilters("resolved");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, size: 10 });
-  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const query = useRunResource<Schema["ResolvedPage"]>(
-    `/runs/${runId}/resolved?${params}&page=1&page_size=${list.size}`, revision, tick,
-    { scope: `${runId}/resolved?${canonical}` },
+  const query = useRunPages<Schema["ResolvedPage"]>(
+    `/runs/${runId}/resolved?${canonical}`, revision, tick,
   );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
   const first = query.data;
   const last = query.data;
-  const more = !!last?.has_more && list.size < 100;
-  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
   const findings = query.data?.items ?? [];
   return <div className="space-y-4">
     <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
@@ -630,7 +608,6 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
       ]} onChange={filters.change}>
       {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} resolved findings</span>}
     </FilterBar>
-    <ErrorNotice error={query.error} />
     <section aria-label="Findings resolved by this run" className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {!last && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
         state={<Status value={item.status} label={item.status === "resolved" ? "Resolved" : `Currently ${words(item.status)}`} />}
@@ -638,13 +615,7 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
         <p>{first?.registered_total ? "Try another search, severity, or type." : "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
       </Empty>}
-      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
-          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
-        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry resolved findings</Button>
-          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining resolved findings.</p> : null}
-        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{findings.length} of {last.total} shown</span>}
-      </div>}
+      <Pagination {...query.pagination} label="resolved findings" />
     </section>
   </div>;
 }
@@ -654,18 +625,13 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
 }) {
   const filters = useReviewFilters("assessment");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, size: 10 });
-  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const query = useRunResource<Schema["CandidatePage"]>(
-    `/runs/${runId}/candidates?${params}&page=1&page_size=${list.size}`, revision, tick,
-    { scope: `${runId}/candidates?${canonical}` },
+  const query = useRunPages<Schema["CandidatePage"]>(
+    `/runs/${runId}/candidates?${canonical}`, revision, tick,
   );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
   const first = query.data;
   const last = query.data;
-  const more = !!last?.has_more && list.size < 100;
-  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
   const candidates = query.data?.items ?? [];
   return <div className="mt-6 space-y-4">
     <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
@@ -676,7 +642,6 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
       ]} onChange={filters.change}>
       {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} assessments</span>}
     </FilterBar>
-    <ErrorNotice error={query.error} />
     <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {!last && query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
         state={<CandidateStatus candidate={item} inCard />}
@@ -684,13 +649,7 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
-      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
-          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
-        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
-          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
-        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
-      </div>}
+      <Pagination {...query.pagination} label="assessments" />
     </div>
   </div>;
 }
