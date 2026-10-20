@@ -80,7 +80,7 @@ def test_finding_pages_counts_filters_and_stable_order(seed, github_stub, client
             assert len(result) == 1 and result[0]["page"] == page
             assert len(result[0]["items"]) == (10 if page == 2 else 3)
             ids += [row["id"] for row in result[0]["items"]]
-        assert ids == [f'{group["group"]}-{index:02}' for index in reversed(range(23))]
+        assert ids == [f'{group["group"]}-{index:02}' for index in [*range(22, -1, -2), *range(21, -1, -2)]]
     result = client.get(path, params=[("status", "open"), ("status", "resolved"), ("severity", "high"), ("q", "PERFORMANCE")]).json()
     assert result["total"] == 2 and result["registered_total"] == 69
     assert {item["id"] for group in result["groups"] for item in group["items"]} == {"open-22", "resolved-22"}
@@ -180,7 +180,7 @@ def test_resolved_pages_filter_confirmed_run_history_on_server(seed, github_stub
         assert result["page"] == page and result["has_more"] is (page < 3)
         assert len(result["items"]) == (5 if page == 3 else 10)
         ids += [item["id"] for item in result["items"]]
-    assert ids == [f"finding-{index:02}" for index in reversed(range(25))]
+    assert ids == [f"finding-{index:02}" for index in [*range(24, -1, -2), *range(23, -1, -2)]]
     assert first["items"][0]["status"] == "open"
     assert client.get(path, params={"page": 1000000}).json()["page"] == 3
     filtered = client.get(path, params=[("category", "custom_rule"), ("category", "performance"),
@@ -248,7 +248,7 @@ def test_candidate_pages_filter_full_run_and_preserve_evidence(seed, github_stub
         assert result["page"] == page and result["has_more"] is (page < 3)
         assert len(result["items"]) == (5 if page == 3 else 10)
         ids += [item["id"] for item in result["items"]]
-    assert ids == [f"candidate-{index:02}" for index in range(25)]
+    assert ids == [f"candidate-{index:02}" for index in [*range(0, 25, 2), *range(1, 25, 2)]]
     assert client.get(path, params={"page": 1000000}).json()["page"] == 3
     filtered = client.get(path, params=[("outcome", "withheld"), ("outcome", "rejected"), ("severity", "high"), ("q", "PERFORMANCE")]).json()
     assert filtered["total"] == 1 and filtered["registered_total"] == 25
@@ -405,8 +405,8 @@ def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub,
         if path == "/runs/run":
             db.execute(update(Finding).where(Finding.pr_id == "pr").values(severity="low", path="changed-live.py"))
 
-    def read(ordering, page=1):
-        params = {"ordering": ordering}
+    def read(ordering=None, page=1):
+        params = {"ordering": ordering} if ordering else {}
         if path != "/runs/run":
             params["page"] = page
         if path == "/pulls/pr/findings":
@@ -416,6 +416,7 @@ def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub,
         data = response.json()
         return data["groups"][0]["items"] if "groups" in data else data.get("occurrences", data.get("items"))
 
+    assert read() == read("-severity")
     ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
     for ordering in ("severity", "-severity", "path", "-path"):
         rows = read(ordering) if path == "/runs/run" else [item for page in (1, 2, 3) for item in read(ordering, page)]

@@ -67,7 +67,7 @@ test("run finding results normalize without consuming assessment outcomes", () =
 test("review ordering is validated per list and independent across tabs", () => {
   const raw = new URLSearchParams("ordering=-updated_at&assessment_ordering=-severity&resolved_ordering=path");
   expect(normalizeReviewFilters(raw, "pull").get("ordering")).toBe("-updated_at");
-  expect(normalizeReviewFilters(raw, "assessment").get("ordering")).toBe("-severity");
+  expect(normalizeReviewFilters(raw, "assessment").has("ordering")).toBe(false);
   expect(normalizeReviewFilters(raw, "resolved").get("ordering")).toBe("path");
   expect(normalizeReviewFilters(raw, "run").has("ordering")).toBe(false);
   const next = withReviewFilters(raw, new URLSearchParams("ordering=-path"), "assessment");

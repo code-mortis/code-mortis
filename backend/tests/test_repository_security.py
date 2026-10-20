@@ -614,6 +614,7 @@ def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, se
         scan = saved_scan(db, seed, status="completed")
         finding = saved_finding(db, seed, scan)
         rows = [{"id": finding.id if index == 0 else uid(), "finding_id": finding.id if index == 0 else uid(),
+                 "state": "open" if index < 21 else "resolved" if index < 23 else "false_positive" if index == 23 else "unknown",
                  "title": f"Original source {index}", "path": "query%_test.py" if index == 5 else f"src/{index}.py",
                  "outcome": "present" if index < 21 else "fixed" if index < 23 else "not_observed" if index == 23 else None,
                  "severity": "high" if index < 21 else "medium" if index < 23 else "low" if index == 23 else None,
@@ -629,6 +630,11 @@ def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, se
     assert first["total"] == first["registered_total"] == 25 and first["page_size"] == 10
     assert len(first["items"]) == 10 and len(second["items"]) == 5
     assert first["items"] + middle["items"] + second["items"] == rows
+    assert first["state_counts"] == {"open": 21, "resolved": 2, "false_positive": 1, "unknown": 1}
+    assert client.get(path, params={"state": "resolved"}).json()["items"] == rows[21:23]
+    assert client.get(path, params=[("state", "open"), ("state", "resolved")]).json()["total"] == 23
+    assert client.get(path, params={"state": "open", "page": 3}).json()["items"] == rows[20:21]
+    assert client.get(path, params={"state": "unknown"}).json()["items"] == rows[24:]
     filtered = client.get(path, params={"kind": "infrastructure", "severity": "medium", "outcome": "fixed"}).json()
     assert filtered["items"] == rows[21:23] and filtered["total"] == 2
     assert filtered["registered_total"] == 25 and filtered["outcome_counts"] == first["outcome_counts"]
@@ -641,7 +647,7 @@ def test_report_findings_are_filtered_and_paginated_from_saved_evidence(seed, se
     assert client.get(path, params={"finding_id": finding_id}).json()["items"] == rows[:1]
     assert client.get(path, params={"finding_id": uid()}).json()["items"] == []
     assert client.get(path, params={"page": 4}).json()["items"] == []
-    for params in ({"page": 0}, {"q": "x" * 257}, {"severity": "invalid"}, {"kind": "x" * 51}):
+    for params in ({"page": 0}, {"q": "x" * 257}, {"severity": "invalid"}, {"state": "invalid"}, {"kind": "x" * 51}):
         assert client.get(path, params=params).status_code == 422
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["report_count"] == 25 and "findings" not in detail["scan"]["report"]
@@ -3288,6 +3294,7 @@ def test_security_ordering_sorts_full_lists_and_preserves_saved_evidence(seed, s
     paths = ["/repositories/22/findings", f"/scans/{scan_id}/findings", f"/scans/{scan_id}/report/findings", f"/scans/{scan_id}/assessments"]
     ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
     for path in paths:
+        assert client.get("/api/v1/security" + path).json() == client.get("/api/v1/security" + path, params={"ordering": "-severity"}).json()
         for ordering in ("severity", "-severity", "path", "-path"):
             pages = [client.get("/api/v1/security" + path, params={"ordering": ordering, "page": page}) for page in (1, 2, 3)]
             assert all(page.status_code == 200 for page in pages), [page.text for page in pages]
@@ -3302,3 +3309,53 @@ def test_security_ordering_sorts_full_lists_and_preserves_saved_evidence(seed, s
         assert client.get("/api/v1/security" + path, params={"ordering": "invalid"}).status_code == 422
     with transaction() as db:
         assert db.get(SecurityScan, scan_id).report["findings"] == rows
+
+
+@pytest.mark.parametrize("scope", ["repository", "scan"])
+def test_security_current_state_filters_and_default_severity_sort_before_paging(seed, security_github, client, scope):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        for state, total in [("open", 13), ("resolved", 15), ("false_positive", 1)]:
+            for index in range(total):
+                finding = saved_finding(db, seed, scan, state=state,
+                    severity="critical" if index == total - 1 else "low", path=f"{state}/{index}.py")
+                db.flush()
+                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+        scan_id = scan.id
+    path = "/api/v1/security/repositories/22/findings" if scope == "repository" else f"/api/v1/security/scans/{scan_id}/findings"
+    for state, total in [("open", 13), ("resolved", 15)]:
+        first = client.get(path, params={"state": state}).json()
+        second = client.get(path, params={"state": state, "page": 2}).json()
+        assert first["total"] == second["total"] == total
+        assert len(first["items"]) == 10 and len(second["items"]) == total - 10
+        assert first["items"][0]["severity"] == "critical"
+        assert {item["state"] for item in first["items"] + second["items"]} == {state}
+        assert not {item["id"] for item in first["items"]} & {item["id"] for item in second["items"]}
+        assert first["state_counts"] == {"open": 13, "resolved": 15, "false_positive": 1}
+    assert client.get(path, params={"state": "invalid"}).status_code == 422
+
+
+def test_report_state_groups_use_saved_states_and_preserve_unknown_history(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        live = saved_finding(db, seed, scan, state="open")
+        rows = [{"id": f"{state}-{index}", "finding_id": live.id if state == "resolved" and index == 12 else f"{state}-{index}",
+                 "state": state, "severity": "critical" if index == 12 else "low", "title": f"Saved {state} {index}",
+                 "path": f"src/{index}.py", "outcome": "uncertain" if state == "open" else "fixed"}
+                for state in ("open", "resolved") for index in range(13)]
+        rows += [{"finding_id": "legacy", "outcome": "fixed"}, {"finding_id": "not-observed", "outcome": "not_observed"}]
+        scan.report = {"findings": rows}
+        scan_id = scan.id
+    path = f"/api/v1/security/scans/{scan_id}/report/findings"
+    for state in ("open", "resolved"):
+        first = client.get(path, params={"state": state}).json()
+        second = client.get(path, params={"state": state, "page": 2}).json()
+        assert first["total"] == second["total"] == 13 and first["registered_total"] == 28
+        assert len(first["items"]) == 10 and len(second["items"]) == 3
+        assert first["items"][0]["severity"] == "critical"
+        assert {row["state"] for row in first["items"] + second["items"]} == {state}
+        assert first["state_counts"] == {"open": 13, "resolved": 13, "unknown": 2}
+    legacy = client.get(path, params={"state": "unknown"}).json()
+    assert [row["state"] for row in legacy["items"]] == ["unknown", "unknown"]
+    assert [row["outcome"] for row in legacy["items"]] == ["fixed", "not_observed"]
+    assert client.get(f"/api/v1/security/scans/{scan_id}/report").json()["findings"] == rows

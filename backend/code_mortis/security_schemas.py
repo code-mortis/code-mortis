@@ -244,6 +244,7 @@ class SecurityReportPage(StrictModel):
     items: list[dict[str, Any]]
     total: int
     registered_total: int
+    state_counts: dict[str, int]
     outcome_counts: dict[str, int]
     severity_counts: dict[str, int]
     kind_counts: dict[str, int]

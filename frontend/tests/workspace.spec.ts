@@ -9003,7 +9003,7 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
       if (url.pathname !== `/api/v1${endpoint}`) return route.fallback();
       const params = url.searchParams;
       requests.push(params);
-      const ordered = ["-severity", "path"].includes(params.get("ordering") ?? "") ? [...rows].reverse() : rows;
+      const ordered = ["-severity", "path"].includes(params.get("ordering") ?? "-severity") ? [...rows].reverse() : rows;
       const pageNumber = Number(params.get("page") ?? 1);
       const shown = ordered.slice((pageNumber - 1) * 10, pageNumber * 10);
       const data = area === "pull" ? findingPage(rows, params) : area === "assessment" ? candidatePage(candidates, params) : resolvedPage(rows, params);
@@ -9013,7 +9013,7 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
       return route.fulfill({ json: area === "run" ? { run, pull_request: pr, repository: repo,
         occurrences: ordered.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null })), can_write: true } : data });
     });
-    await page.goto(area === "pull" ? "/pulls/pr" : `/runs/run?tab=${area === "run" ? "findings" : area}`);
+    await page.goto(area === "pull" ? "/pulls/pr?ordering=-created_at" : `/runs/run?tab=${area === "run" ? "findings" : area === "assessment" ? "assessment&assessment_ordering=position" : "resolved&resolved_ordering=-created_at"}`);
     const panel = page.getByRole("tabpanel");
     if (area !== "run") {
       await panel.getByRole("button", { name: area === "pull" ? "Next open findings" : area === "assessment" ? "Next assessments" : "Next resolved findings", exact: true }).click();
@@ -9023,7 +9023,7 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
     await panel.getByRole("button", { name: `Sort by ${defaultField}`, exact: true }).click();
     const selected = area === "run" ? "File" : "Severity";
     await page.getByRole("menuitemradio", { name: selected, exact: true }).click();
-    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe(area === "run" ? "path" : "-severity");
+    await expect.poll(() => requests.at(-1)?.get("ordering") ?? "-severity").toBe(area === "run" ? "path" : "-severity");
     if (area !== "run") expect(requests.at(-1)?.get("page") ?? "1").toBe("1");
     await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered review 22");
     await expect(panel.getByRole("button", { name: `Sort by ${selected}`, exact: true })).toBeFocused();

@@ -49,7 +49,7 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
     for (const value of [...new Set(values)].slice(0, 100)) result.append(key, value);
   }
   const orderings = scope === "run" ? runFindingOrderings : scope === "assessment" ? assessmentOrderings : findingOrderings;
-  const defaultOrdering = scope === "run" ? "-severity" : scope === "assessment" ? "position" : "-created_at";
+  const defaultOrdering = "-severity";
   const ordering = normalizeOrdering(input.get(`${prefix}ordering`), orderings, defaultOrdering);
   if (ordering !== defaultOrdering) result.set("ordering", ordering);
   return result;

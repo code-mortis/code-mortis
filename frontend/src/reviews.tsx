@@ -393,7 +393,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-created_at", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
@@ -602,7 +602,7 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
   const last = query.data;
   const findings = query.data?.items ?? [];
   return <div className="space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-created_at", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
         { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
@@ -635,7 +635,7 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
   const last = query.data;
   const candidates = query.data?.items ?? [];
   return <div className="mt-6 space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "position", options: assessmentOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: assessmentOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "outcome", label: "Result", values: params.getAll("outcome"), choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },

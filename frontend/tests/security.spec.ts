@@ -43,15 +43,18 @@ async function mockReportFindings(page: Page, rows: Record<string, unknown>[]) {
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
     if (state.failure) return route.fulfill({ status: state.failure, json: { detail: state.failure === 403 ? "Access denied" : "Report temporarily unavailable" } });
-    const counts = Object.fromEntries(["outcome", "severity", "kind"].map((key) => [key, Object.fromEntries(
-      [...new Set(rows.map((row) => String(row[key] || "unknown")))].map((value) => [value, rows.filter((row) => String(row[key] || "unknown") === value).length]))]));
+    const projected = rows.map((row) => ({ ...row, state: ["open", "resolved", "false_positive", "accepted_risk"].includes(String(row.state)) ? row.state : "unknown" }));
+    const counts = Object.fromEntries(["state", "outcome", "severity", "kind"].map((key) => [key, Object.fromEntries(
+      [...new Set(projected.map((row) => String(row[key] || "unknown")))].map((value) => [value, projected.filter((row) => String(row[key] || "unknown") === value).length]))]));
     const term = (params.get("q") ?? "").trim().toLowerCase();
-    const filtered = rows.filter((row) => (!params.has("finding_id") || row.finding_id === params.get("finding_id"))
-      && ["outcome", "severity", "kind"].every((key) => !params.has(key) || params.getAll(key).includes(String(row[key] || "unknown")))
+    const filtered = projected.filter((row) => (!params.has("finding_id") || row.finding_id === params.get("finding_id"))
+      && ["state", "outcome", "severity", "kind"].every((key) => !params.has(key) || params.getAll(key).includes(String(row[key] || "unknown")))
       && (!term || [row.title, row.path, row.kind, (row.evidence as Record<string, unknown>)?.explanation].some((value) => String(value ?? "").toLowerCase().includes(term))));
+    const ranks: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    if ((params.get("ordering") ?? "-severity") === "-severity") filtered.sort((a, b) => (ranks[String(b.severity)] ?? 0) - (ranks[String(a.severity)] ?? 0));
     const pageNumber = Number(params.get("page") ?? 1);
     return route.fulfill({ json: { items: filtered.slice((pageNumber - 1) * 10, pageNumber * 10).map((row) => ({ ...row, id: row.finding_id })),
-      total: filtered.length, registered_total: rows.length, outcome_counts: counts.outcome, severity_counts: counts.severity, kind_counts: counts.kind,
+      total: filtered.length, registered_total: rows.length, state_counts: counts.state, outcome_counts: counts.outcome, severity_counts: counts.severity, kind_counts: counts.kind,
       page: pageNumber, page_size: 10 } });
   });
   return { requests, state };
@@ -139,7 +142,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
     else if (path === "/security/repositories") json = { items: [{ repository, summary: state }], total: 1, registered_total: 1, grade_counts: { [state.grade ?? "unrated"]: 1 }, status_counts: { [state.state]: 1 }, page: 1, page_size: 10 };
     else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, scan_count: 1 };
     else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 10 };
-    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") json = { items: [current], total: 1, page: 1, page_size: 10 };
+    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") json = { items: url.searchParams.get("state") === current.state ? [current] : [], total: url.searchParams.get("state") === current.state ? 1 : 0, registered_total: 1, page: 1, page_size: 10 };
     else if (path === "/security/scans/scan" || path === "/security/scans/queued") json = { repository, scan: path.endsWith("queued") ? { ...scan, id: "queued", status: "queued", grade: null, report: {} }
       : { ...saved, coverage: { ...saved.coverage, inventory_count: Object.keys(saved.coverage.inventory as object).length }, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
       report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
@@ -544,10 +547,10 @@ test("report filters and pagination request server pages and preserve independen
   const writes = await mock(page);
   const rows = [
     { ...finding, finding_id: finding.id, outcome: "present" },
-    { ...finding, finding_id: "fixed", outcome: "fixed", title: "Restricted container port", path: "Dockerfile", kind: "infrastructure", severity: "medium" },
+    { ...finding, finding_id: "fixed", state: "resolved", outcome: "fixed", title: "Restricted container port", path: "Dockerfile", kind: "infrastructure", severity: "medium" },
     { ...finding, finding_id: "dependency", outcome: "present", title: "Vulnerable dependency", path: "bun.lock", kind: "dependency", severity: "critical" },
     { ...finding, finding_id: "earlier", outcome: "not_observed", title: "Earlier policy observation", path: "infra/job.yml", kind: "custom_policy", severity: "low" },
-    { ...finding, finding_id: "legacy", outcome: null, title: "Legacy observation", kind: null, severity: null },
+    { ...finding, finding_id: "legacy", state: null, outcome: null, title: "Legacy observation", kind: null, severity: null },
     ...Array.from({ length: 21 }, (_, index) => ({ ...finding, finding_id: `uncertain-${index}`, outcome: "uncertain", title: `Saved observation ${index}`, severity: "low" })),
   ];
   const server = await mockReportFindings(page, rows);
@@ -559,15 +562,15 @@ test("report filters and pagination request server pages and preserve independen
   const report = page.getByRole("region", { name: "Findings at this scan", exact: true });
   const cards = report.locator('[data-slot="finding-card"]');
   const search = page.getByRole("textbox", { name: "Search report findings", exact: true });
-  await expect(cards).toHaveCount(10);
-  await report.getByRole("button", { name: "Next report findings", exact: true }).click();
-  await expect(cards).toHaveCount(10);
-  await expect(report.getByRole("status")).toHaveText("Page 2 of 3 · 26 total");
-  await report.getByRole("button", { name: "Next report findings", exact: true }).click();
-  await expect(cards).toHaveCount(6);
-  await expect(report.getByRole("button", { name: "Next report findings", exact: true })).toBeDisabled();
-  await report.getByRole("button", { name: "Previous report findings", exact: true }).click();
-  await expect(cards).toHaveCount(10);
+  await expect(cards).toHaveCount(11);
+  await report.getByRole("button", { name: "Next open report findings", exact: true }).click();
+  await expect(cards).toHaveCount(11);
+  await expect(report.getByRole("status")).toHaveText("Page 2 of 3 · 24 total");
+  await report.getByRole("button", { name: "Next open report findings", exact: true }).click();
+  await expect(cards).toHaveCount(5);
+  await expect(report.getByRole("button", { name: "Next open report findings", exact: true })).toBeDisabled();
+  await report.getByRole("button", { name: "Previous open report findings", exact: true }).click();
+  await expect(cards).toHaveCount(11);
   expect(server.requests.some((params) => params.get("page") === "2")).toBe(true);
   await search.fill("DOCKERFILE");
   await expect(cards).toHaveCount(1);
@@ -576,15 +579,15 @@ test("report filters and pagination request server pages and preserve independen
   expect(server.requests.at(-1)?.get("q")).toBe("DOCKERFILE");
   expect(server.requests.at(-1)?.get("page")).toBe("1");
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Present 2", exact: true }).click();
+  await page.getByRole("button", { name: "Edit State: Open, Resolved", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Open 24", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(cards).toHaveCount(2);
-  await page.getByRole("button", { name: "Edit Result: Present", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Fixed 1", exact: true }).click();
+  await expect(cards).toHaveCount(1);
+  await expect(report.getByRole("region", { name: "Resolved report findings", exact: true })).toContainText("Resolved");
+  await page.getByRole("button", { name: "Edit State: Resolved", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Open 24", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(cards).toHaveCount(3);
+  await expect(cards).toHaveCount(11);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: "High 1", exact: true }).click();
@@ -599,7 +602,7 @@ test("report filters and pagination request server pages and preserve independen
   await expect(page.getByRole("tab", { name: "Report 26", exact: true })).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "1 of 26 report findings" })).toBeAttached();
   await expect.poll(() => server.requests.at(-1)?.get("kind")).toBe("code");
-  expect(server.requests.at(-1)?.getAll("outcome")).toEqual(["present", "fixed"]);
+  expect(new Set(server.requests.slice(-2).map((params) => params.get("state")))).toEqual(new Set(["open", "resolved"]));
   expect(server.requests.at(-1)?.get("severity")).toBe("high");
   await expect(page.getByRole("link", { name: "Download JSON", exact: true })).toHaveAttribute("href", "/api/v1/security/scans/scan/report?format=json");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -620,9 +623,9 @@ test("report filters and pagination request server pages and preserve independen
   await expect(page.getByRole("heading", { name: "No report findings match these filters", exact: true })).toBeVisible();
   await expect(page.getByText("Unvalidated result remains visible.", { exact: true })).toBeVisible();
   await page.getByRole("tabpanel").getByRole("button", { name: "Clear filters", exact: true }).click();
-  await expect(cards).toHaveCount(10);
+  await expect(cards).toHaveCount(12);
   await expect(search).toBeFocused();
-  await expect(page).toHaveURL((url) => ![...url.searchParams.keys()].some((key) => key.startsWith("report_"))
+  await expect(page).toHaveURL((url) => ![...url.searchParams.keys()].some((key) => key.startsWith("report_") && key !== "report_state") && url.searchParams.get("report_state") === "all"
     && url.searchParams.get("outcome") === "open_repeat" && url.searchParams.get("assessment_outcome") === "withheld");
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Type", exact: true }).click();
@@ -631,7 +634,7 @@ test("report filters and pagination request server pages and preserve independen
   await page.keyboard.press("Escape");
   await expect(cards).toHaveCount(1);
   await expect(report).toContainText("Earlier policy observation");
-  await page.goto("/security/scans/scan?report_outcome=unknown");
+  await page.goto("/security/scans/scan?report_state=unknown");
   await expect(cards).toHaveCount(1);
   await expect(report).toContainText("Legacy observation");
   server.state.failure = 503;
@@ -674,7 +677,7 @@ for (const theme of ["light", "dark"] as const) {
       const before = await cards.first().evaluate((node) => getComputedStyle(node).backgroundColor);
       await cards.first().hover();
       await expect.poll(() => cards.first().evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe(before);
-      await cards.first().getByText("present", { exact: true }).hover();
+      await cards.first().getByText("open", { exact: true }).hover();
       await expect(page.getByRole("tooltip")).toHaveCount(0);
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1564,6 +1567,7 @@ test("repository security tabs show stable totals before opening lists and refre
     items: Array.from({ length: 4 }, (_, index) => ({ ...scan, id: `scan-${index}` })), total: 4, page: 1, page_size: 10,
   } }));
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     findingRequests++;
     const filtered = new URL(route.request().url()).searchParams.has("search");
     return route.fulfill({ json: { items: filtered ? [] : Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })),
@@ -1629,6 +1633,7 @@ test("security scan tabs count saved report observations separately from current
     can_write: true, finding_count: 23, activity_count: 201, activity,
   } }));
   await page.route("**/api/v1/security/scans/scan/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
     return route.fulfill({ json: { items: findings.slice((pageNumber - 1) * 10, pageNumber * 10), total: 23, page: pageNumber, page_size: 10 } });
   });
@@ -1648,10 +1653,10 @@ test("security scan tabs count saved report observations separately from current
   await page.screenshot({ path: `/private/tmp/code-mortis-security-scan-tab-counts-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Findings 23", exact: true }).click();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(10);
-  await page.getByRole("button", { name: "Next findings", exact: true }).click();
-  await expect(page.getByRole("navigation", { name: "findings pagination" }).getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "open findings pagination" }).getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(10);
-  await page.getByRole("button", { name: "Next findings", exact: true }).click();
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
   await expect(page.getByRole("tab", { name: "Findings 23", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
@@ -1675,6 +1680,7 @@ test("scan findings filter new and repeated observations like review runs withou
     report: { findings: [{ ...finding, finding_id: finding.id, outcome: "present", title: "Original report evidence" }] } },
     can_write: true, finding_count: rows.length, activity_count: 0, activity: [] } }));
   await page.route("**/api/v1/security/scans/scan/findings**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const request = route.request();
     if (request.method() !== "GET") writes.push(request.method());
     const params = new URL(request.url()).searchParams;
@@ -1683,7 +1689,7 @@ test("scan findings filter new and repeated observations like review runs withou
       && (!params.has("search") || row.finding.title.toLowerCase().includes(params.get("search")!.toLowerCase())));
     const pageNumber = Number(params.get("page") ?? 1);
     return route.fulfill({ json: { items: selected.slice((pageNumber - 1) * 10, pageNumber * 10).map((row) => row.finding),
-      total: selected.length, page: pageNumber, page_size: 10, result_counts: resultCounts } });
+      total: selected.length, registered_total: rows.length, page: pageNumber, page_size: 10, result_counts: resultCounts } });
   });
   await page.goto("/security/scans/scan?tab=findings&assessment_outcome=withheld");
   const list = page.getByRole("region", { name: "Current findings for this scan", exact: true });
@@ -1695,10 +1701,10 @@ test("scan findings filter new and repeated observations like review runs withou
   await page.getByRole("checkbox", { name: /^Open repeats/ }).click();
   await page.keyboard.press("Escape");
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
-  await list.getByRole("button", { name: "Next findings", exact: true }).click();
+  await list.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
-  await list.getByRole("button", { name: "Next findings", exact: true }).click();
+  await list.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(list.getByText("open", { exact: true })).toHaveCount(1);
   await expect(page.getByRole("status").filter({ hasText: "21 of 28 findings" })).toBeAttached();
@@ -1753,7 +1759,7 @@ test("security tabs display zero for empty repositories and scans", async ({ pag
 test("security lists omit pagination when all results fit on one page", async ({ page }, info) => {
   await mock(page);
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => route.fulfill({ json: {
-    items: Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })), total: 3, page: 1, page_size: 10,
+    items: new URL(route.request().url()).searchParams.get("state") === "resolved" ? [] : Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })), total: new URL(route.request().url()).searchParams.get("state") === "resolved" ? 0 : 3, page: 1, page_size: 10,
   } }));
   await page.goto("/security/repositories/22");
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
@@ -1773,11 +1779,12 @@ for (const history of [false, true]) {
   test(`security ${history ? "scan history" : "findings"} keeps loaded rows on page failure and hides them after access loss`, async ({ page }) => {
     await mock(page);
     await page.clock.install();
-    const label = history ? "scan history" : "findings";
+    const label = history ? "scan history" : "open findings";
     const rows = Array.from({ length: 5 }, (_, index) => ({ ...(history ? scan : finding), id: `item-${index}` }));
     let failure = 503;
     const requests: number[] = [];
     await page.route(`**/api/v1/security/repositories/22/${history ? "scans" : "findings"}?**`, (route) => {
+      if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
       const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
       requests.push(pageNumber);
       return route.fulfill(failure ? { status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Results temporarily unavailable" } }
@@ -1789,17 +1796,17 @@ for (const history of [false, true]) {
     await expect(panel.getByText("Results temporarily unavailable", { exact: true })).toBeVisible();
     await expect(panel.getByText(history ? "No security scans yet" : "No findings in this view", { exact: true })).toHaveCount(0);
     failure = 0;
-    await panel.getByRole("button", { name: `Retry ${label}`, exact: true }).click();
+    await panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first().click();
     await expect(cards).toHaveCount(2);
     const footer = panel.locator('[data-slot="pagination"]');
     await expect(footer.getByRole("status")).toHaveText("Page 1 of 3 · 5 total");
     failure = 503;
     await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
-    await expect(panel.getByRole("button", { name: `Retry ${label}`, exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first()).toBeVisible();
     await expect(cards).toHaveCount(2);
     await expect(footer.getByRole("status")).toHaveText("Page 1 of 3 · 5 total");
     failure = 0;
-    await panel.getByRole("button", { name: `Retry ${label}`, exact: true }).click();
+    await panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first().click();
     await expect(cards).toHaveCount(2);
     await expect(footer.getByRole("status")).toHaveText("Page 2 of 3 · 5 total");
     failure = 403;
@@ -1817,6 +1824,7 @@ test("security findings replace pages, keep live polling, and reset when filters
   const rows = Array.from({ length: 4 }, (_, index) => ({ ...finding, id: `finding-${index}`, title: `Security finding ${index}` }));
   const requests: { page: number; search: string | null }[] = [];
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const params = new URL(route.request().url()).searchParams;
     const pageNumber = Number(params.get("page"));
     const search = params.get("search");
@@ -1832,12 +1840,12 @@ test("security findings replace pages, keep live polling, and reset when filters
   await expect(footer.getByRole("status")).toHaveText("Page 1 of 2 · 4 total");
   await page.clock.fastForward(5000);
   await expect.poll(() => requests.length).toBe(2);
-  await panel.getByRole("button", { name: "Next findings", exact: true }).focus();
+  await panel.getByRole("button", { name: "Next open findings", exact: true }).focus();
   await page.screenshot({ path: `/private/tmp/code-mortis-security-pagination-${info.project.name}.png`, fullPage: true });
   await page.keyboard.press("Enter");
   await expect(cards).toHaveCount(2);
   await expect(footer.getByRole("status")).toHaveText("Page 2 of 2 · 4 total");
-  await expect(panel.getByRole("button", { name: "Next findings", exact: true })).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Next open findings", exact: true })).toBeDisabled();
   await page.clock.fastForward(15000);
   await expect.poll(() => requests.filter((request) => request.page === 2).length).toBeGreaterThan(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -2090,6 +2098,7 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} security fin
   const requests: URLSearchParams[] = [];
   const path = scope === "scan" ? "/security/scans/scan/findings" : "/security/repositories/22/findings";
   await page.route(`**/api/v1${path}?**`, (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
     const pageNumber = Number(params.get("page"));
@@ -2099,9 +2108,9 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} security fin
       page: pageNumber, page_size: 2 } });
   });
   await page.goto(scope === "scan" ? "/security/scans/scan?tab=findings" : "/security/repositories/22");
-  await page.getByRole("button", { name: "Next findings", exact: true }).click();
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
-  for (const [filter, values] of [["Severity", ["High", "Medium"]], ["Type", ["Code", "Secret"]], ...(scope === "repository" ? [["State", ["Open", "Resolved"]]] : [])] as [string, string[]][]) {
+  for (const [filter, values] of [["Severity", ["High", "Medium"]], ["Type", ["Code", "Secret"]]] as [string, string[]][]) {
     await page.getByRole("button", { name: "Filters", exact: true }).click();
     await page.getByRole("menuitem", { name: filter, exact: true }).click();
     await page.getByRole("checkbox", { name: new RegExp(`^${values[0]}(?: |$)`) }).click();
@@ -2110,11 +2119,11 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} security fin
   }
   await expect.poll(() => requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
   await expect.poll(() => requests.at(-1)?.getAll("kind")).toEqual(["code", "secret"]);
-  if (scope === "repository") await expect.poll(() => requests.at(-1)?.getAll("state")).toEqual(["open", "resolved"]);
+  await expect.poll(() => requests.at(-1)?.getAll("state")).toEqual(["open"]);
   await expect.poll(() => requests.at(-1)?.get("page")).toBe("1");
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(2);
   await page.screenshot({ path: info.outputPath(`security-${scope}-multiselect.png`), fullPage: true });
-  await page.getByRole("button", { name: "Next findings", exact: true }).click();
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
   expect(requests.at(-1)?.get("page")).toBe("2");
   expect(requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
@@ -2264,6 +2273,7 @@ test("shared security pagination replaces ten-item pages, keeps focus, and recov
   let hold = true;
   const requests: number[] = [];
   await page.route("**/api/v1/security/repositories/22/findings?**", async (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
     requests.push(pageNumber);
     if (pageNumber === 2 && hold) await new Promise<void>((resolve) => { release = resolve; });
@@ -2273,9 +2283,9 @@ test("shared security pagination replaces ten-item pages, keeps focus, and recov
   await page.goto("/security/repositories/22");
   const panel = page.getByRole("tabpanel");
   const cards = panel.locator('[data-slot="finding-card"]');
-  const pagination = panel.getByRole("navigation", { name: "findings pagination", exact: true });
-  const previous = pagination.getByRole("button", { name: "Previous findings", exact: true });
-  const next = pagination.getByRole("button", { name: "Next findings", exact: true });
+  const pagination = panel.getByRole("navigation", { name: "open findings pagination", exact: true });
+  const previous = pagination.getByRole("button", { name: "Previous open findings", exact: true });
+  const next = pagination.getByRole("button", { name: "Next open findings", exact: true });
   await expect(cards).toHaveCount(10);
   await expect(pagination.getByRole("status")).toHaveText("Page 1 of 3 · 23 total");
   await expect(previous).toBeDisabled();
@@ -2300,7 +2310,7 @@ test("shared security pagination replaces ten-item pages, keeps focus, and recov
   await previous.click();
   await expect(cards.first()).toContainText("Paged finding 10");
   await expect(pagination.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
-  const lastPageResponse = page.waitForResponse((response) => response.url().endsWith("/repositories/22/findings?page=3"));
+  const lastPageResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/repositories/22/findings") && new URL(response.url()).searchParams.get("page") === "3");
   await next.click();
   await (await lastPageResponse).finished();
   await page.clock.runFor(1);
@@ -2321,6 +2331,7 @@ for (const area of ["repository", "scan", "report", "assessment"] as const) {
     const endpoint = area === "repository" ? "/security/repositories/22/findings" : `/security/scans/scan/${area === "scan" ? "findings" : area === "report" ? "report/findings" : "assessments"}`;
     const requests: URLSearchParams[] = [];
     await page.route(`**/api/v1${endpoint}?**`, (route) => {
+      if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
       const params = new URL(route.request().url()).searchParams;
       requests.push(params);
       const pageNumber = Number(params.get("page"));
@@ -2330,19 +2341,19 @@ for (const area of ["repository", "scan", "report", "assessment"] as const) {
         return area === "assessment" ? securityAssessment(String(index), { proposal: { title, path: `src/${index}.py`, severity } })
           : { ...finding, id: String(index), finding_id: String(index), title, severity, outcome: "present" };
       });
-      if (params.get("ordering") === "-severity") rows = [...rows].reverse();
+      if ((params.get("ordering") ?? "-severity") === "-severity") rows = [...rows].reverse();
       return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: 23, registered_total: 23,
         page: pageNumber, page_size: 10, revision: "1", outcome_counts: {}, severity_counts: {}, category_counts: {}, kind_counts: {} } });
     });
-    await page.goto(area === "repository" ? "/security/repositories/22" : `/security/scans/scan?tab=${area === "scan" ? "findings" : area === "assessment" ? "assessment" : "report"}`);
+    await page.goto(area === "repository" ? "/security/repositories/22?ordering=-updated_at" : `/security/scans/scan?tab=${area === "scan" ? "findings&ordering=-updated_at" : area === "assessment" ? "assessment&assessment_ordering=position" : "report&report_ordering=position"}`);
     const panel = page.getByRole("tabpanel");
-    const label = area === "assessment" ? "assessments" : area === "report" ? "report findings" : "findings";
+    const label = area === "assessment" ? "assessments" : area === "report" ? "open report findings" : "open findings";
     await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
     await expect(panel.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
     const field = area === "assessment" ? "Assessment order" : area === "report" ? "Report order" : "Updated";
     await panel.getByRole("button", { name: `Sort by ${field}`, exact: true }).click();
     await page.getByRole("menuitemradio", { name: "Severity", exact: true }).click();
-    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe("-severity");
+    await expect.poll(() => requests.at(-1)?.get("ordering") ?? "-severity").toBe("-severity");
     expect(requests.at(-1)?.get("page")).toBe("1");
     await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered finding 22");
     const sort = panel.getByRole("button", { name: "Sort by Severity", exact: true });
@@ -2357,3 +2368,49 @@ for (const area of ["repository", "scan", "report", "assessment"] as const) {
     if (area === "repository") await page.screenshot({ path: `/private/tmp/code-mortis-ordering-${info.project.name}.png` });
   });
 }
+
+for (const scope of ["repository", "scan", "report"] as const) test(`${scope} findings default to separate open and resolved backend pages ordered by severity`, async ({ page }, info) => {
+  await mock(page);
+  const rows = ["open", "resolved", "false_positive"].flatMap((state) => Array.from({ length: state === "false_positive" ? 1 : 13 }, (_, index) => ({
+    ...finding, id: `${state}-${index}`, finding_id: `${state}-${index}`, state, title: `${state} defect ${index}`, path: `${state}/${index}.py`, severity: index === 12 ? "critical" : "low",
+  })));
+  const endpoint = scope === "repository" ? "/security/repositories/22/findings" : scope === "report" ? "/security/scans/scan/report/findings" : "/security/scans/scan/findings";
+  const requests: URLSearchParams[] = [];
+  await page.route(`**/api/v1${endpoint}?**`, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const selected = rows.filter((row) => row.state === params.get("state"));
+    if ((params.get("ordering") ?? "-severity") === "-severity") selected.sort((a, b) => Number(b.severity === "critical") - Number(a.severity === "critical"));
+    const pageNumber = Number(params.get("page"));
+    return route.fulfill({ json: { items: selected.slice((pageNumber - 1) * 10, pageNumber * 10), total: selected.length,
+      registered_total: rows.length, page: pageNumber, page_size: 10, state_counts: { open: 13, resolved: 13, false_positive: 1 } } });
+  });
+  await page.goto(scope === "repository" ? "/security/repositories/22" : scope === "report" ? "/security/scans/scan" : "/security/scans/scan?tab=findings");
+  const suffix = scope === "report" ? " report" : "";
+  const panel = page.getByRole("tabpanel");
+  const open = panel.getByRole("region", { name: `Open${suffix} findings`, exact: true });
+  const resolved = panel.getByRole("region", { name: `Resolved${suffix} findings`, exact: true });
+  await expect(panel.getByRole("button", { name: "Sort by Severity", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Highest first");
+  await expect(panel.getByRole("button", { name: "Edit State: Open, Resolved", exact: true })).toBeVisible();
+  for (const [group, state] of [[open, "open"], [resolved, "resolved"]] as const) {
+    await expect(group.locator('[data-slot="finding-card"]')).toHaveCount(10);
+    await expect(group.locator('[data-slot="finding-card"]').first()).toContainText(`${state} defect 12`);
+  }
+  await expect(panel.getByText("false_positive defect 0", { exact: true })).toHaveCount(0);
+  await open.getByRole("button", { name: `Next open${suffix} findings`, exact: true }).click();
+  await expect(open.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 13 total");
+  await expect(resolved.getByRole("navigation").getByRole("status")).toHaveText("Page 1 of 2 · 13 total");
+  await resolved.getByRole("button", { name: `Next resolved${suffix} findings`, exact: true }).click();
+  await expect(resolved.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 13 total");
+  await expect(open.locator('[data-slot="finding-card"]')).toHaveCount(3);
+  await panel.getByRole("button", { name: "Sort by Severity", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "File", exact: true }).click();
+  await expect(open.getByRole("navigation").getByRole("status")).toHaveText("Page 1 of 2 · 13 total");
+  await expect(resolved.getByRole("navigation").getByRole("status")).toHaveText("Page 1 of 2 · 13 total");
+  expect(requests.slice(-2).every((params) => params.get("ordering") === "path" && params.get("page") === "1")).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `/private/tmp/code-mortis-finding-groups-${scope}-${info.project.name}.png` });
+  await panel.getByRole("button", { name: "Remove State filter", exact: true }).click();
+  await expect(panel.getByRole("region", { name: `False positive${suffix} findings`, exact: true })).toContainText("false_positive defect 0");
+});

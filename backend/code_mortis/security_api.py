@@ -177,7 +177,7 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
     severity: Annotated[list[Literal["critical", "high", "medium", "low"]] | None, Query()] = None,
     category: Annotated[list[str] | None, Query(max_length=100)] = None,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = PAGE_SIZE,
-    ordering: SnapshotOrdering = "position",
+    ordering: SnapshotOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows, summary = security_assessments.read(db, scan)
@@ -238,17 +238,20 @@ def report(scan_id: str, db: DB, user: USER, format: Literal["json", "markdown"]
 def report_findings(scan_id: str, db: DB, user: USER,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1,
     q: Annotated[str, Query(max_length=256)] = "",
+    state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk", "unknown"]] | None, Query(max_length=100)] = None,
     outcome: Annotated[list[Literal["present", "fixed", "not_observed", "uncertain", "unknown"]] | None, Query(max_length=100)] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Annotated[str, Field(min_length=1, max_length=50)]] | None, Query(max_length=100)] = None,
     finding_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
-    ordering: SnapshotOrdering = "position",
+    ordering: SnapshotOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    rows = scan.report.get("findings", [])
-    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("outcome", "severity", "kind")}
+    rows = [{**row, "state": row.get("state") if row.get("state") in {"open", "resolved", "false_positive", "accepted_risk"} else "unknown"}
+            for row in scan.report.get("findings", [])]
+    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("state", "outcome", "severity", "kind")}
     query = q.strip().casefold()
     items = [row for row in rows if (not finding_id or row.get("finding_id") == finding_id)
+        and (not state or row["state"] in state)
         and (not outcome or (row.get("outcome") or "unknown") in outcome)
         and (not severity or (row.get("severity") or "unknown") in severity)
         and (not kind or (row.get("kind") or "unknown") in kind)
@@ -256,11 +259,11 @@ def report_findings(scan_id: str, db: DB, user: USER,
              (row.get("title"), row.get("path"), row.get("kind"), row.get("evidence", {}).get("explanation"))))]
     items = sort_snapshots(items, ordering)
     return SecurityReportPage(items=items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], total=len(items),
-        registered_total=len(rows), outcome_counts=counts["outcome"], severity_counts=counts["severity"],
+        registered_total=len(rows), state_counts=counts["state"], outcome_counts=counts["outcome"], severity_counts=counts["severity"],
         kind_counts=counts["kind"], page=page, page_size=PAGE_SIZE)
 
 
-def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None, ordering="-updated_at"):
+def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None, ordering="-severity"):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
     result_counts = {}
     if scan_id:
@@ -301,7 +304,7 @@ def findings(repository_id: int, db: DB, user: USER,
              state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk"]] | None, Query(max_length=100)] = None,
              severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
              kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
-             search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-updated_at"):
+             search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-severity"):
     repo_access(db, user, repository_id)
     return finding_page(db, repository_id, page, state, severity, kind, search, ordering=ordering)
 
@@ -309,14 +312,15 @@ def findings(repository_id: int, db: DB, user: USER,
 @router.get("/scans/{scan_id}/findings", response_model=SecurityFindingPage)
 def scan_findings(scan_id: str, db: DB, user: USER,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+    state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk"]] | None, Query(max_length=100)] = None,
     outcome: Annotated[list[Literal["new", "open_repeat", "resolved_repeat", "false_positive_repeat", "accepted_risk_repeat",
                                    "repeated", "recorded", "fixed", "not_observed", "uncertain"]] | None, Query(max_length=100)] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
-    search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-updated_at",
+    search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    return finding_page(db, scan.repository_id, page, None, severity, kind, search, scan_id, outcome, ordering)
+    return finding_page(db, scan.repository_id, page, state, severity, kind, search, scan_id, outcome, ordering)
 
 
 @router.get("/findings/{finding_id}", response_model=SecurityFindingDetail)

@@ -2957,6 +2957,10 @@ export interface components {
             total: number;
             /** Registered Total */
             registered_total: number;
+            /** State Counts */
+            state_counts: {
+                [key: string]: number;
+            };
             /** Outcome Counts */
             outcome_counts: {
                 [key: string]: number;
@@ -5769,6 +5773,7 @@ export interface operations {
             query?: {
                 page?: number;
                 q?: string;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk" | "unknown")[] | null;
                 outcome?: ("present" | "fixed" | "not_observed" | "uncertain" | "unknown")[] | null;
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: string[] | null;
@@ -5845,6 +5850,7 @@ export interface operations {
         parameters: {
             query?: {
                 page?: number;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk")[] | null;
                 outcome?: ("new" | "open_repeat" | "resolved_repeat" | "false_positive_repeat" | "accepted_risk_repeat" | "repeated" | "recorded" | "fixed" | "not_observed" | "uncertain")[] | null;
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
