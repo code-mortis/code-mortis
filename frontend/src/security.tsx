@@ -114,9 +114,12 @@ export function SecurityOverview({ user }: { user: User }) {
   const { query, items: rows, total, denied } = useSecurityPages<SecurityRepo>(`/security/repositories?${request}`);
   const data = query.data?.pages[0];
   return <>
-    <PageTitle title="Security">Scan default branches, inspect supported findings, and verify fixes.</PageTitle>
+    <header className="mb-6">
+      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Security</h1>
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Scan default branches, inspect supported findings, and verify fixes.</p>
+    </header>
     {denied ? <ErrorNotice error={query.error} /> : <>
-      <div className="mb-4"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
+      <div className="mb-6"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
         onSearch={(value) => change("search", value)} onChange={change} filters={[
           { key: "grade", label: "Grade", values: params.getAll("grade"), choices: ["A", "B", "C", "D", "F", "unrated"].map((value) => ({ value, name: value === "unrated" ? "Not rated" : value, count: data?.grade_counts?.[value] ?? 0 })) },
           { key: "status", label: "Scan status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
