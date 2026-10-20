@@ -153,6 +153,7 @@ def test_reinstall_reuses_repositories_settings_and_review_history(remote, clien
         assert db.get(PullRequest, "pr") and db.get(ReviewRun, "published")
         assert db.get(Finding, "finding").status == "open"
         assert db.get(Installation, 10).account_id == db.get(Installation, 11).account_id == 7
+        assert db.get(Installation, 10).uninstalled and not db.get(Installation, 11).uninstalled
 
 
 def test_same_name_does_not_merge_different_or_unknown_account_identities(remote, client):
@@ -256,6 +257,31 @@ def test_account_migration_preserves_existing_rows_and_backfills_verified_jobs(s
             assert db.get(Installation, 12).account_id is None
             assert all(not row.archived for row in db.scalars(select(Installation)))
             assert db.get(Repository, 22).enabled and db.get(PullRequest, "pr")
+    finally:
+        command.upgrade(config, "head")
+
+
+def test_uninstall_migration_only_backfills_confirmed_inactive_installations(seed):
+    with transaction() as db:
+        add_run(db, "published", "completed", "published", [456])
+        db.add_all(Installation(id=identity, account=f"account-{identity}", active=identity == 15)
+                   for identity in range(11, 18))
+        for identity, status in [(11, "done"), (12, "queued"), (13, "failed"), (15, "done")]:
+            db.add(Job(kind="uninstall_installation", status=status,
+                       payload={"installation_id": identity, "delete_accepted": True}))
+        db.add(Job(kind="sync_repositories", status="done", payload={"installation_id": 16}))
+        db.add(Job(kind="uninstall_installation", status="done", payload={"installation_id": "17"}))
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261021_report_grades")
+        command.upgrade(config, "head")
+        with transaction() as db:
+            rows = db.scalars(select(Installation).order_by(Installation.id)).all()
+            assert {row.id for row in rows if row.uninstalled} == {11}
+            assert {row.id for row in rows if row.active} == {10, 15}
+            assert len(rows) == 8 and all(not row.archived for row in rows)
+            assert db.get(Repository, 22).enabled and db.get(PullRequest, "pr")
+            assert db.get(ReviewRun, "published").review_ids == [456]
     finally:
         command.upgrade(config, "head")
 
@@ -444,10 +470,13 @@ def test_accepted_uninstall_waits_for_confirmation_and_never_reactivates(remote,
     assert remote["deletes"] == 1
     with transaction() as db:
         assert not db.get(Installation, 10).active
+        assert not db.get(Installation, 10).uninstalled
         assert not db.get(Repository, 22).active
     remote["installation"] = None
     retry_job(identity)
     assert client.get("/api/v1/installations").json()[0]["status"] == "uninstalled"
+    with transaction() as db:
+        assert db.get(Installation, 10).uninstalled
 
 
 def test_failed_uninstall_can_retry_the_existing_job(remote, client):
@@ -465,6 +494,78 @@ def test_failed_uninstall_can_retry_the_existing_job(remote, client):
         assert db.get(Job, identity).status == "done"
 
 
+@pytest.mark.parametrize("origin", ["local", "external"])
+def test_confirmed_uninstall_stops_polling_and_keeps_history(remote, client, monkeypatch, origin):
+    with transaction() as db:
+        add_run(db, "published", "completed", "published", [456])
+        db.flush()
+        db.add(Finding(id="finding", pr_id="pr", fingerprint="fp", path="a.py", start_line=1, end_line=1,
+                       content="Original finding", last_seen_run_id="published", severity="high", status="open"))
+        queued = reviews.enqueue(db, "sync_repositories", {"installation_id": 10}).id
+    if origin == "local":
+        jobs.execute_job(request_uninstall(client))
+    else:
+        remote["installation"] = None
+        jobs.sync_repositories(10)
+    row = client.get("/api/v1/installations").json()[0]
+    assert row["status"] == "uninstalled" and row["can_remove"]
+
+    monkeypatch.setattr(installations, "remote_installation", lambda *args:
+        pytest.fail("A confirmed uninstall must not be polled again"))
+    jobs.sync_repositories(10)
+    jobs.execute_job(queued)
+    for event in ["installation", "installation_repositories"]:
+        jobs.process_webhook({"event": event, "body": {
+            "action": "unsuspend", "installation": {"id": 10},
+        }})
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        assert saved.uninstalled and not saved.active and not saved.archived
+        assert not db.scalar(select(Job.id).where(Job.kind == "sync_repositories",
+                                                 Job.status.in_(["queued", "running"])))
+        repo = db.get(Repository, 22)
+        assert not repo.active and not repo.enabled and repo.connection_id == "connection"
+        assert db.get(PullRequest, "pr") and db.get(ReviewRun, "published").review_ids == [456]
+        assert db.get(Finding, "finding").status == "open"
+
+
+@pytest.mark.parametrize("state", ["active", "suspended", "inactive"])
+def test_polling_keeps_active_suspended_and_unconfirmed_installations(remote, state):
+    if state == "suspended":
+        remote["installation"]["suspended_at"] = "2026-10-10T00:00:00Z"
+        jobs.sync_repositories(10)
+    elif state == "inactive":
+        with transaction() as db:
+            db.get(Installation, 10).active = False
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        identity = db.scalar(select(Job.id).where(Job.kind == "sync_repositories"))
+        assert identity is not None and not db.get(Installation, 10).uninstalled
+    jobs.execute_job(identity)
+    with transaction() as db:
+        assert db.get(Job, identity).status == "done"
+        assert db.get(Installation, 10).active == (state != "suspended")
+        assert not db.get(Installation, 10).uninstalled
+    remote["installation"]["suspended_at"] = None
+    jobs.sync_repositories(10)
+    with transaction() as db:
+        assert db.get(Installation, 10).active and db.get(Repository, 22).active
+
+
+def test_explicit_reconnect_rechecks_remote_access_and_clears_uninstalled(remote, client):
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        saved.active, saved.uninstalled = False, True
+    assert client.post("/api/v1/installations/10").status_code == 202
+    with transaction() as db:
+        saved = db.get(Installation, 10)
+        assert saved.active and not saved.uninstalled
+    jobs.sync_repositories(10)
+    with transaction() as db:
+        assert db.get(Repository, 22).active
+
+
 @pytest.mark.parametrize("status", [401, 403, 429, 503])
 def test_remote_errors_do_not_mean_removed(remote, client, status):
     remote["error"] = status
@@ -473,6 +574,17 @@ def test_remote_errors_do_not_mean_removed(remote, client, status):
         jobs.sync_repositories(10)
     with transaction() as db:
         assert db.get(Installation, 10).active and db.get(Repository, 22).enabled
+        assert not db.get(Installation, 10).uninstalled
+
+
+@pytest.mark.parametrize("field,value", [("id", 11), ("app_id", 999), ("account", {"id": True})])
+def test_invalid_remote_installation_does_not_mark_uninstalled(remote, field, value):
+    remote["installation"][field] = value
+    with pytest.raises(github.GitHubError):
+        jobs.sync_repositories(10)
+    with transaction() as db:
+        assert db.get(Installation, 10).active and db.get(Repository, 22).enabled
+        assert not db.get(Installation, 10).uninstalled
 
 
 @pytest.mark.parametrize("removed", [True, False])

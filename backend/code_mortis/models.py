@@ -75,6 +75,7 @@ class Installation(Base):
     account_id: Mapped[int | None] = mapped_column(BigInteger)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    uninstalled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Connection(Base):

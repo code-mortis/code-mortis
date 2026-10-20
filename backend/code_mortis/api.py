@@ -1169,6 +1169,7 @@ def connect_installation(installation_id: int, db: DB, user: ADMIN) -> dict:
         db.add(installation)
     installation.active = True
     installation.archived = False
+    installation.uninstalled = False
     installation.account, installation.account_id = remote.account.login, remote.account.id
     enqueue(db, "sync_repositories", {"installation_id": installation_id})
     return {"ok": True}

@@ -79,10 +79,11 @@ celery.conf.update(
 def sync_repositories(installation_id: int):
     with transaction() as db:
         installation = db.scalar(select(Installation).where(Installation.id == installation_id).with_for_update())
-        if not installation or installation.archived:
+        if not installation or installation.archived or installation.uninstalled:
             return
         remote_installation = installations.remote_installation(db, installation_id)
         if remote_installation is None or remote_installation.suspended_at:
+            installation.uninstalled = remote_installation is None
             installations.deactivate(db, installation, "GitHub installation access was removed or suspended.")
             return
         if installations.removing(installations.uninstall_job(db, installation_id)):
@@ -191,7 +192,7 @@ def process_webhook(payload: dict):
         if type(installation_id) is not int or installation_id < 1:
             return
         installation = db.get(Installation, installation_id) if installation_id else None
-        if not installation or installation.archived:
+        if not installation or installation.archived or installation.uninstalled:
             return
         if event == "installation":
             # Read current GitHub state in the sync job instead of replaying stale event state.
@@ -572,7 +573,9 @@ def schedule_reconciliation():
             ReviewRun.check_enabled.is_(True), ReviewRun.check_pending.is_(True)
         )):
             checks.enqueue_sync(db, run)
-        for installation in db.scalars(select(Installation).where(Installation.archived.is_(False))):
+        for installation in db.scalars(select(Installation).where(
+            Installation.archived.is_(False), Installation.uninstalled.is_(False),
+        )):
             enqueue_reconciliation(db, "sync_repositories", {"installation_id": installation.id})
         for repo in db.scalars(
             select(Repository).where(Repository.active.is_(True), Repository.enabled.is_(True))
