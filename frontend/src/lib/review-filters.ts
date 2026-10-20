@@ -37,8 +37,8 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
     if (key === "q" || key === "ordering") continue;
     let values = [...new Set(input.getAll(`${prefix}${key}`))];
     if (key === "status") {
-      values = values.includes("all") ? ["all"] : values.filter((value) => findingStatuses.some((status) => status === value));
-      if (!values.length) values = ["open", "resolved"];
+      values = values.includes("all") ? ["all"] : values.filter((value) => findingStatuses.some((status) => status !== "resolved" && status === value));
+      if (!values.length) values = ["open"];
     }
     if (key === "severity") values = values.filter((value) => findingSeverities.includes(value));
     if (key === "outcome") {

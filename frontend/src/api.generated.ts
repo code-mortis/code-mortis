@@ -2986,6 +2986,10 @@ export interface components {
             can_write?: boolean | null;
             /** Finding Count */
             finding_count?: number | null;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
             /** Scan Count */
             scan_count?: number | null;
         };

@@ -1,10 +1,10 @@
 import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { useRunPages, useRunResource } from "./hooks/use-run-resource";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
-import { getInboxReturn } from "./lib/inbox-filters";
+import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
   Link,
   Navigate,
@@ -274,9 +274,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
-  const filters = useReviewFilters("pull");
-  const statuses = filters.params.getAll("status").filter((value) => value !== "all");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "history"], "findings");
+  const resolved = tab === "resolved";
+  const filters = useReviewFilters(resolved ? "resolved" : "pull");
+  const statuses = resolved ? ["resolved"] : filters.params.getAll("status").filter((value) => value !== "all");
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const search = filters.params.get("q") ?? "";
@@ -290,20 +291,40 @@ export function PullDetail({ admin }: { admin: boolean }) {
     if (value) next.set("finding", value); else next.delete("finding");
     setParams(next, { state: location.state });
   }
-  const filterKey = JSON.stringify([id, filters.canonical]);
-  const [pagination, setPagination] = useState({ filters: filterKey, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
-  if (pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
+  const availableStatuses = resolved ? ["resolved"] : findingStatuses.filter((status) => status !== "resolved");
+  const pages = Object.fromEntries(availableStatuses.map((status) => {
+    const page = Number(params.get(`${status}_page`) ?? 1);
+    return [status, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
+  }));
+  function changePage(status: string, page: number) {
+    const next = new URLSearchParams(params);
+    if (page > 1) next.set(`${status}_page`, String(page)); else next.delete(`${status}_page`);
+    setParams(next, { state: location.state });
+  }
   const findingFilters = new URLSearchParams(filters.params);
-  if (findingFilters.get("status") === "all") findingFilters.delete("status");
+  findingFilters.delete("status");
+  for (const status of statuses.length ? statuses : availableStatuses) findingFilters.append("status", status);
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
-    queryKey: ["pull-findings", id, filters.canonical, pagination.pages],
-    queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
+    queryKey: ["pull-findings", id, resolved, filters.canonical, pages],
+    queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pages, signal),
     enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
     staleTime: 0,
     refetchInterval: 5000,
     retry: false,
-    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id ? previous : undefined,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id && previousQuery?.queryKey[2] === resolved ? previous : undefined,
   });
+  const savedCounts = useRef<{ id: typeof id; counts: Record<string, number> } | null>(null);
+  if (findingsQuery.data) savedCounts.current = { id, counts: findingsQuery.data.status_counts };
+  const counts = savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
+  useEffect(() => {
+    if (!findingsQuery.data || findingsQuery.isPlaceholderData) return;
+    const next = new URLSearchParams(params);
+    for (const group of findingsQuery.data.groups) {
+      if (findingsQuery.data.errors[group.group] || pages[group.group] === group.page) continue;
+      if (group.page > 1) next.set(`${group.group}_page`, String(group.page)); else next.delete(`${group.group}_page`);
+    }
+    if (next.toString() !== params.toString()) setParams(next, { replace: true, state: location.state });
+  }, [findingsQuery.data, findingsQuery.isPlaceholderData, pages, params, setParams, location.state]);
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
@@ -312,9 +333,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const total = findings?.registered_total ?? 0;
   const latest = pr.latest_run;
   const term = search.trim().toLowerCase();
-  const count = (state: string) => findings?.status_counts[state] ?? 0;
+  const count = (state: string) => counts?.[state] ?? 0;
+  const scopeTotal = resolved ? count("resolved") : count("open") + count("dismissed");
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
-  const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
+  const noOpenFindings = !resolved && total > 0 && (!statuses.length || statuses.includes("open")) && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
@@ -388,14 +410,15 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4">
-        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
+        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") + count("dismissed") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
+        <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
-      <TabsContent value="findings" className="min-w-0">
+      {["findings", "resolved"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
-              { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
+              ...(!resolved ? [{ key: "status" as const, label: "Status", values: statuses, choices: availableStatuses.map((value) => ({ value, name: label(value), count: count(value) })) }] : []),
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
@@ -403,7 +426,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
         </div>
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
-        {findings && (findings.total > 0 ? <section aria-label="Findings" className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
+        {findings && (findings.total > 0 ? <section aria-label={resolved ? "Resolved pull request findings" : "Findings"} className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
           {sections.map(({ group: status, items, page, total: groupTotal }) => {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
@@ -417,16 +440,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
                   </span>} />)}
                 <Pagination page={page} pageSize={findings.page_size} total={groupTotal} loading={findingsQuery.isFetching && (findingsQuery.isPlaceholderData || !!error)}
                   error={error ? new Error(error) : null} onRetry={findingsQuery.refetch} label={`${status} findings`}
-                  onPageChange={(next) => setPagination({ filters: filterKey, pages: { ...pagination.pages, [status]: next } })} />
+                  onPageChange={(next) => changePage(status, next)} />
               </div>
             </section>;
           })}
-        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : run_count ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, severity, or type." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
-          {total > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
+        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : scopeTotal ? "No findings match these filters" : resolved ? "No resolved findings" : run_count ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : scopeTotal ? "Try another search, status, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          {noOpenFindings && count("resolved") > 0 ? <Button variant="outline" className="mt-4" onClick={() => setTab("resolved")}>View resolved findings</Button> : scopeTotal > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>Clear filters</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
-      </TabsContent>
+      </TabsContent>)}
       <TabsContent value="history" className="min-w-0"><RunList prId={pr.id} /></TabsContent>
     </Tabs>
     <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>

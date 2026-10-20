@@ -140,6 +140,7 @@ class SecurityRepositoryOut(StrictModel):
     summary: SecuritySummary
     can_write: bool | None = None
     finding_count: int | None = Field(default=None, ge=0)
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
     scan_count: int | None = Field(default=None, ge=0)
 
 

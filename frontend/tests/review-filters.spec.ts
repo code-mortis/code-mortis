@@ -3,10 +3,11 @@ import { normalizeReviewFilters, withReviewFilters } from "../src/lib/review-fil
 
 test("review filters preserve default and explicitly unrestricted finding statuses", () => {
   for (const query of ["", "status=unknown"]) {
-    expect(normalizeReviewFilters(new URLSearchParams(query), "pull").getAll("status")).toEqual(["open", "resolved"]);
+    expect(normalizeReviewFilters(new URLSearchParams(query), "pull").getAll("status")).toEqual(["open"]);
   }
+  expect(normalizeReviewFilters(new URLSearchParams("status=open&status=resolved&status=dismissed"), "pull").getAll("status")).toEqual(["open", "dismissed"]);
   expect(normalizeReviewFilters(new URLSearchParams("status=all"), "pull").getAll("status")).toEqual(["all"]);
-  expect(normalizeReviewFilters(new URLSearchParams("status=resolved&status=resolved&status=unknown"), "pull").getAll("status")).toEqual(["resolved"]);
+  expect(normalizeReviewFilters(new URLSearchParams("status=resolved&status=resolved&status=unknown"), "pull").getAll("status")).toEqual(["open"]);
 });
 
 test("review filters bound URL input to the existing API constraints", () => {

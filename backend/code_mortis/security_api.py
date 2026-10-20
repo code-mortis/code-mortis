@@ -107,9 +107,11 @@ def repository(repository_id: int, db: DB, user: USER):
     repo, remote = repo_access(db, user, repository_id)
     summary = repository_security.summaries(db, [repo.id])[repo.id]
     summary.default_branch = remote.get("default_branch") or summary.default_branch
+    finding_counts = dict(db.execute(select(SecurityFinding.state, func.count())
+        .where(SecurityFinding.repository_id == repo.id).group_by(SecurityFinding.state)).all())
     return SecurityRepositoryOut(repository=repo_out(db, repo), summary=summary,
         can_write=bool(remote.get("permissions", {}).get("push")),
-        finding_count=db.scalar(select(func.count()).select_from(SecurityFinding).where(SecurityFinding.repository_id == repo.id)),
+        finding_count=sum(finding_counts.values()), finding_state_counts=finding_counts,
         scan_count=db.scalar(select(func.count()).select_from(SecurityScan).where(SecurityScan.repository_id == repo.id)))
 
 

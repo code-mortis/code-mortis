@@ -575,6 +575,7 @@ def freshness(sha=SHA):
 def test_security_detail_counts_include_empty_lists(seed, security_github, client):
     detail = client.get("/api/v1/security/repositories/22").json()
     assert detail["finding_count"] == detail["scan_count"] == 0
+    assert detail["finding_state_counts"] == {}
     with transaction() as db:
         scan_id = saved_scan(db, seed, status="completed").id
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
@@ -599,9 +600,10 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
         saved_finding(db, {**seed, "repo": repo}, unrelated)
     detail = client.get("/api/v1/security/repositories/22").json()
     assert detail["finding_count"] == 25 and detail["scan_count"] == 2
+    assert detail["finding_state_counts"] == {"open": 7, "resolved": 6, "false_positive": 6, "accepted_risk": 6}
     page = client.get("/api/v1/security/repositories/22/findings?state=open").json()
     assert page["total"] == 7
-    assert client.get("/api/v1/security/repositories/22").json()["finding_count"] == 25
+    assert client.get("/api/v1/security/repositories/22").json() == detail
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 21 and detail["activity_count"] == 205
     assert len(detail["activity"]) == 200

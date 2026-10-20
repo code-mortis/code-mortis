@@ -27,7 +27,7 @@ import { SecurityBadge, SecurityScanBadge, SecurityScanStatus, SecurityStatus } 
 import { useUrlTab } from "./hooks/use-url-tab";
 import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
-import { label } from "./lib/inbox-filters";
+import { INBOX_MAX_PAGES, label } from "./lib/inbox-filters";
 import { errorFeedback } from "./lib/error-feedback";
 import { runDuration } from "./lib/run-duration";
 
@@ -213,7 +213,7 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
 export function SecurityRepository({ user }: { user: User }) {
   const { id } = useParams();
   const query = useApi<SecurityRepo>(`/security/repositories/${id}`, true);
-  const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "history"], "findings");
   const [scanning, setScanning] = useState(false);
   const [creatingIssues, setCreatingIssues] = useState(false);
   const [queuedIssues, setQueuedIssues] = useState(0);
@@ -221,6 +221,8 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.isPending) return <Loading />;
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
+  const stateCounts = query.data.finding_state_counts;
+  const findingCount = stateCounts ? Object.entries(stateCounts).reduce((sum, [state, count]) => sum + (state === "resolved" ? 0 : count), 0) : query.data.finding_count;
   const slash = repo.full_name.lastIndexOf("/");
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
@@ -242,8 +244,9 @@ export function SecurityRepository({ user }: { user: User }) {
         {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
       </div>
     </section>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count ?? "…"}</span></TabsTrigger><TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
+    <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{findingCount ?? "…"}</span></TabsTrigger><TabsTrigger value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.resolved ?? 0}</span></TabsTrigger><TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><Findings repositoryId={repo.id} /></TabsContent>
+      <TabsContent value="resolved"><Findings repositoryId={repo.id} resolved /></TabsContent>
       <TabsContent value="history"><ScanHistory repositoryId={repo.id} /></TabsContent>
     </Tabs>
     {scanning && <ScanDialog repositoryId={repo.id} user={user} onClose={() => setScanning(false)} />}
@@ -261,12 +264,27 @@ const scanFindingResults = {
 
 const findingStates = ["open", "resolved", "false_positive", "accepted_risk"];
 
-function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path: string, states: string[]) {
+function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path: string, states: string[], rememberPages = false) {
+  const [params, setParams] = useSearchParams();
   const filterKey = JSON.stringify([path, states]);
   const resource = path.split("?")[0];
   const [pagination, setPagination] = useState({ filters: filterKey, pages: {} as Record<string, number> });
-  if (pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
-  const pages = pagination.filters === filterKey ? pagination.pages : {};
+  if (!rememberPages && pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
+  const pages = rememberPages ? Object.fromEntries(states.map((state) => {
+    const page = Number(params.get(`${state}_page`) ?? 1);
+    return [state, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
+  })) : pagination.filters === filterKey ? pagination.pages : {};
+  function updatePages(nextPages: Record<string, number>, replace = false) {
+    if (!rememberPages) { setPagination({ filters: filterKey, pages: nextPages }); return; }
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const state of states) {
+        next.delete(`${state}_page`);
+        if (nextPages[state] > 1) next.set(`${state}_page`, String(nextPages[state]));
+      }
+      return next;
+    }, { replace });
+  }
   const query = useQuery<(Omit<Schema["SecurityFindingPage"], "items"> & { items: T[]; state: string })[], ApiError>({
     queryKey: ["security-findings", resource, filterKey, pages],
     queryFn: async ({ signal }) => {
@@ -298,44 +316,55 @@ function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path:
   const counts = groups[0];
   const registered = counts?.registered_total ?? total;
   useEffect(() => {
-    if (!query.data) return;
+    if (!query.data || query.isPlaceholderData) return;
     const corrected = Object.fromEntries(query.data.map((group) => [group.state, Math.min(pages[group.state] ?? 1, Math.max(1, Math.ceil(group.total / group.page_size)))]));
-    if (Object.entries(corrected).some(([state, page]) => page !== (pages[state] ?? 1))) setPagination({ filters: filterKey, pages: corrected });
-  }, [query.data, filterKey, pages]);
+    if (Object.entries(corrected).some(([state, page]) => page !== (pages[state] ?? 1))) updatePages(corrected, true);
+  }, [query.data, query.isPlaceholderData, filterKey, pages]);
   return { query, denied, groups, total, counts, registered,
     pagination: (group: typeof groups[number]) => ({ page: group.page, pageSize: group.page_size, total: group.total,
       loading: query.isFetching && query.isPlaceholderData, error: query.error, onRetry: query.refetch,
-      onPageChange: (page: number) => { if (page === group.page) void query.refetch(); else setPagination({ filters: filterKey, pages: { ...pages, [group.state]: page } }); },
+      onPageChange: (page: number) => { if (page === group.page) void query.refetch(); else updatePages({ ...pages, [group.state]: page }); },
     }),
   };
 }
 
-function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: string }) {
+function Findings({ repositoryId, scanId, resolved = false }: { repositoryId: number; scanId?: string; resolved?: boolean }) {
   const { params, change, setParams } = useFilters();
   const searchInput = useRef<HTMLInputElement>(null);
-  const ordering = normalizeOrdering(params.get("ordering"), findingOrderings, "-severity");
-  const selectedStates = findingStates.filter((value) => params.getAll("state").includes(value));
-  const states = params.getAll("state").includes("all") ? findingStates : selectedStates.length ? selectedStates : ["open", "resolved"];
+  const prefix = resolved ? "resolved_" : "";
+  const filters = new URLSearchParams();
+  for (const key of ["search", "state", "severity", "kind", "outcome", "ordering"]) for (const value of params.getAll(`${prefix}${key}`)) filters.append(key, value);
+  const availableStates = scanId ? findingStates : resolved ? ["resolved"] : findingStates.filter((state) => state !== "resolved");
+  const ordering = normalizeOrdering(filters.get("ordering"), findingOrderings, "-severity");
+  const selectedStates = availableStates.filter((value) => filters.getAll("state").includes(value));
+  const states = resolved ? ["resolved"] : filters.getAll("state").includes("all") ? availableStates : selectedStates.length ? selectedStates : scanId ? ["open", "resolved"] : ["open"];
   const queryParams = new URLSearchParams();
   if (ordering !== "-severity") queryParams.set("ordering", ordering);
-  for (const key of ["search", "severity", "kind", ...(scanId ? ["outcome"] : [])]) for (const value of params.getAll(key)) queryParams.append(key, value);
+  for (const key of ["search", "severity", "kind", ...(scanId ? ["outcome"] : [])]) for (const value of filters.getAll(key)) queryParams.append(key, value);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
-  const { query, denied, groups, total, counts, registered, pagination } = useFindingGroups<Finding>(`${path}?${queryParams}`, states);
+  const { query, denied, groups, total, counts, registered, pagination } = useFindingGroups<Finding>(`${path}?${queryParams}`, states, !scanId);
+  const registeredTotal = !scanId && counts?.state_counts ? availableStates.reduce((sum, state) => sum + (counts.state_counts?.[state] ?? 0), 0) : registered;
+  const onlyResolved = !scanId && !resolved && !registeredTotal && (counts?.state_counts?.resolved ?? 0) > 0 && !filters.get("search") && !filters.has("severity") && !filters.has("kind");
   function changeFilter(key: string, values: string[]) {
-    change(key, key === "state" && !values.length ? "all" : values);
+    const next = new URLSearchParams(params);
+    next.delete(`${prefix}${key}`);
+    if (key === "state" && !values.length) next.set(`${prefix}state`, "all");
+    else for (const value of values) if (value) next.append(`${prefix}${key}`, value);
+    for (const state of availableStates) next.delete(`${state}_page`);
+    setParams(next, { replace: key === "search" });
   }
   return <div className="pt-4">
     {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this scan. Repeats were observed again; their labels show the current status. Fix verification outcomes remain separate. Saved observations stay unchanged.</p>}
-    <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
-      ordering={{ value: ordering, defaultValue: "-severity", options: findingOrderings, onChange: (value) => change("ordering", value) }}
-      onSearch={(value) => change("search", value)} onChange={changeFilter} filters={[
-        { key: "state", label: "State", values: params.getAll("state").includes("all") ? [] : states, choices: findingStates.map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) },
-        ...(scanId ? [{ key: "outcome", label: "Result", values: params.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
-        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },
-        { key: "kind", label: "Type", values: params.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
-      ]}><span role="status" className="sr-only">{total} of {registered} findings</span></FilterBar></div>
+    <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "-severity", options: findingOrderings, onChange: (value) => changeFilter("ordering", [value]) }}
+      onSearch={(value) => changeFilter("search", [value])} onChange={changeFilter} filters={[
+        ...(!resolved ? [{ key: "state", label: "State", values: filters.getAll("state").includes("all") ? [] : states, choices: availableStates.map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) }] : []),
+        ...(scanId ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
+        { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },
+        { key: "kind", label: "Type", values: filters.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
+      ]}><span role="status" className="sr-only">{total} of {registeredTotal} findings</span></FilterBar></div>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} />{!denied && <Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry findings</Button>}</div>}
-    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} className="space-y-6" aria-busy={query.isPlaceholderData}>
+    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Current findings for this scan" : resolved ? "Resolved repository findings" : "Repository findings"} className="space-y-6" aria-busy={query.isPlaceholderData}>
       {groups.filter((group) => group.total > 0).map((group) => <section key={group.state} aria-label={`${label(group.state)} findings`}>
         <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(group.state)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.total}</span></h2>
         <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
@@ -344,9 +373,14 @@ function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: str
           <Pagination {...pagination(group)} label={`${group.state} findings`} />
         </div>
       </section>)}
-    </section> : !query.error && <Empty title={registered ? "No findings match these filters" : "No findings in this view"}>
-      {registered ? <><p>Try another search, state, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["search", "outcome", "severity", "kind", "page"]) next.delete(key); next.set("state", "all"); setParams(next); searchInput.current?.focus(); }}>Clear filters</Button></> : "Findings will appear here as security scans complete. Change filters to inspect other states."}
-    </Empty>)}
+    </section> : !query.error && <Empty title={onlyResolved ? "No open findings" : registeredTotal ? "No findings match these filters" : "No findings in this view"}>
+      {onlyResolved ? <><p>Resolved findings are available in the Resolved tab.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); next.set("tab", "resolved"); setParams(next); }}>View resolved findings</Button></> : registeredTotal ? <><p>Try another search, state, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => {
+        const next = new URLSearchParams(params);
+        for (const key of ["search", "outcome", "severity", "kind", "state", "page"]) next.delete(`${prefix}${key}`);
+        for (const state of availableStates) next.delete(`${state}_page`);
+        if (!resolved) next.set("state", "all");
+        setParams(next); searchInput.current?.focus();
+      }}>Clear filters</Button></> : resolved ? "Resolved findings will appear here after fixes are verified." : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty>)}
   </div>;
 }
 

@@ -157,6 +157,10 @@ function findingPage(items: Schema["FindingOut"][], params: URLSearchParams) {
   return {
     groups: statuses.filter((group) => (!params.has("status") || params.getAll("status").includes(group)) && (!params.has("group") || params.get("group") === group)).map((group) => {
       const matches = filtered.filter((item) => item.status === group);
+      const ordering = params.get("ordering") ?? "-severity";
+      const field = ordering.replace(/^-/, "") as "severity" | "path" | "created_at" | "updated_at";
+      const ranks: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+      matches.sort((a, b) => (field === "severity" ? ranks[a.severity] - ranks[b.severity] : a[field].localeCompare(b[field])) * (ordering.startsWith("-") ? -1 : 1));
       const page = Math.min(params.has("group") ? Number(params.get("page") ?? 1) : 1, Math.max(1, Math.ceil(matches.length / 10)));
       return { group, items: matches.slice((page - 1) * 10, page * 10), total: matches.length, page, has_more: page * 10 < matches.length };
     }),
@@ -2088,27 +2092,27 @@ test("pull filters, history tabs, and finding tabs survive reload and browser hi
   await mock(page);
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [run],
     findings: [
-      { ...finding, status: "resolved", severity: "high", category: "bug" },
+      { ...finding, status: "dismissed", severity: "high", category: "bug" },
       { ...finding, id: "open", status: "open", severity: "high", category: "bug" },
-      { ...finding, id: "dismissed", status: "dismissed", severity: "high", category: "bug" },
+      { ...finding, id: "resolved", status: "resolved", severity: "high", category: "bug" },
     ],
   }));
-  await page.goto("/pulls/pr?q=retry&status=resolved&severity=high&category=bug");
-  const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
-  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await page.goto("/pulls/pr?q=retry&status=dismissed&severity=high&category=bug");
+  const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
+  await expect(dismissed.getByRole("button")).toHaveCount(1);
   await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("retry");
-  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
   await page.reload();
-  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await expect(dismissed.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
   await expect(page).toHaveURL((url) => url.searchParams.get("status") === "all");
-  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole("button", { name: "Edit Status: Resolved", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
   await page.goForward();
-  await expect(page.getByRole("region", { name: "Dismissed findings", exact: true })).toBeVisible();
-  await resolved.getByRole("button").click();
+  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
+  await dismissed.getByRole("button").click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await sheet.getByRole("button", { name: "View activity", exact: true }).click();
   await expect(page).toHaveURL((url) => url.searchParams.get("finding") === "finding" && url.searchParams.get("finding_tab") === "activity");
@@ -2123,7 +2127,7 @@ test("pull filters, history tabs, and finding tabs survive reload and browser hi
   await page.reload();
   await expect(page.getByRole("tab", { name: /Run history/ })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: /^Findings/ }).click();
-  await expect(resolved.getByRole("button")).toHaveCount(1);
+  await expect(dismissed.getByRole("button")).toHaveCount(1);
 });
 
 test("run tabs and independent finding and assessment filters survive shared URLs", async ({ page }, info) => {
@@ -8058,8 +8062,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await mock(page);
   const latest = { ...run, status: "completed", publication: "published", head_sha: "c".repeat(40) };
   await mockPullDetail(page, () => ({
-    pull_request: { ...pr, draft: true }, repository: repo, can_write: true,
-    runs: [latest, { ...run, id: "older" }],
+    pull_request: { ...pr, draft: true }, repository: repo, can_write: true, runs: [latest, { ...run, id: "older" }],
     findings: [
       { ...finding, sync_intent: null },
       { ...finding, id: "resolved", status: "resolved", severity: "medium", content: "Validate the response before acknowledging a webhook.", path: "src/webhooks/validate.ts", last_seen_run_id: "older" },
@@ -8072,98 +8075,49 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(summary).toContainText("ccccccc");
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
-  await expect(list.getByRole("region")).toHaveCount(2);
-  await expect(list.getByRole("button")).toHaveCount(2);
-  await expect(page.getByRole("heading", { name: `#${pr.number} ${pr.title}`, exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
-  await expect(list.getByRole("region", { name: "Dismissed findings", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(list.getByRole("region")).toHaveCount(3);
-  await expect(list.getByRole("button")).toHaveCount(3);
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  for (const theme of ["light", "dark"]) {
-    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
-    if (await toggle.isVisible()) await toggle.click();
-    await noOverflow(page);
-    await page.evaluate(() => document.fonts.ready);
-    await page.screenshot({ path: `../.impeccable/review/finding-groups-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
-  }
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  await expect(list.getByRole("region")).toHaveCount(1);
   await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
-  await expect(list.getByRole("button")).toHaveCount(2);
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Dismissed/ })).toBeChecked();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Edit Status: Open, Resolved, Dismissed", exact: true })).toBeFocused();
-  await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Edit Status: Open", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 2", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
-  await expect(list.getByRole("button", { name: /Validate the response/ })).toContainText("resolved");
+  await expect(list.getByRole("region")).toHaveCount(2);
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("dismissed");
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
-  await page.getByLabel("Search findings", { exact: true }).fill("VALIDATE.TS");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
+  await page.getByLabel("Search findings", { exact: true }).fill("performance");
   await expect(list.getByRole("button")).toHaveCount(1);
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: "High", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No findings match these filters" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Performance/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "View all findings", exact: true }).click();
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: /Remove (Status|Severity|Type) filter/ })).toHaveCount(0);
-  await page.getByLabel("Search findings", { exact: true }).fill("performance");
-  await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Clear search", exact: true }).click();
-  await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
+  await expect(list.getByRole("button")).toHaveCount(2);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
   await page.getByRole("checkbox", { name: /^Open/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
-  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
-  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
-  await page.keyboard.press("Escape");
-  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeFocused();
+  await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("Validate the response");
+  await expect(list).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
-    await page.getByRole("tab", { name: /Findings/ }).click();
     await noOverflow(page);
-    await page.evaluate(() => document.fonts.ready);
-    await page.screenshot({ path: `../.impeccable/review/pull-detail-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
-    await page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true }).click();
-    await noOverflow(page);
-    await page.screenshot({ path: `../.impeccable/review/pull-filters-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
-    await page.keyboard.press("Escape");
-    await page.getByRole("tab", { name: "Run history" }).click();
+    await page.screenshot({ path: `/private/tmp/code-mortis-pr-resolved-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("tab", { name: /Run history/ }).click();
     await expect(page.getByRole("link", { name: /automatic.*ccccccc/ })).toContainText("GitHub: Published");
-    await expect(page.getByRole("tabpanel").getByRole("status")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Next run history" })).toHaveCount(0);
-    await noOverflow(page);
-    await page.screenshot({ path: `../.impeccable/review/pull-history-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   }
-  await page.getByRole("tab", { name: /Findings/ }).click();
+  await page.getByRole("tab", { name: "Findings 2", exact: true }).click();
   await list.getByRole("button", { name: /retry loop has no upper bound/ }).press("Enter");
   await expect(page.getByRole("dialog", { name: "Finding details" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -8176,34 +8130,30 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   let runs: typeof run[] = [run];
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings }));
   await page.goto("/pulls/pr");
-  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
-  await page.getByRole("button", { name: "Edit Status: Open, Resolved", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Resolved/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).not.toBeChecked();
-  await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "View all findings", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "View resolved findings", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText("Coverage is incomplete");
+  await page.getByLabel("Search resolved findings", { exact: true }).fill("no matches");
+  await expect(page.getByRole("heading", { name: "No findings match these filters", exact: true })).toBeVisible();
   await page.clock.install();
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
-  await page.getByLabel("Search findings", { exact: true }).fill("pending search with no matches");
-  await page.getByRole("button", { name: "View all findings", exact: true }).click();
-  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("");
-  await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
+  await page.getByLabel("Search resolved findings", { exact: true }).fill("pending search with no matches");
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Search resolved findings", { exact: true })).toBeFocused();
   await page.clock.fastForward(500);
   await page.clock.resume();
-  await expect(page.getByRole("region", { name: "Findings", exact: true })).toContainText("resolved");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
   findings = [];
   await page.reload();
+  await expect(page.getByRole("heading", { name: "No resolved findings", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Findings 0", exact: true }).click();
   await expect(page.getByRole("heading", { name: "No findings recorded", exact: true })).toBeVisible();
   await expect(page.getByText("Check run history for completion and coverage. An incomplete review is not a clean result.")).toBeVisible();
   runs = [];
@@ -8370,7 +8320,7 @@ test("run history replaces shifted pages and preserves the server total and curs
   await expect(history.getByRole("button", { name: /Next/ })).toBeDisabled();
 });
 
-test("pull detail paginates each finding status independently and resets pages with filters", async ({ page }, info) => {
+test("pull detail keeps independent findings and resolved backend filters, ordering and pages", async ({ page }, info) => {
   await mock(page);
   const requests: URLSearchParams[] = [];
   page.on("request", (request) => {
@@ -8383,88 +8333,102 @@ test("pull detail paginates each finding status independently and resets pages w
     path: `src/${status}/handler-${index + 1}.ts`, severity: index % 2 ? "medium" : "high",
     category: index === 20 ? "custom_rule" : index === 19 ? "performance" : "bug",
   })));
-  await mockPullDetail(page, () => ({
-    pull_request: pr, repository: repo, can_write: true, runs: [], findings,
-  }));
+  await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [], findings }));
+  let holdResolved = true;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/pulls/pr/findings?**", async (route) => {
+    if (holdResolved && new URL(route.request().url()).searchParams.get("status") === "resolved") await held;
+    await route.fallback();
+  });
   await page.goto("/pulls/pr");
+  const panel = page.getByRole("tabpanel");
   const open = page.getByRole("region", { name: "Open findings", exact: true });
   const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
   const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
-  const rows = (section: typeof open) => section.getByRole("button", { name: /Test finding/ });
+  const rows = (section: typeof open) => section.locator('[data-slot="finding-card"]');
+  const findingsTab = page.getByRole("tab", { name: "Findings 42", exact: true });
+  const resolvedTab = page.getByRole("tab", { name: "Resolved 21", exact: true });
+  await expect(findingsTab).toHaveAttribute("aria-selected", "true");
   await expect(rows(open)).toHaveCount(10);
-  await expect(rows(resolved)).toHaveCount(10);
-  await expect(dismissed).toHaveCount(0);
-  expect(requests[0].getAll("status")).toEqual(["open", "resolved"]);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
-  await expect(rows(open)).toHaveCount(10);
-  await expect.poll(() => requests.some((params) => params.get("status") === "open" && params.get("group") === "open" && params.get("page") === "2")).toBe(true);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  for (const section of [open, resolved, dismissed]) {
-    await expect(rows(section)).toHaveCount(10);
-    await expect(section.getByRole("heading")).toContainText("21");
-    await expect(section.getByText("Page 1 of 3 · 21 total", { exact: true })).toBeVisible();
-  }
-  await noOverflow(page);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `../.impeccable/review/finding-pagination-${info.project.name}.png`, animations: "disabled" });
-  await open.getByRole("button", { name: "Next open findings", exact: true }).press("Enter");
-  await expect(rows(open)).toHaveCount(10);
-  await expect(rows(resolved)).toHaveCount(10);
-  await expect(rows(dismissed)).toHaveCount(10);
-  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
-  await expect(rows(resolved)).toHaveCount(10);
-  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
-  await expect(rows(dismissed)).toHaveCount(10);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
-  await expect(rows(open)).toHaveCount(1);
-  for (const status of ["open", "resolved", "dismissed"]) expect(requests.some((params) => params.get("group") === status && params.get("page") === "2")).toBe(true);
-  expect(requests.some((params) => params.get("group") === "open" && params.get("page") === "3")).toBe(true);
-  await expect(open.getByRole("button", { name: /Next/ })).toBeDisabled();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Custom rule/ })).toBeChecked();
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
-  await page.getByRole("checkbox", { name: /^Performance/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Performance/ })).toBeChecked();
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(2);
-  await page.keyboard.press("Escape");
-  expect(requests.at(-1)?.getAll("category")).toEqual(["custom_rule", "performance"]);
-  expect(requests.at(-1)?.has("group")).toBe(false);
-  await noOverflow(page);
-  await page.screenshot({ path: `../.impeccable/review/finding-type-filter-${info.project.name}.png`, animations: "disabled" });
-  await page.getByRole("button", { name: "Remove Type filter", exact: true }).click();
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
-
-  await page.getByLabel("Search findings", { exact: true }).fill("handler-21.ts");
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(1);
-  await page.getByRole("button", { name: "Clear search", exact: true }).click();
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "High", exact: true })).toBeChecked();
-  await page.keyboard.press("Escape");
-  for (const section of [open, resolved, dismissed]) {
-    await expect(rows(section)).toHaveCount(10);
-    await expect(section.getByRole("heading")).toContainText("11");
-  }
-  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
-  await expect(rows(resolved)).toHaveCount(1);
-  await page.getByRole("button", { name: "Remove Severity filter", exact: true }).click();
-  await expect(rows(resolved)).toHaveCount(10);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
-  await page.keyboard.press("Escape");
-  await expect(rows(open)).toHaveCount(10);
+  await expect(rows(open).first()).toContainText(/high/i);
   await expect(resolved).toHaveCount(0);
   await expect(dismissed).toHaveCount(0);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  for (const section of [open, resolved, dismissed]) await expect(rows(section)).toHaveCount(10);
+  expect(requests[0].getAll("status")).toEqual(["open"]);
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await resolvedTab.click();
+  await expect(findingsTab).toHaveText("Findings 42");
+  await expect(resolvedTab).toHaveText("Resolved 21");
+  holdResolved = false;
+  release();
+  await expect(rows(resolved)).toHaveCount(10);
+  await expect(rows(resolved).first()).toContainText(/high/i);
+  await expect(resolved.getByRole("status")).toHaveText("Page 1 of 3 · 21 total");
+  await expect(panel.getByRole("button", { name: "Sort ascending", exact: true })).toHaveAttribute("title", "Highest first");
+  await expect(panel.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
+  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await findingsTab.click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await panel.getByLabel("Search findings", { exact: true }).fill("handler");
+  await expect(open.getByRole("status")).toHaveText("Page 1 of 3 · 21 total");
+  await panel.getByRole("button", { name: "Sort by Severity", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "File", exact: true }).click();
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await resolvedTab.click();
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(panel.getByLabel("Search resolved findings", { exact: true })).toHaveValue("");
+  await expect(panel.getByRole("button", { name: "Sort by Severity", exact: true })).toBeVisible();
+  for (const [filter, values] of [["Severity", ["High", "Medium"]], ["Type", ["Bug", "Performance"]]] as const) {
+    await panel.getByRole("button", { name: "Filters", exact: true }).click();
+    await page.getByRole("menuitem", { name: filter, exact: true }).click();
+    for (const value of values) await page.getByRole("checkbox", { name: new RegExp(`^${value}(?: |$)`) }).click();
+    await page.keyboard.press("Escape");
+  }
+  await expect(resolved.getByRole("status")).toHaveText("Page 1 of 2 · 20 total");
+  await panel.getByLabel("Search resolved findings", { exact: true }).fill("resolved");
+  await expect.poll(() => requests.at(-1)?.get("q")).toBe("resolved");
+  await panel.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await expect.poll(() => requests.at(-1)?.get("ordering")).toBe("severity");
+  expect(requests.at(-1)?.getAll("status")).toEqual(["resolved"]);
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
+  expect(requests.at(-1)?.getAll("category")).toEqual(["bug", "performance"]);
+  await resolved.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 2 · 20 total");
+  await page.reload();
+  await expect(resolvedTab).toHaveAttribute("aria-selected", "true");
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 2 · 20 total");
+  await expect(panel.getByLabel("Search resolved findings", { exact: true })).toHaveValue("resolved");
+  await findingsTab.click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(panel.getByLabel("Search findings", { exact: true })).toHaveValue("handler");
+  await expect(panel.getByRole("button", { name: "Sort by File", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: /^Edit Severity:/ })).toHaveCount(0);
+  expect(requests.at(-1)?.getAll("severity")).toEqual([]);
+  await page.goBack();
+  await expect(resolvedTab).toHaveAttribute("aria-selected", "true");
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 2 · 20 total");
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/code-mortis-pr-resolved-pagination-${info.project.name}.png`, fullPage: true });
+  await page.goForward();
+  await panel.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(rows(open)).toHaveCount(10);
+  await expect(rows(dismissed)).toHaveCount(10);
+  await expect(resolved).toHaveCount(0);
+  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await panel.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
+  await page.getByRole("checkbox", { name: /^Performance/ }).click();
+  await page.keyboard.press("Escape");
+  for (const section of [open, dismissed]) await expect(rows(section)).toHaveCount(2);
+  await resolvedTab.click();
+  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 2 · 20 total");
 });
 
 for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {
