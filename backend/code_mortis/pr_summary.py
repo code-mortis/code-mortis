@@ -445,7 +445,7 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
             allowance = None if options["summary_token_budget"] is None else options["summary_token_budget"] - consumed
             if allowance is not None and allowance <= 0:
                 raise SummaryUnavailable("Summary token allowance exhausted before correction.")
-            remaining = max(0, int(deadline - time.monotonic())) if deadline is not None else None
+            remaining = max(1, int(deadline - time.monotonic())) if deadline is not None else None
             request_context = review_context.sanitize({**context,
                 **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
             spent = {"tokens": None}

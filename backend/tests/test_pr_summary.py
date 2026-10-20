@@ -911,3 +911,29 @@ def test_summary_correction_preserves_allowance_and_never_retries_limits(seed, g
         assert run.summary["status"] == ("completed" if failure == "corrected" else "failed")
         assert run.summary["tokens"] == (None if failure == "unknown" else 18 if failure == "corrected" else 14 if failure == "repeat" else 7)
     assert calls == ([60000, 59993] if failure in {"corrected", "repeat"} else [60000])
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_summary_fractional_remaining_time_keeps_a_positive_timeout(seed, generation, monkeypatch, kind):
+    identity = ready_run()
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        if kind != "api":
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": connection.owner_id},
+                      "settings": {**run.config["settings"], "summary_timeout_seconds": 1}}
+    ticks = iter([0.0])
+    monkeypatch.setattr(pr_summary.time, "monotonic", lambda: next(ticks, 0.75))
+    timeouts = []
+    def response(timeout):
+        timeouts.append(timeout)
+        assert type(timeout) is int and timeout > 0
+        return copy.deepcopy(RESULT), {"tokens": 7}
+    monkeypatch.setattr(verification, "api_verify", lambda *args, **kwargs: response(args[6]))
+    monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped: response(payload["timeout"]))
+    generate(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.summary["status"] == "completed" and run.summary["tokens"] == 7
+    assert timeouts == [1]
