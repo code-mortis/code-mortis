@@ -14,6 +14,7 @@ from . import github, repository_security, security_assessments, security_issues
 from .api import DB, USER, repo_access, repo_out
 from .db import now
 from .models import SecurityActivity, SecurityFinding, SecurityOccurrence, SecurityScan
+from .ordering import FindingOrdering, SnapshotOrdering, list_order, sort_snapshots
 from .schemas import RepositoryOut
 from .security_schemas import (
     SecurityActivityOut,
@@ -176,6 +177,7 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
     severity: Annotated[list[Literal["critical", "high", "medium", "low"]] | None, Query()] = None,
     category: Annotated[list[str] | None, Query(max_length=100)] = None,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = PAGE_SIZE,
+    ordering: SnapshotOrdering = "position",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows, summary = security_assessments.read(db, scan)
@@ -186,6 +188,7 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
         and (not severity or row.proposal.get("severity") in severity)
         and (not category or row.proposal.get("category") in category)
         and (not query or any(query in str(row.proposal.get(key, "")).casefold() for key in ("title", "path", "category")))]
+    rows = sort_snapshots(rows, ordering, snapshot=lambda row: row.proposal)
     return SecurityAssessmentPage(items=rows[(page - 1) * page_size:page * page_size], total=len(rows),
         registered_total=summary.total, outcome_counts=summary.outcome_counts, severity_counts=dict(severity_counts),
         category_counts=dict(category_counts), revision=summary.revision, page=page, page_size=page_size)
@@ -239,6 +242,7 @@ def report_findings(scan_id: str, db: DB, user: USER,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Annotated[str, Field(min_length=1, max_length=50)]] | None, Query(max_length=100)] = None,
     finding_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+    ordering: SnapshotOrdering = "position",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows = scan.report.get("findings", [])
@@ -250,12 +254,13 @@ def report_findings(scan_id: str, db: DB, user: USER,
         and (not kind or (row.get("kind") or "unknown") in kind)
         and (not query or any(query in str(value or "").casefold() for value in
              (row.get("title"), row.get("path"), row.get("kind"), row.get("evidence", {}).get("explanation"))))]
+    items = sort_snapshots(items, ordering)
     return SecurityReportPage(items=items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], total=len(items),
         registered_total=len(rows), outcome_counts=counts["outcome"], severity_counts=counts["severity"],
         kind_counts=counts["kind"], page=page, page_size=PAGE_SIZE)
 
 
-def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None):
+def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None, ordering="-updated_at"):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
     result_counts = {}
     if scan_id:
@@ -282,7 +287,8 @@ def finding_page(db, repository_id, page, state, severity, kind, search, scan_id
     if search:
         query = query.where(SecurityFinding.title.icontains(search, autoescape=True) | SecurityFinding.path.icontains(search, autoescape=True))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    rows = db.scalars(query.order_by(SecurityFinding.updated_at.desc(), SecurityFinding.id)
+    rows = db.scalars(query.order_by(*list_order(ordering, {"created_at": SecurityFinding.created_at, "updated_at": SecurityFinding.updated_at,
+        "severity": SecurityFinding.severity, "path": SecurityFinding.path}, SecurityFinding.id))
                       .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
     return SecurityFindingPage(items=[SecurityFindingOut.model_validate(row) for row in rows], total=total,
                                page=page, page_size=PAGE_SIZE, result_counts=result_counts, registered_total=registered_total,
@@ -295,9 +301,9 @@ def findings(repository_id: int, db: DB, user: USER,
              state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk"]] | None, Query(max_length=100)] = None,
              severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
              kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
-             search: Annotated[str, Query(max_length=200)] = ""):
+             search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-updated_at"):
     repo_access(db, user, repository_id)
-    return finding_page(db, repository_id, page, state, severity, kind, search)
+    return finding_page(db, repository_id, page, state, severity, kind, search, ordering=ordering)
 
 
 @router.get("/scans/{scan_id}/findings", response_model=SecurityFindingPage)
@@ -307,10 +313,10 @@ def scan_findings(scan_id: str, db: DB, user: USER,
                                    "repeated", "recorded", "fixed", "not_observed", "uncertain"]] | None, Query(max_length=100)] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
-    search: Annotated[str, Query(max_length=200)] = "",
+    search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-updated_at",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    return finding_page(db, scan.repository_id, page, None, severity, kind, search, scan_id, outcome)
+    return finding_page(db, scan.repository_id, page, None, severity, kind, search, scan_id, outcome, ordering)
 
 
 @router.get("/findings/{finding_id}", response_model=SecurityFindingDetail)

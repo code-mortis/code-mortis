@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from code_mortis import github
-from code_mortis.analytics import amount, recorded_usage
+from code_mortis.analytics import amount, ordered, recorded_usage
 from code_mortis.db import transaction
 from code_mortis.models import (
     Finding,
@@ -289,3 +289,25 @@ def test_mean_review_duration_uses_only_valid_finished_samples(client, durations
     result = get(client, "reviews")
     assert result["mean_duration_seconds"] == expected
     assert result["duration_samples"] == len(durations)
+
+
+def test_ordering_changes_breakdowns_on_server_and_keeps_trends_chronological(client):
+    with transaction() as db:
+        run(db)
+        for index in range(4):
+            finding(db, f"ordered-{index}", category="security" if index else "bug", severity="high" if index else "low")
+    for view in ("overview", "findings", "reviews", "usage"):
+        named = get(client, view, QUERY + "&ordering=-key")
+        counted = get(client, view, QUERY + "&ordering=-count")
+        rows = named["categories"] if view in {"overview", "findings"} else named["outcomes"] if view == "reviews" else named["models"]
+        assert [row["key"] for row in rows] == sorted([row["key"] for row in rows], reverse=True)
+        assert [point["date"] for point in named.get("trend", [])] == [point["date"] for point in counted.get("trend", [])]
+        assert client.get("/api/v1/analytics/" + view + QUERY + "&ordering=invalid").status_code == 422
+    assert [row["count"] for row in get(client, "findings", QUERY + "&ordering=-count")["categories"]] == [3, 1]
+
+
+@pytest.mark.parametrize("ordering, expected", [("count", [0, 10, None]), ("-count", [10, 0, None])])
+def test_ordering_keeps_unknown_usage_after_reported_values(ordering, expected):
+    rows = [{"key": "missing", "count": None}, {"key": "known", "count": 10}, {"key": "zero", "count": 0}]
+    result = ordered(rows, ordering, key=lambda row: row["key"], count=lambda row: row["count"])
+    assert [row["count"] for row in result] == expected

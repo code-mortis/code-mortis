@@ -36,6 +36,7 @@ export function useReviewFilters(scope: ReviewFilterScope) {
   }
   function clear() {
     const next = new URLSearchParams(scope === "pull" ? "status=all" : "");
+    if (params.has("ordering")) next.set("ordering", params.get("ordering")!);
     setParams(withReviewFilters(raw, next, scope), { state: location.state });
     setNavigation((current) => ({ ...current, reset: current.reset + 1 }));
   }

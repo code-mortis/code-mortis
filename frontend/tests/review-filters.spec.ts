@@ -62,3 +62,19 @@ test("run finding results normalize without consuming assessment outcomes", () =
   expect(cleared.get("tab")).toBe("assessment");
   expect(cleared.get("finding")).toBe("one");
 });
+
+
+test("review ordering is validated per list and independent across tabs", () => {
+  const raw = new URLSearchParams("ordering=-updated_at&assessment_ordering=-severity&resolved_ordering=path");
+  expect(normalizeReviewFilters(raw, "pull").get("ordering")).toBe("-updated_at");
+  expect(normalizeReviewFilters(raw, "assessment").get("ordering")).toBe("-severity");
+  expect(normalizeReviewFilters(raw, "resolved").get("ordering")).toBe("path");
+  expect(normalizeReviewFilters(raw, "run").has("ordering")).toBe(false);
+  const next = withReviewFilters(raw, new URLSearchParams("ordering=-path"), "assessment");
+  expect(next.get("ordering")).toBe("-updated_at");
+  expect(next.get("assessment_ordering")).toBe("-path");
+  expect(next.get("resolved_ordering")).toBe("path");
+  for (const scope of ["pull", "run", "assessment", "resolved"] as const) {
+    expect(normalizeReviewFilters(new URLSearchParams(`${scope === "assessment" ? "assessment_" : scope === "resolved" ? "resolved_" : ""}ordering=invalid`), scope).has("ordering")).toBe(false);
+  }
+});

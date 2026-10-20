@@ -8987,3 +8987,48 @@ for (const resource of ["candidates", "resolved"] as const) {
     await expect(cards).toHaveCount(10);
   });
 }
+
+for (const area of ["pull", "run", "assessment", "resolved"] as const) {
+  test(`${area} filters send shared ordering to the backend and preserve focus`, async ({ page }) => {
+    const rows = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `ordered-${index}`, content: `Backend ordered review ${index}`,
+      path: `src/${String(22 - index).padStart(2, "0")}.py`, severity: index === 22 ? "critical" : index === 0 ? "low" : "medium" }));
+    const candidates = rows.map((row, index) => ({ ...auditCandidate(index), snapshot: row }));
+    const occurrences = rows.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null }));
+    await mock(page, { candidates, resolved: rows, occurrences, assessment: auditSummary(23) });
+    if (area === "pull") await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, findings: rows, runs: [] }));
+    const endpoint = area === "pull" ? "/pulls/pr/findings" : `/runs/run${area === "run" ? "" : area === "assessment" ? "/candidates" : "/resolved"}`;
+    const requests: URLSearchParams[] = [];
+    await page.route(`**/api/v1${endpoint}**`, (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== `/api/v1${endpoint}`) return route.fallback();
+      const params = url.searchParams;
+      requests.push(params);
+      const ordered = ["-severity", "path"].includes(params.get("ordering") ?? "") ? [...rows].reverse() : rows;
+      const pageNumber = Number(params.get("page") ?? 1);
+      const shown = ordered.slice((pageNumber - 1) * 10, pageNumber * 10);
+      const data = area === "pull" ? findingPage(rows, params) : area === "assessment" ? candidatePage(candidates, params) : resolvedPage(rows, params);
+      if (area === "pull") (data as Schema["FindingsOut"]).groups[0].items = shown;
+      else if (area !== "run") (data as Schema["ResolvedPage"] | Schema["CandidatePage"]).items = area === "assessment"
+        ? shown.map((row) => candidates[rows.indexOf(row)]) : shown;
+      return route.fulfill({ json: area === "run" ? { run, pull_request: pr, repository: repo,
+        occurrences: ordered.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null })), can_write: true } : data });
+    });
+    await page.goto(area === "pull" ? "/pulls/pr" : `/runs/run?tab=${area === "run" ? "findings" : area}`);
+    const panel = page.getByRole("tabpanel");
+    if (area !== "run") {
+      await panel.getByRole("button", { name: area === "pull" ? "Next open findings" : area === "assessment" ? "Next assessments" : "Next resolved findings", exact: true }).click();
+      await expect(panel.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+    }
+    const defaultField = area === "run" ? "Severity" : area === "assessment" ? "Assessment order" : "Created";
+    await panel.getByRole("button", { name: `Sort by ${defaultField}`, exact: true }).click();
+    const selected = area === "run" ? "File" : "Severity";
+    await page.getByRole("menuitemradio", { name: selected, exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe(area === "run" ? "path" : "-severity");
+    if (area !== "run") expect(requests.at(-1)?.get("page") ?? "1").toBe("1");
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered review 22");
+    await expect(panel.getByRole("button", { name: `Sort by ${selected}`, exact: true })).toBeFocused();
+    await panel.getByRole("button", { name: area === "run" ? "Sort descending" : "Sort ascending", exact: true }).click();
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered review 0");
+    await noOverflow(page);
+  });
+}

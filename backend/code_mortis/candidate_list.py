@@ -2,6 +2,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import ReviewCandidate, ReviewRun
+from .ordering import list_order
 from .schemas import CandidateFilters, CandidateOut, CandidatePage
 
 
@@ -42,7 +43,9 @@ def list_candidates(db: Session, run: ReviewRun, filters: CandidateFilters) -> C
     size = filters.page_size
     page = min(filters.page, max(1, (total + size - 1) // size))
     items = db.scalars(select(ReviewCandidate).where(*conditions).order_by(
-        ReviewCandidate.position, ReviewCandidate.id,
+        *list_order(filters.ordering, {"position": ReviewCandidate.position, "created_at": ReviewCandidate.created_at,
+            "finished_at": ReviewCandidate.finished_at, "severity": severity, "path": ReviewCandidate.snapshot["path"].as_string()},
+            ReviewCandidate.position, ReviewCandidate.id),
     ).offset((page - 1) * size).limit(size))
     return CandidatePage(
         items=[CandidateOut.model_validate(item) for item in items], total=total,

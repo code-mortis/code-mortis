@@ -2314,3 +2314,46 @@ test("shared security pagination replaces ten-item pages, keeps focus, and recov
   expect(requests.at(-1)).toBe(1);
   await expect(page.getByRole("button", { name: /Load more/ })).toHaveCount(0);
 });
+
+for (const area of ["repository", "scan", "report", "assessment"] as const) {
+  test(`${area} filters share right-aligned backend ordering and reset the page`, async ({ page }, info) => {
+    await mock(page);
+    const endpoint = area === "repository" ? "/security/repositories/22/findings" : `/security/scans/scan/${area === "scan" ? "findings" : area === "report" ? "report/findings" : "assessments"}`;
+    const requests: URLSearchParams[] = [];
+    await page.route(`**/api/v1${endpoint}?**`, (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      requests.push(params);
+      const pageNumber = Number(params.get("page"));
+      let rows = Array.from({ length: 23 }, (_, index) => {
+        const severity = index === 22 ? "critical" : index === 0 ? "low" : "medium";
+        const title = `Backend ordered finding ${index}`;
+        return area === "assessment" ? securityAssessment(String(index), { proposal: { title, path: `src/${index}.py`, severity } })
+          : { ...finding, id: String(index), finding_id: String(index), title, severity, outcome: "present" };
+      });
+      if (params.get("ordering") === "-severity") rows = [...rows].reverse();
+      return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: 23, registered_total: 23,
+        page: pageNumber, page_size: 10, revision: "1", outcome_counts: {}, severity_counts: {}, category_counts: {}, kind_counts: {} } });
+    });
+    await page.goto(area === "repository" ? "/security/repositories/22" : `/security/scans/scan?tab=${area === "scan" ? "findings" : area === "assessment" ? "assessment" : "report"}`);
+    const panel = page.getByRole("tabpanel");
+    const label = area === "assessment" ? "assessments" : area === "report" ? "report findings" : "findings";
+    await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
+    await expect(panel.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+    const field = area === "assessment" ? "Assessment order" : area === "report" ? "Report order" : "Updated";
+    await panel.getByRole("button", { name: `Sort by ${field}`, exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Severity", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe("-severity");
+    expect(requests.at(-1)?.get("page")).toBe("1");
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered finding 22");
+    const sort = panel.getByRole("button", { name: "Sort by Severity", exact: true });
+    await expect(sort).toBeFocused();
+    const sortBounds = await sort.boundingBox();
+    const filterBounds = await panel.getByRole("button", { name: "Filters", exact: true }).boundingBox();
+    expect(sortBounds!.x).toBeGreaterThan(filterBounds!.x);
+    await panel.getByRole("button", { name: "Sort ascending", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe("severity");
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered finding 0");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (area === "repository") await page.screenshot({ path: `/private/tmp/code-mortis-ordering-${info.project.name}.png` });
+  });
+}

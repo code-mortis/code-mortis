@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .ordering import CandidateOrdering, FindingOrdering
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -580,6 +582,7 @@ CandidateOutcome = Literal["new", "repeated", "rejected", "withheld", "pending"]
 
 
 class CandidateFilters(StrictModel):
+    ordering: CandidateOrdering = "position"
     q: str = Field(default="", max_length=256)
     outcome: list[CandidateOutcome] = Field(default_factory=list, max_length=5)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
@@ -602,6 +605,7 @@ class CandidatePage(BaseModel):
 
 
 class ResolvedFilters(StrictModel):
+    ordering: FindingOrdering = "-created_at"
     q: str = Field(default="", max_length=256)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
@@ -703,6 +707,7 @@ FindingStatus = Literal["open", "resolved", "dismissed"]
 
 
 class FindingFilters(StrictModel):
+    ordering: FindingOrdering = "-created_at"
     q: str = Field(default="", max_length=256)
     status: list[FindingStatus] = Field(default_factory=list, max_length=3)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)

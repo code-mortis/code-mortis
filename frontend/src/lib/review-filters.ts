@@ -1,3 +1,4 @@
+import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./ordering";
 import { INBOX_QUERY_MAX_LENGTH } from "./inbox-filters";
 
 export const findingStatuses = ["open", "resolved", "dismissed"] as const;
@@ -18,12 +19,12 @@ export const candidateOutcomes = [
   { value: "pending", name: "Awaiting assessment" },
 ];
 export type ReviewFilterScope = "pull" | "run" | "assessment" | "resolved";
-export type ReviewFilterKey = "q" | "status" | "severity" | "category" | "outcome";
+export type ReviewFilterKey = "q" | "status" | "severity" | "category" | "outcome" | "ordering";
 export const reviewFilterKeys = {
-  pull: ["q", "status", "severity", "category"],
-  run: ["q", "outcome", "severity", "category"],
-  assessment: ["q", "outcome", "severity", "category"],
-  resolved: ["q", "severity", "category"],
+  pull: ["q", "status", "severity", "category", "ordering"],
+  run: ["q", "outcome", "severity", "category", "ordering"],
+  assessment: ["q", "outcome", "severity", "category", "ordering"],
+  resolved: ["q", "severity", "category", "ordering"],
 } as const;
 export const reviewFilterPrefixes = { pull: "", run: "", assessment: "assessment_", resolved: "resolved_" };
 
@@ -33,7 +34,7 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
   const q = input.get(`${prefix}q`)?.trim().slice(0, INBOX_QUERY_MAX_LENGTH);
   if (q) result.set("q", q);
   for (const key of reviewFilterKeys[scope]) {
-    if (key === "q") continue;
+    if (key === "q" || key === "ordering") continue;
     let values = [...new Set(input.getAll(`${prefix}${key}`))];
     if (key === "status") {
       values = values.includes("all") ? ["all"] : values.filter((value) => findingStatuses.some((status) => status === value));
@@ -47,6 +48,10 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
     if (key === "category") values = values.map((value) => value.trim()).filter((value) => value.length > 0 && value.length <= 50);
     for (const value of [...new Set(values)].slice(0, 100)) result.append(key, value);
   }
+  const orderings = scope === "run" ? runFindingOrderings : scope === "assessment" ? assessmentOrderings : findingOrderings;
+  const defaultOrdering = scope === "run" ? "-severity" : scope === "assessment" ? "position" : "-created_at";
+  const ordering = normalizeOrdering(input.get(`${prefix}ordering`), orderings, defaultOrdering);
+  if (ordering !== defaultOrdering) result.set("ordering", ordering);
   return result;
 }
 

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { AssessmentStatus } from "./components/assessment-status";
 import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, StatusGroup, words } from "./components/common";
 import { ModelPicker } from "./components/model-picker";
 import { FilterBar } from "./components/filter-bar";
+import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/ordering";
 import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
@@ -16,7 +17,7 @@ import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
@@ -80,8 +81,6 @@ export function SecurityOverview({ user }: { user: User }) {
   const search = params.get("search") ?? "";
   const requestedOrdering = params.get("ordering") ?? "-updated_at";
   const ordering = ["updated_at", "-updated_at", "repository", "-repository"].includes(requestedOrdering) ? requestedOrdering : "-updated_at";
-  const field = ordering.replace(/^-/, "");
-  const descending = ordering.startsWith("-");
   const orderings: Record<string, string> = { updated_at: "Updated", repository: "Repository" };
   const request = new URLSearchParams();
   for (const key of ["search", "grade", "status"]) for (const value of params.getAll(key)) request.append(key, value);
@@ -98,19 +97,7 @@ export function SecurityOverview({ user }: { user: User }) {
         onSearch={(value) => change("search", value)} onChange={change} filters={[
           { key: "grade", label: "Grade", values: params.getAll("grade"), choices: ["A", "B", "C", "D", "F", "unrated"].map((value) => ({ value, name: value === "unrated" ? "Not rated" : value, count: data?.grade_counts?.[value] ?? 0 })) },
           { key: "status", label: "Scan status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
-        ]}>
-        <div className="flex shrink-0 items-center gap-2" role="group" aria-label="Ordering">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild><Button variant="outline" className="bg-card" aria-label={`Sort by ${orderings[field]}`}><ArrowUpDown className="text-muted-foreground" />{orderings[field]}</Button></DropdownMenuTrigger>
-            <DropdownMenuContent align="end" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]">
-              <DropdownMenuRadioGroup value={field} onValueChange={(value) => { if (value !== field) change("ordering", value === "updated_at" ? `-${value}` : value); }}>
-                {Object.entries(orderings).map(([value, name]) => <DropdownMenuRadioItem key={value} value={value}>{name}</DropdownMenuRadioItem>)}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button variant="outline" size="icon" className="bg-card" title={field === "updated_at" ? descending ? "Newest first" : "Oldest first" : descending ? "Z to A" : "A to Z"} aria-label={descending ? "Sort ascending" : "Sort descending"} onClick={() => change("ordering", descending ? field : `-${field}`)}>{descending ? <ArrowDown /> : <ArrowUp />}</Button>
-        </div>
-      </FilterBar></div>
+        ]} ordering={{ value: ordering, defaultValue: "-updated_at", options: orderings, onChange: (value) => change("ordering", value) }} /></div>
       {query.isPending ? <Loading /> : !rows.length && !query.error ? <Empty title={data?.registered_total ? "No matching repositories" : "No repositories available"}>{data?.registered_total ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
         <div className="overflow-hidden rounded-lg border bg-card">
           <div aria-hidden="true" data-slot="security-repository-heading" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Repository</span><span>Scan status</span><span>Open findings</span><span>Latest scan</span><span /></div>
@@ -274,7 +261,9 @@ const scanFindingResults = {
 function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: string }) {
   const { params, change, setParams } = useFilters();
   const searchInput = useRef<HTMLInputElement>(null);
+  const ordering = normalizeOrdering(params.get("ordering"), findingOrderings, "-updated_at");
   const queryParams = new URLSearchParams();
+  if (ordering !== "-updated_at") queryParams.set("ordering", ordering);
   for (const key of ["search", "severity", "kind", ...(!scanId ? ["state"] : [])]) for (const value of params.getAll(key)) queryParams.append(key, value);
   if (scanId) for (const value of params.getAll("outcome")) queryParams.append("outcome", value);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
@@ -284,6 +273,7 @@ function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: str
   return <div className="pt-4">
     {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this scan. Repeats were observed again; their labels show the current status. Fix verification outcomes remain separate. Saved observations stay unchanged.</p>}
     <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "-updated_at", options: findingOrderings, onChange: (value) => change("ordering", value) }}
       onSearch={(value) => change("search", value)} onChange={change} filters={[
         ...(scanId ? [{ key: "outcome", label: "Result", values: params.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: resultCounts[value] ?? 0 })) }]
           : [{ key: "state", label: "State", values: params.getAll("state"), choices: ["open", "resolved", "false_positive", "accepted_risk"].map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) }]),
@@ -384,7 +374,9 @@ function ReportFindings({ scanId, registeredTotal, onOpen }: { scanId: string; r
   const [params, setParams] = useSearchParams();
   const searchInput = useRef<HTMLInputElement>(null);
   const query = params.get("report_q") ?? "";
+  const ordering = normalizeOrdering(params.get("report_ordering"), snapshotOrderings, "position");
   const request = new URLSearchParams();
+  if (ordering !== "position") request.set("ordering", ordering);
   for (const key of ["q", "outcome", "severity", "kind"]) for (const value of params.getAll(`report_${key}`)) request.append(key, value);
   const { query: pages, items, total, denied, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/report/findings?${request}`);
   const data = pages.data;
@@ -404,6 +396,7 @@ function ReportFindings({ scanId, registeredTotal, onOpen }: { scanId: string; r
   if (denied) return <ErrorNotice error={pages.error} />;
   return <div className="space-y-4">
     <FilterBar query={query} searchLabel="Search report findings" searchPlaceholder="Search report findings…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "position", options: snapshotOrderings, onChange: (value) => change("ordering", [value]) }}
       onSearch={(value) => change("q", [value])} onChange={change} filters={filters}>
       <span role="status" className="sr-only">{total} of {data?.registered_total ?? registeredTotal} report findings</span>
     </FilterBar>
@@ -440,7 +433,9 @@ function SecurityAssessments({ scan, summary, onOpen }: {
 }) {
   const [params, setParams] = useSearchParams();
   const searchInput = useRef<HTMLInputElement>(null);
+  const ordering = normalizeOrdering(params.get("assessment_ordering"), snapshotOrderings, "position");
   const filters = new URLSearchParams();
+  if (ordering !== "position") filters.set("ordering", ordering);
   for (const key of ["q", "outcome", "severity", "category"]) for (const value of params.getAll(`assessment_${key}`)) filters.append(key, value);
   const { query, items, denied, pagination } = usePagedList<SecurityAssessment>(
     `/security/scans/${scan.id}/assessments?${filters}`, true, summary?.revision,
@@ -456,6 +451,7 @@ function SecurityAssessments({ scan, summary, onOpen }: {
   return <div className="mt-6 space-y-4">
     {summary && <p role="status" aria-label="Assessment progress" className="text-xs tabular-nums text-muted-foreground">{summary.status_counts?.queued ?? 0} queued · {summary.status_counts?.running ?? 0} running · {summary.status_counts?.completed ?? 0} completed · {summary.status_counts?.failed ?? 0} failed{(summary.status_counts?.interrupted ?? 0) > 0 && ` · ${summary.status_counts?.interrupted} interrupted`}</p>}
     <FilterBar query={filters.get("q") ?? ""} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "position", options: { ...snapshotOrderings, position: "Assessment order" }, onChange: (value) => change("ordering", [value]) }}
       onSearch={(value) => change("q", [value])} onChange={change} filters={[
         { key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: assessmentOutcomes.map((choice) => ({ ...choice, count: data?.outcome_counts?.[choice.value] ?? 0 })) },
         { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: data?.severity_counts?.[value] ?? 0 })) },

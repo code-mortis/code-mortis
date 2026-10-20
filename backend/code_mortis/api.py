@@ -59,6 +59,7 @@ from .models import (
     User,
     WebhookDelivery,
 )
+from .ordering import RunFindingOrdering, list_order
 from .reviews import (
     ACTIVE,
     can_publish,
@@ -628,7 +629,7 @@ def start_run(pr_id: str, db: DB, user: USER, body: StartRunInput | None = None)
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
-def run_detail(run_id: str, db: DB, user: USER):
+def run_detail(run_id: str, db: DB, user: USER, ordering: RunFindingOrdering = "-severity"):
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
@@ -654,7 +655,9 @@ def run_detail(run_id: str, db: DB, user: USER):
                 "is_new": new_findings.get(item.finding_id), "current_status": status,
             })
             for item, status in db.execute(select(Occurrence, Finding.status)
-                .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id))
+                .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id)
+                .order_by(*list_order(ordering, {"severity": Occurrence.snapshot["severity"].as_string(),
+                    "path": Occurrence.snapshot["path"].as_string()}, Occurrence.id)))
         ],
         resolved_count=resolved_count, resolved_revision=resolved_revision,
         assessment_revision=run.progress.get("assessment_revision", 0),

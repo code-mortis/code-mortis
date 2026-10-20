@@ -293,3 +293,19 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.screenshot({ path: `../.impeccable/review/analytics-overview-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
 });
+
+for (const tab of ["overview", "findings", "reviews", "usage"] as const) {
+  test(`analytics ${tab} filters order backend breakdowns and keep date order`, async ({ page }) => {
+    const requests = await mock(page);
+    await page.goto(`/analytics?tab=${tab}&period=all`);
+    const toolbar = page.getByRole("group", { name: "Analytics filters", exact: true });
+    await toolbar.getByRole("button", { name: `Sort by ${tab === "usage" ? "Tokens" : "Count"}`, exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.searchParams.get("ordering")).toBe("key");
+    await toolbar.getByRole("button", { name: "Sort descending", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.searchParams.get("ordering")).toBe("-key");
+    expect(requests.at(-1)?.pathname).toBe(`/api/v1/analytics/${tab}`);
+    if (tab === "findings") await expect(page.getByRole("group", { name: "Finding filters", exact: true }).getByRole("button", { name: "Sort by Name", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}

@@ -8,6 +8,7 @@ from .schemas import InboxRepository, StrictModel
 
 
 class AnalyticsFilters(StrictModel):
+    ordering: Literal["count", "-count", "key", "-key"] | None = None
     repo: list[Annotated[int, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=100)
     from_at: AwareDatetime | None = None
     to_at: AwareDatetime | None = None

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import update
 from test_inbox import pull, run
 
 from code_mortis import github
@@ -379,3 +380,52 @@ def test_run_lists_fetch_loaded_window_in_one_request(seed, github_stub, client,
         assert not {item["id"] for item in page["items"]} & {item["id"] for item in next_page["items"]}
         for invalid in [0, 9, 101, 100000]:
             assert client.get(path, params={"page_size": invalid}).status_code == 422
+
+
+@pytest.mark.parametrize("path", ["/pulls/pr/findings", "/runs/run/resolved", "/runs/run/candidates", "/runs/run"])
+def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub, client, path):
+    at = now()
+    with transaction() as db:
+        current = run(db, db.get(PullRequest, "pr"), "completed", "run")
+        for index in range(21):
+            severity = ["low", "medium", "high", "critical"][index % 4]
+            snapshot = {"path": f"src/{20 - index:02}.py", "severity": severity, "content": f"Finding {index}"}
+            db.add(Finding(id=f"finding-{index:02}", pr_id="pr", fingerprint=str(index), status="resolved",
+                **snapshot, start_line=1, end_line=1, last_seen_run_id=current.id,
+                created_at=at + timedelta(seconds=index), updated_at=at - timedelta(seconds=index)))
+            db.flush()
+            db.add(Occurrence(id=f"occurrence-{index:02}", finding_id=f"finding-{index:02}", run_id=current.id, snapshot=snapshot))
+            db.add(ReviewCandidate(id=f"candidate-{index:02}", run_id=current.id, position=index, snapshot=snapshot,
+                created_at=at + timedelta(seconds=index)))
+            db.flush()
+            db.add(FindingVerification(finding_id=f"finding-{index:02}", run_id=current.id,
+                occurrence_id=f"occurrence-{index:02}", head_sha=current.head_sha, finding_version=0,
+                status="completed", verdict="fixed", resolution="resolved"))
+
+        if path == "/runs/run":
+            db.execute(update(Finding).where(Finding.pr_id == "pr").values(severity="low", path="changed-live.py"))
+
+    def read(ordering, page=1):
+        params = {"ordering": ordering}
+        if path != "/runs/run":
+            params["page"] = page
+        if path == "/pulls/pr/findings":
+            params["group"] = "resolved"
+        response = client.get("/api/v1" + path, params=params)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        return data["groups"][0]["items"] if "groups" in data else data.get("occurrences", data.get("items"))
+
+    ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    for ordering in ("severity", "-severity", "path", "-path"):
+        rows = read(ordering) if path == "/runs/run" else [item for page in (1, 2, 3) for item in read(ordering, page)]
+        assert len(rows) == 21
+        evidence = [row.get("snapshot", row) for row in rows]
+        values = [ranks[row["severity"]] if "severity" in ordering else row["path"] for row in evidence]
+        assert values == sorted(values, reverse=ordering.startswith("-"))
+        assert read(ordering) == read(ordering)
+    if path != "/runs/run":
+        assert read("-created_at")[0]["id"].endswith("20")
+        if path != "/runs/run/candidates":
+            assert read("-updated_at")[0]["id"].endswith("00")
+    assert client.get("/api/v1" + path, params={"ordering": "invalid"}).status_code == 422

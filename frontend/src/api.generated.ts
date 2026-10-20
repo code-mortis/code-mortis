@@ -3553,6 +3553,7 @@ export interface operations {
     analytics_overview_api_v1_analytics_overview_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3588,6 +3589,7 @@ export interface operations {
     analytics_findings_api_v1_analytics_findings_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3626,6 +3628,7 @@ export interface operations {
     analytics_reviews_api_v1_analytics_reviews_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3661,6 +3664,7 @@ export interface operations {
     analytics_usage_api_v1_analytics_usage_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -4078,6 +4082,7 @@ export interface operations {
     pull_findings_api_v1_pulls__pr_id__findings_get: {
         parameters: {
             query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 status?: ("open" | "resolved" | "dismissed")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
@@ -4115,7 +4120,9 @@ export interface operations {
     };
     run_detail_api_v1_runs__run_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                ordering?: "severity" | "-severity" | "path" | "-path";
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -4147,6 +4154,7 @@ export interface operations {
     run_resolved_api_v1_runs__run_id__resolved_get: {
         parameters: {
             query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
@@ -4184,6 +4192,7 @@ export interface operations {
     run_candidates_api_v1_runs__run_id__candidates_get: {
         parameters: {
             query?: {
+                ordering?: "position" | "-position" | "created_at" | "-created_at" | "finished_at" | "-finished_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 outcome?: ("new" | "repeated" | "rejected" | "withheld" | "pending")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
@@ -5594,6 +5603,7 @@ export interface operations {
                 category?: string[] | null;
                 page?: number;
                 page_size?: number;
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5763,6 +5773,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: string[] | null;
                 finding_id?: string | null;
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5800,6 +5811,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5837,6 +5849,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {

@@ -3267,3 +3267,38 @@ def test_security_repository_ordering_uses_latest_security_changes_before_pagina
     assert identities({"ordering": "-repository"}) == [22, *range(124, 99, -1)]
     assert client.get(path, params={"search": "app-0", "ordering": "-updated_at"}).json()["items"][0]["repository"]["id"] == 103
     assert client.get(path, params={"ordering": "invalid"}).status_code == 422
+
+
+def test_security_ordering_sorts_full_lists_and_preserves_saved_evidence(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        rows = []
+        for index in range(21):
+            severity = "unknown" if index == 0 else ["low", "medium", "high", "critical"][index % 4]
+            finding = saved_finding(db, seed, scan, severity=severity, path=f"src/{20 - index:02}.py")
+            db.flush()
+            rows.append({"id": finding.id, "finding_id": finding.id, "severity": severity,
+                         "path": finding.path, "title": f"Saved title {index}"})
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+        scan.report = {"findings": rows}
+        scan.stages = {"analysis": {"status": "completed"}}
+        scan.coverage = {"inventory": {"app.py": {}}}
+        scan.progress = {"tasks": {"analysis:app.py": {"status": "completed", "result": {"findings": rows}}}}
+        scan_id = scan.id
+    paths = ["/repositories/22/findings", f"/scans/{scan_id}/findings", f"/scans/{scan_id}/report/findings", f"/scans/{scan_id}/assessments"]
+    ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    for path in paths:
+        for ordering in ("severity", "-severity", "path", "-path"):
+            pages = [client.get("/api/v1/security" + path, params={"ordering": ordering, "page": page}) for page in (1, 2, 3)]
+            assert all(page.status_code == 200 for page in pages), [page.text for page in pages]
+            items = [row.get("proposal", row) for page in pages for row in page.json()["items"]]
+            assert len(items) == 21
+            if "severity" in ordering:
+                assert items[-1]["severity"] == "unknown"
+                values = [ranks[row["severity"]] for row in items[:-1]]
+            else:
+                values = [row["path"] for row in items]
+            assert values == sorted(values, reverse=ordering.startswith("-"))
+        assert client.get("/api/v1/security" + path, params={"ordering": "invalid"}).status_code == 422
+    with transaction() as db:
+        assert db.get(SecurityScan, scan_id).report["findings"] == rows

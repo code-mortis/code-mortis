@@ -82,6 +82,7 @@ import {
 import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
+import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { SecurityGrade } from "./components/security-grade";
@@ -392,7 +393,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-created_at", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
               { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
@@ -601,7 +602,7 @@ function ResolvedList({ runId, running, revision, tick, onOpen }: {
   const last = query.data;
   const findings = query.data?.items ?? [];
   return <div className="space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-created_at", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
         { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
@@ -634,7 +635,7 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
   const last = query.data;
   const candidates = query.data?.items ?? [];
   return <div className="mt-6 space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "position", options: assessmentOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "outcome", label: "Result", values: params.getAll("outcome"), choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
@@ -746,7 +747,14 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
 
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
-  const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
+  const [params] = useSearchParams();
+  const ordering = normalizeOrdering(params.get("ordering"), runFindingOrderings, "-severity");
+  const path = `/runs/${id}${ordering === "-severity" ? "" : `?ordering=${ordering}`}`;
+  const query = useQuery<Schema["RunDetail"], ApiError>({
+    queryKey: ["run-detail", id, ordering], queryFn: ({ signal }) => api(path, "GET", undefined, undefined, signal),
+    refetchInterval: 5000, staleTime: 0, retry: false,
+    placeholderData: (previous) => previous?.run.id === id ? previous : undefined,
+  });
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} tick={query.dataUpdatedAt} />;
@@ -966,7 +974,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
-        <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+        <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: runFindingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
           filters={[
             { key: "outcome", label: "Result", values: outcomes, choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
               name: value === "repeated" ? "Repeats with unknown status" : value === "recorded" ? "Unclassified findings" : `${name}s`,
