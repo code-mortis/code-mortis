@@ -439,10 +439,14 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
 
 
 @pytest.mark.parametrize("change", ["approval", "permission"])
-def test_sync_rechecks_approval_and_permission_before_comment_mutation(seed, security_github, monkeypatch, change):
+@pytest.mark.parametrize("partial", [False, True])
+def test_sync_rechecks_approval_and_permission_before_comment_mutation(seed, security_github, monkeypatch, change, partial):
     with transaction() as db:
-        scan = saved_scan(db, seed, status="completed")
+        scan = saved_scan(db, seed, status="partial" if partial else "completed")
         finding = saved_finding(db, seed, scan, state="resolved")
+        if partial:
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="fixed",
+                snapshot={"version": 0, "state": "resolved", "verification": {"verdict": "fixed"}}))
         identity, operation = finding.id, uid()
         finding.issue = {"number": 9, "id": 99, "node_id": "issue-node", "operation_id": operation,
             "actor_id": 7, "desired_state": "closed", "intent_version": 0, "verification_scan_id": scan.id,
@@ -473,6 +477,48 @@ def test_sync_rechecks_approval_and_permission_before_comment_mutation(seed, sec
     assert writes == []
     with transaction() as db:
         assert db.get(SecurityFinding, identity).issue["sync_status"] == "failed"
+
+
+@pytest.mark.parametrize("proof", ["fixed", "missing", "uncertain", "not_observed", "stale", "other_finding", "other_scan", "failed_scan"])
+def test_partial_scan_issue_close_requires_this_findings_applied_verification(seed, security_github, monkeypatch, proof):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="failed" if proof == "failed_scan" else "partial")
+        finding = saved_finding(db, seed, scan, state="resolved")
+        finding.version = 1
+        identity, operation = finding.id, uid()
+        finding.issue = {"number": 9, "id": 99, "node_id": "issue-node", "operation_id": operation,
+            "actor_id": 7, "desired_state": "closed", "intent_version": 1, "verification_scan_id": scan.id}
+        if proof != "missing":
+            other = saved_finding(db, seed, scan)
+            db.add(SecurityOccurrence(scan_id=saved_scan(db, seed).id if proof == "other_scan" else scan.id,
+                finding_id=other.id if proof == "other_finding" else finding.id,
+                outcome=proof if proof in {"uncertain", "not_observed"} else "fixed",
+                snapshot={"version": 0 if proof == "stale" else 1, "state": "resolved",
+                          "verification": {"verdict": "fixed"}}))
+        marker = security_issues.marker(finding, operation)
+    bot = {"login": "mortis-test[bot]", "type": "Bot"}
+    remote = {"id": 99, "node_id": "issue-node", "number": 9, "state": "open", "body": marker,
+        "html_url": "https://github.com/team/project/issues/9", "repository_url": "https://api.github.com/repos/team/project",
+        "user": bot, "closed_by": None}
+    writes = []
+
+    def request(method, path, token, **kwargs):
+        if method == "GET":
+            return dict(remote) if "/issues/9" in path else {"sha": SHA} if "/commits/" in path else security_github
+        writes.append(method)
+        if method == "PATCH":
+            remote.update(state=kwargs["json"]["state"], closed_by=bot)
+        return dict(remote)
+
+    monkeypatch.setattr(github, "request", request)
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [])
+    security_issues.sync(identity)
+    assert writes == (["POST", "PATCH"] if proof == "fixed" else [])
+    with transaction() as db:
+        issue = db.get(SecurityFinding, identity).issue
+        assert issue["sync_status"] == ("synced" if proof == "fixed" else "failed")
+        if proof == "fixed":
+            assert issue["closed_by_app"] and issue["remote_state"] == "closed"
 
 
 def test_redaction_failure_after_provider_result_retains_paid_usage(tmp_path, monkeypatch):
@@ -805,6 +851,76 @@ def test_resolution_requires_complete_current_evidence(seed, security_github, co
         assert (finding.state == "resolved") == resolved
         assert scan.grade == ("A" if resolved else "D")
         assert scan.report["commit"] == SHA
+
+
+def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(seed, security_github, monkeypatch, tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"bun.lock": {"code": False, "hash": digest("updated"), "lines": 1}}
+    item.read = lambda path, sha=None: "original" if sha else "updated"
+    item.renamed = lambda sha, path: path
+    item.diff = lambda sha: "lockfile updated"
+    packages = [{"name": f"dependency-{index}", "version": "1.1.0"} for index in range(40)]
+    packages.append({"name": "http-cache-semantics", "version": "4.3.0"})
+    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "bun.lock")
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "problems": [], "metadata": {},
+        "targets": {"bun.lock": {"packages": packages}}})
+    monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Dependency verification must not dispatch inference"))
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed")
+        fixed = [saved_finding(db, seed, prior, kind="dependency", path="bun.lock", package=p["name"],
+            installed_version="1.0.0", fixed_version="1.1.0").id for p in packages[:-1]]
+        unknown = saved_finding(db, seed, prior, kind="dependency", title="Disputed cache advisory", path="bun.lock",
+            package="http-cache-semantics", installed_version="4.2.0", fixed_version="").id
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid())).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == "partial" and scan.stages["verification"]["status"] == "partial"
+        assert scan.stages["verification"]["completed"] == scan.stages["verification"]["total"] == 41
+        assert all(db.get(SecurityFinding, key).state == "resolved" for key in fixed)
+        assert db.get(SecurityFinding, unknown).state == "open"
+        assert {row["outcome"] for row in scan.report["findings"] if row["finding_id"] in fixed} == {"fixed"}
+        assert "Disputed cache advisory" in scan.error and "bun.lock" in scan.error
+        assert "safe version" in scan.error and "Previous findings still require verification" not in scan.error
+        assert scan.report["problems"] == [scan.error] and scan.progress["tokens"] == 0
+        assert scan.grade == "D" and security.summaries(db, [22])[22].state == "incomplete"
+        assert len(list(db.scalars(select(SecurityActivity).where(SecurityActivity.action == "finding_resolved")))) == 40
+        markdown = security.markdown_report(scan.report)
+        assert "### Fix verification" in markdown and "safe version" in markdown
+
+
+@pytest.mark.parametrize("blocker", ["coverage", "outdated", "branch", "unsupported", "cancelled", "permission", "version", "triage"])
+def test_independent_resolution_preserves_global_guards_and_finding_versions(seed, security_github, monkeypatch, blocker):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        first, second, unknown = [saved_finding(db, seed, scan) for _ in range(3)]
+        identity, ids = scan.id, [row.id for row in (first, second, unknown)]
+        verdicts = {key: {"verdict": "fixed" if key != unknown.id else "uncertain", "explanation": "Checked", "finding_version": 0} for key in ids}
+        if blocker in {"version", "triage"}:
+            first.version += 1
+        if blocker == "triage":
+            first.state = "false_positive"
+        if blocker == "cancelled":
+            scan.cancel_requested = True
+    fresh = {**freshness("c" * 40 if blocker == "outdated" else SHA), "default_branch": "other" if blocker == "branch" else "main"}
+    if blocker == "permission":
+        monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("Access revoked")))
+        with pytest.raises(ValueError, match="Access revoked"):
+            security.finish(identity, verdicts, [], fresh, True)
+    else:
+        security.finish(identity, verdicts, ["Source coverage incomplete"] if blocker == "coverage" else [], fresh, blocker != "unsupported")
+    with transaction() as db:
+        assert db.get(SecurityFinding, ids[0]).state == ("false_positive" if blocker == "triage" else "open")
+        assert db.get(SecurityFinding, ids[1]).state == ("resolved" if blocker in {"version", "triage"} else "open")
+        assert db.get(SecurityFinding, ids[2]).state == "open"
+        if blocker not in {"cancelled", "permission"}:
+            scan = db.get(SecurityScan, identity)
+            assert scan.status == "partial"
+            if blocker in {"version", "triage"}:
+                assert {row["finding_id"]: row["outcome"] for row in scan.report["findings"]} == {
+                    ids[0]: "not_observed", ids[1]: "fixed", ids[2]: "uncertain"}
 
 
 def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
