@@ -530,7 +530,7 @@ test("ignored run status keeps restoration navigation outside the live region", 
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/pr-ignored-run-${info.project.name}.png` });
   await restore.press("Enter");
-  await expect(page).toHaveURL(/\/pulls\/pr$/);
+  await expect(page).toHaveURL(/\/pulls\/pr(?:\?.*)?$/);
   await expect(page.getByRole("region", { name: "Ignored pull request" })).toBeVisible();
 });
 
@@ -2701,7 +2701,7 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   await expect(gaps.getByText(missing.path, { exact: true })).toBeVisible();
   await expect(coverage.getByRole("button", { name: /View coverage/ })).toHaveCount(0);
   await coverage.getByText("Inspect coverage report", { exact: true }).click();
-  await expect(coverage.locator("pre")).toContainText(failed.reason);
+  await expect(coverage.getByRole("region", { name: "Code snippet", exact: true })).toContainText(failed.reason);
   await noOverflow(page);
 });
 
@@ -4015,7 +4015,9 @@ test("oversized review explains its outcome and links to editable limits through
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
   await page.goto("/repositories");
-  await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(reason);
+  const row = page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]");
+  await expect(row.getByText("skipped", { exact: true })).toBeVisible();
+  await expect(row).not.toContainText(reason);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
   await page.getByRole("tab", { name: /Run history/ }).click();
@@ -4874,6 +4876,11 @@ for (const example of feedbackCases) {
     if (example.fileReason) {
       await page.getByRole("tab", { name: "Coverage", exact: true }).click();
       const files = page.getByRole("region", { name: "Files not reviewed", exact: true });
+      if (example.name === "token budget") {
+        await expect(files.getByText("The analysis could not continue within its configured limits. Review the token budget and prompt limit before retrying.", { exact: true })).toBeVisible();
+        await expect(files.getByText(example.fileReason, { exact: true })).toBeHidden();
+        await files.getByText("Technical details", { exact: true }).click();
+      }
       await expect(files.getByText(example.fileReason, { exact: true })).toBeVisible();
     }
     if (example.state.status === "blocked") {

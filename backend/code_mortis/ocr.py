@@ -72,6 +72,8 @@ def command(
     timeout: int | None = 60,
     stopped: Callable[[], bool] = lambda: False,
 ) -> tuple[int, str, str]:
+    if args and args[0] == settings().ocr_binary and any(part in {"review", "scan"} for part in args[1:2]):
+        env = {**env, "CM_OCR_REDACTION_FILE": str(Path.home() / ".opencodereview" / "redaction.json")}
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             args,
@@ -194,13 +196,22 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
             "language": review_settings.get("language", "English"),
             "mcp_servers": {},
         }
+        redaction = folder / "redaction.json"
+        def update_redaction():
+            redaction_values = [credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
+                                *credentials.get("redaction_values", [])]
+            fd = os.open(redaction, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as file:
+                json.dump(redaction_values, file)
+        update_redaction()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as file:
             json.dump(data, file)
         try:
-            yield
+            yield update_redaction
         finally:
             path.unlink(missing_ok=True)
+            redaction.unlink(missing_ok=True)
             for name in ("sessions", "logs"):
                 directory = folder / name
                 if directory.is_dir() and not directory.is_symlink():
@@ -209,8 +220,8 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
 
 def check_version(directory: Path, env: dict):
     code, output, _ = command([settings().ocr_binary, "version"], directory, env, timeout=10)
-    if code or not re.search(rf"\bv{re.escape(settings().ocr_version)}\b", output):
-        raise ValueError(f"The review worker needs Open Code Review (OCR) version {settings().ocr_version}. Ask the administrator to update the worker image.")
+    if code or not re.search(rf"\bv{re.escape(settings().ocr_version)}\b", output) or "+cm-context" not in output:
+        raise ValueError(f"The review worker needs Open Code Review (OCR) version {settings().ocr_version} with the Code Mortis context guard. Rebuild and restart the worker image.")
 
 
 def test_connection(connection: dict, credentials: dict) -> str:
@@ -463,8 +474,10 @@ def review(
                 stopped,
                 progress,
                 checkpoint or {},
-                before_analysis=before_analysis,
+                before_analysis=before_analysis, credentials={**credentials, "redaction_values": [*credentials.get("redaction_values", []), token]},
             ))
+        from .review_context import prepare_ocr_redaction
+
         args = [
             settings().ocr_binary,
             "review",
@@ -500,7 +513,8 @@ def review(
             args += ["--rule", str(rules)]
         check_version(directory, env)
         limited = None
-        with configuration(connection, credentials, review_settings, stopped):
+        credentials.setdefault("redaction_values", []).append(token)
+        with configuration(connection, credentials, review_settings, stopped) as update_redaction:
             if review_settings.get("max_files") is not None:
                 code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
                 if code:
@@ -520,6 +534,9 @@ def review(
             if before_analysis:
                 before_analysis(limited)
             if limited is None:
+                if credentials.get("redaction_rules"):
+                    prepare_ocr_redaction(repo, env, merge_base, head_sha, credentials, stopped)
+                    update_redaction()
                 code, output, _ = command(
                     args, repo, env, timeout=None, stopped=stopped
                 )

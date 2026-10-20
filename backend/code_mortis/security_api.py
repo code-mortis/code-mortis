@@ -27,6 +27,7 @@ from .security_schemas import (
     SecurityIssueCandidatePage,
     SecurityIssueInput,
     SecurityIssuePreview,
+    SecurityIssueReapproval,
     SecurityReportPage,
     SecurityRepositoryOut,
     SecurityRotation,
@@ -350,4 +351,11 @@ def create_issue(finding_id: str, body: SecurityIssueInput, db: DB, user: USER):
 def sync_issue(finding_id: str, db: DB, user: USER):
     finding, _, _ = finding_access(db, user, finding_id, write=True, lock=True)
     security_issues.retry(db, finding, user)
+    return SecurityFindingOut.model_validate(finding)
+
+
+@router.post("/findings/{finding_id}/github-issue/reapprove", response_model=SecurityFindingOut, status_code=202)
+def reapprove_issue(finding_id: str, body: SecurityIssueReapproval, db: DB, user: USER):
+    finding, _, _ = finding_access(db, user, finding_id, write=True, lock=True)
+    security_issues.reapprove(db, finding, user, body)
     return SecurityFindingOut.model_validate(finding)

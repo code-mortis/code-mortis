@@ -12,7 +12,7 @@ from .models import AppConfig, Installation, Membership, Repository, SecurityFin
 from .reviews import enqueue
 from .security import clean_text
 from .security_engine import secure_digest
-from .security_schemas import SecurityIssuePreview
+from .security_schemas import ISSUE_BODY_LIMIT, SecurityIssuePreview
 
 
 def marker(finding, operation):
@@ -23,9 +23,9 @@ def preview(repo, finding):
     evidence = finding.evidence
     sha = evidence["source_sha"]
     anchor = f"#L{evidence['start_line']}-L{evidence.get('end_line', evidence['start_line'])}" if evidence.get("start_line") else ""
-    lines = [f"## {finding.title}", "", f"Severity: **{finding.severity.title()}**", "",
-             evidence.get("explanation", ""), "", "### Evidence", "",
-             f"Observed in commit `{sha}`: https://github.com/{repo.full_name}/blob/{sha}/{quote(finding.path, safe='/')}{anchor}", ""]
+    lines = [f"## {finding.title[:200]}", "", f"Severity: **{finding.severity.title()}**", "",
+             f"Observed in commit `{sha}`: https://github.com/{repo.full_name}/blob/{sha}/{quote(finding.path, safe='/')}{anchor}", "",
+             evidence.get("explanation", ""), "", "### Evidence", ""]
     if finding.kind == "dependency":
         lines.extend([f"Package: `{evidence.get('package', '')}` | Installed: `{evidence.get('installed_version', '')}`",
                       f"Advisory: `{evidence.get('rule_id', '')}` | Fixed versions: `{evidence.get('fixed_version') or 'Not reported'}`", ""])
@@ -38,8 +38,12 @@ def preview(repo, finding):
     for reference in evidence.get("references", []):
         if isinstance(reference, str) and reference.startswith("https://"):
             lines.append(reference)
+    body = clean_text("\n".join(lines))
+    if len(body) > ISSUE_BODY_LIMIT:
+        notice = "\n\nPreview shortened to fit publication limits. Complete evidence remains in Code Mortis."
+        body = body[:ISSUE_BODY_LIMIT - len(notice)].rsplit("\n", 1)[0] + notice
     return SecurityIssuePreview(title=clean_text(f"[Security] {finding.title}")[:200],
-        body=clean_text("\n".join(lines)), repository=repo.full_name, public=not repo.private, version=finding.version,
+        body=body, repository=repo.full_name, public=not repo.private, version=finding.version,
         recovery_token=finding.issue.get("attempt_id", finding.issue.get("operation_id")) if finding.issue.get("started") else None)
 
 
@@ -88,7 +92,8 @@ def identity(db, finding, *, publishing=False):
     config = db.get(AppConfig, 1)
     if not repo or not repo.active or not install or not install.active or not config:
         raise ValueError("Repository or GitHub App access is no longer available.")
-    actor = db.get(User, finding.issue.get("actor_id"))
+    approval = {} if publishing else finding.issue.get("sync_approval", {})
+    actor = db.get(User, approval.get("actor_id", finding.issue.get("actor_id")))
     if not actor or not actor.enabled or not db.get(Membership, actor.id):
         raise ValueError("The user who approved this issue no longer has access.")
     remote = github.authorize_repo(db, actor, repo.full_name, write=True)
@@ -227,6 +232,7 @@ def sync(finding_id):
             elif remote["state"] != desired:
                 with transaction() as db:
                     finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
+                    check_sync_approval(finding, saved)
                     if finding.version != version or finding.issue.get("intent_version") != version:
                         raise ValueError("Finding state changed before GitHub synchronization.")
                 comment_marker = operation_marker
@@ -235,6 +241,10 @@ def sync(finding_id):
                     # A comment with an unknown delivery must be reconciled before another POST.
                     with transaction() as db:
                         finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
+                        check_sync_approval(finding, saved)
+                        full_name, token, login = identity(db, finding)
+                        if finding.version != version or finding.issue.get("intent_version") != version:
+                            raise ValueError("Finding state changed before the verification comment.")
                         if finding.issue.get("comment_started") == comment_marker:
                             raise ValueError("Verification comment delivery is uncertain. Retry synchronization to reconcile it.")
                         finding.issue = {**finding.issue, "comment_started": comment_marker}
@@ -242,6 +252,7 @@ def sync(finding_id):
                     github.request("POST", f"/repos/{full_name}/issues/{saved['number']}/comments", token, json={"body": text})
                 with transaction() as db:
                     finding = db.get(SecurityFinding, finding_id)
+                    check_sync_approval(finding, saved)
                     full_name, token, login = identity(db, finding)
                     if finding.version != version or finding.issue.get("intent_version") != version or finding.state != state:
                         raise ValueError("The finding changed immediately before issue synchronization.")
@@ -253,6 +264,8 @@ def sync(finding_id):
                     raise ValueError("The GitHub issue changed during synchronization. Retry to reconcile its state.")
                 with transaction() as db:
                     finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
+                    check_sync_approval(finding, saved)
+                    full_name, token, login = identity(db, finding)
                     if finding.version != version or finding.issue.get("intent_version") != version:
                         raise ValueError("The finding changed before the issue state request.")
                     finding.issue = {**finding.issue, "state_started": operation_marker}
@@ -263,6 +276,7 @@ def sync(finding_id):
                 closed_by_app = desired == "closed"
         with transaction() as db:
             finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
+            check_sync_approval(finding, saved)
             if finding.version != version:
                 raise ValueError("The finding changed before synchronization could be recorded.")
             finding.issue = {**finding.issue, "sync_status": "synced", "desired_state": None,
@@ -280,6 +294,31 @@ def retry(db, finding, actor):
     finding.issue = {**finding.issue, "sync_status": "pending", "error": None}
     enqueue(db, "security_issue_sync", {"finding_id": finding.id})
     repository_security.activity(db, "issue_sync_retried", finding=finding, actor=actor)
+
+
+def check_sync_approval(finding, saved):
+    if (not finding or finding.issue.get("operation_id") != saved["operation_id"]
+            or finding.issue.get("sync_approval", {}) != saved.get("sync_approval", {})):
+        raise ValueError("Issue synchronization approval changed. Retry synchronization with the current approval.")
+
+
+def reapprove(db, finding, actor, body):
+    saved = finding.issue
+    previous = saved.get("sync_approval", {})
+    if not saved.get("number") or not saved.get("id") or not saved.get("node_id"):
+        raise HTTPException(409, "Only a published, linked issue can receive synchronization approval.")
+    if (finding.version != body.version or saved.get("operation_id") != body.operation_id
+            or previous.get("revision", 0) != body.approval_revision):
+        raise HTTPException(409, "The finding or synchronization approval changed. Refresh and review it again.")
+    reason = repository_security.redact_finding_text(db, finding, body.reason.strip())
+    if not reason:
+        raise ValueError("Enter a reason for taking responsibility for issue synchronization.")
+    finding.issue = {**saved, "sync_approval": {"actor_id": actor.id, "revision": body.approval_revision + 1,
+        "approved_at": now().isoformat(), "reason": reason}, "sync_status": "pending", "error": None}
+    repository_security.activity(db, "issue_sync_reapproved", finding=finding, actor=actor,
+        previous_actor_id=previous.get("actor_id", saved.get("actor_id")), operation_id=body.operation_id,
+        approval_revision=body.approval_revision + 1, reason=reason)
+    enqueue(db, "security_issue_sync", {"finding_id": finding.id})
 
 
 def validate_public_text(value):

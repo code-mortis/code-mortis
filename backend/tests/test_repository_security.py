@@ -1,9 +1,12 @@
+import asyncio
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -16,11 +19,13 @@ from code_mortis.db import now, transaction, uid
 from code_mortis.models import (
     ConnectionGrant,
     Job,
+    Membership,
     Repository,
     SecurityActivity,
     SecurityFinding,
     SecurityOccurrence,
     SecurityScan,
+    User,
 )
 from code_mortis.security import digest
 from code_mortis.security_schemas import SecurityScanInput
@@ -28,6 +33,461 @@ from code_mortis.security_schemas import SecurityScanInput
 SHA = "a" * 40
 OLD = "b" * 40
 SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation_failures.json").read_text())["cases"]
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("credential", ["synthetic-雪-credential", "synthetic-first\nsecond-line"])
+def test_security_outgoing_history_is_redacted_without_mutating_saved_context(tmp_path, monkeypatch, kind, credential):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.secret_values.append(credential)
+    item.inventory = {"app.py": {}}
+    sent = []
+    response = {"verdict": "uncertain", "finding_id": None, "explanation": "Missing caller", "evidence": [], "required_paths": []}
+
+    def api(*args, **kwargs):
+        sent.append(security_engine.verification.evidence_bundle(args[4]))
+        if len(sent) == 1:
+            raise security_engine.verification.VerificationOutputError("Correction needed", {"tokens": 2},
+                feedback={"kind": "schema", "errors": [{"msg": credential}]})
+        return kwargs["validator"](response, args[4]), {"tokens": 1}
+
+    def native(connection, identity, payload, stopped):
+        sent.append(payload["prompt"])
+        return response, {"tokens": 1}
+
+    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    context = {"sources": {"current": {"app.py": "safe"}}, "diff": credential,
+        "proposal": {"path": "app.py", "explanation": credential},
+        "history": [{"id": "existing", "path": "app.py", "evidence": {"quote": credential}}]}
+    original = deepcopy(context)
+    _, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {},
+        "assessment", context, 1000, 60, lambda: False, uid())
+    assert context == original
+    assert sent and all(credential not in text and json.dumps(credential)[1:-1] not in text for text in sent)
+    assert usage["tokens"] == (3 if kind == "api" else 1)
+
+
+def test_historical_secret_fingerprint_redaction_preserves_lines_and_stops(tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    credential = "雪é-first\nsecond-line"
+    item.secret_rules = [{"rule_id": "fixture", "match_bytes": len(credential.encode()),
+                          "identity": security_engine.secure_digest("fixture\0" + credential)}]
+    item.read = lambda *args: "before\n" + credential + "\nafter"
+    assert item.source("app.py") == "before\n[redacted]\n[redacted]\nafter"
+    assert credential in item.secret_values
+    item.secret_values.clear()
+    item.stopped = lambda: True
+    with pytest.raises(security.ocr.ReviewStopped):
+        item.redact("x" * 10000)
+
+
+def test_secret_in_structural_path_withholds_dispatch(tmp_path, monkeypatch):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.secret_values = ["synthetic-credential"]
+    path = "synthetic-credential.py"
+    item.inventory = {path: {}}
+    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: pytest.fail("Must not dispatch"))
+    with pytest.raises(security.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "analysis",
+            {"assigned_path": path, "sources": {"current": {path: "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
+    assert error.value.usage["tokens"] == 0
+    assert error.value.feedback["kind"] == "redaction"
+
+
+@pytest.mark.parametrize("state, expected", [("false_positive", "completed"), ("open", "partial")])
+def test_missing_historical_secret_commit_does_not_abort_current_analysis(seed, security_github, monkeypatch, tmp_path, state, expected):
+    credential = "synthetic-old-雪-credential"
+    source = "prefix " + credential + "\nsafe"
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {"code": True, "hash": digest(source), "lines": 2}}
+
+    def read(path, sha=None):
+        if sha == OLD:
+            raise ValueError("Original commit unavailable")
+        return source
+
+    item.read = read
+    item.renamed = lambda sha, path: path
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    calls = []
+
+    def ask(*args, **kwargs):
+        calls.append(args[4])
+        assert credential not in json.dumps(args[4], ensure_ascii=False)
+        return {"findings": [], "required_paths": []}, {"tokens": 1}
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        earlier = saved_scan(db, seed, status="completed")
+        finding_id = saved_finding(db, seed, earlier, kind="secret", state=state, match_offset=0,
+            match_bytes=len(credential.encode()), rule_id="fixture", identity=security_engine.secure_digest("fixture\0" + credential)).id
+        scan_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid())).id
+    security.perform(scan_id, "audit:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.status == expected, scan.error
+        assert calls and scan.progress["tokens"] == 1
+        assert db.get(SecurityFinding, finding_id).state == state
+
+
+@pytest.mark.parametrize("tokens", [123, None])
+def test_freshness_refresh_serializes_with_checkpoint(seed, security_github, monkeypatch, tokens):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        scan.progress = {**scan.progress, "execution": "worker:1"}
+        scan_id = scan.id
+    loaded, recorded = Event(), Event()
+    real_transaction = security.transaction
+    refresh_thread = get_ident()
+
+    @contextmanager
+    def interleaved_transaction():
+        with real_transaction() as db:
+            if get_ident() != refresh_thread:
+                yield db
+                return
+            class Session:
+                def __getattr__(self, name):
+                    return getattr(db, name)
+
+                def get(self, model, identity):
+                    row = db.get(model, identity)
+                    if model is SecurityScan:
+                        loaded.set()
+                        assert recorded.wait(5)
+                    return row
+
+                def scalar(self, statement):
+                    # Pause before a locking read so the completed checkpoint is visible.
+                    if statement._for_update_arg is not None:
+                        loaded.set()
+                        assert recorded.wait(5)
+                    return db.scalar(statement)
+            yield Session()
+
+    def checkpoint():
+        assert loaded.wait(5)
+        security.checkpoint(scan_id, "analysis:app.py", "completed", tokens=tokens, result={"findings": []})
+        recorded.set()
+
+    monkeypatch.setattr(security, "transaction", interleaved_transaction)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(checkpoint)
+        security.refresh_repository(seed["repo"].id)
+        future.result()
+    with real_transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.progress["tokens"] == tokens
+        assert scan.progress["tasks"]["analysis:app.py"]["status"] == "completed"
+        assert scan.progress["execution"] == "worker:1"
+
+
+def test_older_freshness_refresh_cannot_replace_newer_completion(seed, security_github, monkeypatch):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        scan_id = scan.id
+    newer = {**freshness(), "checked_at": (now() + timedelta(seconds=5)).isoformat()}
+
+    def head(*args):
+        with transaction() as db:
+            row = db.get(SecurityScan, scan_id)
+            row.progress = {**row.progress, "freshness": newer, "tokens": None}
+            row.status = "completed"
+        return freshness("c" * 40)
+
+    monkeypatch.setattr(security, "branch_head", head)
+    security.refresh_repository(seed["repo"].id)
+    with transaction() as db:
+        row = db.get(SecurityScan, scan_id)
+        assert row.status == "completed" and row.progress["tokens"] is None
+        assert row.progress["freshness"] == newer
+
+
+@pytest.mark.parametrize("directory", [".", "infra"])
+def test_trivy_terraform_directory_summaries_are_separate_from_file_evidence(tmp_path, directory):
+    path = "main.tf" if directory == "." else "infra/main.tf"
+    item = SimpleNamespace(files=tmp_path, inventory={path: {"lines": 1, "hash": digest("source")}},
+        sha=SHA, redact=lambda text: text)
+    report = {"Results": [
+        {"Target": directory, "Class": "config", "Type": "terraform", "MisconfSummary": {"Successes": 1},
+         "Misconfigurations": [{"ID": "fixture", "Status": "PASS"}]},
+        {"Target": path, "Class": "config", "Type": "terraform", "Misconfigurations": [
+            {"ID": "fixture", "Status": "FAIL", "Title": "Unsafe group", "CauseMetadata": {"Resource": "group.unsafe"}}]},
+    ]}
+    result = security_engine.normalize_trivy(item, report)
+    assert not result["problems"]
+    assert result["directory_summaries"][0]["path"] == directory
+    assert result["findings"][0]["path"] == path
+    assert result["targets"][path]["checks"] == [{"id": "fixture", "status": "FAIL", "resource": "group.unsafe"}]
+    assert directory not in result["targets"]
+
+
+@pytest.mark.parametrize("directory", ["../outside", "/outside", "missing", "infra/../infra"])
+def test_trivy_directory_summaries_do_not_loosen_path_validation(tmp_path, directory):
+    item = SimpleNamespace(files=tmp_path, inventory={"infra/main.tf": {}}, sha=SHA, redact=lambda text: text)
+    with pytest.raises(ValueError):
+        security_engine.normalize_trivy(item, {"Results": [{"Target": directory, "Class": "config", "Type": "terraform"}]})
+
+
+def test_unmapped_directory_failure_is_explicitly_incomplete(tmp_path):
+    item = SimpleNamespace(files=tmp_path, inventory={"main.tf": {"hash": "hash"}}, sha=SHA, redact=lambda text: text)
+    result = security_engine.normalize_trivy(item, {"Results": [{"Target": ".", "Class": "config", "Type": "terraform",
+        "Misconfigurations": [{"ID": "fixture", "Status": "FAIL"}]}]})
+    assert result["problems"] and result["directory_summaries"]
+    assert result["findings"] == []
+
+
+def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
+    item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, renamed=lambda sha, path: path,
+        diff=lambda sha: "changed", read=lambda path, sha=None: "unsafe" if sha else "unsafe\nunrelated change")
+    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "100644 blob object\tmain.tf")
+    old = {"path": "main.tf", "evidence": {"kind": "infrastructure", "source_sha": OLD,
+        "rule_id": "fixture", "resource": "group.unsafe"}}
+    result = security.deterministic_fix(item, old, {"targets": {"main.tf": {
+        "checks": [{"id": "fixture", "status": "PASS", "resource": "group.safe"}]}}})
+    assert result["verdict"] == "uncertain"
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+@pytest.mark.parametrize("obsolete", [False, True])
+def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, security_github, monkeypatch, tmp_path, concurrency, obsolete):
+    paths = ["fresh.py", "cached.py", "cached2.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={})
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    calls = []
+
+    def ask(*args, **kwargs):
+        calls.append((args[4]["assigned_path"], args[5]))
+        return {"findings": [], "required_paths": []}, {"tokens": 1000}
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    body = {"connection_id": "connection", "token_budget": 1000, "concurrency": concurrency}
+    with transaction() as db:
+        parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()))
+        config = {**parent.config, "limits": {key: value for key, value in parent.config["limits"].items() if key != "concurrency"}}
+        tasks = {}
+        for path in paths[1:]:
+            context = {"assigned_path": path, "head_sha": SHA, "diff": "", "sources": {"current": {path: "safe"}},
+                "language": "English", "task_contract": "obsolete" if obsolete else "security-task/v2"}
+            tasks["analysis:" + path] = {"status": "completed", "tokens": 1,
+                "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}
+        parent.status, parent.progress = "partial", {"tokens": 2, "tasks": tasks}
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()), parent=parent).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        if obsolete:
+            assert not any(task.get("reused") for task in scan.progress["tasks"].values())
+        else:
+            assert scan.status == "completed", scan.error
+            assert calls == [("fresh.py", 1000)]
+            assert scan.progress["tokens"] == 1000
+            assert all(scan.progress["tasks"]["analysis:" + path]["reused"] for path in paths[1:])
+
+
+def test_related_security_history_retains_transitive_renames_and_dismissals():
+    proposal = {"path": "new.py", "evidence": [{"path": "new.py", "quote": "shared"}]}
+    history = [
+        {"path": "old.py", "state": "false_positive", "evidence": {"source_sha": OLD, "locations": [{"path": "bridge.py"}]}},
+        {"path": "another.py", "state": "resolved", "evidence": {"source_sha": SHA, "locations": [{"path": "bridge.py"}]}},
+        {"path": "unrelated.py", "state": "false_positive", "evidence": {"source_sha": SHA}},
+    ]
+    item = SimpleNamespace(sha=SHA, renamed=lambda sha, path: "new.py" if path == "old.py" else path)
+    assert security.assessment_history(proposal, history, item) == history[:2]
+
+
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+def test_security_context_limit_is_local_to_the_task(tmp_path, monkeypatch, kind):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}}
+    calls = []
+
+    def api(*args, **kwargs):
+        calls.append(1)
+        raise security.verification.VerificationOutputError("Too large", {"tokens": 0}, "skipped",
+            feedback={"kind": "context_limit"})
+
+    def native(*args):
+        calls.append(1)
+        raise security.runner_client.RunnerBlocked("prompt_limit", {"tokens": 0})
+
+    monkeypatch.setattr(security.verification, "api_verify", api)
+    monkeypatch.setattr(security.runner_client, "review", native)
+    with pytest.raises(security.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
+            {"history": [], "sources": {"current": {"app.py": "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
+    assert error.value.feedback["kind"] == "context_limit" and error.value.usage["tokens"] == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("large_advisory", [False, True])
+def test_oversized_issue_preview_fits_the_publication_contract(seed, security_github, client, large_advisory):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan, evidence=[{"revision": "current", "path": f"source{i}.py",
+            "start_line": 1, "end_line": 1, "quote": "雪" * 20000} for i in range(3)],
+            **({"title": "Long advisory title " * 5000, "explanation": "Long advisory description\n" * 5000} if large_advisory else {}))
+        identity = finding.id
+        evidence = deepcopy(finding.evidence)
+    path = f"/api/v1/security/findings/{identity}/github-issue"
+    response = client.get(path)
+    assert response.status_code == 200
+    preview = response.json()
+    assert len(preview["body"]) <= 50000
+    assert "Preview shortened" in preview["body"] and OLD in preview["body"] and "team/project/blob/" in preview["body"]
+    assert client.post(path, json={key: preview[key] for key in ("title", "body", "version", "public")}).status_code == 202
+    with transaction() as db:
+        assert db.get(SecurityFinding, identity).evidence == evidence
+
+
+@pytest.mark.parametrize("invalid", [None, "version", "operation", "revision", "unpublished", "read_only"])
+def test_issue_sync_reapproval_is_explicit_versioned_and_writer_only(seed, security_github, client, monkeypatch, invalid):
+    with transaction() as db:
+        db.add(User(id=99, login="departed", enabled=False))
+        db.flush()
+        scan = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan)
+        identity, operation = finding.id, uid()
+        finding.issue = {"operation_id": operation, "actor_id": 99, "number": 9, "id": 99,
+            "node_id": "issue-node", "url": "https://github.com/team/project/issues/9", "sync_status": "failed"}
+        if invalid == "unpublished":
+            finding.issue = {"operation_id": operation, "actor_id": 99, "started": True}
+    path = f"/api/v1/security/findings/{identity}/github-issue"
+    body = {"version": 0, "operation_id": operation, "approval_revision": 0, "reason": "I reviewed this issue and will manage synchronization."}
+    if invalid == "version":
+        body["version"] = 1
+    elif invalid == "operation":
+        body["operation_id"] = uid()
+    elif invalid == "revision":
+        body["approval_revision"] = 1
+    elif invalid == "read_only":
+        monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: (_ for _ in ()).throw(HTTPException(403, "Read-only")))
+    response = client.post(path + "/reapprove", json=body)
+    assert response.status_code == (403 if invalid == "read_only" else 409 if invalid else 202), response.text
+    if invalid:
+        return
+    with transaction() as db:
+        finding = db.get(SecurityFinding, identity)
+        assert finding.version == 0 and finding.issue["actor_id"] == 99
+        assert finding.issue["operation_id"] == operation and finding.issue["number"] == 9
+        assert finding.issue["sync_approval"]["actor_id"] == 7 and finding.issue["sync_approval"]["revision"] == 1
+        assert db.scalar(select(SecurityActivity).where(SecurityActivity.action == "issue_sync_reapproved")).detail["previous_actor_id"] == 99
+    assert client.post(path + "/reapprove", json=body).status_code == 409
+    with transaction() as db:
+        finding = db.get(SecurityFinding, identity)
+        assert security_issues.identity(db, finding)[0] == "team/project"
+        db.delete(db.get(Membership, 7))
+    security_issues.sync(identity)
+    with transaction() as db:
+        finding = db.get(SecurityFinding, identity)
+        assert finding.issue["sync_status"] == "failed" and "no longer has access" in finding.issue["error"]
+
+
+@pytest.mark.parametrize("related", [False, True])
+def test_large_history_only_withholds_candidates_that_need_it(seed, security_github, monkeypatch, tmp_path, related):
+    paths = ["app.py", "independent.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={}, renamed=lambda sha, path: path)
+    histories = []
+    real_ask = security_engine.ask
+
+    def native(connection, identity, payload, stopped):
+        if "history_1" in payload["prompt"]:
+            entry = {}
+            asyncio.run(native_runner.execute("audit-history", native_runner.ReviewBody(**payload), entry))
+            assert entry["reason"] == "prompt_limit"
+            raise security.runner_client.RunnerBlocked("prompt_limit", entry["usage"])
+        return {"verdict": "rejected", "finding_id": None, "explanation": "Guarded", "evidence": [], "required_paths": []}, {"tokens": 1}
+
+    def ask(item, connection, credentials, task, context, *args, **kwargs):
+        if task == "analysis":
+            path = context["assigned_path"]
+            proposal = {"title": path, "category": "test", "severity": "low", "path": path,
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                "verification": "Test", "evidence": [{"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": "safe"}]}
+            return {"findings": [proposal], "required_paths": []}, {"tokens": 1}
+        histories.append((context["proposal"]["path"], len(context["history"])))
+        return real_ask(item, {**connection, "kind": "chatgpt"}, credentials, task, context, *args, **kwargs)
+
+    monkeypatch.setattr(native_runner, "auth_status", lambda *args: pytest.fail("Oversized history must be blocked before authentication"))
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security.runner_client, "review", native)
+    with transaction() as db:
+        earlier = saved_scan(db, seed, status="completed")
+        for index in range(60):
+            saved_finding(db, seed, earlier, state="false_positive", source_sha=SHA,
+                path="app.py" if related else f"unrelated/{index}.py", explanation="e" * 1000)
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid())).id
+    security.perform(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == ("partial" if related else "completed"), scan.error
+        assert sorted(histories) == [("app.py", 60 if related else 0), ("independent.py", 0)]
+        assert scan.stages["assessment"]["failed"] == int(related)
+        assert scan.stages["assessment"]["completed"] == (1 if related else 2)
+        assert scan.progress["tokens"] == (3 if related else 4)
+
+
+@pytest.mark.parametrize("change", ["approval", "permission"])
+def test_sync_rechecks_approval_and_permission_before_comment_mutation(seed, security_github, monkeypatch, change):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan, state="resolved")
+        identity, operation = finding.id, uid()
+        finding.issue = {"number": 9, "id": 99, "node_id": "issue-node", "operation_id": operation,
+            "actor_id": 7, "desired_state": "closed", "intent_version": 0, "verification_scan_id": scan.id,
+            "sync_approval": {"actor_id": 7, "revision": 1}}
+        marker = security_issues.marker(finding, operation)
+    writes = []
+    remote = {"id": 99, "node_id": "issue-node", "number": 9, "state": "open", "body": marker,
+        "html_url": "https://github.com/team/project/issues/9", "repository_url": "https://api.github.com/repos/team/project",
+        "user": {"login": "mortis-test[bot]", "type": "Bot"}}
+
+    def request(method, path, token, **kwargs):
+        if method != "GET":
+            writes.append(method)
+        return remote if "/issues/9" in path else {"sha": SHA} if "/commits/" in path else security_github
+
+    def comments(*args, **kwargs):
+        with transaction() as db:
+            finding = db.get(SecurityFinding, identity)
+            if change == "approval":
+                finding.issue = {**finding.issue, "sync_approval": {"actor_id": 7, "revision": 2}}
+            else:
+                db.get(User, 7).enabled = False
+        return []
+
+    monkeypatch.setattr(github, "request", request)
+    monkeypatch.setattr(github, "pages", comments)
+    security_issues.sync(identity)
+    assert writes == []
+    with transaction() as db:
+        assert db.get(SecurityFinding, identity).issue["sync_status"] == "failed"
+
+
+def test_redaction_failure_after_provider_result_retains_paid_usage(tmp_path, monkeypatch):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}}
+
+    def api(*args, **kwargs):
+        item.redact = lambda text: (_ for _ in ()).throw(TimeoutError("Redaction deadline reached"))
+        return {"verdict": "uncertain", "finding_id": None, "explanation": "Checked", "evidence": [], "required_paths": []}, {"tokens": 17}
+
+    monkeypatch.setattr(security.verification, "api_verify", api)
+    with pytest.raises(security.verification.VerificationOutputError) as error:
+        security_engine.ask(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "assessment",
+            {"history": [], "sources": {"current": {"app.py": "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
+    assert error.value.usage["tokens"] == 17 and error.value.feedback["kind"] == "redaction"
 
 
 @pytest.fixture
@@ -512,6 +972,22 @@ def test_snapshot_never_follows_symlinks_or_executes_hooks(tmp_path):
     assert item.excluded[0]["reason"] == "Symlink or submodule is not followed"
 
 
+def test_snapshot_analyzes_astro_without_loading_protected_generated_or_documentation_files(tmp_path, monkeypatch):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    paths = ["src/page.astro", "src/App.vue", "src/App.svelte", "src/generated.generated.astro",
+             ".agents/skill/page.astro", "README.md", "src/content/docs/article.mdx", "public/index.html"]
+    source = "<script>throw new Error('repository code must never execute')</script>\n"
+    entries = "\0".join(f"100644 blob {'c' * 40} {len(source)}\t{path}" for path in paths)
+    monkeypatch.setattr(security_engine.ocr, "git", lambda *args, **kwargs: entries)
+    item.read = lambda path, sha=None: source
+    item.populate()
+    assert {path for path, value in item.inventory.items() if value["code"]} == set(paths[:3])
+    assert all((item.files / path).read_text() == source for path in paths)
+    assert {row["path"] for row in item.excluded} == set(paths[3:])
+    with pytest.raises(ValueError, match="agent instructions"):
+        item.source(".agents/skill/page.astro")
+
+
 def test_scanner_environment_excludes_all_application_and_provider_credentials(tmp_path, monkeypatch):
     for key in ("AWS_SECRET_ACCESS_KEY", "CM_DATABASE_URL", "CM_RUNNER_TOKEN", "GITHUB_TOKEN", "OPENAI_API_KEY"):
         monkeypatch.setenv(key, "private-value")
@@ -951,6 +1427,74 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
             assert scan.stages["assessment"]["completed"] == 3
 
 
+@pytest.mark.parametrize("task", ["assessment", "verification"])
+@pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.parametrize("concurrency", [1, 2])
+@pytest.mark.parametrize("budget", [None, 1000])
+@pytest.mark.parametrize("policy_changed", [False, True])
+def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
+    seed, security_github, monkeypatch, tmp_path, task, uncertain, concurrency, budget, policy_changed,
+):
+    paths = ["app.py", "other.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
+        renamed=lambda sha, path: path, diff=lambda sha: "source changed", redact=lambda text: text,
+        sha=SHA, git=tmp_path, env={})
+    proposals = [{"title": path, "category": "test", "severity": "low", "path": path,
+        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+        "verification": "Test", "evidence": [{"revision": "current", "path": path,
+            "start_line": 1, "end_line": 1, "quote": "unsafe"}]} for path in paths]
+    calls, retrying = [], False
+
+    def ask(item, connection, credentials, current_task, context, allowance, timeout, stopped, identity, **kwargs):
+        path = context["assigned_path"] if current_task == "analysis" else context["proposal" if current_task == "assessment" else "finding"]["path"]
+        calls.append((current_task, path, allowance))
+        assert not stopped()
+        if current_task == "analysis":
+            return {"findings": [proposals[paths.index(path)]] if task == "assessment" else [], "required_paths": []}, {"tokens": 7}
+        verdict = "uncertain" if path == paths[0] and (not retrying or uncertain) else "rejected" if task == "assessment" else "still_present"
+        return {"verdict": verdict, "finding_id": None, "explanation": "Checked",
+                "evidence": proposals[paths.index(path)]["evidence"], "required_paths": []}, {"tokens": 7}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security_engine, "ask", ask)
+    body = {"connection_id": "connection", "token_budget": budget, "concurrency": concurrency}
+    with transaction() as db:
+        if task == "verification":
+            original = saved_scan(db, seed, status="completed")
+            for path in paths:
+                saved_finding(db, seed, original, path=path)
+        parent_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid())).id
+    security.perform(parent_id, "test:1")
+    with transaction() as db:
+        parent = db.get(SecurityScan, parent_id)
+        assert parent.status == "partial" and parent.progress["tokens"] == 28
+        original_progress = json.loads(json.dumps(parent.progress))
+        retry_id = security.create_scan(db, seed["repo"], seed["user"],
+            SecurityScanInput(**body, request_key=uid()), parent=parent).id
+    calls.clear()
+    retrying = True
+    if policy_changed:
+        monkeypatch.setattr(security_engine, "ASSESSMENT_INSTRUCTIONS", security_engine.ASSESSMENT_INSTRUCTIONS + " Revised decision criteria.")
+    security.perform(retry_id, "retry:1")
+    with transaction() as db:
+        retry = db.get(SecurityScan, retry_id)
+        expected = [(task, path) for path in paths] if task == "assessment" and policy_changed else [(task, paths[0])]
+        assert sorted((kind, path) for kind, path, allowance in calls) == expected
+        assert calls[0][2] is None if budget is None else 0 < calls[0][2] <= budget
+        assert retry.progress["tokens"] == 7 * len(expected)
+        assert retry.status == ("partial" if uncertain else "completed"), retry.error
+        assert retry.stages[task]["status"] == ("partial" if uncertain else "completed")
+        tasks = retry.progress["tasks"]
+        assert sum(bool(value.get("reused")) for value in tasks.values()) == 4 - len(expected)
+        assert all(value["citation_contract"] == security_engine.CITATION_CONTRACT for value in tasks.values())
+        assert db.get(SecurityScan, parent_id).progress == original_progress
+        assert db.get(SecurityScan, parent_id).status == "partial"
+        assert all(finding.state == "open" for finding in db.scalars(select(SecurityFinding)))
+
+
 @pytest.mark.parametrize("concurrency", [None, 3])
 def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, security_github, monkeypatch, tmp_path, concurrency):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("safe"), "lines": 1}},
@@ -967,7 +1511,8 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, securi
     with transaction() as db:
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         config = {**parent.config, "limits": {"token_budget": None, "timeout_seconds": None}}
-        context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}}, "language": "English"}
+        context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},
+                   "language": "English", "task_contract": security_engine.TASK_CONTRACT}
         parent.config, parent.status = config, "partial"
         parent.progress = {"tokens": 12, "tasks": {"analysis:app.py": {"status": "completed", "tokens": 12,
             "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}}}

@@ -5,7 +5,7 @@ import time
 
 from pydantic import ValidationError
 
-from . import ocr, review_policy, runner_client
+from . import ocr, review_context, review_policy, runner_client
 from .config import settings
 from .schemas import ReviewComment
 from .security import digest
@@ -45,7 +45,7 @@ def validate_result(data, path, line_count, patch):
     return comments
 
 
-def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint, *, before_analysis=None):
+def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint, *, before_analysis=None, credentials=None):
     ocr.check_version(repo, env)
     deadline = time.monotonic() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     args = ["--repo", str(repo), "--from", base, "--to", head, "--format", "json"]
@@ -115,8 +115,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         if stopped():
             raise ocr.ReviewStopped()
         if previous.get(path, {}).get("status") == "completed":
-            items[path] = previous[path]
-            comments.extend(previous[path]["comments"])
+            items[path] = review_context.sanitize(previous[path], credentials or {}, stopped)
+            comments.extend(items[path]["comments"])
             save()
             continue
         if deadline is not None and time.monotonic() >= deadline:
@@ -152,7 +152,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         ):
             raise ValueError("OCR rules did not match the file assigned by the application.")
         prompt = json.dumps(
-            {
+            review_context.sanitize({
                 "task": "Review this complete file and diff. Return findings only for the assigned path.",
                 "language": options["language"],
                 "background": options.get("background", ""),
@@ -163,7 +163,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 "diff": patch,
                 "base_sha": base,
                 "head_sha": head,
-            },
+            }, credentials or {}, stopped),
             ensure_ascii=False,
         )
         input_bytes = len(prompt.encode()) + 4096
@@ -194,7 +194,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 },
                 stopped,
             )
-            found = validate_result(data, path, len(source.splitlines()), patch)
+            found = review_context.sanitize(validate_result(data, path, len(source.splitlines()), patch), credentials or {}, stopped, usage=spent)
             for comment in found:
                 comment["source_sha"] = ref
             items[path] = {"status": "completed", "comments": found, "input_bytes": input_bytes}

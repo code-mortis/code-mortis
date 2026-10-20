@@ -50,9 +50,20 @@ def request(method: str, path: str, body=None, timeout=35):
 
 
 def review(connection_id: str, run_id: str, payload: dict, stopped):
+    from . import review_context, verification
     from .ocr import ReviewStopped
 
+    payload = dict(payload)
+    context = payload.pop("_evidence_context", None)
+    instructions = payload.pop("_instructions", None)
+    history_ids = {}
+    if context is not None:
+        supplied, schema, history_ids = review_context.selection_context(context, payload["output_schema"])
+        payload.update(prompt=instructions + review_context.SELECTION_INSTRUCTIONS + "\n\n" + verification.evidence_bundle(supplied),
+                       output_schema=schema)
     path = f"/connections/{connection_id}/reviews/{run_id}"
+    if stopped():
+        raise ReviewStopped("Review stopped before native dispatch.")
     request("POST", path, payload)
     try:
         while True:
@@ -64,7 +75,13 @@ def review(connection_id: str, run_id: str, payload: dict, stopped):
                 tokens = usage.get("tokens") if isinstance(usage, dict) else None
                 if type(tokens) is not int or tokens < 0:
                     raise RunnerBlocked("usage_unknown")
-                return state["result"], usage
+                result = state["result"]
+                if context is not None:
+                    try:
+                        result = review_context.selected_result(result, supplied, history_ids)
+                    except verification.ResultValidationError as exc:
+                        raise verification.VerificationOutputError(str(exc), usage, feedback=exc.feedback) from exc
+                return result, usage
             if state["status"] == "failed":
                 raise RunnerBlocked(state["reason"], state.get("usage"))
             time.sleep(1)

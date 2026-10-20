@@ -15,7 +15,7 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import ocr, security_engine, verification
+from code_mortis import assessment, ocr, review_context, security_engine, verification
 from code_mortis.security_engine import model_schema
 from code_mortis.security_schemas import SecurityAnalysis
 
@@ -69,7 +69,11 @@ class Provider(BaseHTTPRequestHandler):
             assert set(selection) == {"source_id", "start_line", "end_line"}
             assert selection["source_id"]["enum"] == ["source_1"]
             assert "Copy source text verbatim" not in definitions[0]["description"]
-        value = {"state": "DONE", "result": self.server.result if mode == "security_citation" else RESULT}
+        if mode == "review_selection":
+            assert "SYNTHETIC_SECRET" not in json.dumps(data)
+            schema = definitions[0].get("parameters", definitions[0].get("input_schema"))
+            assert set(schema["$defs"]["SelectedEvidence"]["properties"]) == {"source_id", "start_line", "end_line"}
+        value = {"state": "DONE", "result": self.server.result if mode in {"security_citation", "review_selection"} else RESULT}
         if mode == "rejected_round" and not continuing:
             value = {"state": "INVALID"}
         if mode == "missing_result":
@@ -178,6 +182,33 @@ def main():
                     assert server.calls == (2 if changed else 1)
                     assert not (Path.home() / ".opencodereview/config.json").exists()
             print(f"Pinned OCR {protocol}: source selections materialized exact saved Python/TSX evidence and preserved verdicts; invalid ranges rejected with bounded usage (mock provider).")
+            for task in ("assessment", "verification"):
+                server.mode, server.calls = "review_selection", 0
+                context = {"task_contract": review_context.TASK_CONTRACT, "head_sha": "b" * 40, "finding": {"path": "app.py"},
+                    "sources": {"current": {"app.py": "safe()\n"}, "original": {"app.py": "unsafe()\n"}},
+                    "diff": "-unsafe()\n+safe()", "history": [{"id": "stored-uuid", "reason": "SYNTHETIC_SECRET"}],
+                    "validation_feedback": {"reason": "SYNTHETIC_SECRET"}}
+                evidence = [{"source_id": review_context.source_id("current", "app.py"), "start_line": 1, "end_line": 1}]
+                if task == "assessment":
+                    server.result = {"verdict": "confirmed", "relationship": "duplicate", "finding_id": "history_1",
+                        "explanation": "Concrete defect", "cause": "Cause", "trigger": "Input", "consequence": "Effect",
+                        "history_explanation": "Same defect", "contradicts_prior": False, "changed_conditions": "",
+                        "suggestion_supported": False, "required_paths": [], "evidence": evidence}
+                    schema, validator = assessment.output_schema(context), assessment.validate_response
+                else:
+                    server.result = {"verdict": "fixed", "original_issue_present": True, "dismissal_recommended": False,
+                        "explanation": "Original cause demonstrated", "change_explanation": "Cause removed", "required_sources": [],
+                        "evidence": [*evidence, {"source_id": review_context.source_id("original", "app.py"), "start_line": 1, "end_line": 1}]}
+                    schema, validator = verification.output_schema(), verification.validate_response
+                with tempfile.TemporaryDirectory() as directory:
+                    result, usage = verification.api_verify(Path(directory), ocr.child_environment(), connection,
+                        {"api_key": "fake-test-key", "redaction_values": ["SYNTHETIC_SECRET"]}, context,
+                        100000, 30, lambda: False, schema=schema, validator=validator)
+                assert result["evidence"][0]["quote"] == "safe()\n" and usage == {"tokens": 15}
+                if task == "assessment":
+                    assert result["finding_id"] == "stored-uuid"
+                assert server.calls == 1
+            print(f"Pinned OCR {protocol}: PR assessment and fix verification selections, history IDs and redaction passed.")
     finally:
         server.shutdown()
         server.server_close()

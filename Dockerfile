@@ -16,10 +16,10 @@ WORKDIR /src
 ADD --checksum=sha256:71dd1e101b77385ec1aa233de458c5325139e67d947f303e3f80bf32676f7621 https://codeload.github.com/alibaba/open-code-review/tar.gz/8eb83340a487b1150af00701b94f01af97e4b4d6 /tmp/ocr.tar.gz
 RUN tar -xzf /tmp/ocr.tar.gz --strip-components=1 && rm /tmp/ocr.tar.gz
 COPY build/ocr/ /tmp/mortis-ocr/
-RUN git apply --check /tmp/mortis-ocr/diagnostics.patch && git apply /tmp/mortis-ocr/diagnostics.patch && cp /tmp/mortis-ocr/*.go internal/llm/
+RUN git apply --check /tmp/mortis-ocr/diagnostics.patch && git apply /tmp/mortis-ocr/diagnostics.patch && git apply --check /tmp/mortis-ocr/redaction.patch && git apply /tmp/mortis-ocr/redaction.patch && cp /tmp/mortis-ocr/*.go internal/llm/
 ENV CGO_ENABLED=0 GOFLAGS=-p=2
-RUN go test ./internal/llm -run 'TestCodeMortisResultDiagnostics|TestOpenAIResponsesClient'
-RUN GOARCH=$TARGETARCH go build -trimpath -ldflags '-s -w -X main.Version=v1.13.1 -X main.GitCommit=8eb8334+cm-diagnostics' -o /out/ocr ./cmd/opencodereview
+RUN go test ./internal/llm -run 'TestCodeMortis|TestOpenAIResponsesClient'
+RUN GOARCH=$TARGETARCH go build -trimpath -ldflags '-s -w -X main.Version=v1.13.1 -X main.GitCommit=8eb8334+cm-context' -o /out/ocr ./cmd/opencodereview
 
 FROM ${DOCKERHUB_REGISTRY}/library/python:3.13-slim-bookworm AS runtime
 ARG TARGETARCH

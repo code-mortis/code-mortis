@@ -11,7 +11,7 @@ from sqlalchemy import event, inspect, select
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session
 
-from . import github, ocr, runner_client, verification
+from . import github, ocr, review_context, runner_client, verification
 from .config import settings
 from .db import now, transaction, uid
 from .models import (
@@ -185,6 +185,14 @@ def validate_result(value, context):
     return output
 
 
+def validate_response(value, context):
+    try:
+        return validate_result(value, context)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise verification.ResultValidationError("Invalid structured summary.",
+            {"kind": "schema", "reason": "Return the requested summary schema using only supplied paths."}) from exc
+
+
 def diagram_section(diagram):
     nodes = {node["id"]: f"n{index}" for index, node in enumerate(diagram["nodes"])}
     lines = ["flowchart TD"]
@@ -311,6 +319,7 @@ def perform_retry(payload):
             raise runner_client.RunnerBlocked("busy")
         credentials = json.loads(unseal(connection.secret))
         token = github.installation_token(db, repo.installation_id)
+        credentials = review_context.execution_credentials(db, repo.id, credentials, token)
         remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
         if remote["state"] != "open" or (remote["head"]["sha"], remote["base"]["sha"]) != (run.head_sha, run.base_sha):
             raise SummaryUnavailable("The pull request changed. Review its latest revision before generating a summary.")
@@ -400,60 +409,89 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
         schema = SummaryResult.model_json_schema()
         if not flags["summary_diagram_enabled"]:
             schema["properties"].pop("diagram", None)
-        secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
-        context = json.loads(clean_text(json.dumps(context), secrets))
-        with transaction() as db:
-            current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-            if (retry_stopped(db, current, retry_job_id, claim) if retry_job_id else
-                    (not pipeline.owns(current, stage, claim) if stage else current.progress.get("execution") != claim) or current.cancel_requested):
-                raise ocr.ReviewStopped()
-            pr = db.get(PullRequest, current.pr_id)
-            repo = db.get(Repository, pr.repository_id)
-            if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
-                raise ocr.ReviewStopped()
-            selected = db.get(Connection, connection["id"])
-            if not selected or any(connection[key] != getattr(selected, key)
-                                   for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
-                raise SummaryUnavailable("The selected connection changed before summary generation.")
-            actor_id, trigger = (actor_id, "manual") if retry_job_id else execution_identity(current)
-            actor = db.get(User, actor_id) if actor_id else None
-            if actor_id:
-                if not actor or not actor.enabled or not db.get(Membership, actor.id):
-                    raise SummaryUnavailable("The requesting user no longer has access.")
-                github.authorize_repo(db, actor, repo.full_name, write=True)
-            authorize_connection(db, selected, repo, trigger, actor)
-            if selected.kind != "api" and selected.auth_status != "connected":
-                raise runner_client.RunnerBlocked("authentication")
-            # Unknown usage cannot become a fresh allowance after a worker disappears.
-            current.summary = {"status": "running", "tokens": None, "settings": flags, "limited_context": context["limited_context"],
-                               "inference_started_at": now().isoformat()}
-            if pipeline.enabled(current):
-                pipeline.update(current, "summary", "running", tokens=None)
-        stopped()
-        usage = {"tokens": None}
-        remaining = max(1, int(deadline - time.monotonic())) if deadline is not None else None
-        if connection["kind"] == "api":
-            result, usage = verification.api_verify(
-                repo_path, env, connection, credentials, context, options["summary_token_budget"], remaining, stopped,
-                instructions=instructions, schema=schema, validator=validate_result,
-                delivery=DELIVERY,
-            )
-        else:
-            raw, usage = runner_client.review(connection["id"], (retry_job_id or run_id) + "-summary", {
-                "kind": connection["kind"], "task": "summary", "model": connection["model"],
-                "effort": options["effort"], "prompt": instructions + "\n\n" + verification.evidence_bundle(context),
-                "output_schema": schema, "timeout": remaining,
-                "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                "token_budget": options["summary_token_budget"],
-            }, stopped)
-            result = validate_result(raw, context)
+        context = review_context.sanitize(context, credentials, stopped)
+        def authorize():
+            with transaction() as db:
+                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                if (retry_stopped(db, current, retry_job_id, claim) if retry_job_id else
+                        (not pipeline.owns(current, stage, claim) if stage else current.progress.get("execution") != claim) or current.cancel_requested):
+                    raise ocr.ReviewStopped()
+                pr = db.get(PullRequest, current.pr_id)
+                repo = db.get(Repository, pr.repository_id)
+                if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+                    raise ocr.ReviewStopped()
+                selected = db.get(Connection, connection["id"])
+                if not selected or any(connection[key] != getattr(selected, key)
+                                       for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
+                    raise SummaryUnavailable("The selected connection changed before summary generation.")
+                request_actor_id, trigger = (actor_id, "manual") if retry_job_id else execution_identity(current)
+                actor = db.get(User, request_actor_id) if request_actor_id else None
+                if request_actor_id:
+                    if not actor or not actor.enabled or not db.get(Membership, actor.id):
+                        raise SummaryUnavailable("The requesting user no longer has access.")
+                    github.authorize_repo(db, actor, repo.full_name, write=True)
+                authorize_connection(db, selected, repo, trigger, actor)
+                if selected.kind != "api" and selected.auth_status != "connected":
+                    raise runner_client.RunnerBlocked("authentication")
+                # Unknown usage cannot become a fresh allowance after a worker disappears.
+                current.summary = {"status": "running", "tokens": None, "settings": flags, "limited_context": context["limited_context"],
+                                   "inference_started_at": now().isoformat()}
+                if pipeline.enabled(current):
+                    pipeline.update(current, "summary", "running", tokens=None)
+        consumed, feedback = 0, None
+        for attempt in range(2):
+            stopped()
+            authorize()
+            allowance = None if options["summary_token_budget"] is None else options["summary_token_budget"] - consumed
+            if allowance is not None and allowance <= 0:
+                raise SummaryUnavailable("Summary token allowance exhausted before correction.")
+            remaining = max(1, int(deadline - time.monotonic())) if deadline is not None else None
+            request_context = review_context.sanitize({**context,
+                **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
+            spent = {"tokens": None}
+            usage = {"tokens": None}
+            try:
+                if connection["kind"] == "api":
+                    result, spent = verification.api_verify(
+                        repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
+                        instructions=instructions, schema=schema, validator=validate_response,
+                        delivery=DELIVERY,
+                    )
+                else:
+                    raw, spent = runner_client.review(connection["id"], (retry_job_id or run_id) + "-summary" + (f"-{attempt}" if attempt else ""), {
+                        "kind": connection["kind"], "task": "summary", "model": connection["model"],
+                        "effort": options["effort"], "prompt": instructions + "\n\n" + verification.evidence_bundle(request_context),
+                        "output_schema": schema, "timeout": remaining,
+                        "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
+                        "token_budget": allowance,
+                    }, stopped)
+                    result = validate_response(raw, request_context)
+            except (verification.VerificationOutputError, verification.ResultValidationError) as exc:
+                amount = exc.usage.get("tokens") if isinstance(exc, verification.VerificationOutputError) else spent.get("tokens")
+                known = type(amount) is int and amount >= 0
+                usage = {"tokens": consumed + amount if known else None}
+                if isinstance(exc, verification.VerificationOutputError):
+                    exc.usage = usage
+                if attempt == 0 and known and review_context.correctable(exc.feedback):
+                    consumed += amount
+                    feedback = exc.feedback
+                    continue
+                raise
+            except runner_client.RunnerBlocked as exc:
+                amount = exc.usage.get("tokens")
+                exc.usage = {"tokens": consumed + amount if type(amount) is int and amount >= 0 else None}
+                raise
+            amount = spent.get("tokens")
+            usage = {"tokens": consumed + amount if type(amount) is int and amount >= 0 else None}
+            if request_context.get("diagram_warning"):
+                context["diagram_warning"] = request_context["diagram_warning"]
+            break
         count = usage.get("tokens")
         if type(count) is not int or count < 0:
             raise SummaryUnavailable("Summary token usage was not reported; generation will not be retried automatically.")
         if options["summary_token_budget"] is not None and count > options["summary_token_budget"]:
             raise SummaryUnavailable("Summary generation exceeded its token allowance.")
-        secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
-        result = validate_result(json.loads(clean_text(json.dumps(result), secrets)), context)
+        result = validate_result(review_context.sanitize(result, credentials, stopped, usage=usage), context)
         stopped()
     except Exception as exc:
         if isinstance(exc, (verification.VerificationOutputError, runner_client.RunnerBlocked)):

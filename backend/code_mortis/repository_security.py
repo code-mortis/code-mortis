@@ -168,6 +168,8 @@ def grade_for(findings):
 
 
 def validation_problem(path, feedback, *, task="analysis"):
+    if (feedback or {}).get("kind") in {"context_limit", "redaction"}:
+        return f"Security task withheld for {path}: {feedback.get('reason', 'Context could not be safely supplied')}."
     if (feedback or {}).get("kind") == "delivery":
         return f"AI result delivery failed for {path}: {feedback['reason']}" + (
             " " + result_diagnostics.explanation(feedback["transport"]) if feedback.get("transport") else "")
@@ -188,20 +190,9 @@ def redact_finding_text(db, finding, text):
     if connection:
         credentials = json.loads(unseal(connection.secret))
         secrets = [credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()]
-    for secret in db.scalars(select(SecurityFinding).where(SecurityFinding.repository_id == finding.repository_id,
-                                                          SecurityFinding.kind == "secret")):
-        evidence = secret.evidence
-        size = evidence.get("match_bytes", 0)
-        data = text.encode()
-        if 0 < size <= len(data):
-            for offset in range(len(data) - size + 1):
-                try:
-                    candidate = data[offset:offset + size].decode()
-                except UnicodeDecodeError:
-                    continue
-                if security_engine.secure_digest(evidence["rule_id"] + "\0" + candidate) == evidence.get("identity"):
-                    secrets.append(candidate)
-    return clean_text(text, tuple(secrets))
+    rules = [secret.evidence for secret in db.scalars(select(SecurityFinding).where(
+        SecurityFinding.repository_id == finding.repository_id, SecurityFinding.kind == "secret"))]
+    return security_engine.redact_secrets(text, secrets, rules)
 
 
 def connection_busy(db, connection_id, *, scan_id=None, run_id=None, job_id=None):
@@ -283,7 +274,7 @@ def finding_snapshot(row):
             "rotation": row.rotation, "pending_close": row.issue.get("desired_state") == "closed"}
 
 
-def assessment_keys(value, item):
+def assessment_keys(value, item, history=()):
     evidence = value.get("evidence", [])
     source_sha = item.sha
     if isinstance(evidence, dict):
@@ -293,23 +284,29 @@ def assessment_keys(value, item):
     else:
         citations = evidence
     paths = {value["path"], *(citation["path"] for citation in citations)}
-    paths.update(item.renamed(source_sha, path) for path in list(paths) if source_sha != item.sha)
-    return {("path", path) for path in paths} | {
+    if source_sha != item.sha:
+        for path in list(paths):
+            try:
+                paths.add(item.renamed(source_sha, path))
+            except ValueError:
+                pass  # Original paths and citation anchors still relate unavailable historical commits.
+    connected = {("path", path) for path in paths} | {
         ("anchor", citation["quote"].strip()) for citation in citations if citation.get("quote", "").strip()}
+    dependencies = [assessment_keys(old, item) for old in history]
+    while True:
+        expanded = connected.union(*(group for group in dependencies if connected & group))
+        if expanded == connected:
+            return connected
+        connected = expanded
+
+
+def assessment_history(proposal, history, item):
+    connected = assessment_keys(proposal, item, history)
+    return [old for old in history if connected & assessment_keys(old, item)]
 
 
 def assessment_batch(rows, history, item, concurrency):
-    dependencies = [assessment_keys(old, item) for old in history]
-    keys = {}
-    for row in rows:
-        connected = assessment_keys(row.proposal, item)
-        # Historical multi-file findings also connect otherwise separate proposals.
-        while True:
-            expanded = connected.union(*(group for group in dependencies if connected & group))
-            if expanded == connected:
-                break
-            connected = expanded
-        keys[row.id] = connected
+    keys = {row.id: assessment_keys(row.proposal, item, history) for row in rows}
     return assessment.independent_batch(rows, keys, concurrency)
 
 
@@ -406,7 +403,8 @@ def deterministic_fix(item, old, trivy_result):
             return {"verdict": "uncertain", "explanation": "The new version is not an independently established safe version for the original advisory."}
     elif evidence["kind"] == "infrastructure":
         checks = trivy_result["targets"].get(current_path, {}).get("checks", [])
-        if exists and not any(check["id"] == evidence["rule_id"] and check["status"] == "PASS" for check in checks):
+        if exists and not any(check["id"] == evidence["rule_id"] and check["status"] == "PASS"
+                              and check.get("resource", "") == evidence.get("resource", "") for check in checks):
             return {"verdict": "uncertain", "explanation": "The original configuration check did not explicitly pass."}
     return {"verdict": "fixed", "explanation": "The original condition changed and the relevant scanner check confirms its removal.",
             "original_sha": original, "current_sha": item.sha, "path": path, "current_path": current_path,
@@ -480,13 +478,22 @@ def perform(scan_id, claim):
     def timeout():
         return max(1, int(limits["timeout_seconds"] - (time.monotonic() - started))) if limits["timeout_seconds"] is not None else None
 
-    def ai(item, task, context, key, allowance=None, *, parallel=False):
-        context["language"] = config.get("language", "English")
+    def task_input(task, context, key):
+        context = {**context, "language": config.get("language", "English"), "task_contract": security_engine.TASK_CONTRACT}
+        if task == "assessment":
+            context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS)
         cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
         cached = saved.get(key, {})
-        if cached.get("status") == "completed" and cached.get("input_hash") == identity:
+        reusable = (cached.get("status") == "completed" and cached.get("input_hash") == identity
+                    and cached.get("result", {}).get("verdict") != "uncertain")
+        return context, identity, cached if reusable else None
+
+    def ai(item, task, context, key, allowance=None, *, parallel=False):
+        context, identity, cached = task_input(task, context, key)
+        if cached is not None:
             checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
+                       **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
                        **({"proposal": context["proposal"]} if task == "assessment" else {}))
             return cached["result"]
         with transaction() as db:
@@ -498,6 +505,8 @@ def perform(scan_id, claim):
         remaining = None if limits["token_budget"] is None else limits["token_budget"] - used
         if allowance is not None:
             remaining = min(remaining, allowance)
+        if remaining is not None and remaining <= 0:
+            raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": 0})
         checkpoint(scan_id, key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
         try:
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
@@ -509,8 +518,13 @@ def perform(scan_id, claim):
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
             feedback = getattr(exc, "feedback", None)
-            checkpoint(scan_id, key, "failed", error=item.redact(str(exc))[:2000], tokens=tokens,
-                       **({"validation_feedback": json.loads(item.redact(json.dumps(feedback)))} if feedback else {}))
+            try:
+                detail = item.redact(str(exc))[:2000]
+                feedback = security_engine.redacted_context(item, feedback) if feedback else None
+            except Exception:
+                detail, feedback = f"AI task failed ({type(exc).__name__}); diagnostic text could not be safely sanitized.", None
+            checkpoint(scan_id, key, "failed", error=detail, tokens=tokens,
+                       **({"validation_feedback": feedback} if feedback else {}))
             raise
         except Exception:
             checkpoint(scan_id, key, "failed", error="AI analysis was interrupted; token consumption is unknown.", tokens=None)
@@ -531,6 +545,7 @@ def perform(scan_id, claim):
                 db.get(SecurityScan, scan_id).coverage = {"inventory": item.inventory, "excluded": item.excluded, "problems": item.problems}
             stage(scan_id, "trivy", "running")
             result = security_engine.trivy(item, timeout(), stopped)
+            item.secret_rules = []
             for old in previous:
                 if old["kind"] == "secret":
                     try:
@@ -541,7 +556,7 @@ def perform(scan_id, claim):
                             raise ValueError("Original credential identity changed.")
                         item.secret_values.append(raw)
                     except (ValueError, KeyError):
-                        raise ValueError("Original secret evidence could not be revalidated for redaction. No source was submitted to AI.") from None
+                        item.secret_rules.append(old["evidence"])
             problems.extend(result["problems"])
             with transaction() as db:
                 row = db.get(SecurityScan, scan_id)
@@ -562,10 +577,6 @@ def perform(scan_id, claim):
             completed, failed = 0, 0
             stage(scan_id, "analysis", "running", total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
 
-            def analyze(path, allowance):
-                context = {"assigned_path": path, "head_sha": item.sha, "diff": "", "sources": {"current": {path: item.source(path)}}}
-                return ai(item, "analysis", context, "analysis:" + path, allowance, parallel=parallel)
-
             parallel = concurrency > 1 and len(code_paths) > 1
             configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
                              if parallel else nullcontext())
@@ -574,14 +585,16 @@ def perform(scan_id, claim):
                     if stopped():
                         raise ocr.ReviewStopped("Security scan cancelled.")
                     batch = code_paths[offset:offset + concurrency]
+                    contexts = {path: {"assigned_path": path, "head_sha": item.sha, "diff": "",
+                                "sources": {"current": {path: item.source(path)}}} for path in batch}
+                    needed = sum(task_input("analysis", contexts[path], "analysis:" + path)[2] is None for path in batch)
                     with transaction() as db:
                         used = db.get(SecurityScan, scan_id).progress.get("tokens")
                     if used is None:
                         raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
-                    allowance = None if limits["token_budget"] is None else (limits["token_budget"] - used) // len(batch)
-                    if allowance is not None and allowance <= 0:
-                        raise ValueError("Security token budget exhausted.")
-                    pending = {pool.submit(analyze, path, allowance): path for path in batch}
+                    allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
+                    pending = {pool.submit(ai, item, "analysis", contexts[path], "analysis:" + path, allowance,
+                                           parallel=parallel): path for path in batch}
                     results, fatal = {}, None
                     for future in as_completed(pending):
                         path = pending[future]
@@ -620,17 +633,17 @@ def perform(scan_id, claim):
                             SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id))]
                         used = db.get(SecurityScan, scan_id).progress.get("tokens")
                     batch = assessment_batch(remaining, history, item, concurrency)
+                    contexts = {candidate.id: {"proposal": candidate.proposal,
+                        "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
+                        "sources": {"current": {citation["path"]: item.source(citation["path"])
+                                   for citation in candidate.proposal["evidence"]}}} for candidate in batch}
+                    needed = sum(task_input("assessment", contexts[row.id], f"assessment:{row.id}")[2] is None for row in batch)
                     if used is None:
                         raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
-                    allowance = None if limits["token_budget"] is None else (limits["token_budget"] - used) // len(batch)
-                    if allowance is not None and allowance <= 0:
-                        raise ValueError("Security token budget exhausted.")
+                    allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
                     pending = {}
                     for candidate in batch:
-                        context = {"proposal": candidate.proposal, "history": history, "head_sha": item.sha, "diff": "",
-                                   "sources": {"current": {citation["path"]: item.source(citation["path"])
-                                                          for citation in candidate.proposal["evidence"]}}}
-                        pending[pool.submit(ai, item, "assessment", context, f"assessment:{candidate.id}", allowance,
+                        pending[pool.submit(ai, item, "assessment", contexts[candidate.id], f"assessment:{candidate.id}", allowance,
                                             parallel=parallel)] = candidate
                     results, fatal = {}, None
                     for future in as_completed(pending):
@@ -709,8 +722,11 @@ def perform(scan_id, claim):
         with transaction() as db:
             cancel(db, db.get(SecurityScan, scan_id))
     except Exception as exc:
-        message = clean_text(item.redact(str(exc)) if item else str(exc),
-                             (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
+        try:
+            message = clean_text(item.redact(str(exc)) if item else str(exc),
+                                 (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
+        except Exception:
+            message = f"Security scan failed ({type(exc).__name__}); diagnostic text could not be safely sanitized."
         with transaction() as db:
             row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
             if row and row.status in ACTIVE:
@@ -825,13 +841,15 @@ def refresh_repository(repository_id):
             return
         token = github.installation_token(db, repo.installation_id)
         name, identity = repo.full_name, scan.id
+    requested_at = now().isoformat()
     try:
         freshness = branch_head(name, token)
     except (github.GitHubError, ValueError):
-        freshness = {"error": "Unable to verify default-branch freshness", "checked_at": now().isoformat()}
+        freshness = {"error": "Unable to verify default-branch freshness"}
+    freshness = {**freshness, "checked_at": requested_at}
     with transaction() as db:
-        scan = db.get(SecurityScan, identity)
-        if scan:
+        scan = db.scalar(select(SecurityScan).where(SecurityScan.id == identity).with_for_update())
+        if scan and scan.progress.get("freshness", {}).get("checked_at", "") <= requested_at:
             scan.progress = {**scan.progress, "freshness": freshness}
 
 

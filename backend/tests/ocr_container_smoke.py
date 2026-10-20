@@ -43,6 +43,7 @@ class Provider(BaseHTTPRequestHandler):
         messages = data.get("input", []) if responses else data["messages"]
         names = {tool["name"] for tool in data.get("tools", [])}
         text = json.dumps(data)
+        assert "fake-test-key" not in text, "Execution credential leaked into model content"
         if "ocr_selftest" in names and not any(
             message.get("role") == "assistant" for message in messages
         ):
@@ -221,7 +222,7 @@ def main():
             git("add", ".")
             git("commit", "-m", "base")
             base = git("rev-parse", "HEAD")
-            (root / "main.py").write_text("count = 2\n")
+            (root / "main.py").write_text("count = 2  # fake-test-key\n")
             git("add", ".")
             git("commit", "-m", "head")
             head = git("rev-parse", "HEAD")
