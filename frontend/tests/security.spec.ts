@@ -297,8 +297,10 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(alert).toContainText("docker-compose.yml");
   await expect(alert).toContainText("not a missing-file error");
-  await expect(page.getByRole("group", { name: "Analysis stage" })).toContainText("57 / 58 files");
-  await expect(page.getByRole("group", { name: "Analysis stage" }).getByText("partial", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Scan stages" })).toContainText("57 / 58 files");
+  await page.getByRole("button", { name: "Scan stage details" }).click();
+  await expect(page.getByRole("group", { name: "Analysis details" })).toContainText("57 / 58 · Partial");
+  await page.keyboard.press("Escape");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-partial-grade-${grade}-${info.project.name}.png`, fullPage: true });
 });
@@ -1176,13 +1178,190 @@ test("running scan stages explain validated file progress without changing the s
   const writes = await mock(page, { running: true });
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Report 0", exact: true })).toBeVisible();
-  const stage = page.getByRole("group", { name: "Analysis stage", exact: true });
-  await expect(stage).toContainText("11 / 163 files");
-  await stage.locator("[data-security-badge]").focus();
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  const trigger = stages.getByRole("button", { name: "Scan stage details" });
+  await expect(trigger).toContainText("Analysis · 11 / 163 files");
+  await expect(stages.getByRole("progressbar", { name: "Analysis progress" })).toHaveAttribute("aria-valuenow", "11");
+  await expect(stages).toContainText("2 of 6 stages complete");
+  await expect(stages).toContainText("Analyzing source files");
+  await trigger.click();
+  await page.getByRole("group", { name: "Analysis details", exact: true }).locator("[data-security-badge]").focus();
   await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation.");
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Cancel scan", exact: true })).toBeEnabled();
   await page.screenshot({ path: info.outputPath("security-running-aligned.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
+test("compact scan progress updates validated progress and keeps details open across polling", async ({ page }, info) => {
+  await page.clock.install({ time: new Date("2026-10-18T15:08:42Z") });
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page, { running: true });
+  const saved = { ...scan, status: "running", grade: null, finished_at: null,
+    progress: { tokens: 4500, work: { analysis_completed: 117, analysis_total: 163, completed: 117, failed: 0 } },
+    stages: { snapshot: { status: "completed" }, trivy: { status: "completed" },
+      analysis: { status: "running", total: 163, completed: 117 }, assessment: { status: "pending", total: 32, completed: 0 },
+      verification: { status: "pending" }, report: { status: "pending" } } };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.goto("/security/scans/scan");
+  const track = page.getByRole("region", { name: "Scan stages" });
+  const trigger = track.getByRole("button", { name: "Scan stage details" });
+  await expect(trigger).toContainText("117 / 163 files");
+  await expect(track).toContainText("72% of analysis");
+  await page.screenshot({ path: info.outputPath("scan-compact-running.png"), fullPage: true });
+  await trigger.click();
+  const details = page.getByRole("dialog", { name: "Scan stage details" });
+  await expect(details).toBeFocused();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(details.getByText("2 of 6 complete", { exact: true })).toBeVisible();
+  await expect(details.getByText("File counts include validated results only.", { exact: true })).toBeVisible();
+  await expect(details.getByRole("group", { name: "Analysis details" }).locator('[data-slot="badge"]')).toHaveText("117 / 163");
+  await expect(details.getByRole("group")).toHaveCount(6);
+  const detailsBox = (await details.boundingBox())!;
+  const triggerBox = (await trigger.boundingBox())!;
+  expect(detailsBox.x).toBeCloseTo((await track.boundingBox())!.x, 0);
+  expect(detailsBox.y).toBeGreaterThanOrEqual(triggerBox.y + triggerBox.height);
+  saved.stages.analysis.completed = 163;
+  saved.stages.analysis.status = "completed";
+  saved.stages.assessment.status = "running";
+  saved.stages.assessment.completed = 8;
+  saved.progress.work.analysis_completed = 163;
+  saved.progress.work.completed = 171;
+  await page.clock.fastForward(5000);
+  await expect(trigger).toContainText("Assessment · 8 / 32");
+  await expect(track).toContainText("3 of 6 stages complete");
+  await expect(track).toContainText("25% of assessment");
+  await expect(track.getByRole("progressbar")).toHaveCount(1);
+  await expect(track.getByRole("progressbar", { name: "Assessment progress" })).toHaveAttribute("aria-valuenow", "8");
+  await expect(details).toBeVisible();
+  await expect(details.getByRole("group", { name: "Analysis details" }).locator('[data-slot="badge"]')).toHaveText("163 / 163");
+  await expect(details.getByText("3 of 6 complete", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("scan-compact-details.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(details).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
+test("compact scan progress stays visible without layout shifts from queued to completed", async ({ page }, info) => {
+  await page.clock.install({ time: new Date("2026-10-18T15:00:48Z") });
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page, { running: true });
+  const saved = { ...scan, status: "queued", grade: null, finished_at: null,
+    progress: { tokens: 0, work: { analysis_completed: 0, analysis_total: 0, completed: 0, failed: 0 } },
+    stages: Object.fromEntries(Object.keys(scan.stages).map((name) => [name, { status: "pending" }])) };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.goto("/security/scans/scan");
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  const bar = stages.getByRole("progressbar");
+  const caption = stages.getByRole("status");
+  await expect(stages.getByRole("button", { name: "Scan stage details" })).toHaveText("Queued");
+  await expect(bar).toBeVisible();
+  await expect(stages.getByLabel("Stage progress unavailable")).toHaveText("—");
+  await expect(caption).toHaveText("Waiting for a worker0 of 6 stages complete");
+  const geometry = async () => {
+    const regionBox = (await stages.boundingBox())!, barBox = (await bar.boundingBox())!, captionBox = (await caption.boundingBox())!;
+    return { height: regionBox.height, barTop: barBox.y - regionBox.y, captionTop: captionBox.y - regionBox.y, captionHeight: captionBox.height };
+  };
+  const initial = await geometry();
+  saved.status = "running";
+  saved.stages.snapshot.status = "running";
+  await page.clock.fastForward(5000);
+  await expect(stages.getByRole("button", { name: "Scan stage details" })).toHaveText("Snapshot");
+  expect(await geometry()).toEqual(initial);
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveAttribute("aria-valuenow", "0");
+  await expect(bar).toHaveAttribute("aria-valuemax", "6");
+  await expect(stages).toContainText("Preparing repository files");
+  await page.screenshot({ path: info.outputPath("scan-compact-snapshot.png"), fullPage: true });
+  const names = Object.keys(saved.stages);
+  for (let index = 1; index < names.length; index++) {
+    saved.stages[names[index - 1]].status = "completed";
+    saved.stages[names[index]].status = "running";
+    await page.clock.fastForward(5000);
+    await expect(bar).toBeVisible();
+    await expect(bar).toHaveAttribute("aria-valuenow", String(index));
+    await expect(bar).toHaveAttribute("aria-valuetext", `${index} of 6 stages complete`);
+    await expect(caption).toContainText(`${index} of 6 stages complete`);
+    expect(await geometry()).toEqual(initial);
+    if (["analysis", "assessment", "verification"].includes(names[index])) {
+      Object.assign(saved.stages[names[index]], { total: 163, completed: 117 });
+      await page.clock.fastForward(5000);
+      await expect(bar).toHaveAttribute("aria-valuenow", "117");
+      expect(await geometry()).toEqual(initial);
+    }
+    if (index === 1) await page.screenshot({ path: info.outputPath("scan-compact-trivy.png"), fullPage: true });
+  }
+  await expect(stages).toContainText("Preparing report");
+  saved.stages.report.status = "completed";
+  saved.status = "completed";
+  await page.clock.fastForward(5000);
+  await expect(stages.getByRole("button", { name: "Scan stage details" })).toHaveText("Completed");
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveAttribute("aria-valuenow", "6");
+  await expect(caption).toHaveText("Completed6 of 6 stages complete");
+  expect(await geometry()).toEqual(initial);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
+test("compact scan progress preserves terminal states and avoids invented progress", async ({ page }, info) => {
+  await page.clock.install();
+  const writes = await mock(page);
+  const saved: Schema["SecurityScanOut"] = { ...scan };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.setViewportSize({ width: info.project.name === "mobile" ? 320 : 1440, height: 960 });
+  await page.goto("/security/scans/scan");
+  const track = page.getByRole("region", { name: "Scan stages" });
+  const trigger = track.getByRole("button", { name: "Scan stage details" });
+  await expect(trigger).toHaveText("Completed");
+  await expect(track).toContainText("6 of 6 stages complete");
+  await expect(track.getByRole("progressbar", { name: "Scan stages progress" })).toBeVisible();
+  await expect(track.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "6");
+  await page.screenshot({ path: info.outputPath("scan-compact-completed.png"), fullPage: true });
+  for (const status of ["partial", "blocked", "failed", "cancelled"]) {
+    saved.status = status;
+    saved.stages = { ...scan.stages, analysis: { status: status === "blocked" ? "failed" : status, total: 163, completed: 117 },
+      assessment: { status: "skipped" }, verification: { status: "skipped" } };
+    await page.clock.fastForward(5000);
+    await expect(trigger).toHaveText(status === "partial" ? "Completed with warnings" : status[0].toUpperCase() + status.slice(1));
+    await expect(track).toContainText("3 of 6 stages complete");
+    if (["blocked", "failed"].includes(status)) await expect(track.getByRole("progressbar", { name: "Analysis progress" })).toHaveAttribute("aria-valuenow", "117");
+    else await expect(track.getByRole("progressbar", { name: "Scan stages progress" })).toHaveAttribute("aria-valuenow", "3");
+    await trigger.click();
+    const details = page.getByRole("dialog", { name: "Scan stage details" });
+    await expect(details.getByRole("group", { name: "Analysis details", exact: true })).toContainText("117 / 163");
+    await expect(details.getByRole("group", { name: "Assessment details", exact: true })).toContainText("Skipped");
+    expect(await details.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.keyboard.press("Escape");
+  }
+  saved.status = "running";
+  saved.stages = { analysis: { status: "running", total: 10000, completed: 9999 } };
+  await page.clock.fastForward(5000);
+  await expect(track).toContainText("99% of analysis");
+  for (const values of [{}, { total: 0, completed: 0 }, { total: 10, completed: 12 }, { total: "163", completed: 11 }, { total: 163, completed: -1 }]) {
+    saved.stages = { analysis: { status: "running", ...values } };
+    await page.clock.fastForward(5000);
+    await expect(track).toContainText("0 of 1 stages complete");
+    await expect(track.getByRole("progressbar", { name: "Scan stages progress" })).toHaveAttribute("aria-valuenow", "0");
+    await expect(track.getByRole("progressbar")).toBeVisible();
+    await expect(track).not.toContainText("%");
+  }
+  saved.status = "queued";
+  saved.stages = {};
+  await page.clock.fastForward(5000);
+  await expect(trigger).toHaveText("Queued");
+  await expect(track).toContainText("Stage status unavailable");
+  await expect(track.getByRole("progressbar", { name: "Scan stages progress" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
@@ -1345,7 +1524,8 @@ test("security grades and scan stages keep their help while finding and scan sta
     }
   }
   await page.goto("/security/scans/scan");
-  const stage = page.getByRole("group", { name: "Analysis stage", exact: true });
+  await page.getByRole("button", { name: "Scan stage details" }).click();
+  const stage = page.getByRole("group", { name: "Analysis details", exact: true });
   if (info.project.name === "desktop") await stage.locator("[data-security-badge]").hover();
   else await stage.locator("[data-security-badge]").focus();
   await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation");
@@ -1643,7 +1823,9 @@ test("scan activity shows past stage transitions separately from the current sta
     can_write: true, finding_count: 1, activity_count: activity.length, activity } }));
   await page.route("**/api/v1/security/scans/scan/activity?**", (route) => route.fulfill({ json: { items: activity, total: activity.length, page: 1, page_size: 10 } }));
   await page.goto("/security/scans/scan?tab=activity");
-  await expect(page.getByRole("group", { name: "Trivy stage", exact: true })).toContainText("completed");
+  await page.getByRole("button", { name: "Scan stage details" }).click();
+  await expect(page.getByRole("group", { name: "Trivy details", exact: true })).toContainText("Completed");
+  await page.keyboard.press("Escape");
   const panel = page.getByRole("tabpanel");
   await expect(panel.getByText("Trivy started", { exact: true })).toBeVisible();
   await expect(panel.getByText("Trivy completed", { exact: true })).toBeVisible();
@@ -2440,11 +2622,28 @@ test("repository findings and resolved tabs keep independent backend filters, or
   await expect(cards).toHaveCount(10);
   await expect(cards.first()).toContainText("open defect 12");
   await expect(panel.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
-  await panel.getByRole("button", { name: "Edit State: Open", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /^Edit State:/ })).toHaveCount(0);
+  await panel.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "State", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open(?: |$)/ })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toHaveCount(0);
   await expect(page.getByRole("checkbox", { name: /^Accepted risk/ })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /^False positive/ })).toBeVisible();
+  await page.getByRole("checkbox", { name: /^False positive/ }).click();
+  await expect(panel.getByRole("button", { name: "Edit State: Open, False positive", exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: /^Open(?: |$)/ }).click();
   await page.keyboard.press("Escape");
+  await expect(panel.getByRole("button", { name: "Edit State: False positive", exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(1);
+  await page.reload();
+  await expect(panel.getByRole("button", { name: "Edit State: False positive", exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Remove State filter", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /^Edit State:/ })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
+  await expect(cards).toHaveCount(10);
+  await page.goto("/security/repositories/22?state=all");
+  await expect(panel.getByRole("button", { name: "Edit State: Open, False positive, Accepted risk", exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Remove State filter", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /^Edit State:/ })).toHaveCount(0);
   await panel.getByRole("textbox", { name: "Search findings", exact: true }).fill("open");
   await expect.poll(() => requests.at(-1)?.get("search")).toBe("open");
   await panel.getByRole("button", { name: "Sort by Severity", exact: true }).click();

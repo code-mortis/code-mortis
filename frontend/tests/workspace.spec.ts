@@ -2104,8 +2104,10 @@ test("pull filters, history tabs, and finding tabs survive reload and browser hi
   await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
   await page.reload();
   await expect(dismissed.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(page).toHaveURL((url) => url.searchParams.get("status") === "all");
+  await page.getByRole("button", { name: "Edit Status: Dismissed", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL((url) => url.searchParams.getAll("status").includes("open") && url.searchParams.getAll("status").includes("dismissed"));
   await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
   await page.goBack();
   await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
@@ -2128,6 +2130,15 @@ test("pull filters, history tabs, and finding tabs survive reload and browser hi
   await expect(page.getByRole("tab", { name: /Run history/ })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: /^Findings/ }).click();
   await expect(dismissed.getByRole("button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
+  await expect(dismissed).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
+  await page.goto("/pulls/pr?status=all");
+  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
 });
 
 test("run tabs and independent finding and assessment filters survive shared URLs", async ({ page }, info) => {
@@ -8077,10 +8088,14 @@ test("pull detail searches evidence and separates severity, status, and run hist
   const list = page.getByRole("region", { name: "Findings", exact: true });
   await expect(list.getByRole("region")).toHaveCount(1);
   await expect(list.getByRole("button")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Edit Status: Open", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Findings 2", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await page.keyboard.press("Escape");
   await expect(list.getByRole("region")).toHaveCount(2);
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("dismissed");
   await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
@@ -8095,14 +8110,15 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: /Remove (Status|Severity|Type) filter/ })).toHaveCount(0);
-  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
   await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
   await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
   await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("Validate the response");
   await expect(list).toHaveCount(0);
@@ -8132,8 +8148,7 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   await page.goto("/pulls/pr");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   await page.getByRole("button", { name: "View resolved findings", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("resolved");
@@ -8413,7 +8428,12 @@ test("pull detail keeps independent findings and resolved backend filters, order
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/code-mortis-pr-resolved-pagination-${info.project.name}.png`, fullPage: true });
   await page.goForward();
-  await panel.getByRole("button", { name: "Remove Status filter", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
+  await panel.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(panel.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
   await expect(rows(open)).toHaveCount(10);
   await expect(rows(dismissed)).toHaveCount(10);
   await expect(resolved).toHaveCount(0);

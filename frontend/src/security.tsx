@@ -2,11 +2,11 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LoaderCircle, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { AssessmentStatus } from "./components/assessment-status";
-import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, StatusGroup, words } from "./components/common";
+import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, Status, StatusGroup, words } from "./components/common";
 import { ModelPicker } from "./components/model-picker";
 import { FilterBar } from "./components/filter-bar";
 import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/ordering";
@@ -20,6 +20,7 @@ import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
@@ -60,6 +61,76 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
     onOpenAutoFocus: () => { trigger.current = returnTo ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null); },
     onCloseAutoFocus: (event: Event) => { event.preventDefault(); const target = returnTo?.isConnected ? returnTo : trigger.current; if (target?.isConnected) target.focus(); },
   };
+}
+
+function ScanStages({ scan }: { scan: Scan }) {
+  const details = useRef<HTMLDivElement>(null);
+  const names = [...Object.keys(stageDescriptions).filter((name) => Object.hasOwn(scan.stages, name)),
+    ...Object.keys(scan.stages).filter((name) => !Object.hasOwn(stageDescriptions, name))];
+  const stages = names.map((name) => {
+    const stage = object(scan.stages[name]);
+    const [label, description] = stageDescriptions[name] ?? [words(name), "Saved stage status for this scan."];
+    const status = text(stage.status) || "pending";
+    const total = typeof stage.total === "number" && Number.isSafeInteger(stage.total) && stage.total >= 0 ? stage.total : null;
+    const completed = typeof stage.completed === "number" && Number.isSafeInteger(stage.completed) && stage.completed >= 0 ? stage.completed : null;
+    const validCounts = total !== null && completed !== null && completed <= total;
+    const progress = validCounts ? `${count(completed)} / ${count(total)}${name === "analysis" ? " files" : ""}` : null;
+    const percentage = validCounts && total > 0 ? completed / total * 100 : null;
+    const Icon = status === "completed" ? CircleCheck : status === "running" ? LoaderCircle : status === "failed" ? CircleX
+      : status === "partial" ? TriangleAlert : status === "blocked" ? Pause : ["cancelled", "skipped"].includes(status) ? CircleSlash : Circle;
+    const color = status === "completed" ? "text-emerald-700 dark:text-emerald-300" : status === "failed" ? "text-red-700 dark:text-red-300"
+      : ["partial", "blocked"].includes(status) ? "text-amber-800 dark:text-amber-300" : status === "running" ? "text-primary" : "text-muted-foreground";
+    return { name, label, description, status, total, completed, progress, percentage, Icon, color };
+  });
+  const current = stages.find((stage) => stage.status === "running")
+    ?? stages.find((stage) => ["failed", "partial", "blocked"].includes(stage.status));
+  const running = scan.status === "running";
+  const stageLabel = running && current?.status === "running" ? `${current.label}${current.progress ? ` · ${current.progress}` : ""}`
+    : scan.status === "partial" ? "Completed with warnings" : label(scan.status);
+  const completedStages = stages.filter((stage) => stage.status === "completed").length;
+  const completion = stages.length ? `${completedStages} of ${stages.length} stages complete` : "Stage status unavailable";
+  const progress = current && current.percentage !== null && !["completed", "partial", "cancelled"].includes(scan.status) ? current : null;
+  const progressTotal = progress?.total ?? stages.length;
+  const progressCompleted = progress?.completed ?? completedStages;
+  const progressPercentage = progress?.percentage ?? (stages.length ? completedStages / stages.length * 100 : 0);
+  const activity = scan.status === "queued" ? "Waiting for a worker" : current ? running
+    ? ({ snapshot: "Preparing repository files", trivy: "Checking dependencies and configuration", analysis: "Analyzing source files", assessment: "Assessing proposed findings", verification: "Verifying earlier findings", report: "Preparing report" }[current.name] ?? `${current.label} in progress`)
+    : `${current.label} · ${words(scan.status)}${current.progress ? ` · ${current.progress}` : ""}` : running ? "Preparing scan" : null;
+  return <section className="my-5 border-t pt-4 text-xs" aria-label="Scan stages">
+    <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <Popover>
+        <PopoverAnchor asChild><div className="flex min-w-0 max-w-full items-center gap-3">
+          <PopoverTrigger asChild><button type="button" aria-label="Scan stage details" className="group inline-flex min-h-11 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-left font-medium outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6">
+            <span className="min-w-0 tabular-nums">{stageLabel}</span>
+            <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" />
+          </button></PopoverTrigger>
+        </div></PopoverAnchor>
+        <PopoverContent ref={details} tabIndex={-1} align="start" sideOffset={12} aria-label="Scan stage details"
+          onOpenAutoFocus={(event) => { event.preventDefault(); details.current?.focus(); }}
+          className="max-h-[var(--radix-popover-content-available-height)] w-86 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border-0 text-xs shadow-lg dark:bg-[color-mix(in_srgb,var(--popover)_70%,var(--muted))]">
+          <div className="flex items-center justify-between gap-2 border-b pb-3"><span className="text-sm font-medium">Scan stages</span><span className="tabular-nums text-muted-foreground">{stages.length ? `${completedStages} of ${stages.length} complete` : "Unavailable"}</span></div>
+          {stages.length ? stages.map((stage) => <div key={stage.name} role="group" aria-label={`${stage.label} details`} className="mt-3 flex items-center justify-between gap-2">
+            <SecurityBadge description={stage.description}><span className="inline-flex items-center gap-2">
+              <stage.Icon aria-hidden="true" className={`size-3.5 shrink-0 ${stage.color} ${stage.status === "running" && running ? "motion-safe:animate-spin" : ""}`} />
+              <span>{stage.label}</span><span className="sr-only">: {words(stage.status)}</span>
+            </span></SecurityBadge>
+            <span className="shrink-0 tabular-nums [&_svg]:hidden"><Status value={stage.status} label={stage.progress && stage.status !== "pending"
+              ? `${stage.progress.replace(/ files$/, "")}${["completed", "running"].includes(stage.status) ? "" : ` · ${label(stage.status)}`}` : label(stage.status)} /></span>
+          </div>) : <p className="text-muted-foreground">Stage status was not recorded for this scan.</p>}
+          <p className="mt-3.5 border-t pt-3 text-muted-foreground">File counts include validated results only.</p>
+        </PopoverContent>
+      </Popover>
+      <span className="h-4 whitespace-nowrap tabular-nums text-muted-foreground sm:ml-auto" aria-label={progress ? undefined : "Stage progress unavailable"}>{progress ? `${Math.min(progress.completed === progress.total ? 100 : 99, Math.round(progress.percentage!))}% of ${progress.label.toLowerCase()}` : "—"}</span>
+    </div>
+    <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={progress ? `${progress.label} progress` : "Scan stages progress"}
+      aria-valuemin={0} aria-valuemax={progressTotal || undefined} aria-valuenow={progressTotal ? progressCompleted : undefined}
+      aria-valuetext={progress ? `${progress.progress} · ${words(progress.status)}` : completion}>
+      <div className={`h-full rounded-full bg-current transition-[width] duration-300 motion-reduce:transition-none ${progress?.color ?? "text-primary"}`} style={{ width: `${progressPercentage}%` }} />
+    </div>
+    <p role="status" className="mt-2 grid gap-y-1 text-muted-foreground sm:flex sm:justify-between sm:gap-x-3">
+      <span className="h-4 min-w-0 truncate" title={activity ?? label(scan.status)}>{activity ?? label(scan.status)}</span><span className="h-4 shrink-0 whitespace-nowrap tabular-nums">{completion}</span>
+    </p>
+  </section>;
 }
 
 
@@ -358,7 +429,9 @@ function Findings({ repositoryId, scanId, resolved = false }: { repositoryId: nu
     <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
       ordering={{ value: ordering, defaultValue: "-severity", options: findingOrderings, onChange: (value) => changeFilter("ordering", [value]) }}
       onSearch={(value) => changeFilter("search", [value])} onChange={changeFilter} filters={[
-        ...(!resolved ? [{ key: "state", label: "State", values: filters.getAll("state").includes("all") ? [] : states, choices: availableStates.map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) }] : []),
+        ...(!resolved ? [{ key: "state", label: "State", values: scanId && filters.getAll("state").includes("all") ? [] : states,
+          ...(!scanId ? { active: states.some((state) => state !== "open"), clearValues: ["open"] } : {}),
+          choices: availableStates.map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) }] : []),
         ...(scanId ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
         { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },
         { key: "kind", label: "Type", values: filters.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
@@ -378,7 +451,7 @@ function Findings({ repositoryId, scanId, resolved = false }: { repositoryId: nu
         const next = new URLSearchParams(params);
         for (const key of ["search", "outcome", "severity", "kind", "state", "page"]) next.delete(`${prefix}${key}`);
         for (const state of availableStates) next.delete(`${state}_page`);
-        if (!resolved) next.set("state", "all");
+        if (!resolved) next.set("state", scanId ? "all" : "open");
         setParams(next); searchInput.current?.focus();
       }}>Clear filters</Button></> : resolved ? "Resolved findings will appear here after fixes are verified." : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty>)}
   </div>;
@@ -438,11 +511,7 @@ export function SecurityScan({ user }: { user: User }) {
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ScanDuration scan={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
     <ErrorNotice error={scan.error || action.error} />
-    <div className="my-5 flex flex-wrap gap-x-4 gap-y-2 border-y py-3 text-xs" aria-label="Scan stages">{Object.entries(scan.stages).map(([name, raw]) => {
-      const stage = object(raw);
-      const [label, description] = stageDescriptions[name] ?? [words(name), "Saved stage status for this scan."];
-      return <div role="group" aria-label={`${label} stage`} key={name} className="flex min-h-8 items-center gap-2"><span className="font-medium">{label}</span><SecurityStatus value={text(stage.status) || "pending"} description={description} />{typeof stage.total === "number" && <span className="tabular-nums text-muted-foreground">{count(stage.completed)} / {count(stage.total)}{name === "analysis" && " files"}</span>}</div>;
-    })}</div>
+    <ScanStages scan={scan} />
     <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto"><TabsTrigger value="report">Report <span className="text-xs font-normal tabular-nums text-muted-foreground">{reportCount}</span></TabsTrigger><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="report"><div className="space-y-6 pt-4">
         {Object.keys(report).length ? <><div className="flex flex-wrap gap-2">{(["markdown", "json"] as const).map((format) => <Button variant="outline" size="sm" asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download><Download aria-hidden="true" className="size-4" />Download {format === "json" ? "JSON" : "Markdown"}</a></Button>)}</div>

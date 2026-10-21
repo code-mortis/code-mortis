@@ -39,7 +39,7 @@ export function useReviewFilters(scope: ReviewFilterScope) {
     setParams(resetPages(withReviewFilters(next, normalizeReviewFilters(next, scope), scope)), { state: location.state });
   }
   function clear() {
-    const next = new URLSearchParams(scope === "pull" ? "status=all" : "");
+    const next = new URLSearchParams(scope === "pull" ? "status=open" : "");
     if (params.has("ordering")) next.set("ordering", params.get("ordering")!);
     setParams(resetPages(withReviewFilters(raw, next, scope)), { state: location.state });
     setNavigation((current) => ({ ...current, reset: current.reset + 1 }));

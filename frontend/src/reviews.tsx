@@ -418,7 +418,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
         <div className="mb-4">
           <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
-              ...(!resolved ? [{ key: "status" as const, label: "Status", values: statuses, choices: availableStatuses.map((value) => ({ value, name: label(value), count: count(value) })) }] : []),
+              ...(!resolved ? [{ key: "status" as const, label: "Status", values: statuses.length ? statuses : availableStatuses,
+                active: statuses.length !== 1 || statuses[0] !== "open", clearValues: ["open"],
+                choices: availableStatuses.map((value) => ({ value, name: label(value), count: count(value) })) }] : []),
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
