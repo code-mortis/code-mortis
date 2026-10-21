@@ -5,6 +5,7 @@ import { fileFeedback } from "../lib/run-feedback";
 import { errorFeedback } from "../lib/error-feedback";
 import { active, Code, Empty, Status, TechnicalDetails } from "./common";
 import { Pagination } from "./pagination";
+import { CoverageGroup } from "./coverage-group";
 
 const outcomes = {
   completed: { label: "Reviewed", value: "completed", reason: "Validated file result saved in this run." },
@@ -62,18 +63,17 @@ export function RunCoverage({ run }: { run: Run }) {
     {!run.report ? <div className="mt-4"><Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty></div> : <>
       {!hasScope && <p role="status" className="mt-2 text-xs text-muted-foreground">Selected review scope was not recorded.</p>}
       <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{countKeys.map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className={`text-sm tabular-nums ${key === "failed" && counts.failed ? "text-destructive" : ""}`}>{counts[key]}</dd></div>)}</dl>
-      <div className="mt-6 space-y-6">
+      <div className="mt-6 space-y-3">
         {(["attention", "reviewed"] as const).map((group) => {
           const files = items.filter((item) => ["completed", "reused"].includes(item.outcome) === (group === "reviewed"));
           if (!files.length) return null;
           const page = Math.min(pages[group] ?? 1, Math.ceil(files.length / 10));
           const visible = files.slice((page - 1) * 10, page * 10);
           const heading = group === "attention" ? "Files not reviewed" : "Reviewed files";
-          return <section key={group} aria-label={heading}>
-            <h3 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{heading}<span className="text-xs font-normal tabular-nums text-muted-foreground">{files.length}</span></h3>
-            <ul className="divide-y border-y">{visible.map((file) => {
+          return <CoverageGroup key={group} title={heading} count={files.length.toLocaleString()}>
+            <ul className="divide-y">{visible.map((file) => {
               const feedback = errorFeedback(file.reason);
-              return <li key={file.path} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 py-3">
+              return <li key={file.path} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 px-4 py-3 sm:px-5">
               <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
               <div className="min-w-0 flex-1">
                 <code className="block break-words text-xs leading-5 [overflow-wrap:anywhere]">{file.path}</code>
@@ -84,7 +84,7 @@ export function RunCoverage({ run }: { run: Run }) {
             </li>; })}</ul>
             <Pagination page={page} pageSize={10} total={files.length} label={heading.toLowerCase()}
               onPageChange={(next) => setPages((current) => ({ ...current, [group]: next }))} />
-          </section>;
+          </CoverageGroup>;
         })}
         {!items.length && <Empty title="No file coverage recorded">Inspect the saved report for scope and review details. No selected files does not imply a clean review.</Empty>}
       </div>

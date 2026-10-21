@@ -5,8 +5,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { ArrowRight, ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
+import { CoverageGroup } from "./components/coverage-group";
 import { AssessmentStatus } from "./components/assessment-status";
-import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, Status, StatusGroup, words } from "./components/common";
+import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, Status, StatusGroup, TechnicalDetails, words } from "./components/common";
 import { ModelPicker } from "./components/model-picker";
 import { FilterBar } from "./components/filter-bar";
 import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/ordering";
@@ -682,26 +683,50 @@ function SecurityAssessmentContents({ item, scan, error, reload, onOpenFinding }
 
 function Coverage({ scan }: { scan: Scan }) {
   const scanner = object(scan.coverage.trivy);
-  return <div className="space-y-6 pt-5"><p className="text-sm leading-relaxed text-muted-foreground">Coverage records prepared source files and scanner targets. A completed process does not establish that every possible vulnerability was detected.</p>
-    <dl className="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">Prepared files</dt><dd className="mt-1 tabular-nums">{count(scan.coverage.inventory_count)}</dd></div><div><dt className="text-muted-foreground">Trivy version</dt><dd className="mt-1">{text(scanner.version) || "Not recorded"}</dd></div><div><dt className="text-muted-foreground">Vulnerability database</dt><dd className="mt-1">{scanner.database_fresh === true ? "Within 24-hour freshness limit" : "Not verified"}</dd></div><div><dt className="text-muted-foreground">Scanner targets</dt><dd className="mt-1 tabular-nums">{Object.keys(object(scan.coverage.targets)).length}</dd></div></dl>
-    {([ ["inventory", "Prepared source inventory"], ["excluded", "Excluded and unsupported files"], ["units", "Analysis work units"] ] as const).map(([section, title]) => <CoverageSection key={section} scanId={scan.id} section={section} title={title} />)}
-    <CoverageRows scanId={scan.id} section="problems" />
-  </div>;
+  const work = object(scan.progress.work);
+  return <section aria-label="Coverage" className="min-w-0 pt-4">
+    <p className="text-xs leading-relaxed text-muted-foreground">See which source files were analyzed, the saved work results, and why files were left outside the scan.</p>
+    <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{([
+      ["Prepared files", scan.coverage.inventory_count], ["Selected for analysis", work.analysis_total],
+      ["Analyzed files", work.analysis_completed], ["Failed work units", work.failed],
+    ] as const).map(([label, value]) => <div key={label} className="flex items-baseline gap-2"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={`text-sm tabular-nums ${label === "Failed work units" && typeof value === "number" && value > 0 ? "text-destructive" : ""}`}>{count(value)}</dd></div>)}</dl>
+    <div className="mt-6 space-y-3">
+      <CoverageRows scanId={scan.id} section="problems" title="Coverage problems" />
+      <CoverageRows scanId={scan.id} section="units" title="Work units" />
+      <CoverageRows scanId={scan.id} section="excluded" title="Excluded and unsupported files" />
+      <CoverageRows scanId={scan.id} section="inventory" title="Prepared source inventory" />
+    </div>
+    <details className="mt-4 text-sm"><summary className="w-fit cursor-pointer font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">Scanner details</summary>
+      <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-3 text-xs"><div><dt className="text-muted-foreground">Trivy version</dt><dd className="mt-1">{text(scanner.version) || "Not recorded"}</dd></div><div><dt className="text-muted-foreground">Vulnerability database</dt><dd className="mt-1">{scanner.database_fresh === true ? "Within 24-hour freshness limit" : "Not verified"}</dd></div><div><dt className="text-muted-foreground">Scanner targets</dt><dd className="mt-1 tabular-nums">{Object.keys(object(scan.coverage.targets)).length}</dd></div></dl>
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">A completed process does not establish that every possible vulnerability was detected.</p>
+    </details>
+  </section>;
 }
 
-function CoverageSection({ scanId, section, title }: { scanId: string; section: string; title: string }) {
-  const [open, setOpen] = useState(false);
-  return <details className={disclosure} onToggle={(event) => setOpen(event.currentTarget.open)}><summary className={disclosureSummary}>{title}<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary>{open && <div className="mt-4"><CoverageRows scanId={scanId} section={section} /></div>}</details>;
-}
-
-function CoverageRows({ scanId, section }: { scanId: string; section: string }) {
-  const { query, items, denied, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/coverage/${section}`);
+function CoverageRows({ scanId, section, title }: { scanId: string; section: string; title: string }) {
+  const { query, items, denied, total, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/coverage/${section}`);
   if (denied) return <ErrorNotice error={query.error} />;
-  return <>{query.isPending ? <Loading /> : <ul className="max-h-80 space-y-3 overflow-auto text-xs">{items.map((row) => <li key={row.id} className="flex flex-wrap justify-between gap-2">
-    {section === "problems" ? <ErrorNotice error={`${text(row.path)}: ${text(row.reason)}`} /> : <><span className="break-words font-mono [overflow-wrap:anywhere]">{text(row.path) || text(row.task)}</span>
-      {text(row.status) && <SecurityStatus value={text(row.status)} />}{text(row.reason) && <span className="w-full text-muted-foreground">{text(row.reason)}</span>}
-      {text(row.error) && <div className="w-full"><ErrorNotice error={text(row.error)} /></div>}</>}
-  </li>)}</ul>}<Pagination {...pagination} label={section === "inventory" ? "prepared files" : section === "units" ? "work units" : section === "excluded" ? "excluded files" : "coverage problems"} /></>;
+  if (["problems", "excluded"].includes(section) && query.data && !query.error && !total) return null;
+  return <CoverageGroup title={title} count={query.error ? "Unavailable" : query.data ? total.toLocaleString() : "…"}>
+    {section === "inventory" && <p className="px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">Prepared files are available to the scan. Their presence here does not establish that they were analyzed.</p>}
+    {query.isPending ? <div className="px-4 sm:px-5"><Loading /></div> : items.length ? <ul className="divide-y">{items.map((row) => {
+      const path = text(row.path) || text(row.task);
+      const reason = text(row.reason);
+      const error = text(row.error) || (section === "problems" ? reason : "");
+      const feedback = error ? errorFeedback(error) : undefined;
+      return <li key={row.id} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 px-4 py-3 sm:px-5">
+        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          {path && <code className="block break-words text-xs leading-5 [overflow-wrap:anywhere]">{path}</code>}
+          {reason && section !== "problems" && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{reason}</p>}
+          {feedback && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{feedback.message}</p>}
+          {feedback?.details && <TechnicalDetails error={feedback.details} name={path || "Coverage problem"} />}
+        </div>
+        {section === "excluded" ? <Status value="not_reviewed" label="Not analyzed" /> : section === "problems" ? <Status value="partial" label="Incomplete" /> : text(row.status) && <Status value={text(row.status)} icon={row.status === "completed" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />}
+      </li>;
+    })}</ul> : !query.error && <p className="p-4 text-xs leading-relaxed text-muted-foreground sm:px-5">{section === "units" ? "No work results recorded yet. Prepared files alone do not establish analysis coverage." : "No prepared source files recorded."}</p>}
+    <Pagination {...pagination} label={section === "inventory" ? "prepared files" : section === "units" ? "work units" : section === "excluded" ? "excluded files" : "coverage problems"} />
+  </CoverageGroup>;
 }
 
 function ScanActivity({ scanId }: { scanId: string }) {

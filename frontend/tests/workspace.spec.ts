@@ -2692,6 +2692,13 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   await expect(coverage.getByRole("heading", { name: "Coverage", exact: true })).toHaveCount(0);
   await expect(coverage.getByRole("textbox")).toHaveCount(0);
   await expect(coverage.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
+  await expect(reviewed.locator("details").first()).not.toHaveAttribute("open", "");
+  await expect(gaps.locator("details").first()).not.toHaveAttribute("open", "");
+  await expect(reviewed.getByRole("list")).toBeHidden();
+  await page.screenshot({ path: `/private/tmp/pr-coverage-collapsed-${info.project.name}.png`, fullPage: true });
+  await reviewed.locator("summary").first().focus();
+  await page.keyboard.press("Enter");
+  await gaps.getByRole("heading").click();
   await expect(reviewed.getByRole("listitem")).toHaveCount(10);
   await expect(gaps.getByRole("listitem")).toHaveCount(4);
   await expect(reviewed.getByText("Validated file result saved in this run.", { exact: true })).toHaveCount(0);
@@ -2703,6 +2710,11 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   await expect(reviewed.getByText(completed[10].path, { exact: true })).toBeVisible();
   await expect(reviewed.getByRole("listitem").filter({ hasText: reused.path })).toContainText("Reused");
   await expect(gaps.getByRole("listitem")).toHaveCount(4);
+  await reviewed.getByRole("heading").click();
+  await expect(reviewed.getByRole("list")).toBeHidden();
+  await expect(gaps.getByRole("list")).toBeVisible();
+  await reviewed.getByRole("heading").click();
+  await expect(reviewed.getByRole("status").last()).toHaveText("Page 2 of 2 · 12 total");
   await mkdir("../.impeccable/review", { recursive: true });
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
@@ -2734,6 +2746,7 @@ for (const example of [
     await expect(coverage.getByText(example.label, { exact: true })).toHaveCount(0);
     if (example.name === "legacy report") await expect(coverage.getByText(example.summary, { exact: true })).toBeVisible();
     else await expect(coverage.getByText(example.summary, { exact: true })).toHaveCount(0);
+    await coverage.getByRole("heading", { name: /^Files not reviewed/ }).click();
     await expect(coverage.getByRole("listitem").filter({ hasText: example.file })).toContainText(example.state);
     await noOverflow(page);
   });
@@ -2746,10 +2759,12 @@ test("run coverage updates file rows through polling and hides them after access
   await mock(page, { run: state });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  await page.getByRole("heading", { name: /^Files not reviewed/ }).click();
   const row = page.getByRole("region", { name: "Coverage", exact: true }).getByRole("listitem").filter({ hasText: "src/live.ts" });
   await expect(row).toContainText("Awaiting review");
   state.report = { manifest: { coverage: { selected: [{ path: "src/live.ts" }], completed: [{ path: "src/live.ts" }] } } };
   await page.clock.fastForward(5000);
+  await page.getByRole("heading", { name: /^Reviewed files/ }).click();
   await expect(row).toContainText("Reviewed");
   await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Repository access revoked" } }));
   await page.clock.fastForward(5000);

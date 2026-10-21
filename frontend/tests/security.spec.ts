@@ -337,10 +337,12 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await expect(page.locator("body")).toHaveAttribute("data-copied-error", error);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-  await page.getByText("Analysis work units", { exact: true }).click();
-  const work = page.getByRole("tabpanel").getByRole("alert");
-  await expect(work.getByText("AI citation mismatch", { exact: true })).toBeVisible();
+  await page.getByRole("heading", { name: /^Work units/ }).click();
+  const work = page.getByRole("region", { name: "Work units", exact: true }).getByRole("listitem");
+  await expect(work).toContainText("The source was read; this is not a missing-file error.");
   await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
+  await work.getByText("Technical details", { exact: true }).click();
+  await expect(work.getByRole("region")).toHaveText(error);
 });
 
 for (const error of [
@@ -674,8 +676,9 @@ test("saved scan exposes actionable report, coverage, findings and downloads", a
   await page.keyboard.press("Escape");
   await expect(report.getByRole("button")).toBeFocused();
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  await page.getByText("Scanner details", { exact: true }).click();
   await expect(page.getByText("Within 24-hour freshness limit", { exact: true })).toBeVisible();
-  await page.getByText("Prepared source inventory", { exact: true }).click();
+  await page.getByRole("heading", { name: /^Prepared source inventory/ }).click();
   await expect(page.getByText("src/orders.ts", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
   await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
@@ -2488,6 +2491,93 @@ test("security assessments load backend pages beyond one hundred and keep rows o
   await expect(list.getByRole("status")).toHaveText("Page 10 of 11 · 105 total");
 });
 
+test("security coverage uses compact rows with authoritative counts and independent pages", async ({ page }, info) => {
+  await mock(page);
+  const longPath = `src/${"long-directory/".repeat(10)}pending.ts`;
+  const units = [
+    { id: "0", task: "analysis:src/orders.ts", status: "completed" },
+    { id: "1", task: `analysis:${longPath}`, status: "running" },
+    ...Array.from({ length: 9 }, (_, index) => ({ id: String(index + 2), task: `assessment:finding-${index}`, status: "completed" })),
+  ];
+  await page.route("**/api/v1/security/scans/scan/coverage/units?**", (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    return route.fulfill({ json: { items: units.slice((pageNumber - 1) * 10, pageNumber * 10), total: units.length, page: pageNumber, page_size: 10 } });
+  });
+  await page.route("**/api/v1/security/scans/scan/coverage/problems?**", (route) => route.fulfill({ json: {
+    items: [{ id: "0", path: "large.bin", reason: "File exceeds the source size limit." }], total: 1, page: 1, page_size: 10,
+  } }));
+  await page.goto("/security/scans/scan?tab=coverage");
+  const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  const work = coverage.getByRole("region", { name: "Work units", exact: true });
+  const excluded = coverage.getByRole("region", { name: "Excluded and unsupported files", exact: true });
+  await expect(work.getByRole("heading")).toHaveText("Work units11");
+  await expect(work.getByRole("list")).toBeHidden();
+  await expect(excluded.getByRole("list")).toBeHidden();
+  await page.screenshot({ path: `/private/tmp/security-coverage-collapsed-${info.project.name}.png`, fullPage: true });
+  await work.locator("summary").first().focus();
+  await page.keyboard.press("Enter");
+  await excluded.getByRole("heading").click();
+  await coverage.getByRole("heading", { name: /^Coverage problems/ }).click();
+  await expect(work.getByRole("listitem")).toHaveCount(10);
+  await expect(work.getByRole("listitem").filter({ hasText: longPath })).toContainText(/running/i);
+  await expect(coverage.locator("dl > div").filter({ hasText: "Analyzed files" })).toHaveText("Analyzed files1");
+  await expect(excluded.getByRole("listitem")).toContainText("Generated directory");
+  await expect(excluded.getByRole("listitem")).toContainText("Not analyzed");
+  await expect(coverage.getByRole("region", { name: "Coverage problems", exact: true })).toContainText("File exceeds the source size limit.");
+  await expect(coverage).not.toContainText("This action could not be completed.");
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await work.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/security-coverage-${info.project.name}-${theme}.png` });
+  }
+  await work.getByRole("button", { name: "Next work units", exact: true }).click();
+  await expect(work.getByRole("listitem")).toHaveCount(1);
+  await expect(work.getByRole("heading")).toHaveText("Work units11");
+  await expect(excluded.getByRole("listitem")).toHaveCount(1);
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("list")).toBeHidden();
+  await expect(excluded.getByRole("list")).toBeVisible();
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("listitem")).toHaveCount(1);
+  await coverage.getByRole("heading", { name: /^Prepared source inventory/ }).click();
+  const inventory = coverage.getByRole("region", { name: "Prepared source inventory", exact: true });
+  await expect(inventory.getByRole("listitem")).toHaveText("src/orders.ts");
+  await expect(inventory.locator('[data-slot="badge"]')).toHaveCount(0);
+  await coverage.getByText("Scanner details", { exact: true }).click();
+  await expect(coverage.getByText("0.76.0", { exact: true })).toBeVisible();
+});
+
+test("security coverage retains empty, retry, polling and access-loss states", async ({ page }) => {
+  await page.clock.install();
+  await mock(page, { running: true });
+  let failure = 503;
+  let units: Record<string, unknown>[] = [];
+  await page.route("**/api/v1/security/scans/scan/coverage/units?**", (route) => failure
+    ? route.fulfill({ status: failure, json: { detail: "Coverage unavailable" } })
+    : route.fulfill({ json: { items: units, total: units.length, page: 1, page_size: 10 } }));
+  await page.goto("/security/scans/scan?tab=coverage");
+  const work = page.getByRole("region", { name: "Work units", exact: true });
+  await expect(work.getByRole("heading")).toContainText("Unavailable");
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("button", { name: "Retry work units", exact: true })).toBeVisible();
+  await expect(work.getByText(/No work results/)).toHaveCount(0);
+  failure = 0;
+  await work.getByRole("button", { name: "Retry work units", exact: true }).click();
+  await expect(work.getByText(/No work results recorded yet/)).toBeVisible();
+  units = [{ id: "0", task: "analysis:private/source.ts", status: "running" }];
+  await page.clock.fastForward(5000);
+  await expect(work.getByRole("listitem")).toContainText(/running/i);
+  units[0].status = "completed";
+  await page.clock.fastForward(5000);
+  await expect(work.getByRole("listitem")).toContainText(/completed/i);
+  failure = 403;
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tabpanel").getByRole("alert")).toBeVisible();
+  await expect(page.getByText("analysis:private/source.ts", { exact: true })).toHaveCount(0);
+});
+
 test("security coverage and scan activity use backend pages and hide them on access loss", async ({ page }) => {
   await mock(page);
   const requests: string[] = [];
@@ -2500,7 +2590,7 @@ test("security coverage and scan activity use backend pages and hide them on acc
     return route.fulfill({ json: { items: [{ id: String(pageNumber), path: `private/source-${pageNumber}.ts` }], total: 2, page: pageNumber, page_size: 1 } });
   });
   await page.goto("/security/scans/scan?tab=coverage");
-  await page.getByText("Prepared source inventory", { exact: true }).click();
+  await page.getByRole("heading", { name: /^Prepared source inventory/ }).click();
   await expect(page.getByText("private/source-1.ts", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Next prepared files", exact: true }).click();
   await expect(page.getByText("private/source-2.ts", { exact: true })).toBeVisible();
