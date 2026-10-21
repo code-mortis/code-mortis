@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowRight, ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { CoverageGroup } from "./components/coverage-group";
@@ -84,14 +84,6 @@ function ScanStages({ scan }: { scan: Scan }) {
   const finished = ["completed", "partial"].includes(scan.status);
   const progressStage = finished ? stages.find((stage) => stage.name === "analysis") : current;
   const progress = scan.status === "queued" ? null : progressStage?.progress;
-  const currentIndex = current ? stages.indexOf(current) : -1;
-  const previous = scan.status === "queued" ? undefined : stages.slice(0, finished ? names.indexOf("report") : Math.max(0, currentIndex))
-    .reverse().find((stage) => !["pending", "unknown"].includes(stage.status));
-  const reportAvailable = Object.keys(object(scan.report)).length > 0;
-  const previousLabel = scan.status === "queued" || (!finished && currentIndex === 0) ? "Not started" : previous?.label ?? "Not recorded";
-  const nextLabel = scan.status === "queued" ? "Snapshot" : finished ? reportAvailable ? "Report available" : "No report saved"
-    : ["blocked", "failed"].includes(scan.status) ? "Requires attention" : scan.status === "cancelled" ? "Scan stopped"
-      : running ? stages[currentIndex + 1]?.label ?? "Scan completion" : "Not recorded";
   const title = scan.status === "queued" ? "Waiting to start" : running ? current?.label ?? "Preparing scan"
     : scan.status === "completed" ? "Scan complete" : scan.status === "partial" ? "Scan complete with warnings"
       : `${current?.label ?? "Scan"} ${label(scan.status).toLowerCase()}`;
@@ -99,8 +91,17 @@ function ScanStages({ scan }: { scan: Scan }) {
     : scan.status === "partial" ? TriangleAlert : scan.status === "blocked" ? Pause : scan.status === "cancelled" ? CircleSlash : Circle;
   const color = scan.status === "completed" ? "text-emerald-700 dark:text-emerald-300" : scan.status === "failed" ? "text-red-700 dark:text-red-300"
     : ["partial", "blocked"].includes(scan.status) ? "text-amber-800 dark:text-amber-300" : running ? "text-primary" : "text-muted-foreground";
-  return <section className="@container my-5 rounded-lg bg-muted/40 px-4 pt-4 text-xs" aria-label="Scan stages">
-    <div role="status" className="grid grid-cols-1 gap-x-4 pb-3 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
+  const explanation = scan.status === "queued" ? "Waiting for a worker to start the scan." : running
+    ? ({ snapshot: "Preparing repository files.", trivy: "Checking dependencies and configuration.",
+      analysis: "Reviewing source files for vulnerabilities.", assessment: "Validating findings against source evidence.",
+      verification: "Checking whether earlier findings are fixed.", report: "Saving the report and security grade." }[current?.name ?? ""] ?? "Preparing to scan the repository.")
+    : scan.status === "completed" ? "Review findings and coverage below."
+      : scan.status === "partial" ? "Some scan work could not be completed."
+        : scan.status === "blocked" ? "Waiting to continue. Completed results are saved."
+          : scan.status === "failed" ? "Scan stopped after an error. Review Activity for details."
+            : scan.status === "cancelled" ? "Scan cancelled. Completed results remain available." : "Stage details are not available yet.";
+  return <section className="@container my-5 rounded-lg bg-muted/40 p-4 text-xs" aria-label="Scan stages">
+    <div role="status" className="grid grid-cols-1 gap-x-4 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
       <div className="min-w-0">
         <div className="h-12 @min-[500px]:h-6">
           <SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
@@ -113,10 +114,7 @@ function ScanStages({ scan }: { scan: Scan }) {
       </div>
       <span className="h-9 whitespace-nowrap text-sm font-medium tabular-nums leading-6 @min-[500px]:h-6" aria-label={progress ? "Scan progress count" : "Stage progress unavailable"}>{progress ?? "—"}</span>
     </div>
-    <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t py-3 @min-[500px]:grid-cols-2">
-      <div role="group" aria-label="Previous stage" className="flex h-5 min-w-0 items-center gap-1.5"><span className="text-muted-foreground">Previous</span><span className="truncate" title={previousLabel}>{previousLabel}</span>{previous && <span className="sr-only">: {label(previous.status)}</span>}</div>
-      <div role="group" aria-label="Next stage" className="flex h-5 min-w-0 items-center gap-1.5 @min-[500px]:justify-end"><span className="text-muted-foreground">Next</span><span className="truncate" title={nextLabel}>{nextLabel}</span><ArrowRight aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" /></div>
-    </div>
+    <div className="mt-3 border-t pt-3"><p className="h-9 leading-4.5 text-muted-foreground @min-[500px]:h-5">{explanation}</p></div>
   </section>;
 }
 

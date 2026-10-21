@@ -1294,13 +1294,13 @@ test("running scan stages explain validated file progress without changing the s
   const stages = page.getByRole("region", { name: "Scan stages" });
   await expect(stages.getByLabel("Scan progress count")).toHaveText("11 / 163 files");
   await expect(stages.getByRole("group", { name: "Scan progress details" })).toContainText("Analysis");
-  await expect(stages.getByRole("group", { name: "Previous stage" })).toContainText("Trivy");
-  await expect(stages.getByRole("group", { name: "Next stage" })).toContainText("Assessment");
+  await expect(stages.getByRole("group", { name: "Previous stage" })).toHaveCount(0);
+  await expect(stages.getByRole("group", { name: "Next stage" })).toHaveCount(0);
   await expect(stages.getByRole("button")).toHaveCount(0);
   await expect(stages.getByRole("progressbar")).toHaveCount(0);
   await expect(stages.locator('[data-slot="badge"], .animate-spin, .lucide-chevron-down')).toHaveCount(0);
   await expect(stages).not.toContainText("of 6");
-  await expect(stages).not.toContainText("Analyzing source files");
+  await expect(stages.getByText("Reviewing source files for vulnerabilities.", { exact: true })).toBeVisible();
   await stages.getByRole("group", { name: "Scan progress details", exact: true }).locator("..").focus();
   await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation.");
   await page.keyboard.press("Escape");
@@ -1325,8 +1325,6 @@ test("focus strip updates validated progress and the current stage across pollin
   await page.goto("/security/scans/scan");
   const track = page.getByRole("region", { name: "Scan stages" });
   await expect(track.getByLabel("Scan progress count")).toHaveText("117 / 163 files");
-  await expect(track.getByRole("group", { name: "Previous stage" })).toContainText("Trivy");
-  await expect(track.getByRole("group", { name: "Next stage" })).toContainText("Assessment");
   await expect(track).not.toContainText("0 / 32");
   await page.screenshot({ path: info.outputPath("scan-focus-running.png"), fullPage: true });
   saved.stages.analysis.completed = 163;
@@ -1337,10 +1335,8 @@ test("focus strip updates validated progress and the current stage across pollin
   saved.progress.work.completed = 171;
   await page.clock.fastForward(5000);
   await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
-  await expect(track).not.toContainText("Assessing proposed findings");
+  await expect(track.getByText("Validating findings against source evidence.", { exact: true })).toBeVisible();
   await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Assessment");
-  await expect(track.getByRole("group", { name: "Previous stage" })).toContainText("Analysis");
-  await expect(track.getByRole("group", { name: "Next stage" })).toContainText("Fix verification");
   await page.screenshot({ path: info.outputPath("scan-focus-assessment.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
@@ -1360,8 +1356,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
   const count = stages.locator('[aria-label="Scan progress count"], [aria-label="Stage progress unavailable"]');
   const geometry = async () => {
     const region = (await stages.boundingBox())!;
-    const rows = await Promise.all([stages.getByRole("status"), count,
-      stages.getByRole("group", { name: "Previous stage" }), stages.getByRole("group", { name: "Next stage" }),
+    const rows = await Promise.all([stages.getByRole("status"), count, stages.locator("p"),
       page.getByRole("tablist")].map(async (row) => {
         const box = (await row.boundingBox())!;
         return { top: box.y - region.y, height: box.height };
@@ -1369,11 +1364,15 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
     return { height: region.height, rows };
   };
   const names = Object.keys(scan.stages);
+  const explanations = ["Preparing repository files.", "Checking dependencies and configuration.",
+    "Reviewing source files for vulnerabilities.", "Validating findings against source evidence.",
+    "Checking whether earlier findings are fixed.", "Saving the report and security grade."];
   for (const width of info.project.name === "mobile" ? [320, 390] : [768, 1440]) {
     saved.status = "queued"; saved.stages = {}; saved.report = {};
     await page.setViewportSize({ width, height: 960 });
     await page.goto("/security/scans/scan");
     await expect(current).toContainText("Waiting to start");
+    await expect(stages.locator("p")).toHaveText("Waiting for a worker to start the scan.");
     await expect(count).toHaveText("—");
     const initial = await geometry();
     saved.status = "running";
@@ -1386,6 +1385,8 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
       saved.stages[names[index]] = { status: "running" };
       await page.clock.fastForward(5000);
       await expect(current).toContainText(names[index] === "verification" ? "Fix verification" : names[index][0].toUpperCase() + names[index].slice(1));
+      await expect(stages.locator("p")).toHaveText(explanations[index]);
+      expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
       await expect(count).toHaveText("—");
       expect(await geometry()).toEqual(initial);
       if (["analysis", "assessment", "verification"].includes(names[index])) {
@@ -1405,6 +1406,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
       await page.clock.fastForward(5000);
       await expect(current).toContainText(title);
       await expect(stages).not.toContainText("Report ready");
+      expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
       await expect(count).toHaveText("117 / 163 files");
       expect(await geometry()).toEqual(initial);
       expect(await stages.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -1425,7 +1427,7 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
   await page.setViewportSize({ width: info.project.name === "mobile" ? 320 : 1440, height: 960 });
   await page.goto("/security/scans/scan");
   const track = page.getByRole("region", { name: "Scan stages" });
-  await expect(track.getByRole("group", { name: "Next stage" })).toContainText("No report saved");
+  await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Scan complete");
   await expect(track.getByLabel("Stage progress unavailable")).toHaveText("—");
   for (const status of ["partial", "blocked", "failed", "cancelled"]) {
     saved.status = status;
@@ -1435,7 +1437,6 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
     await expect(track.getByRole("status")).toContainText(status === "partial" ? "Scan complete with warnings" : `Analysis ${status}`);
     await expect(track.getByLabel("Scan progress count")).toHaveText("117 / 163 files");
     await expect(track.getByRole("group", { name: "Scan progress details", exact: true })).toContainText(status === "blocked" ? "Failed" : status[0].toUpperCase() + status.slice(1));
-    await expect(track.getByRole("group", { name: "Next stage" })).toContainText(status === "partial" ? "No report saved" : status === "cancelled" ? "Scan stopped" : "Requires attention");
     expect(await track.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
   saved.status = "running";
@@ -1455,7 +1456,6 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
   saved.stages = {};
   await page.clock.fastForward(5000);
   await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Unknown");
-  await expect(track.getByRole("group", { name: "Previous stage" })).toContainText("Not recorded");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
@@ -1915,7 +1915,7 @@ test("scan activity shows past stage transitions separately from the current sta
     scan: { ...scan, status: "running", grade: null, stages: { ...scan.stages, analysis: { status: "running" } } },
     can_write: true, finding_count: 1, activity_count: activity.length, activity } }));
   await page.goto("/security/scans/scan?tab=activity");
-  await expect(page.getByRole("group", { name: "Previous stage", exact: true })).toContainText("Completed");
+  await expect(page.getByRole("group", { name: "Scan progress details", exact: true })).toContainText("Analysis");
   await page.keyboard.press("Escape");
   const panel = page.getByRole("tabpanel");
   await expect(panel.getByText("Trivy started", { exact: true })).toBeVisible();
