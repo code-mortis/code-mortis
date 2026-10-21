@@ -99,13 +99,8 @@ function ScanStages({ scan }: { scan: Scan }) {
     : scan.status === "partial" ? TriangleAlert : scan.status === "blocked" ? Pause : scan.status === "cancelled" ? CircleSlash : Circle;
   const color = scan.status === "completed" ? "text-emerald-700 dark:text-emerald-300" : scan.status === "failed" ? "text-red-700 dark:text-red-300"
     : ["partial", "blocked"].includes(scan.status) ? "text-amber-800 dark:text-amber-300" : running ? "text-primary" : "text-muted-foreground";
-  const activity = scan.status === "queued" ? "Waiting for a worker" : running ? current
-    ? ({ snapshot: "Preparing repository files", trivy: "Checking dependencies and configuration", analysis: "Analyzing source files", assessment: "Assessing proposed findings", verification: "Verifying earlier findings", report: "Preparing report" }[current.name] ?? `${current.label} in progress`)
-    : "Waiting for stage details" : scan.status === "completed" ? reportAvailable ? "Report ready" : "No report was saved"
-      : scan.status === "partial" ? "Some scan work could not be completed" : scan.status === "blocked" ? "Completed results are saved"
-        : ["failed", "cancelled"].includes(scan.status) ? "Completed results remain available" : "Stage status was not recorded";
   return <section className="@container my-5 rounded-lg bg-muted/40 px-4 pt-4 text-xs" aria-label="Scan stages">
-    <div role="status" className="grid grid-cols-1 gap-x-4 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
+    <div role="status" className="grid grid-cols-1 gap-x-4 pb-3 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
       <div className="min-w-0">
         <div className="h-12 @min-[500px]:h-6">
           <SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
@@ -115,7 +110,6 @@ function ScanStages({ scan }: { scan: Scan }) {
             </span>
           </SecurityBadge>
         </div>
-        <p className="mt-1 h-9 leading-4.5 text-muted-foreground">{activity}</p>
       </div>
       <span className="h-9 whitespace-nowrap text-sm font-medium tabular-nums leading-6 @min-[500px]:h-6" aria-label={progress ? "Scan progress count" : "Stage progress unavailable"}>{progress ?? "—"}</span>
     </div>

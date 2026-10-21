@@ -1300,7 +1300,7 @@ test("running scan stages explain validated file progress without changing the s
   await expect(stages.getByRole("progressbar")).toHaveCount(0);
   await expect(stages.locator('[data-slot="badge"], .animate-spin, .lucide-chevron-down')).toHaveCount(0);
   await expect(stages).not.toContainText("of 6");
-  await expect(stages).toContainText("Analyzing source files");
+  await expect(stages).not.toContainText("Analyzing source files");
   await stages.getByRole("group", { name: "Scan progress details", exact: true }).locator("..").focus();
   await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation.");
   await page.keyboard.press("Escape");
@@ -1337,7 +1337,7 @@ test("focus strip updates validated progress and the current stage across pollin
   saved.progress.work.completed = 171;
   await page.clock.fastForward(5000);
   await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
-  await expect(track).toContainText("Assessing proposed findings");
+  await expect(track).not.toContainText("Assessing proposed findings");
   await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Assessment");
   await expect(track.getByRole("group", { name: "Previous stage" })).toContainText("Analysis");
   await expect(track.getByRole("group", { name: "Next stage" })).toContainText("Fix verification");
@@ -1404,6 +1404,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
       saved.stages.analysis = { status: status === "completed" ? "completed" : status, total: 163, completed: 117 };
       await page.clock.fastForward(5000);
       await expect(current).toContainText(title);
+      await expect(stages).not.toContainText("Report ready");
       await expect(count).toHaveText("117 / 163 files");
       expect(await geometry()).toEqual(initial);
       expect(await stages.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -1424,7 +1425,7 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
   await page.setViewportSize({ width: info.project.name === "mobile" ? 320 : 1440, height: 960 });
   await page.goto("/security/scans/scan");
   const track = page.getByRole("region", { name: "Scan stages" });
-  await expect(track.getByRole("status")).toContainText("No report was saved");
+  await expect(track.getByRole("group", { name: "Next stage" })).toContainText("No report saved");
   await expect(track.getByLabel("Stage progress unavailable")).toHaveText("—");
   for (const status of ["partial", "blocked", "failed", "cancelled"]) {
     saved.status = status;
