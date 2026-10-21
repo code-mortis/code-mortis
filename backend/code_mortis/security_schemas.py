@@ -129,6 +129,8 @@ class SecurityActivityOut(ORMModel):
     id: str
     scan_id: str | None
     finding_id: str | None
+    finding_title: str | None = None
+    finding_path: str | None = None
     actor_id: int | None
     action: str
     detail: dict[str, Any]
@@ -184,6 +186,7 @@ class SecurityScanDetail(StrictModel):
     assessment: SecurityAssessmentSummary = Field(default_factory=SecurityAssessmentSummary)
     finding_count: int = Field(ge=0)
     report_count: int = Field(default=0, ge=0)
+    resolved_count: int = Field(default=0, ge=0)
     activity_count: int = Field(ge=0)
     activity: list[SecurityActivityOut]
 

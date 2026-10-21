@@ -5,6 +5,7 @@ import { contrast, themes } from "../src/lib/appearance";
 import { findingSeverities } from "../src/lib/review-filters";
 
 const at = "2026-10-05T13:20:00Z";
+
 const installation: Schema["InstallationOut"] = {
   id: 10, account: "acme", connected: true, active: true, status: "active",
   settings_url: "https://github.com/organizations/acme/settings/installations/10",
@@ -519,6 +520,55 @@ async function repositorySection(page: Page, name: string) {
   await link.click();
   await expect(link).toHaveAttribute("aria-current", "page");
 }
+
+test("review activity shows saved milestones in order and follows stage retries", async ({ page }, info) => {
+  await page.clock.install();
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const saved: Partial<Run> = { status: "running", finished_at: null, publication: "pending", publication_error: null,
+    stages: {
+      ocr: { tokens: 0, status: "completed", started_at: at, finished_at: "2026-10-05T13:20:30Z" },
+      assessment: { tokens: 0, status: "running", started_at: "2026-10-05T13:21:00Z", finished_at: "2026-10-05T13:20:45Z" },
+      verification: { tokens: 0, status: "skipped", error: "No earlier findings." },
+    } };
+  await mock(page, { run: saved });
+  await page.goto("/runs/run?tab=activity");
+  await expect(page.getByRole("tab", { name: "Activity", exact: true })).toHaveAttribute("aria-selected", "true");
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(timeline.locator("li p.font-medium")).toHaveText([
+    "Assessment started", "Code review completed", "Code review started", "Review started", "Review queued",
+  ]);
+  await expect(timeline.getByText("Assessment completed", { exact: true })).toHaveCount(0);
+  await expect(timeline.getByText("Fix verification skipped", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/earlier retry attempts are not retained/)).toBeVisible();
+  const failure = "AI result delivery failed. Technical details: saved provider response " + "detail".repeat(120);
+  Object.assign(saved, { status: "partial", finished_at: "2026-10-05T13:22:00Z",
+    stages: { ...saved.stages, assessment: { tokens: 0, status: "failed", started_at: "2026-10-05T13:21:00Z", finished_at: "2026-10-05T13:21:50Z", error: failure } } });
+  await page.clock.fastForward(5000);
+  await expect(timeline.locator("li p.font-medium").first()).toHaveText("Review finished with incomplete work");
+  const failed = timeline.getByRole("listitem").filter({ hasText: "Assessment failed" });
+  await failed.getByText("Technical details", { exact: true }).click();
+  await expect(failed.getByRole("region", { name: "Assessment failed technical details" })).toHaveText(failure);
+  await expect(timeline.getByRole("alert")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("review-activity.png"), fullPage: true });
+  await page.getByRole("tab", { name: "Details", exact: true }).click();
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  await expect(page).toHaveURL(/tab=activity/);
+});
+
+test("review activity preserves cancellation and does not invent history for legacy runs", async ({ page }) => {
+  await page.clock.install();
+  await mock(page, { run: { status: "cancelled", stages: {}, error: "Stopped by the repository administrator." } });
+  await page.goto("/runs/run?tab=activity");
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(timeline.locator("li p.font-medium")).toHaveText(["Review cancelled", "Review started", "Review queued"]);
+  await expect(timeline).toContainText("Stopped by the repository administrator.");
+  await expect(timeline.locator("time")).toHaveCount(3);
+  await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Access denied" } }));
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert").filter({ hasText: "Access denied" })).toBeVisible();
+  await expect(timeline).toHaveCount(0);
+});
 
 test("ignored run status keeps restoration navigation outside the live region", async ({ page }, info) => {
   await mock(page, { overview: { ignored: true } });

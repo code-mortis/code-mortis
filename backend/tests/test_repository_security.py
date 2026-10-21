@@ -591,7 +591,7 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
             finding = saved_finding(db, seed, scan, state=["open", "resolved", "false_positive", "accepted_risk"][index % 4])
             db.add(SecurityOccurrence(scan_id=scan.id if index < 21 else other.id, finding_id=finding.id,
                                       outcome="present", snapshot={}))
-        db.add_all([SecurityActivity(scan_id=scan.id, action="finding_observed") for _ in range(205)])
+        db.add_all([SecurityActivity(scan_id=scan.id, action="scan_stage") for _ in range(205)])
         db.add(SecurityActivity(scan_id=other.id, action="scan_created"))
         repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
         db.add(repo)
@@ -606,7 +606,8 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
     assert client.get("/api/v1/security/repositories/22").json() == detail
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 21 and detail["activity_count"] == 205
-    assert len(detail["activity"]) == 200
+    assert len(detail["activity"]) == 205
+    assert len({event["id"] for event in detail["activity"]}) == 205
     page = client.get(f"/api/v1/security/scans/{scan_id}/findings").json()
     assert page["total"] == 21 and len(page["items"]) == 10
 
@@ -710,9 +711,37 @@ def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pa
         db.get(SecurityFinding, identities["resolved_repeat"][0]).state = "open"
     page = client.get(path, params={"outcome": "resolved_repeat"}).json()
     assert page["total"] == 0 and page["result_counts"]["open_repeat"] == 22
+    resolved = client.get(path, params={"resolved": True}).json()
+    assert resolved["total"] == resolved["registered_total"] == 1
+    assert resolved["items"][0]["id"] == identities["fixed"][0]
+    assert resolved["items"][0]["state"] == "open"  # Reopened later, still verified by this scan.
+    assert resolved["result_counts"] == {"fixed": 1}
+    assert resolved["state_counts"] == {"open": 1}
+    remaining = client.get(path, params={"resolved": False}).json()
+    assert remaining["total"] == remaining["registered_total"] == 30
+    assert "fixed" not in remaining["result_counts"]
+    assert client.get(path, params={"resolved": False, "outcome": "not_observed"}).json()["total"] == 1
+    assert client.get(path, params={"resolved": True, "outcome": "not_observed"}).json()["total"] == 0
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["finding_count"] == 31 and detail["resolved_count"] == 1
     with transaction() as db:
         assert db.get(SecurityScan, scan_id).report == {"findings": [{"title": "Original report"}]}
         assert db.scalar(select(SecurityOccurrence.snapshot).where(SecurityOccurrence.finding_id == identities["new"][0])) == {"title": "Original evidence"}
+
+
+def test_unfinished_scan_exposes_saved_observation_without_claiming_a_report(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        finding = saved_finding(db, seed, scan)
+        scan_id, finding_id = scan.id, finding.id
+        snapshot = {"title": "Original finding", "path": "app.py", "state": "open"}
+        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=snapshot))
+        finding.title, finding.state = "Later title", "resolved"
+    rows = client.get(f"/api/v1/security/scans/{scan_id}/report/findings", params={"finding_id": finding_id}).json()
+    assert rows["items"] == [{**snapshot, "finding_id": finding_id, "outcome": "present"}]
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["finding_count"] == 1 and detail["resolved_count"] == detail["report_count"] == 0
+    assert client.get(f"/api/v1/security/scans/{scan_id}/report").status_code == 409
 
 
 @pytest.mark.parametrize(("severity", "grade"), [(None, "A"), ("low", "B"), ("medium", "C"), ("high", "D"), ("critical", "F"), ("unknown", None)])
@@ -3194,6 +3223,41 @@ def test_security_finding_multiselect_uses_union_within_filters_and_intersection
     assert client.get(repository_path, params=filters).status_code == 403
 
 
+def test_scan_activity_filters_findings_before_counts_and_pagination_preserving_finding_history(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        other = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan, title="Current title", path="current.py")
+        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present",
+                                  snapshot={"title": "Title at this scan", "path": "original.py"}))
+        for index in range(13):
+            db.add(SecurityActivity(scan_id=scan.id, action="scan_stage", detail={"stage": "analysis", "status": "completed"},
+                                    created_at=now() - timedelta(seconds=index * 2)))
+            db.add(SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="finding_created",
+                                    created_at=now() - timedelta(seconds=index * 2 + 1)))
+        db.add_all([
+            SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="finding_resolved"),
+            SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="ai_evidence_merged"),
+            SecurityActivity(scan_id=scan.id, action="finding_created"),
+            SecurityActivity(scan_id=other.id, action="scan_completed"),
+        ])
+        scan_id, finding_id = scan.id, finding.id
+    path = f"/api/v1/security/scans/{scan_id}/activity"
+    first, second = client.get(path).json(), client.get(path, params={"page": 2}).json()
+    assert first["total"] == second["total"] == 13
+    assert len(first["items"]) == 10 and len(second["items"]) == 3
+    milestones = first["items"] + second["items"]
+    assert len({row["id"] for row in milestones}) == 13
+    assert all(row["action"] == "scan_stage" and row["finding_id"] is None for row in milestones)
+    detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+    assert detail["activity_count"] == 13 and detail["activity"] == milestones
+    assert client.get(path, params={"page": 3}).json()["items"] == []
+    history = client.get(f"/api/v1/security/findings/{finding_id}/activity").json()
+    assert history["total"] == 15
+    assert all(row["finding_title"] == "Title at this scan" and row["finding_path"] == "original.py" for row in history["items"])
+    assert client.get(f"/api/v1/security/findings/{finding_id}").json()["activity_count"] == 15
+
+
 def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(seed, security_github, client, monkeypatch):
     with transaction() as db:
         scan = saved_scan(db, seed, status="completed")
@@ -3207,6 +3271,7 @@ def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(s
             observation_scan = scan if index == 0 else saved_scan(db, seed, status="completed")
             db.add(SecurityOccurrence(scan_id=observation_scan.id, finding_id=finding.id, outcome="present", snapshot={}))
             db.add(SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="finding_observed", created_at=now() - timedelta(seconds=index)))
+            db.add(SecurityActivity(scan_id=scan.id, action="scan_stage", created_at=now() - timedelta(seconds=index)))
         other = saved_scan(db, seed, status="completed")
         db.add(SecurityActivity(scan_id=other.id, action="scan_created"))
     paths = [f"/api/v1/security/scans/{scan_id}/activity", f"/api/v1/security/findings/{finding_id}/activity",

@@ -82,6 +82,7 @@ import {
 import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { RunCoverage } from "./components/run-coverage";
+import { RunActivity } from "./components/run-activity";
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
@@ -830,7 +831,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "activity", "details"], "findings");
   const filters = useReviewFilters("run");
   const search = filters.params.get("q") ?? "";
   const outcomes = filters.params.getAll("outcome");
@@ -995,7 +996,8 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
-        <TabsTrigger value="details" className="col-span-2 sm:col-span-1">Details</TabsTrigger>
+        <TabsTrigger value="activity">Activity</TabsTrigger>
+        <TabsTrigger value="details">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
@@ -1026,6 +1028,9 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />
+      </TabsContent>
+      <TabsContent value="activity" className="min-w-0">
+        <RunActivity run={run} />
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">

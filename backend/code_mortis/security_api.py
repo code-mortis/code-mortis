@@ -138,28 +138,46 @@ def scan_detail(scan_id: str, db: DB, user: USER):
     public.report = {key: value for key, value in public.report.items() if key != "findings"}
     public.coverage = {key: value for key, value in public.coverage.items() if key not in {"inventory", "excluded", "units", "problems"}}
     public.coverage["inventory_count"] = len(scan.coverage.get("inventory", {}))
+    outcomes = dict(db.execute(select(SecurityOccurrence.outcome, func.count()).join(SecurityFinding).where(
+        SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == repo.id)
+        .group_by(SecurityOccurrence.outcome)).all())
+    events = db.scalars(scan_events(scan.id).order_by(
+        SecurityActivity.created_at.desc(), SecurityActivity.id.desc())).all()
     return SecurityScanDetail(repository=repo_out(db, repo), scan=public,
         can_write=bool(remote.get("permissions", {}).get("push")),
         assessment=assessment,
-        finding_count=db.scalar(select(func.count()).select_from(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id)),
+        finding_count=sum(outcomes.values()),
         report_count=len(scan.report.get("findings", [])),
-        activity_count=db.scalar(select(func.count()).select_from(SecurityActivity).where(SecurityActivity.scan_id == scan.id)),
-        activity=[SecurityActivityOut.model_validate(row) for row in db.scalars(select(SecurityActivity).where(
-            SecurityActivity.scan_id == scan.id).order_by(SecurityActivity.created_at.desc()).limit(200))])
+        resolved_count=outcomes.get("fixed", 0),
+        activity_count=len(events),
+        activity=[SecurityActivityOut.model_validate(row) for row in events])
 
 
-def activity_page(db, query, page):
+def scan_events(scan_id):
+    return select(SecurityActivity).where(SecurityActivity.scan_id == scan_id,
+        SecurityActivity.finding_id.is_(None), SecurityActivity.action.startswith("scan_", autoescape=True))
+
+
+def activity_page(db, query, page, repository_id):
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    rows = db.scalars(query.order_by(SecurityActivity.created_at.desc(), SecurityActivity.id.desc())
-                      .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
-    return SecurityActivityPage(items=[SecurityActivityOut.model_validate(row) for row in rows],
+    rows = db.execute(query.add_columns(
+        func.coalesce(SecurityOccurrence.snapshot["title"].as_string(), SecurityFinding.title),
+        func.coalesce(SecurityOccurrence.snapshot["path"].as_string(), SecurityFinding.path),
+    ).outerjoin(SecurityFinding, (SecurityFinding.id == SecurityActivity.finding_id)
+                & (SecurityFinding.repository_id == repository_id))
+        .outerjoin(SecurityOccurrence, (SecurityOccurrence.finding_id == SecurityFinding.id)
+                   & (SecurityOccurrence.scan_id == SecurityActivity.scan_id))
+        .order_by(SecurityActivity.created_at.desc(), SecurityActivity.id.desc())
+        .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
+    return SecurityActivityPage(items=[SecurityActivityOut.model_validate(row).model_copy(
+        update={"finding_title": title, "finding_path": path}) for row, title, path in rows],
                                 total=total, page=page, page_size=PAGE_SIZE)
 
 
 @router.get("/scans/{scan_id}/activity", response_model=SecurityActivityPage)
 def scan_activity(scan_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
-    scan_access(db, user, scan_id)
-    return activity_page(db, select(SecurityActivity).where(SecurityActivity.scan_id == scan_id), page)
+    scan, _, _ = scan_access(db, user, scan_id)
+    return activity_page(db, scan_events(scan_id), page, scan.repository_id)
 
 
 @router.get("/scans/{scan_id}/coverage/{section}", response_model=SecurityRecordPage)
@@ -248,8 +266,12 @@ def report_findings(scan_id: str, db: DB, user: USER,
     ordering: SnapshotOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
+    snapshots = scan.report.get("findings", []) if scan.report else [
+        {**row.snapshot, "finding_id": row.finding_id, "outcome": row.outcome}
+        for row in db.scalars(select(SecurityOccurrence).join(SecurityFinding).where(
+            SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == scan.repository_id))]
     rows = [{**row, "state": row.get("state") if row.get("state") in {"open", "resolved", "false_positive", "accepted_risk"} else "unknown"}
-            for row in scan.report.get("findings", [])]
+            for row in snapshots]
     counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("state", "outcome", "severity", "kind")}
     query = q.strip().casefold()
     items = [row for row in rows if (not finding_id or row.get("finding_id") == finding_id)
@@ -265,11 +287,13 @@ def report_findings(scan_id: str, db: DB, user: USER,
         kind_counts=counts["kind"], page=page, page_size=PAGE_SIZE)
 
 
-def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None, ordering="-severity"):
+def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None, ordering="-severity", resolved=None):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
     result_counts = {}
     if scan_id:
         query = query.join(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan_id)
+        if resolved is not None:
+            query = query.where((SecurityOccurrence.outcome == "fixed") if resolved else (SecurityOccurrence.outcome != "fixed"))
         result = case(
             (SecurityOccurrence.outcome.in_(["fixed", "not_observed", "uncertain"]), SecurityOccurrence.outcome),
             (SecurityOccurrence.outcome != "present", "recorded"),
@@ -320,9 +344,10 @@ def scan_findings(scan_id: str, db: DB, user: USER,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
     search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-severity",
+    resolved: bool | None = None,
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    return finding_page(db, scan.repository_id, page, state, severity, kind, search, scan_id, outcome, ordering)
+    return finding_page(db, scan.repository_id, page, state, severity, kind, search, scan_id, outcome, ordering, resolved)
 
 
 @router.get("/findings/{finding_id}", response_model=SecurityFindingDetail)
@@ -341,8 +366,8 @@ def finding_detail(finding_id: str, db: DB, user: USER):
 
 @router.get("/findings/{finding_id}/activity", response_model=SecurityActivityPage)
 def finding_activity(finding_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
-    finding_access(db, user, finding_id)
-    return activity_page(db, select(SecurityActivity).where(SecurityActivity.finding_id == finding_id), page)
+    finding, _, _ = finding_access(db, user, finding_id)
+    return activity_page(db, select(SecurityActivity).where(SecurityActivity.finding_id == finding_id), page, finding.repository_id)
 
 
 @router.get("/findings/{finding_id}/observations", response_model=SecurityRecordPage)

@@ -2622,6 +2622,10 @@ export interface components {
             scan_id: string | null;
             /** Finding Id */
             finding_id: string | null;
+            /** Finding Title */
+            finding_title?: string | null;
+            /** Finding Path */
+            finding_path?: string | null;
             /** Actor Id */
             actor_id: number | null;
             /** Action */
@@ -3035,6 +3039,11 @@ export interface components {
              * @default 0
              */
             report_count: number;
+            /**
+             * Resolved Count
+             * @default 0
+             */
+            resolved_count: number;
             /** Activity Count */
             activity_count: number;
             /** Activity */
@@ -5860,6 +5869,7 @@ export interface operations {
                 kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
+                resolved?: boolean | null;
             };
             header?: never;
             path: {
