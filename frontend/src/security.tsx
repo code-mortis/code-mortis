@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LoaderCircle, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
+import { ArrowRight, ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { AssessmentStatus } from "./components/assessment-status";
@@ -20,7 +20,6 @@ import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
@@ -64,72 +63,64 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
 }
 
 function ScanStages({ scan }: { scan: Scan }) {
-  const details = useRef<HTMLDivElement>(null);
-  const names = [...Object.keys(stageDescriptions).filter((name) => Object.hasOwn(scan.stages, name)),
+  const names = [...Object.keys(stageDescriptions),
     ...Object.keys(scan.stages).filter((name) => !Object.hasOwn(stageDescriptions, name))];
   const stages = names.map((name) => {
     const stage = object(scan.stages[name]);
     const [label, description] = stageDescriptions[name] ?? [words(name), "Saved stage status for this scan."];
-    const status = text(stage.status) || "pending";
+    const status = text(stage.status) || (active(scan.status) ? "pending" : "unknown");
     const total = typeof stage.total === "number" && Number.isSafeInteger(stage.total) && stage.total >= 0 ? stage.total : null;
     const completed = typeof stage.completed === "number" && Number.isSafeInteger(stage.completed) && stage.completed >= 0 ? stage.completed : null;
     const validCounts = total !== null && completed !== null && completed <= total;
-    const progress = validCounts ? `${count(completed)} / ${count(total)}${name === "analysis" ? " files" : ""}` : null;
-    const percentage = validCounts && total > 0 ? completed / total * 100 : null;
-    const Icon = status === "completed" ? CircleCheck : status === "running" ? LoaderCircle : status === "failed" ? CircleX
-      : status === "partial" ? TriangleAlert : status === "blocked" ? Pause : ["cancelled", "skipped"].includes(status) ? CircleSlash : Circle;
-    const color = status === "completed" ? "text-emerald-700 dark:text-emerald-300" : status === "failed" ? "text-red-700 dark:text-red-300"
-      : ["partial", "blocked"].includes(status) ? "text-amber-800 dark:text-amber-300" : status === "running" ? "text-primary" : "text-muted-foreground";
-    return { name, label, description, status, total, completed, progress, percentage, Icon, color };
+    const unit = { analysis: " files", assessment: " candidates", verification: " findings" }[name] ?? "";
+    const progress = validCounts && status !== "pending" ? `${count(completed)} / ${count(total)}${unit}` : null;
+    return { name, label, description, status, progress };
   });
   const current = stages.find((stage) => stage.status === "running")
-    ?? stages.find((stage) => ["failed", "partial", "blocked"].includes(stage.status));
+    ?? stages.find((stage) => ["failed", "partial", "blocked", "cancelled"].includes(stage.status));
   const running = scan.status === "running";
-  const stageLabel = running && current?.status === "running" ? `${current.label}${current.progress ? ` · ${current.progress}` : ""}`
-    : scan.status === "partial" ? "Completed with warnings" : label(scan.status);
-  const completedStages = stages.filter((stage) => stage.status === "completed").length;
-  const completion = stages.length ? `${completedStages} of ${stages.length} stages complete` : "Stage status unavailable";
-  const progress = current && current.percentage !== null && !["completed", "partial", "cancelled"].includes(scan.status) ? current : null;
-  const progressTotal = progress?.total ?? stages.length;
-  const progressCompleted = progress?.completed ?? completedStages;
-  const progressPercentage = progress?.percentage ?? (stages.length ? completedStages / stages.length * 100 : 0);
-  const activity = scan.status === "queued" ? "Waiting for a worker" : current ? running
+  const finished = ["completed", "partial"].includes(scan.status);
+  const progressStage = finished ? stages.find((stage) => stage.name === "analysis") : current;
+  const progress = scan.status === "queued" ? null : progressStage?.progress;
+  const currentIndex = current ? stages.indexOf(current) : -1;
+  const previous = scan.status === "queued" ? undefined : stages.slice(0, finished ? names.indexOf("report") : Math.max(0, currentIndex))
+    .reverse().find((stage) => !["pending", "unknown"].includes(stage.status));
+  const reportAvailable = Object.keys(object(scan.report)).length > 0;
+  const previousLabel = scan.status === "queued" || (!finished && currentIndex === 0) ? "Not started" : previous?.label ?? "Not recorded";
+  const nextLabel = scan.status === "queued" ? "Snapshot" : finished ? reportAvailable ? "Report available" : "No report saved"
+    : ["blocked", "failed"].includes(scan.status) ? "Requires attention" : scan.status === "cancelled" ? "Scan stopped"
+      : running ? stages[currentIndex + 1]?.label ?? "Scan completion" : "Not recorded";
+  const title = scan.status === "queued" ? "Waiting to start" : running ? current?.label ?? "Preparing scan"
+    : scan.status === "completed" ? "Scan complete" : scan.status === "partial" ? "Scan complete with warnings"
+      : `${current?.label ?? "Scan"} ${label(scan.status).toLowerCase()}`;
+  const Icon = scan.status === "completed" ? CircleCheck : running ? CircleDot : scan.status === "failed" ? CircleX
+    : scan.status === "partial" ? TriangleAlert : scan.status === "blocked" ? Pause : scan.status === "cancelled" ? CircleSlash : Circle;
+  const color = scan.status === "completed" ? "text-emerald-700 dark:text-emerald-300" : scan.status === "failed" ? "text-red-700 dark:text-red-300"
+    : ["partial", "blocked"].includes(scan.status) ? "text-amber-800 dark:text-amber-300" : running ? "text-primary" : "text-muted-foreground";
+  const activity = scan.status === "queued" ? "Waiting for a worker" : running ? current
     ? ({ snapshot: "Preparing repository files", trivy: "Checking dependencies and configuration", analysis: "Analyzing source files", assessment: "Assessing proposed findings", verification: "Verifying earlier findings", report: "Preparing report" }[current.name] ?? `${current.label} in progress`)
-    : `${current.label} · ${words(scan.status)}${current.progress ? ` · ${current.progress}` : ""}` : running ? "Preparing scan" : null;
-  return <section className="my-5 border-t pt-4 text-xs" aria-label="Scan stages">
-    <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <Popover>
-        <PopoverAnchor asChild><div className="flex min-w-0 max-w-full items-center gap-3">
-          <PopoverTrigger asChild><button type="button" aria-label="Scan stage details" className="group inline-flex min-h-11 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-left font-medium outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6">
-            <span className="min-w-0 tabular-nums">{stageLabel}</span>
-            <ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" />
-          </button></PopoverTrigger>
-        </div></PopoverAnchor>
-        <PopoverContent ref={details} tabIndex={-1} align="start" sideOffset={12} aria-label="Scan stage details"
-          onOpenAutoFocus={(event) => { event.preventDefault(); details.current?.focus(); }}
-          className="max-h-[var(--radix-popover-content-available-height)] w-86 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border-0 text-xs shadow-lg dark:bg-[color-mix(in_srgb,var(--popover)_70%,var(--muted))]">
-          <div className="flex items-center justify-between gap-2 border-b pb-3"><span className="text-sm font-medium">Scan stages</span><span className="tabular-nums text-muted-foreground">{stages.length ? `${completedStages} of ${stages.length} complete` : "Unavailable"}</span></div>
-          {stages.length ? stages.map((stage) => <div key={stage.name} role="group" aria-label={`${stage.label} details`} className="mt-3 flex items-center justify-between gap-2">
-            <SecurityBadge description={stage.description}><span className="inline-flex items-center gap-2">
-              <stage.Icon aria-hidden="true" className={`size-3.5 shrink-0 ${stage.color} ${stage.status === "running" && running ? "motion-safe:animate-spin" : ""}`} />
-              <span>{stage.label}</span><span className="sr-only">: {words(stage.status)}</span>
-            </span></SecurityBadge>
-            <span className="shrink-0 tabular-nums [&_svg]:hidden"><Status value={stage.status} label={stage.progress && stage.status !== "pending"
-              ? `${stage.progress.replace(/ files$/, "")}${["completed", "running"].includes(stage.status) ? "" : ` · ${label(stage.status)}`}` : label(stage.status)} /></span>
-          </div>) : <p className="text-muted-foreground">Stage status was not recorded for this scan.</p>}
-          <p className="mt-3.5 border-t pt-3 text-muted-foreground">File counts include validated results only.</p>
-        </PopoverContent>
-      </Popover>
-      <span className="h-4 whitespace-nowrap tabular-nums text-muted-foreground sm:ml-auto" aria-label={progress ? undefined : "Stage progress unavailable"}>{progress ? `${Math.min(progress.completed === progress.total ? 100 : 99, Math.round(progress.percentage!))}% of ${progress.label.toLowerCase()}` : "—"}</span>
+    : "Waiting for stage details" : scan.status === "completed" ? reportAvailable ? "Report ready" : "No report was saved"
+      : scan.status === "partial" ? "Some scan work could not be completed" : scan.status === "blocked" ? "Completed results are saved"
+        : ["failed", "cancelled"].includes(scan.status) ? "Completed results remain available" : "Stage status was not recorded";
+  return <section className="@container my-5 rounded-lg bg-muted/40 px-4 pt-4 text-xs" aria-label="Scan stages">
+    <div role="status" className="grid grid-cols-1 gap-x-4 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="min-w-0">
+        <div className="h-12 @min-[500px]:h-6">
+          <SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
+            <span role="group" aria-label="Scan progress details" className="inline-flex items-start gap-2 text-base font-medium leading-6">
+              <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span>{title}</span>
+              {progressStage && <span className="sr-only">: {label(progressStage.status)}{progress ? ` · ${progress}` : ""}</span>}
+            </span>
+          </SecurityBadge>
+        </div>
+        <p className="mt-1 h-9 leading-4.5 text-muted-foreground">{activity}</p>
+      </div>
+      <span className="h-9 whitespace-nowrap text-sm font-medium tabular-nums leading-6 @min-[500px]:h-6" aria-label={progress ? "Scan progress count" : "Stage progress unavailable"}>{progress ?? "—"}</span>
     </div>
-    <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={progress ? `${progress.label} progress` : "Scan stages progress"}
-      aria-valuemin={0} aria-valuemax={progressTotal || undefined} aria-valuenow={progressTotal ? progressCompleted : undefined}
-      aria-valuetext={progress ? `${progress.progress} · ${words(progress.status)}` : completion}>
-      <div className={`h-full rounded-full bg-current transition-[width] duration-300 motion-reduce:transition-none ${progress?.color ?? "text-primary"}`} style={{ width: `${progressPercentage}%` }} />
+    <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t py-3 @min-[500px]:grid-cols-2">
+      <div role="group" aria-label="Previous stage" className="flex h-5 min-w-0 items-center gap-1.5"><span className="text-muted-foreground">Previous</span><span className="truncate" title={previousLabel}>{previousLabel}</span>{previous && <span className="sr-only">: {label(previous.status)}</span>}</div>
+      <div role="group" aria-label="Next stage" className="flex h-5 min-w-0 items-center gap-1.5 @min-[500px]:justify-end"><span className="text-muted-foreground">Next</span><span className="truncate" title={nextLabel}>{nextLabel}</span><ArrowRight aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" /></div>
     </div>
-    <p role="status" className="mt-2 grid gap-y-1 text-muted-foreground sm:flex sm:justify-between sm:gap-x-3">
-      <span className="h-4 min-w-0 truncate" title={activity ?? label(scan.status)}>{activity ?? label(scan.status)}</span><span className="h-4 shrink-0 whitespace-nowrap tabular-nums">{completion}</span>
-    </p>
   </section>;
 }
 
@@ -298,7 +289,7 @@ export function SecurityRepository({ user }: { user: User }) {
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
     <PageTitle title={<span className="break-words [overflow-wrap:anywhere]"><span className="font-normal text-muted-foreground">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</span>} actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues…</Button>
+      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </div>}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} /><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
@@ -501,7 +492,6 @@ export function SecurityScan({ user }: { user: User }) {
     .map((problem) => typeof problem === "string" ? problem : text(object(problem).reason))
     .filter((problem) => problem && problem !== scan.error);
   return <>
-    <Link className={`mb-5 inline-flex min-h-6 max-w-full items-center gap-1.5 break-words text-xs text-muted-foreground ${metadataLink}`} to={`/security/repositories/${repo.id}`}><ArrowLeft aria-hidden="true" className="size-3.5 shrink-0" />{repo.full_name}</Link>
     <PageTitle title="Security scan" actions={<>
       {canWrite && active(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/scans/${scan.id}/cancel` })}>Cancel scan</Button>}
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
@@ -510,7 +500,7 @@ export function SecurityScan({ user }: { user: User }) {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ScanDuration scan={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
-    <ErrorNotice error={scan.error || action.error} />
+    <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />
     <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto"><TabsTrigger value="report">Report <span className="text-xs font-normal tabular-nums text-muted-foreground">{reportCount}</span></TabsTrigger><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="report"><div className="space-y-6 pt-4">
