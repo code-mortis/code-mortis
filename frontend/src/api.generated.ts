@@ -3034,6 +3034,10 @@ export interface components {
             assessment?: components["schemas"]["SecurityAssessmentSummary"];
             /** Finding Count */
             finding_count: number;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
             /**
              * Report Count
              * @default 0
@@ -3142,6 +3146,18 @@ export interface components {
              * @default not_scanned
              */
             state: string;
+            /**
+             * Coverage
+             * @default not_scanned
+             * @enum {string}
+             */
+            coverage: "not_scanned" | "complete" | "incomplete";
+            /**
+             * Freshness
+             * @default unavailable
+             * @enum {string}
+             */
+            freshness: "current" | "outdated" | "unavailable";
             /** Grade Scan Id */
             grade_scan_id?: string | null;
             /** Grade Sha */

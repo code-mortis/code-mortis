@@ -280,6 +280,8 @@ class StartRunInput(StrictModel):
 class SecuritySummary(StrictModel):
     grade: str | None = None
     state: str = "not_scanned"
+    coverage: Literal["not_scanned", "complete", "incomplete"] = "not_scanned"
+    freshness: Literal["current", "outdated", "unavailable"] = "unavailable"
     grade_scan_id: str | None = None
     grade_sha: str | None = None
     graded_at: datetime | None = None

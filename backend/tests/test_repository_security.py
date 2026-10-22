@@ -606,6 +606,7 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
     assert client.get("/api/v1/security/repositories/22").json() == detail
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 21 and detail["activity_count"] == 205
+    assert detail["finding_state_counts"] == {"open": 6, "resolved": 5, "false_positive": 5, "accepted_risk": 5}
     assert len(detail["activity"]) == 205
     assert len({event["id"] for event in detail["activity"]}) == 205
     page = client.get(f"/api/v1/security/scans/{scan_id}/findings").json()
@@ -741,15 +742,13 @@ def test_unfinished_scan_exposes_saved_observation_without_claiming_a_report(see
     assert rows["items"] == [{**snapshot, "finding_id": finding_id, "outcome": "present"}]
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 1 and detail["resolved_count"] == detail["report_count"] == 0
+    assert detail["finding_state_counts"] == {"resolved": 1}
     assert client.get(f"/api/v1/security/scans/{scan_id}/report").status_code == 409
 
 
 @pytest.mark.parametrize(("severity", "grade"), [(None, "A"), ("low", "B"), ("medium", "C"), ("high", "D"), ("critical", "F"), ("unknown", None)])
 def test_rating_uses_highest_unresolved_severity(severity, grade):
-    rows = [SimpleNamespace(state="open", severity=severity)] if severity else []
-    assert security.grade_for(rows) == grade
-    assert security.grade_for([SimpleNamespace(state="false_positive", severity="critical")]) == "A"
-    assert security.grade_for([SimpleNamespace(state="accepted_risk", severity="critical")]) == "F"
+    assert security.grade_for([severity] if severity else []) == grade
 
 
 def test_create_scan_is_independent_of_pr_reviews_and_idempotent(seed, security_github, client):
@@ -993,7 +992,7 @@ def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypat
     assert security.deterministic_fix(item, old, {"targets": {}})["verdict"] == "uncertain"
 
 
-def test_summaries_keep_historical_grade_neutral_after_partial_scan(seed):
+def test_summaries_separate_current_grade_coverage_and_freshness(seed):
     with transaction() as db:
         prior = saved_scan(db, seed, "completed", grade="A", finished_at=now() - timedelta(minutes=5))
         prior.created_at = now() - timedelta(minutes=5)
@@ -1001,12 +1000,79 @@ def test_summaries_keep_historical_grade_neutral_after_partial_scan(seed):
         latest.progress = {"freshness": freshness()}
         saved_finding(db, seed, latest, severity="critical")
         summary = security.summaries(db, [22])[22]
-        assert summary.grade == "A" and summary.state == "incomplete"
+        assert summary.grade == "F" and summary.state == "incomplete"
+        assert summary.coverage == "incomplete" and summary.freshness == "current"
+        assert prior.grade == "A"
         assert summary.counts == {"critical": 1}
         latest.progress = {"freshness": freshness("c" * 40)}
-        assert security.summaries(db, [22])[22].state == "outdated"
+        summary = security.summaries(db, [22])[22]
+        assert summary.state == summary.freshness == "outdated"
+        assert summary.grade == "F" and summary.coverage == "incomplete"
         latest.progress = {"freshness": {"checked_at": now().isoformat(), "error": "Unavailable"}}
-        assert security.summaries(db, [22])[22].state == "unavailable"
+        summary = security.summaries(db, [22])[22]
+        assert summary.state == summary.freshness == "unavailable"
+        assert summary.grade == "F" and summary.coverage == "incomplete"
+
+
+@pytest.mark.parametrize("scan_status", ["completed", "partial", "running", "failed", "cancelled"])
+@pytest.mark.parametrize("fresh_state", ["current", "outdated", "unavailable"])
+def test_triage_updates_live_grades_without_changing_scan_history_or_coverage(seed, security_github, client, monkeypatch, scan_status, fresh_state):
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository))))
+    with transaction() as db:
+        scan = saved_scan(db, seed, "completed", grade="F", finished_at=now())
+        critical = saved_finding(db, seed, scan, severity="critical")
+        accepted = saved_finding(db, seed, scan, severity="high", state="accepted_risk")
+        saved_finding(db, seed, scan, severity="critical", state="resolved")
+        for finding in (critical, accepted):
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
+        scan.report = security.report_data(db, scan, [])
+        report = deepcopy(scan.report)
+        latest = scan if scan_status == "completed" else saved_scan(db, seed, scan_status)
+        latest.progress = {"freshness": freshness(OLD if fresh_state == "outdated" else SHA)}
+        if fresh_state == "unavailable":
+            latest.progress["freshness"]["checked_at"] = (now() - timedelta(minutes=11)).isoformat()
+        scan_id, critical_id, accepted_id = scan.id, critical.id, accepted.id
+    current_states = {critical_id: "open", accepted_id: "accepted_risk"}
+    expected_coverage = "complete" if scan_status == "completed" else "incomplete"
+    for identity, state, version, grade in [
+        (critical_id, "false_positive", 0, "D"),
+        (accepted_id, "false_positive", 0, "A"),
+        (critical_id, "open", 1, "F"),
+        (critical_id, "accepted_risk", 2, "F"),
+    ]:
+        response = client.patch(f"/api/v1/security/findings/{identity}", json={"state": state, "reason": "Reviewed the source evidence", "version": version})
+        assert response.status_code == 200
+        assert response.json()["state"] == state
+        summary = client.get("/api/v1/security/repositories/22").json()["summary"]
+        assert summary["grade"] == grade
+        assert summary["coverage"] == expected_coverage and summary["freshness"] == fresh_state
+        assert summary["grade_scan_id"] == scan_id
+        assert summary["state"] == (fresh_state if fresh_state != "current" else "current" if scan_status == "completed" else "incomplete")
+        overview = client.get("/api/v1/security/repositories", params={"grade": grade}).json()
+        assert overview["total"] == overview["grade_counts"][grade] == 1
+        assert overview["items"][0]["summary"] == summary
+        assert client.get("/api/v1/repositories").json()[0]["security"] == summary
+        current_states[identity] = state
+        detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
+        assert detail["finding_state_counts"] == {value: list(current_states.values()).count(value) for value in set(current_states.values())}
+        saved = detail["scan"]
+        assert saved["grade"] == saved["report"]["grade"] == "F"
+        assert client.get(f"/api/v1/security/scans/{scan_id}/report").json() == report
+    with transaction() as db:
+        assert not db.scalar(select(SecurityActivity.id).where(SecurityActivity.action == "finding_resolved"))
+
+
+def test_live_grade_stays_unrated_without_report_or_with_unknown_severity(seed):
+    with transaction() as db:
+        assert security.summaries(db, [22])[22].grade is None
+        scan = saved_scan(db, seed, "running")
+        finding = saved_finding(db, seed, scan, severity="critical")
+        assert security.summaries(db, [22])[22].grade is None
+        scan.status, scan.grade = "completed", "F"
+        finding.severity = "unknown"
+        assert security.summaries(db, [22])[22].grade is None
+        finding.state = "false_positive"
+        assert security.summaries(db, [22])[22].grade == "A"
 
 
 def test_finished_partial_report_is_graded_without_claiming_complete_coverage(seed, security_github):

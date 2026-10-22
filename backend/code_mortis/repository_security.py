@@ -138,29 +138,30 @@ def summaries(db, repository_ids):
         data = SecuritySummary(counts=counts.get(identity, {}))
         if scan:
             fresh = scan.progress.get("freshness", {})
+            data.coverage = "complete" if scan.status == "completed" else "incomplete"
             data.latest_scan_id, data.latest_status, data.latest_at = scan.id, scan.status, scan.created_at
             for name in ("default_branch", "head_sha", "checked_at"):
                 if fresh.get(name):
                     setattr(data, name, datetime.fromisoformat(fresh[name]) if name == "checked_at" else fresh[name])
             if grade:
-                data.grade, data.grade_scan_id, data.grade_sha, data.graded_at = grade.grade, grade.id, grade.head_sha, grade.finished_at
+                data.grade = grade_for(counts.get(identity, {}))
+                data.grade_scan_id, data.grade_sha, data.graded_at = grade.id, grade.head_sha, grade.finished_at
             data.state = "current" if grade and scan.id == grade.id and scan.status == "completed" else "incomplete"
-            current_counts = counts.get(identity, {})
-            observed_grade = next((value for severity, value in [("critical", "F"), ("high", "D"), ("medium", "C"), ("low", "B")]
-                                   if current_counts.get(severity)), "A")
-            if grade and (observed_grade != grade.grade or current_counts.get("unknown")):
-                data.state = "incomplete"
             checked = datetime.fromisoformat(fresh["checked_at"]) if fresh.get("checked_at") else None
             if fresh.get("error") or not checked or (now() - checked).total_seconds() > 600:
-                data.state = "unavailable"
+                data.freshness = "unavailable"
             elif grade and (grade.head_sha != fresh.get("head_sha") or grade.branch != fresh.get("default_branch")):
-                data.state = "outdated"
+                data.freshness = "outdated"
+            else:
+                data.freshness = "current"
+            if data.freshness != "current":
+                data.state = data.freshness
         result[identity] = data
     return result
 
 
-def grade_for(findings):
-    severities = {row.severity for row in findings if row.state in {"open", "accepted_risk"}}
+def grade_for(severities):
+    severities = set(severities)
     if severities - security_engine.SEVERITIES:
         return None
     return next((grade for severity, grade in [("critical", "F"), ("high", "D"), ("medium", "C"), ("low", "B")]
@@ -851,9 +852,9 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         scan.status, scan.finished_at = "completed" if complete else "partial", now()
         scan.error = "; ".join(str(problem) for problem in problems)[:2000] or None
         scan.progress = {**scan.progress, "freshness": freshness}
-        findings = list(db.scalars(select(SecurityFinding).where(SecurityFinding.repository_id == scan.repository_id)))
         if supported:
-            scan.grade = grade_for(findings)
+            scan.grade = grade_for(db.scalars(select(SecurityFinding.severity).where(
+                SecurityFinding.repository_id == scan.repository_id, SecurityFinding.state.in_(["open", "accepted_risk"]))))
         scan.stages = {**scan.stages, "report": {"status": "completed"}}
         scan.report = report_data(db, scan, problems)
         activity(db, "scan_completed", scan=scan, grade=scan.grade, status=scan.status, current=current)

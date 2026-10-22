@@ -185,6 +185,7 @@ class SecurityScanDetail(StrictModel):
     can_write: bool
     assessment: SecurityAssessmentSummary = Field(default_factory=SecurityAssessmentSummary)
     finding_count: int = Field(ge=0)
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
     report_count: int = Field(default=0, ge=0)
     resolved_count: int = Field(default=0, ge=0)
     activity_count: int = Field(ge=0)

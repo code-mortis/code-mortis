@@ -15,7 +15,7 @@ import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/or
 import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
-import { SecurityGrade, SecurityGradeShield, securityStates } from "./components/security-grade";
+import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
@@ -266,10 +266,47 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
   </form>;
 }
 
+const findingViews = [
+  { value: "findings", state: "open", name: "Findings" },
+  { value: "resolved", state: "resolved", name: "Resolved" },
+  { value: "accepted_risk", state: "accepted_risk", name: "Accepted risk" },
+  { value: "false_positive", state: "false_positive", name: "False positives" },
+] as const;
+type FindingState = typeof findingViews[number]["state"];
+const findingTabValues = findingViews.map((view) => view.value);
+const findingTabsClass = "max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto";
+
+function useLegacyFindingTabs(scan = false) {
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const oldTab = params.get("tab");
+    const legacyScanTab = scan && ["resolved", "accepted_risk", "false_positive"].includes(oldTab ?? "");
+    if (!params.has("state") && !params.has("resolved_state") && !legacyScanTab) return;
+    const next = new URLSearchParams(params);
+    const legacyState = params.get("state");
+    const view = findingViews.find((view) => view.state === legacyState);
+    if (legacyScanTab) {
+      next.delete("tab");
+      next.set("findings_tab", oldTab!);
+    } else if (view && (!oldTab || oldTab === "findings") && (!scan || !params.has("findings_tab"))) {
+      const key = scan ? "findings_tab" : "tab";
+      if (view.value === "findings") next.delete(key); else next.set(key, view.value);
+      if (view.state !== "open") for (const key of ["search", "severity", "kind", "outcome", "ordering"]) {
+        if (!next.has(`${view.state}_${key}`)) for (const value of params.getAll(key)) next.append(`${view.state}_${key}`, value);
+        next.delete(key);
+      }
+    }
+    next.delete("state");
+    next.delete("resolved_state");
+    setParams(next, { replace: true });
+  }, [params, setParams, scan]);
+}
+
 export function SecurityRepository({ user }: { user: User }) {
   const { id } = useParams();
   const query = useApi<SecurityRepo>(`/security/repositories/${id}`, true);
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "history"], "findings");
+  useLegacyFindingTabs();
+  const [tab, setTab] = useUrlTab("tab", [...findingTabValues, "history"], "findings");
   const [scanning, setScanning] = useState(false);
   const [creatingIssues, setCreatingIssues] = useState(false);
   const [queuedIssues, setQueuedIssues] = useState(0);
@@ -278,7 +315,6 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
   const stateCounts = query.data.finding_state_counts;
-  const findingCount = stateCounts ? Object.entries(stateCounts).reduce((sum, [state, count]) => sum + (state === "resolved" ? 0 : count), 0) : query.data.finding_count;
   const slash = repo.full_name.lastIndexOf("/");
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
@@ -286,8 +322,8 @@ export function SecurityRepository({ user }: { user: User }) {
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </div>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} /><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
-      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `${summary.state === "current" || (summary.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id) ? "Saved" : "Historical report saved"} ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} />{summary.latest_scan_id && <><span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span><span aria-label="Scan freshness">{securityFreshness[summary.freshness ?? "unavailable"]}</span></>}<span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
+      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `Last graded report saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
     </PageTitle>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
     {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
@@ -300,9 +336,10 @@ export function SecurityRepository({ user }: { user: User }) {
         {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
       </div>
     </section>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{findingCount ?? "…"}</span></TabsTrigger><TabsTrigger value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.resolved ?? 0}</span></TabsTrigger><TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
-      <TabsContent value="findings"><Findings repositoryId={repo.id} /></TabsContent>
-      <TabsContent value="resolved"><Findings repositoryId={repo.id} resolved /></TabsContent>
+    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Repository security" className={findingTabsClass}>
+      {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
+      <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
+      {findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} state={view.state} /></TabsContent>)}
       <TabsContent value="history"><ScanHistory repositoryId={repo.id} /></TabsContent>
     </Tabs>
     {scanning && <ScanDialog repositoryId={repo.id} user={user} onClose={() => setScanning(false)} />}
@@ -318,20 +355,15 @@ const scanFindingResults = {
   fixed: "Verified fixes", not_observed: "Not observed", uncertain: "Verification uncertain",
 };
 
-const findingStates = ["open", "resolved", "false_positive", "accepted_risk"];
-
-function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path: string, states: string[], rememberPages = false) {
+function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path: string, states: string[]) {
   const [params, setParams] = useSearchParams();
   const filterKey = JSON.stringify([path, states]);
   const resource = path.split("?")[0];
-  const [pagination, setPagination] = useState({ filters: filterKey, pages: {} as Record<string, number> });
-  if (!rememberPages && pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
-  const pages = rememberPages ? Object.fromEntries(states.map((state) => {
+  const pages = Object.fromEntries(states.map((state) => {
     const page = Number(params.get(`${state}_page`) ?? 1);
     return [state, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
-  })) : pagination.filters === filterKey ? pagination.pages : {};
+  }));
   function updatePages(nextPages: Record<string, number>, replace = false) {
-    if (!rememberPages) { setPagination({ filters: filterKey, pages: nextPages }); return; }
     setParams((current) => {
       const next = new URLSearchParams(current);
       for (const state of states) {
@@ -360,7 +392,7 @@ function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path:
       return groups;
     },
     staleTime: 0, refetchInterval: 5000, retry: false,
-    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === resource ? previous : undefined,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[2] === filterKey ? previous : undefined,
   });
   const saved = useRef<{ filters: string; data?: typeof query.data }>({ filters: filterKey });
   if (saved.current.filters !== filterKey) saved.current = { filters: filterKey };
@@ -384,63 +416,61 @@ function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path:
   };
 }
 
-function Findings({ repositoryId, scanId, resolved = false }: { repositoryId: number; scanId?: string; resolved?: boolean }) {
+function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanId?: string; state: FindingState }) {
   const { params, change, setParams } = useFilters();
   const searchInput = useRef<HTMLInputElement>(null);
-  const prefix = resolved ? "resolved_" : "";
+  const prefix = state === "open" ? "" : `${state}_`;
   const filters = new URLSearchParams();
-  for (const key of ["search", "state", "severity", "kind", "outcome", "ordering"]) for (const value of params.getAll(`${prefix}${key}`)) filters.append(key, value);
-  const availableStates = scanId ? findingStates : resolved ? ["resolved"] : findingStates.filter((state) => state !== "resolved");
+  for (const key of ["search", "severity", "kind", "outcome", "ordering"]) for (const value of params.getAll(`${prefix}${key}`)) filters.append(key, value);
   const ordering = normalizeOrdering(filters.get("ordering"), findingOrderings, "-severity");
-  const selectedStates = availableStates.filter((value) => filters.getAll("state").includes(value));
-  const defaultStates = scanId ? resolved ? availableStates : ["open", "resolved"] : ["open"];
-  const states = resolved && !scanId ? ["resolved"] : filters.getAll("state").includes("all") ? availableStates : selectedStates.length ? selectedStates : defaultStates;
-  const queryParams = new URLSearchParams();
-  if (ordering !== "-severity") queryParams.set("ordering", ordering);
-  for (const key of ["search", "severity", "kind", ...(scanId && !resolved ? ["outcome"] : [])]) for (const value of filters.getAll(key)) queryParams.append(key, value);
-  if (scanId) queryParams.set("resolved", String(resolved));
+  const queryParams = new URLSearchParams(filters);
+  queryParams.set("ordering", ordering);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
-  const { query, denied, groups, total, counts, registered, pagination } = useFindingGroups<Finding>(`${path}?${queryParams}`, states, !scanId);
-  const registeredTotal = !scanId && counts?.state_counts ? availableStates.reduce((sum, state) => sum + (counts.state_counts?.[state] ?? 0), 0) : registered;
-  const onlyResolved = !scanId && !resolved && !registeredTotal && (counts?.state_counts?.resolved ?? 0) > 0 && !filters.get("search") && !filters.has("severity") && !filters.has("kind");
+  const { query, denied, groups, total, counts, registered, pagination } = useFindingGroups<Finding>(`${path}?${queryParams}`, [state]);
+  const registeredTotal = counts?.state_counts ? counts.state_counts[state] ?? 0 : registered;
+  const onlyResolved = !scanId && state === "open" && !registeredTotal && (counts?.state_counts?.resolved ?? 0) > 0;
   function changeFilter(key: string, values: string[]) {
     const next = new URLSearchParams(params);
     next.delete(`${prefix}${key}`);
-    if (key === "state" && !values.length) next.set(`${prefix}state`, "all");
-    else for (const value of values) if (value) next.append(`${prefix}${key}`, value);
-    for (const state of availableStates) next.delete(`${state}_page`);
+    for (const value of values) if (value) next.append(`${prefix}${key}`, value);
+    next.delete(`${state}_page`);
     setParams(next, { replace: key === "search" });
   }
+  const description = {
+    open: scanId ? "Findings recorded by this scan that still need attention. Saved evidence remains available in each finding." : null,
+    accepted_risk: "Real issues accepted without a fix. These still count toward the current repository grade.",
+    false_positive: "Reports marked as invalid. These do not count toward the current repository grade.",
+    resolved: "Findings with verified fixes. Reopened findings return to Findings.",
+  }[state];
   return <div className="pt-4">
-    {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{resolved ? "Fixes verified by this scan. Status labels show the current state, including any findings reopened later." : "Findings recorded by this scan, with their current status. Open a finding to compare its saved evidence."}</p>}
-    <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={resolved ? "Search resolved findings" : scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
+    {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
+    <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={state === "open" ? scanId ? "Search scan findings" : "Search findings" : `Search ${label(state).toLowerCase()} findings`} searchPlaceholder="Search findings…" searchInputRef={searchInput}
       ordering={{ value: ordering, defaultValue: "-severity", options: findingOrderings, onChange: (value) => changeFilter("ordering", [value]) }}
       onSearch={(value) => changeFilter("search", [value])} onChange={changeFilter} filters={[
-        ...(!resolved || scanId ? [{ key: "state", label: "State", values: scanId && states.length === availableStates.length ? [] : states,
-          ...(!scanId ? { active: states.some((state) => state !== "open"), clearValues: ["open"] } : {}),
-          choices: availableStates.map((value) => ({ value, name: label(value), count: counts?.state_counts?.[value] ?? 0 })) }] : []),
-        ...(scanId && !resolved ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).filter(([value]) => value !== "fixed").map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
+        ...(scanId ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
         { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },
         { key: "kind", label: "Type", values: filters.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
       ]}><span role="status" className="sr-only">{total} of {registeredTotal} findings</span></FilterBar></div>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} />{!denied && <Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry findings</Button>}</div>}
-    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? resolved ? "Fixes verified by this scan" : "Current findings for this scan" : resolved ? "Resolved repository findings" : "Repository findings"} className="space-y-6" aria-busy={query.isPlaceholderData}>
+    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} aria-busy={query.isPlaceholderData}>
       {groups.filter((group) => group.total > 0).map((group) => <section key={group.state} aria-label={`${label(group.state)} findings`}>
-        <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(group.state)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.total}</span></h2>
         <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {group.items.map((finding) => <FindingCard key={finding.id} evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
             state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}
           <Pagination {...pagination(group)} label={`${group.state} findings`} />
         </div>
       </section>)}
-    </section> : !query.error && <Empty title={onlyResolved ? "No open findings" : registeredTotal ? "No findings match these filters" : resolved && scanId ? "No fixes verified by this scan" : "No findings in this view"}>
-      {onlyResolved ? <><p>Resolved findings are available in the Resolved tab.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); next.set("tab", "resolved"); setParams(next); }}>View resolved findings</Button></> : registeredTotal ? <><p>Try another search, state, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => {
+    </section> : !query.error && <Empty title={registeredTotal ? "No findings match these filters" : `No ${state === "false_positive" ? "false positives" : state === "accepted_risk" ? "accepted risks" : `${state} findings`}`}>
+      {registeredTotal ? <><p>Try another search, severity, type{scanId ? ", or result" : ""}.</p><Button variant="outline" className="mt-4" onClick={() => {
         const next = new URLSearchParams(params);
-        for (const key of ["search", "outcome", "severity", "kind", "state", "page"]) next.delete(`${prefix}${key}`);
-        for (const state of availableStates) next.delete(`${state}_page`);
-        if (scanId || !resolved) next.set(`${prefix}state`, scanId ? "all" : "open");
+        for (const key of ["search", "outcome", "severity", "kind"]) next.delete(`${prefix}${key}`);
+        next.delete(`${state}_page`);
         setParams(next); searchInput.current?.focus();
-      }}>Clear filters</Button></> : resolved ? "Resolved findings will appear here after fixes are verified." : scanId ? "Findings appear as the scan progresses. Check coverage before interpreting an empty result." : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty>)}
+      }}>Clear filters</Button></> : onlyResolved ? <><p>Resolved findings are available in the Resolved tab.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); next.set("tab", "resolved"); setParams(next); }}>View resolved findings</Button></>
+        : state === "resolved" ? "Findings appear here after fixes are verified."
+          : state === "false_positive" ? "Findings you mark as false positives appear here."
+            : state === "accepted_risk" ? "Findings you choose to accept without a fix appear here."
+              : scanId ? "Check coverage before interpreting an empty result. Other states are available in the tabs above." : "Other finding states are available in the tabs above. Check scan coverage before interpreting an empty result."}</Empty>)}
   </div>;
 }
 
@@ -474,7 +504,9 @@ export function SecurityScan({ user }: { user: User }) {
   const query = useApi<Schema["SecurityScanDetail"]>(`/security/scans/${id}`, true);
   const action = useAction();
   const [retrying, setRetrying] = useState<"retry" | "new">();
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "activity"], "findings");
+  useLegacyFindingTabs(true);
+  const [tab, setTab] = useUrlTab("tab", [...findingTabValues, "assessment", "coverage", "activity"], "findings");
+  const [findingTab, setFindingTab] = useUrlTab("findings_tab", findingTabValues, "findings");
   const [params, setParams] = useSearchParams();
   const assessmentTrigger = useRef<HTMLButtonElement | null>(null);
   const assessmentTab = useRef<HTMLButtonElement | null>(null);
@@ -483,7 +515,6 @@ export function SecurityScan({ user }: { user: User }) {
   const { scan, repository: repo, can_write: canWrite } = query.data;
   const work = object(scan.progress.work);
   const report = object(scan.report);
-  const resolvedCount = query.data.resolved_count ?? 0;
   const reportProblems = (Array.isArray(report.problems) ? report.problems : [])
     .map((problem) => typeof problem === "string" ? problem : text(object(problem).reason))
     .filter((problem) => problem && problem !== scan.error);
@@ -501,13 +532,14 @@ export function SecurityScan({ user }: { user: User }) {
     </PageTitle>
     <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />
-    <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto"><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count - resolvedCount}</span></TabsTrigger><TabsTrigger value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolvedCount}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
+    <Tabs value={findingTabValues.includes(tab as typeof findingTabValues[number]) ? "findings" : tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><div className="space-y-6">
-        <Findings repositoryId={repo.id} scanId={scan.id} />
+        <Tabs value={findingTab} onValueChange={setFindingTab} className="pt-3"><TabsList aria-label="Finding states" variant="line" className={findingTabsClass}>
+          {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.state === "open" ? "Open" : view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
+        </TabsList>{findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} scanId={scan.id} state={view.state} /></TabsContent>)}</Tabs>
           {entries(report.unsettled_candidates).length > 0 && <section className="space-y-3"><h2 className="text-sm font-semibold">Requires verification</h2>{entries(report.unsettled_candidates).map((row, index) => <details className={disclosure} key={index}><summary className={disclosureSummary}><span className="min-w-0 break-words [overflow-wrap:anywhere]">{text(object(row.proposal).title) || "Security candidate"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><div className="mt-5 space-y-6"><section className="space-y-3"><h3 className="text-sm font-semibold">Assessment</h3><Markdown>{text(object(row.assessment).explanation)}</Markdown></section><SecurityEvidence title={text(object(row.proposal).title)} evidence={object(row.proposal)} commit={scan.head_sha} /></div></details>)}</section>}
           {reportProblems.length > 0 && <section><h2 className="mb-3 text-base font-semibold">Incomplete analysis</h2><ul className="space-y-2">{reportProblems.map((problem, index) => <li key={index}><ErrorNotice error={problem} /></li>)}</ul></section>}
       </div></TabsContent>
-      <TabsContent value="resolved"><Findings repositoryId={repo.id} scanId={scan.id} resolved /></TabsContent>
       <TabsContent value="assessment"><SecurityAssessments scan={scan} summary={query.data.assessment} onOpen={(id, trigger) => { assessmentTrigger.current = trigger; const next = new URLSearchParams(params); next.set("assessment", id); next.delete("assessment_tab"); setParams(next); }} /></TabsContent>
       <TabsContent value="coverage"><Coverage scan={scan} /></TabsContent>
       <TabsContent value="activity"><ScanActivity rows={query.data.activity} /></TabsContent>
@@ -782,7 +814,7 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
       {canWrite && triaging && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); action.mutate({ path: `/security/findings/${finding.id}`, method: "PATCH", body: { state, reason, version: finding.version } }, { onSuccess: () => { setReason(""); setTriaging(false); } }); }}>
         <Field label="Decision">{(id) => <select id={id} className="h-9 w-full rounded-md border border-input bg-card px-3 text-base md:text-sm" value={state} onChange={(event) => setState(event.target.value as typeof state)}><option value="false_positive">False positive</option><option value="accepted_risk">Accept risk</option><option value="open">Reopen finding</option></select>}</Field>
         <Field label="Reason">{(id) => <Textarea id={id} autoFocus required value={reason} maxLength={4000} onChange={(event) => setReason(event.target.value)} />}</Field>
-        <p className="text-xs leading-relaxed text-muted-foreground">Accepted risks still affect the grade. Triage changes are reflected in the next complete scan.</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">False positives do not affect the current grade; accepted risks still count. Triage updates the repository grade immediately. Saved scan grades stay unchanged.</p>
         <Button type="submit" variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending || !reason.trim()}>Save decision</Button>
         {finding.kind === "secret" && ["open", "accepted_risk"].includes(finding.state) && <div className="space-y-3 border-t pt-4"><p className="text-sm">Removing a secret does not revoke it. Confirm rotation or revocation before a clean rescan can close this finding.</p>{finding.rotation ? <p className="text-xs text-muted-foreground">Rotation acknowledged. A successful rescan must still verify removal.</p> : <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal sm:min-h-9" disabled={action.isPending || !reason.trim()} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/rotation`, body: { reason, version: finding.version } })}>I rotated or revoked this credential</Button>}</div>}
       </form>}

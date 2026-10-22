@@ -141,12 +141,15 @@ def scan_detail(scan_id: str, db: DB, user: USER):
     outcomes = dict(db.execute(select(SecurityOccurrence.outcome, func.count()).join(SecurityFinding).where(
         SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == repo.id)
         .group_by(SecurityOccurrence.outcome)).all())
+    finding_counts = dict(db.execute(select(SecurityFinding.state, func.count()).join(SecurityOccurrence).where(
+        SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == repo.id)
+        .group_by(SecurityFinding.state)).all())
     events = db.scalars(scan_events(scan.id).order_by(
         SecurityActivity.created_at.desc(), SecurityActivity.id.desc())).all()
     return SecurityScanDetail(repository=repo_out(db, repo), scan=public,
         can_write=bool(remote.get("permissions", {}).get("push")),
         assessment=assessment,
-        finding_count=sum(outcomes.values()),
+        finding_count=sum(outcomes.values()), finding_state_counts=finding_counts,
         report_count=len(scan.report.get("findings", [])),
         resolved_count=outcomes.get("fixed", 0),
         activity_count=len(events),
