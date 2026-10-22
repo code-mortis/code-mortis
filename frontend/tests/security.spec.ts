@@ -1354,13 +1354,27 @@ test("running scan stages explain validated file progress without changing the s
   await expect(stages.getByRole("group", { name: "Scan progress details" })).toContainText("Analysis");
   await expect(stages.getByRole("group", { name: "Previous stage" })).toHaveCount(0);
   await expect(stages.getByRole("group", { name: "Next stage" })).toHaveCount(0);
-  await expect(stages.getByRole("button")).toHaveCount(0);
+  const trigger = stages.getByRole("button", { name: "Scan stage details", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(trigger.locator(".lucide-chevron-down")).toBeVisible();
   await expect(stages.getByRole("progressbar")).toHaveCount(0);
-  await expect(stages.locator('[data-slot="badge"], .animate-spin, .lucide-chevron-down')).toHaveCount(0);
+  await expect(stages.locator('[data-slot="badge"], .animate-spin')).toHaveCount(0);
   await expect(stages).not.toContainText("of 6");
   await expect(stages.getByText("Reviewing source files for vulnerabilities.", { exact: true })).toBeVisible();
-  await stages.getByRole("group", { name: "Scan progress details", exact: true }).locator("..").focus();
-  await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation.");
+  await trigger.focus();
+  await trigger.press("Enter");
+  const details = page.getByRole("dialog", { name: "Scan stage details", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(details.locator('[data-slot="badge"]')).toHaveCount(6);
+  await expect(details).toContainText("A file counts only after its result passes validation.");
+  await expect(details.getByText("11 / 163 files", { exact: true })).toBeVisible();
+  expect((await stages.boundingBox())!.height).toBe(height);
+  await page.screenshot({ path: info.outputPath("security-stage-details.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(details).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await trigger.locator(".lucide-chevron-down").click();
+  await expect(details).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Cancel scan", exact: true })).toBeEnabled();
   await page.screenshot({ path: info.outputPath("security-focus-running.png"), fullPage: true });
@@ -1385,6 +1399,9 @@ test("focus strip updates validated progress and the current stage across pollin
   await expect(track.getByLabel("Scan progress count")).toHaveText("117 / 163 files");
   await expect(track).not.toContainText("0 / 32");
   await page.screenshot({ path: info.outputPath("scan-focus-running.png"), fullPage: true });
+  await track.getByRole("button", { name: "Scan stage details" }).click();
+  const details = page.getByRole("dialog", { name: "Scan stage details", exact: true });
+  await expect(details.getByText("117 / 163 files", { exact: true })).toBeVisible();
   saved.stages.analysis.completed = 163;
   saved.stages.analysis.status = "completed";
   saved.stages.assessment.status = "running";
@@ -1395,6 +1412,10 @@ test("focus strip updates validated progress and the current stage across pollin
   await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
   await expect(track.getByText("Validating findings against source evidence.", { exact: true })).toBeVisible();
   await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Assessment");
+  await expect(details.getByText("Analysis", { exact: true }).locator("..")).toContainText("completed");
+  await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
+  await expect(details.getByText("8 / 32 candidates", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: info.outputPath("scan-focus-assessment.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
@@ -1680,10 +1701,8 @@ test("security grades and scan stages keep their help while finding and scan sta
     }
   }
   await page.goto("/security/scans/scan");
-  const stage = page.getByRole("group", { name: "Scan progress details", exact: true });
-  if (info.project.name === "desktop") await stage.locator("..").hover();
-  else await stage.locator("..").focus();
-  await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation");
+  await page.getByRole("button", { name: "Scan stage details", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Scan stage details", exact: true })).toContainText("A file counts only after its result passes validation");
   expect(writes).toHaveLength(0);
 });
 

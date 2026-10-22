@@ -1295,7 +1295,7 @@ test("review stage animation follows execution, visibility and reduced motion", 
   await page.screenshot({ path: info.outputPath("review-stage-animation.png") });
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect((await animation()).name).toBe("none");
-  await expect(card.getByRole("button", { name: "Review stage details" })).toHaveText("Code review");
+  await expect(card.getByRole("button", { name: "Review stage details" })).toContainText("Code review");
   expect((await card.boundingBox())!.height).toBe(height);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   const viewport = page.viewportSize()!;
@@ -1350,13 +1350,14 @@ test("review stage title follows parallel work and summary publication without c
       explanation: (await card.locator(".stage-divider").boundingBox())!.y - box.y,
       tabs: (await page.getByRole("tablist").boundingBox())!.y - box.y };
   };
-  await expect(title).toHaveText("Code review · PR summary");
+  await expect(title).toContainText("Code review · PR summary");
   const original = await geometry();
   await page.screenshot({ path: info.outputPath("parallel-stage-title.png") });
   const check = async (text: string) => {
-    await expect(title).toHaveText(text);
+    await expect(title).toContainText(text);
     expect(await geometry()).toEqual(original);
-    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle, .lucide-chevron-down')).toHaveCount(0);
+    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle')).toHaveCount(0);
+    await expect(title.locator(".lucide-chevron-down")).toBeVisible();
     await noOverflow(page);
   };
   state.stages!.assessment!.status = "running";
@@ -1420,9 +1421,10 @@ test("review stage card keeps a fixed layout through every stage and terminal st
       completed: [{ path: "one.ts" }], reused: [{ path: "two.ts" }], failed: [], waived: [] } } } : null;
     await page.goto("/runs/run");
     const card = page.getByRole("region", { name: "Review stages", exact: true });
-    await expect(card.getByRole("button", { name: "Review stage details", exact: true })).toHaveText(title);
+    await expect(card.getByRole("button", { name: "Review stage details", exact: true })).toContainText(title);
     await expect(card.getByLabel(count === "—" ? "File progress unavailable" : "Review progress count", { exact: true })).toHaveText(count);
-    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle, .lucide-chevron-down')).toHaveCount(0);
+    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle')).toHaveCount(0);
+    await expect(card.locator(".lucide-chevron-down")).toBeVisible();
     const box = (await card.boundingBox())!;
     if (!height) height = box.height;
     expect(box.height).toBe(height);
@@ -1713,7 +1715,7 @@ test("PR summary comes first inside review stages and retries synchronization wi
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
   await expect(publication.getByText("PR summary", { exact: true })).toHaveCount(0);
   await expect(publication.getByRole("button", { name: /^PR summary details:/ })).toHaveCount(0);
-  const trigger = publication.getByRole("button", { name: "Review stages: partial", exact: true });
+  const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
@@ -1750,7 +1752,7 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await expect(trigger).toBeFocused();
 });
 
-test("review stages badge restores the summary dropdown alongside the live stage card", async ({ page }, info) => {
+test("review stage card keeps live details without a duplicate header badge", async ({ page }, info) => {
   await page.clock.install();
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const state: Partial<Run> = { status: "completed", publication: "published", publication_error: null,
@@ -1760,8 +1762,9 @@ test("review stages badge restores the summary dropdown alongside the live stage
   await mock(page, { run: state, overview: { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10" } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  const trigger = publication.getByRole("button", { name: /^Review stages:/ });
-  await expect(trigger).toHaveText("completed");
+  await expect(publication.getByText("Review stages", { exact: true })).toHaveCount(0);
+  const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+  await expect(trigger).toHaveAttribute("data-status", "completed");
   await expect(trigger.locator(".lucide-chevron-down")).toHaveCount(1);
   await expect(page.getByRole("region", { name: "Review stages", exact: true })).toBeVisible();
   await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 3");
@@ -1772,19 +1775,17 @@ test("review stages badge restores the summary dropdown alongside the live stage
   await expect(details.getByText(/tokens$/)).toHaveText(["6,449 tokens", "133,071 tokens", "0 tokens", "0 tokens"]);
   await expect(details.locator('[data-slot="badge"]')).toHaveText(["completed", "completed", "completed", "skipped"]);
   await noOverflow(page);
-  await page.screenshot({ path: info.outputPath("review-stages-badge.png") });
+  await page.screenshot({ path: info.outputPath("review-stage-card-details.png") });
   await page.keyboard.press("Escape");
   await expect(details).toBeHidden();
   await expect(trigger).toBeFocused();
   state.status = "running";
   state.stages!.assessment!.status = "running";
   await page.clock.fastForward(5000);
-  await expect(trigger).toHaveText("running");
+  await expect(trigger).toHaveAttribute("data-status", "running");
   await trigger.click();
   await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
-  await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
 });
 
 test("run status tooltips stay concise and PR summary failure preserves read-only details", async ({ page }, info) => {
@@ -1800,7 +1801,6 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
     [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
-    [stages, "Review complete with warnings. View stage details."],
   ] as const;
   for (const [trigger, text] of tooltips) {
     if (info.project.name === "desktop") {
@@ -1811,12 +1811,20 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
     await trigger.focus();
     await expect(page.getByRole("tooltip")).toHaveText(text);
     await noOverflow(page);
-    if (trigger === stages) await page.screenshot({ path: `/tmp/run-status-tooltip-${info.project.name}.png` });
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
   }
-  await stages.press("Enter");
+  const card = page.getByRole("region", { name: "Review stages", exact: true });
+  const height = (await card.boundingBox())!.height;
+  await expect(stages).toHaveAttribute("aria-expanded", "false");
+  await stages.locator(".lucide-chevron-down").click();
   const stageDetails = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(stages).toHaveAttribute("aria-expanded", "true");
+  expect((await card.boundingBox())!.height).toBe(height);
+  await page.screenshot({ path: info.outputPath("review-stage-details-chevron.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(stages).toBeFocused();
+  await stages.press("Enter");
   await expect(stageDetails.getByText("OCR", { exact: true })).toBeVisible();
   const details = stageDetails;
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
@@ -2961,7 +2969,9 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByText(/7 of 13 findings verified/)).not.toBeVisible();
   await expect(page.getByText("6 recorded findings", { exact: true })).toHaveCount(0);
   expect((await page.getByRole("tab", { name: "Findings 6", exact: true }).boundingBox())!.y).toBeGreaterThan((await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox())!.y);
-  await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveAttribute("href", "/pulls/pr");
+  await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveCount(0);
+  await expect(await breadcrumbAncestor(page, "Pull request #148")).toHaveAttribute("href", "/pulls/pr");
+  await page.keyboard.press("Escape");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
   await expect(page.getByRole("tabpanel").getByRole("status")).toHaveText("6 of 6 findings");

@@ -1,11 +1,8 @@
 import type { ReactNode } from "react";
-import { ChevronDown, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, Pause, TriangleAlert } from "lucide-react";
+import { Circle, CircleCheck, CircleDot, CircleSlash, CircleX, Pause, TriangleAlert } from "lucide-react";
 import type { Run, Schema } from "../api";
-import { Status } from "./common";
 import { coverageFiles } from "./run-coverage";
 import { StageCard } from "./stage-card";
-import { Popover, PopoverTrigger } from "./ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const descriptions = {
   ocr: ["Code review", "Reviewing changed files and validating their results."],
@@ -14,10 +11,9 @@ const descriptions = {
   summary: ["PR summary", "Preparing the pull request summary."],
 } as const;
 
-export function RunStages({ run, assessmentStatus, summaryStage, summaryPublication, variant = "card", children }: {
+export function RunStages({ run, assessmentStatus, summaryStage, summaryPublication, children }: {
   run: Run; assessmentStatus: string; summaryStage?: Schema["StageState"] | Schema["SummaryState"]; children: ReactNode;
   summaryPublication?: "pending" | "failed";
-  variant?: "card" | "badge";
 }) {
   const stages = (Object.keys(descriptions) as (keyof typeof descriptions)[]).flatMap((key) => {
     const stage = key === "summary" ? summaryStage : run.stages?.[key];
@@ -71,21 +67,10 @@ export function RunStages({ run, assessmentStatus, summaryStage, summaryPublicat
     : ["partial", "blocked"].includes(status) ? "text-amber-800 dark:text-amber-300" : status === "running" ? "text-primary" : "text-muted-foreground";
   const titleText = titles[status] ?? "Review status unavailable";
   const title = <><Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{titleText}</span></>;
-  if (variant === "badge" && !stages.length) return null;
-  return <Popover>
-    {variant === "badge" ? <div className="flex items-center gap-2">
-      <span className="text-muted-foreground">Review stages</span>
-      <PopoverTrigger asChild><button type="button" aria-label={`Review stages: ${status}`} data-status={status}
-        className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">
-        <Status value={status} icon={<ChevronDown aria-hidden="true" className="size-3" />} />
-      </button></PopoverTrigger>
-    </div> : <StageCard label="Review stages" status={status} progress={progress}
-      progressLabel={progress ? "Review progress count" : "File progress unavailable"}
-      explanation={explanations[status] ?? "Stage details are not available yet."}
-      title={stages.length ? <Tooltip><TooltipTrigger asChild><PopoverTrigger asChild>
-        <button type="button" aria-label="Review stage details" data-status={status} className="inline-flex max-w-full items-start gap-2 rounded-sm text-left text-base font-medium leading-6 outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">{title}</button>
-      </PopoverTrigger></TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{titleText}. View stage details.</TooltipContent></Tooltip>
-        : <span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}</span>} />}
-    {children}
-  </Popover>;
+  return <StageCard label="Review stages" status={status} progress={progress} detailsLabel="Review stage details"
+    progressLabel={progress ? "Review progress count" : "File progress unavailable"}
+    explanation={explanations[status] ?? "Stage details are not available yet."}
+    title={<span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}</span>}>
+    {stages.length ? children : null}
+  </StageCard>;
 }

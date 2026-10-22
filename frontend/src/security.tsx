@@ -23,6 +23,7 @@ import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
+import { PopoverContent } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
@@ -77,7 +78,7 @@ function ScanStages({ scan }: { scan: Scan }) {
     const validCounts = total !== null && completed !== null && completed <= total;
     const unit = { analysis: " files", assessment: " candidates", verification: " findings" }[name] ?? "";
     const progress = validCounts && status !== "pending" ? `${count(completed)} / ${count(total)}${unit}` : null;
-    return { name, label, description, status, progress };
+    return { name, label, description, status, progress, error: text(stage.error) };
   });
   const current = stages.find((stage) => stage.status === "running")
     ?? stages.find((stage) => ["failed", "partial", "blocked", "cancelled"].includes(stage.status));
@@ -101,14 +102,21 @@ function ScanStages({ scan }: { scan: Scan }) {
         : scan.status === "blocked" ? "Waiting to continue. Completed results are saved."
           : scan.status === "failed" ? "Scan stopped after an error. Review Activity for details."
             : scan.status === "cancelled" ? "Scan cancelled. Completed results remain available." : "Stage details are not available yet.";
-  return <StageCard label="Scan stages" status={scan.status} progress={progress ?? null}
+  return <StageCard label="Scan stages" status={scan.status} progress={progress ?? null} detailsLabel="Scan stage details"
     progressLabel={progress ? "Scan progress count" : "Stage progress unavailable"} explanation={explanation}
-    title={<SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
-      <span role="group" aria-label="Scan progress details" className="inline-flex items-start gap-2 text-base font-medium leading-6">
-        <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span>{title}</span>
+    title={<span role="group" aria-label="Scan progress details" className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">
+        <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{title}</span>
         {progressStage && <span className="sr-only">: {label(progressStage.status)}{progress ? ` · ${progress}` : ""}</span>}
-      </span>
-    </SecurityBadge>} />;
+      </span>}>
+    <PopoverContent align="start" aria-label="Scan stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
+      {stages.map((stage) => <div key={stage.name} className="space-y-2">
+        <div className="flex items-center justify-between gap-2"><span className="font-medium">{stage.label}</span><Status value={stage.status} /></div>
+        {stage.progress && <p className="tabular-nums text-muted-foreground">{stage.progress}</p>}
+        <p className="text-muted-foreground">{stage.description}</p>
+        {stage.error && <TechnicalDetails error={stage.error} name={stage.label} />}
+      </div>)}
+    </PopoverContent>
+  </StageCard>;
 }
 
 

@@ -909,7 +909,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
           </div>}
         </div>
-        <Link className="mt-2 block w-fit max-w-full break-words rounded-sm text-sm underline-offset-4 hover:text-primary hover:underline [overflow-wrap:anywhere]" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
           <span>{words(run.trigger)}</span>
@@ -936,7 +935,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
-          <RunStages variant="badge" run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublication={summaryPublication}>{stageDetails}</RunStages>
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
             {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
