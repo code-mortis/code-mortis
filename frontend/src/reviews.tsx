@@ -805,7 +805,7 @@ function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
   return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
     <span>Duration: <ExecutionDuration run={run} /></span>
     <span>{hasMetrics
-      ? <>{count(completed)} of {count(selected)} files reviewed · {count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
+      ? <>{count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
       : awaitingResults ? "Awaiting review results" : "Review statistics unavailable"}</span>
   </p>;
 }

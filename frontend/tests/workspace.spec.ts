@@ -2887,7 +2887,7 @@ for (const [status, tokens, expected] of [
     await page.goto("/runs/run");
     const metadata = page.getByLabel("Run statistics");
     await expect(metadata).toBeVisible();
-    await expect(metadata).toHaveText(`Duration: 1m 30s1 of 2 files reviewed · 0 reused · 0 failed · ${expected}`);
+    await expect(metadata).toHaveText(`Duration: 1m 30s0 reused · 0 failed · ${expected}`);
     await expect(page.locator("main header")).toContainText("Current commit");
     await noOverflow(page);
   });
@@ -2901,7 +2901,7 @@ test("review run statistics preserve reused, failed and unknown file coverage", 
   await mock(page, { run: current });
   await page.goto("/runs/run");
   const stats = page.getByLabel("Run statistics");
-  await expect(stats).toContainText("1 of 3 files reviewed · 1 reused · 1 failed · Token usage unavailable");
+  await expect(stats).toContainText("1 reused · 1 failed · Token usage unavailable");
   current.report = null;
   await page.reload();
   await expect(stats).toContainText("Review statistics unavailable");
@@ -2916,10 +2916,10 @@ test("review run statistics wait for results without inventing counts", async ({
   await expect(stats).toHaveText("Duration: 1m 30sAwaiting review results");
   current.progress = { selected: 8 };
   await page.reload();
-  await expect(stats).toContainText("— of 8 files reviewed · — reused · — failed · Token usage pending");
+  await expect(stats).toContainText("— reused · — failed · Token usage pending");
   current.progress = { selected: 8, completed: 0, reused: 0, failed: 0 };
   await page.reload();
-  await expect(stats).toContainText("0 of 8 files reviewed · 0 reused · 0 failed · Token usage pending");
+  await expect(stats).toContainText("0 reused · 0 failed · Token usage pending");
   await noOverflow(page);
 });
 
@@ -2931,7 +2931,7 @@ test("review run statistics show live duration and validated progress", async ({
   await mock(page, { run: current, totalTokens: 12500 });
   await page.goto("/runs/run");
   const stats = page.getByLabel("Run statistics");
-  await expect(stats).toHaveText("Duration: 10s elapsed3 of 8 files reviewed · 0 reused · 1 failed · 12,500 tokens");
+  await expect(stats).toHaveText("Duration: 10s elapsed0 reused · 1 failed · 12,500 tokens");
   await page.clock.setFixedTime(new Date("2026-10-05T13:20:15Z"));
   await page.clock.fastForward(5000);
   await expect(stats).toContainText("Duration: 15s elapsed");
@@ -3156,7 +3156,8 @@ test("review run polls file progress without moving the stage layout", async ({ 
     current.progress = { selected: 8, completed, reused: 0, failed: 1 };
     await page.clock.fastForward(5000);
     await expect(count).toHaveText(`${completed} / 8 files`);
-    await expect(page.getByLabel("Run statistics")).toContainText(`${completed} of 8 files reviewed · 0 reused · 1 failed`);
+    await expect(page.getByLabel("Run statistics")).toContainText("0 reused · 1 failed");
+    await expect(page.getByLabel("Run statistics")).not.toContainText("files reviewed");
     expect((await stage.boundingBox())?.height).toBe(initial?.height);
   }
   await noOverflow(page);
