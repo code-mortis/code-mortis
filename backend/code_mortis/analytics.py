@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from sqlalchemy import JSON, case, column, func, select, true, union_all
 
-from . import github
+from . import github, ocr
 from .analytics_schemas import (
     AnalyticsCount,
     AnalyticsFindings,
@@ -156,7 +156,7 @@ def recorded_usage(usage, status, has_result, legacy):
     return amount(usage.get("tokens"))
 
 
-def usage_records(scope, runs):
+def usage_records(db, runs):
     by_id = {row["id"]: row for row in runs}
     records = []
 
@@ -178,17 +178,17 @@ def usage_records(scope, runs):
         ReviewCandidate.run_id, attempt.c.value["usage"], attempt.c.value["status"].as_string(),
         attempt.c.value["result"]["verdict"].as_string().is_not(None),
     ).select_from(ReviewCandidate).join(attempt, true()).where(ReviewCandidate.run_id.in_(by_id))
-    for run_id, usage, status, has_result in scope.db.execute(union_all(candidates, attempts)):
+    for run_id, usage, status, has_result in db.execute(union_all(candidates, attempts)):
         run = by_id[run_id]
         add(run, "assessment", recorded_usage(usage, status, has_result, run["pipeline"] != 2))
-    for run_id, usage, status, verdict in scope.db.execute(select(
+    for run_id, usage, status, verdict in db.execute(select(
         FindingVerification.run_id, FindingVerification.usage, FindingVerification.status, FindingVerification.verdict,
     ).where(FindingVerification.run_id.in_(by_id))):
         run = by_id[run_id]
         add(run, "verification", recorded_usage(usage, status, verdict is not None, run["pipeline"] != 2))
 
     retries = defaultdict(list)
-    for job in scope.db.execute(select(
+    for job in db.execute(select(
         Job.id,
         Job.payload["run_id"].as_string().label("run_id"),
         Job.payload["previous_summary"]["tokens"].label("tokens"),
@@ -224,6 +224,19 @@ def usage_records(scope, runs):
         if run["summary_status"] not in {None, "not_applicable"}:
             add(run, "summary", amount(run["summary_tokens"]), *previous)
     return records
+
+
+def run_tokens(db, run):
+    records = usage_records(db, [{
+        "id": run.id, "pr_id": run.pr_id, "status": run.status, "started_at": run.started_at,
+        "pipeline": run.config.get("pipeline_version"),
+        "model": run.config.get("connection", {}).get("model"),
+        "effort": run.config.get("settings", {}).get("effort"),
+        "tokens": ocr.report_tokens(run.report),
+        "summary_tokens": run.summary.get("tokens"), "summary_status": run.summary.get("status"),
+        "summary_retry": run.progress.get("summary_retry"),
+    }])
+    return None if any(row["tokens"] is None for row in records) else sum(row["tokens"] for row in records)
 
 
 def usage_totals(records):
@@ -266,7 +279,7 @@ def overview(scope):
         repo.reviewed_prs = len(reviewed[repo.id])
     return AnalyticsOverview(
         scope=scope.meta, reviewed_prs=sum(len(values) for values in reviewed.values()),
-        findings=sum(status.values()), resolved=status["resolved"], usage=usage_totals(usage_records(scope, runs)),
+        findings=sum(status.values()), resolved=status["resolved"], usage=usage_totals(usage_records(scope.db, runs)),
         trend=list(points.values()), severities=scope.counts(severity, SEVERITIES), categories=scope.counts(category),
         repositories=ordered(sorted(repositories.values(), key=lambda repo: (-repo.reviewed_prs, repo.name))[:5],
             scope.filters.ordering, key=lambda repo: repo.name, count=lambda repo: repo.reviewed_prs),
@@ -336,7 +349,7 @@ def reviews(scope):
 
 
 def usage(scope):
-    records = usage_records(scope, scope.runs())
+    records = usage_records(scope.db, scope.runs())
     points = scope.trend()
     groups = {key: defaultdict(list) for key in ("stage", "repository", "model", "effort")}
     names = {repo.id: repo.full_name for repo in scope.repositories}

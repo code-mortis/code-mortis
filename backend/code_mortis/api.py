@@ -651,6 +651,7 @@ def run_detail(run_id: str, db: DB, user: USER, ordering: RunFindingOrdering = "
         .group_by(ReviewCandidate.finding_id)).all())
     return RunDetail(
         run=output,
+        total_tokens=analytics.run_tokens(db, run),
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),

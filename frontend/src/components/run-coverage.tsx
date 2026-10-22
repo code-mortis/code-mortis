@@ -24,7 +24,7 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function coverageFiles(run: Run) {
+export function coverageFiles(run: Run) {
   const coverage = record(record(run.report?.manifest).coverage);
   const rows = (key: typeof countKeys[number]) => (Array.isArray(coverage[key]) ? coverage[key] : []).flatMap((value: unknown) => {
     const row = record(value);

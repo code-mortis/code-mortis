@@ -31,7 +31,7 @@ import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
 import { INBOX_MAX_PAGES, label } from "./lib/inbox-filters";
 import { errorFeedback } from "./lib/error-feedback";
-import { runDuration } from "./lib/run-duration";
+import { ExecutionDuration } from "./components/execution-duration";
 
 type User = Schema["UserOut"];
 type Scan = Schema["SecurityScanOut"];
@@ -473,18 +473,6 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
   </div>;
 }
 
-function ScanDuration({ scan }: { scan: Scan }) {
-  const running = scan.status === "running" && !scan.finished_at;
-  const [time, setTime] = useState(Date.now);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setTime(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-  const duration = runDuration(scan, running ? time : undefined);
-  return <span className="whitespace-nowrap tabular-nums">{duration ?? (scan.started_at ? "Unavailable" : "Not started")}{running && duration && " elapsed"}</span>;
-}
-
 function ScanHistory({ repositoryId }: { repositoryId: number }) {
   const { query, items, denied, pagination } = usePagedList<Scan>(`/security/repositories/${repositoryId}/scans`);
   if (denied) return <ErrorNotice error={query.error} />;
@@ -493,7 +481,7 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
     <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] gap-6 bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Security scan</span><span>Duration</span><span>Grade</span><span>Status</span><span /></div>
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
-      <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ScanDuration scan={scan} /></span>
+      <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ExecutionDuration run={scan} /></span>
       <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
     </Link>)}</div><Pagination {...pagination} label="scan history" /></div></div>;
 }
@@ -526,7 +514,7 @@ export function SecurityScan({ user }: { user: User }) {
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
     </>}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
-      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ScanDuration scan={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
+      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
     <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />

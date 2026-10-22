@@ -2512,6 +2512,8 @@ export interface components {
         /** RunDetail */
         RunDetail: {
             run: components["schemas"]["RunOut"];
+            /** Total Tokens */
+            total_tokens?: number | null;
             pull_request: components["schemas"]["PullRequestOut"];
             repository: components["schemas"]["RepositoryOut"];
             /** Occurrences */

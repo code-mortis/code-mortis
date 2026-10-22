@@ -559,6 +559,7 @@ class AssessmentSummary(StrictModel):
 
 class RunDetail(BaseModel):
     run: RunOut
+    total_tokens: int | None = None
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]

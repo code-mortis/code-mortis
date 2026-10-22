@@ -273,6 +273,7 @@ async function mock(
     personal?: boolean;
     claude?: boolean;
     run?: Partial<Run>;
+    totalTokens?: number | null;
     overview?: Partial<Schema["PullRequestOut"]>;
     finding?: Partial<Schema["FindingOut"]>;
     verifications?: Schema["VerificationOut"][];
@@ -394,6 +395,7 @@ async function mock(
     } else if (path === "/runs/run")
       data = {
         run: currentRun,
+        total_tokens: options.totalTokens ?? null,
         pull_request: { ...pr, ...options.overview },
         repository: repo,
         occurrences: observations,
@@ -1200,7 +1202,7 @@ for (const reason of ["The native runner is temporarily unavailable. Try again s
     } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
-    await expect(trigger).toHaveText(/^waiting$/i);
+    await expect(trigger).toHaveText("PR summary waiting");
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
     await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText("waiting");
@@ -1264,6 +1266,55 @@ test("stage budgets and optional overview content save independently", async ({ 
   });
 });
 
+test("review stage card keeps a fixed layout through every stage and terminal state", async ({ page }, info) => {
+  const state: Partial<Run> = { status: "queued", report: null, progress: {}, publication: "pending",
+    publication_error: null, check_enabled: false, config: { ...run.config, pipeline_version: 2 },
+    summary: { status: "pending", tokens: 0, limited_context: false }, stages: {} };
+  await mock(page, { run: state });
+  let height = 0;
+  const steps: [string, string | null, string, string][] = [
+    ["queued", null, "Waiting to start", "—"],
+    ["running", "ocr", "Code review", "3 / 8 files"],
+    ["running", "assessment", "Assessment", "3 / 8 files"],
+    ["running", "verification", "Fix verification", "3 / 8 files"],
+    ["running", "summary", "PR summary", "3 / 8 files"],
+    ["running", "waiting", "PR summary waiting", "3 / 8 files"],
+    ["blocked", null, "Review paused", "3 / 8 files"],
+    ["completed", null, "Review complete", "2 / 2 files"],
+    ["partial", null, "Review complete with warnings", "3 / 8 files"],
+    ["failed", null, "Review failed", "3 / 8 files"],
+    ["cancelled", null, "Review cancelled", "3 / 8 files"],
+    ["superseded", null, "Review superseded", "3 / 8 files"],
+    ["skipped", null, "Review skipped", "3 / 8 files"],
+  ];
+  for (const [status, stage, title, count] of steps) {
+    state.status = status;
+    state.progress = status === "queued" ? {} : { selected: 8, completed: 3 };
+    state.stages = Object.fromEntries(["ocr", "assessment", "verification", "summary"].map((key) => [key,
+      { status: key === stage ? "running" : stage === "waiting" && key === "summary" ? "waiting" : "completed", tokens: 0 }]));
+    state.report = status === "completed" ? { manifest: { coverage: { selected: [{ path: "one.ts" }, { path: "two.ts" }],
+      completed: [{ path: "one.ts" }], reused: [{ path: "two.ts" }], failed: [], waived: [] } } } : null;
+    await page.goto("/runs/run");
+    const card = page.getByRole("region", { name: "Review stages", exact: true });
+    await expect(card.getByRole("button", { name: "Review stage details", exact: true })).toHaveText(title);
+    await expect(card.getByLabel(count === "—" ? "File progress unavailable" : "Review progress count", { exact: true })).toHaveText(count);
+    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle, .lucide-chevron-down')).toHaveCount(0);
+    const box = (await card.boundingBox())!;
+    if (!height) height = box.height;
+    expect(box.height).toBe(height);
+    await noOverflow(page);
+    if (["running", "completed", "partial"].includes(status) && (!stage || stage === "ocr")) {
+      await page.screenshot({ path: `/private/tmp/review-stage-card-${status}-${info.project.name}.png` });
+    }
+  }
+  state.status = "running";
+  state.stages = {};
+  state.report = null;
+  state.progress = { selected: -1, completed: 5, phase: "__proto__" };
+  await page.goto("/runs/run");
+  await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("File progress unavailable")).toHaveText("—");
+});
+
 for (const [ocr, assessment, verification, expected] of [
   ["completed", "completed", "completed", "Completed"],
   ["completed", "completed", "failed", "Partial"],
@@ -1289,7 +1340,7 @@ for (const [ocr, assessment, verification, expected] of [
     } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
-    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await expect(trigger).toHaveAttribute("data-status", expected.toLowerCase());
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
     await expect(details.getByText("OCR", { exact: true }).locator("..")).toContainText(ocr);
@@ -1310,7 +1361,7 @@ for (const [summary, expected] of [["completed", "Completed"], ["running", "Runn
     } } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
-    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await expect(trigger).toHaveAttribute("data-status", expected.toLowerCase());
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
     await expect(details.locator(".font-medium").first()).toHaveText("PR summary");
@@ -1331,7 +1382,7 @@ for (const [summary, expected] of [["completed", "Completed"], ["running", "Runn
     } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
-    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await expect(trigger).toHaveAttribute("data-status", expected.toLowerCase());
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
     await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
@@ -1339,7 +1390,7 @@ for (const [summary, expected] of [["completed", "Completed"], ["running", "Runn
 }
 
 for (const [summary, expected] of [["waiting", "Waiting"], ["running", "Running"],
-  ["completed", "Completed"], ["failed", "Partial"], ["skipped", "Completed"]] as const) {
+  ["completed", "Running"], ["failed", "Partial"], ["skipped", "Running"]] as const) {
   test(`pipeline summary stage overrides its pending generation status: ${summary}`, async ({ page }) => {
     await mock(page, { run: {
       status: "running", config: { ...run.config, pipeline_version: 2 },
@@ -1351,7 +1402,7 @@ for (const [summary, expected] of [["waiting", "Waiting"], ["running", "Running"
     } });
     await page.goto("/runs/run");
     const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
-    await expect(trigger).toHaveText(new RegExp(`^${expected}$`, "i"));
+    await expect(trigger).toHaveAttribute("data-status", expected.toLowerCase());
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
     await expect(details.getByText("PR summary", { exact: true }).locator("..")).toContainText(summary);
@@ -1538,14 +1589,14 @@ test("PR summary comes first inside review stages and retries synchronization wi
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
   await expect(publication.getByText("PR summary", { exact: true })).toHaveCount(0);
   await expect(publication.getByRole("button", { name: /^PR summary details:/ })).toHaveCount(0);
-  const trigger = publication.getByRole("button", { name: "Review stage details", exact: true });
+  const trigger = page.getByRole("region", { name: "Review stages", exact: true }).getByRole("button", { name: "Review stage details", exact: true });
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
   if (info.project.name === "desktop") {
     const comments = await publication.getByText("GitHub comments", { exact: true }).boundingBox();
-    const stages = await publication.getByText("Review stages", { exact: true }).boundingBox();
-    expect(stages!.y).toBeCloseTo(comments!.y, 0);
+    const stages = await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox();
+    expect(stages!.y).toBeGreaterThan(comments!.y);
   }
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
@@ -1584,7 +1635,7 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  const stages = publication.getByRole("button", { name: "Review stage details", exact: true });
+  const stages = page.getByRole("region", { name: "Review stages", exact: true }).getByRole("button", { name: "Review stage details", exact: true });
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
     [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
@@ -2656,6 +2707,58 @@ test("run finding result filters combine with other filters and survive navigati
   await expect(list.getByRole("button")).toContainText(finding.content);
 });
 
+for (const [status, tokens, expected] of [
+  ["completed", 1234567, "1,234,567 tokens"],
+  ["completed", 0, "0 tokens"],
+  ["completed", null, "Unknown tokens"],
+  ["running", null, "Unknown tokens"],
+] as const) {
+  test(`review run header shows total tokens: ${status}, ${tokens}`, async ({ page }) => {
+    await mock(page, { run: { status }, totalTokens: tokens });
+    await page.goto("/runs/run");
+    const metadata = page.getByLabel("Run statistics");
+    await expect(metadata).toBeVisible();
+    await expect(metadata).toHaveText(`Duration: 1m 30s1 of 2 files reviewed · 0 reused · 0 failed · ${expected}`);
+    await expect(page.locator("main header")).toContainText("Current commit");
+    await noOverflow(page);
+  });
+}
+
+test("review run statistics preserve reused, failed and unknown file coverage", async ({ page }) => {
+  const current: Partial<Run> = { report: { manifest: { coverage: {
+    selected: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }],
+    completed: [{ path: "a.ts" }, { path: "c.ts" }], reused: [{ path: "b.ts" }], failed: [{ path: "c.ts" }],
+  } } } };
+  await mock(page, { run: current });
+  await page.goto("/runs/run");
+  const stats = page.getByLabel("Run statistics");
+  await expect(stats).toContainText("1 of 3 files reviewed · 1 reused · 1 failed · Unknown tokens");
+  current.report = null;
+  await page.reload();
+  await expect(stats).toContainText("Unknown of Unknown files reviewed · Unknown reused · Unknown failed · Unknown tokens");
+  await noOverflow(page);
+});
+
+test("review run statistics show live duration and validated progress", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-10-05T13:20:10Z") });
+  await page.clock.setFixedTime(new Date("2026-10-05T13:20:10Z"));
+  const current: Partial<Run> = { status: "running", finished_at: null, report: null,
+    progress: { selected: 8, completed: 3, failed: 1, reused: 0 } };
+  await mock(page, { run: current, totalTokens: 12500 });
+  await page.goto("/runs/run");
+  const stats = page.getByLabel("Run statistics");
+  await expect(stats).toHaveText("Duration: 10s elapsed3 of 8 files reviewed · 0 reused · 1 failed · 12,500 tokens");
+  await page.clock.setFixedTime(new Date("2026-10-05T13:20:15Z"));
+  await page.clock.fastForward(5000);
+  await expect(stats).toContainText("Duration: 15s elapsed");
+  current.status = "completed";
+  current.finished_at = "2026-10-05T13:20:13Z";
+  await page.clock.fastForward(5000);
+  await expect(stats).toContainText("Duration: 13s");
+  await expect(stats).not.toContainText("elapsed");
+  await noOverflow(page);
+});
+
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
   const occurrences = Array.from({ length: 6 }, (_, index) => ({
     finding_id: index === 0 ? "finding" : `finding-${index}`, inline_line: index % 2 ? null : 46,
@@ -2681,7 +2784,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.locator("summary").filter({ hasText: "Fix verification" })).toHaveCount(0);
   await expect(page.getByText(/7 of 13 findings verified/)).not.toBeVisible();
   await expect(page.getByText("6 recorded findings", { exact: true })).toHaveCount(0);
-  if (info.project.name === "desktop") expect((await page.getByRole("tab", { name: "Findings 6", exact: true }).boundingBox())!.y).toBeLessThan(350);
+  expect((await page.getByRole("tab", { name: "Findings 6", exact: true }).boundingBox())!.y).toBeGreaterThan((await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox())!.y);
   await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveAttribute("href", "/pulls/pr");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
@@ -2868,10 +2971,10 @@ test("review run retains live progress and recovery actions while evidence is pe
   await expect(heading).toBeVisible();
   await expect(heading.locator("[data-slot=badge]")).toHaveText("running");
   await expect(heading.locator("svg")).toHaveClass(/lucide-loader-circle/);
-  await expect(page.getByText("3 of 8 assigned files completed.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("Review progress count", { exact: true })).toHaveText("3 / 8 files");
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
-  await page.getByRole("button", { name: "Inspect coverage", exact: true }).click();
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Coverage is being recorded" })).toBeVisible();
   await noOverflow(page);
   await page.evaluate(() => window.scrollTo(0, 0));
