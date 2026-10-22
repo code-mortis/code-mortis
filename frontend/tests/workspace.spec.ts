@@ -1266,6 +1266,61 @@ test("stage budgets and optional overview content save independently", async ({ 
   });
 });
 
+test("review stage animation follows execution, visibility and reduced motion", async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const state: Partial<Run> = { status: "running", publication: "pending", publication_error: null,
+    config: { ...run.config, pipeline_version: 2 }, check_enabled: false,
+    stages: { ocr: { status: "running", tokens: null } } };
+  await mock(page, { run: state });
+  await page.goto("/runs/run");
+  const card = page.getByRole("region", { name: "Review stages", exact: true });
+  const divider = card.locator(".stage-divider");
+  const animation = () => divider.evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
+  });
+  await expect(card).toHaveAttribute("data-motion", "active");
+  expect(await animation()).toMatchObject({ name: "stage-sweep", state: "running" });
+  const start = await animation();
+  await expect.poll(async () => (await animation()).transform).not.toBe(start.transform);
+  const height = (await card.boundingBox())!.height;
+  await page.screenshot({ path: info.outputPath("review-stage-animation.png") });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect((await animation()).name).toBe("none");
+  await expect(card.getByRole("button", { name: "Review stage details" })).toHaveText("Code review");
+  expect((await card.boundingBox())!.height).toBe(height);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ ...viewport, height: 300 });
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await expect(card).toHaveAttribute("data-motion", "paused");
+  expect((await animation()).state).toBe("paused");
+  await page.setViewportSize(viewport);
+  await card.scrollIntoViewIfNeeded();
+  await expect(card).toHaveAttribute("data-motion", "active");
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(card).toHaveAttribute("data-motion", "paused");
+  await page.evaluate(() => {
+    delete (document as { hidden?: boolean }).hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(card).toHaveAttribute("data-motion", "active");
+  state.stages = { ocr: { status: "waiting", tokens: 0 } };
+  await page.reload();
+  await expect(card).toHaveAttribute("data-status", "waiting");
+  expect((await animation()).name).toBe("none");
+  state.status = "completed";
+  state.stages = { ocr: { status: "completed", tokens: 100 } };
+  await page.reload();
+  await expect(card).toHaveAttribute("data-status", "completed");
+  expect((await animation()).name).toBe("none");
+  expect((await card.boundingBox())!.height).toBe(height);
+  await noOverflow(page);
+});
+
 test("review stage card keeps a fixed layout through every stage and terminal state", async ({ page }, info) => {
   const state: Partial<Run> = { status: "queued", report: null, progress: {}, publication: "pending",
     publication_error: null, check_enabled: false, config: { ...run.config, pipeline_version: 2 },
@@ -2710,8 +2765,8 @@ test("run finding result filters combine with other filters and survive navigati
 for (const [status, tokens, expected] of [
   ["completed", 1234567, "1,234,567 tokens"],
   ["completed", 0, "0 tokens"],
-  ["completed", null, "Unknown tokens"],
-  ["running", null, "Unknown tokens"],
+  ["completed", null, "Token usage unavailable"],
+  ["running", null, "Token usage pending"],
 ] as const) {
   test(`review run header shows total tokens: ${status}, ${tokens}`, async ({ page }) => {
     await mock(page, { run: { status }, totalTokens: tokens });
@@ -2732,10 +2787,25 @@ test("review run statistics preserve reused, failed and unknown file coverage", 
   await mock(page, { run: current });
   await page.goto("/runs/run");
   const stats = page.getByLabel("Run statistics");
-  await expect(stats).toContainText("1 of 3 files reviewed · 1 reused · 1 failed · Unknown tokens");
+  await expect(stats).toContainText("1 of 3 files reviewed · 1 reused · 1 failed · Token usage unavailable");
   current.report = null;
   await page.reload();
-  await expect(stats).toContainText("Unknown of Unknown files reviewed · Unknown reused · Unknown failed · Unknown tokens");
+  await expect(stats).toContainText("Review statistics unavailable");
+  await noOverflow(page);
+});
+
+test("review run statistics wait for results without inventing counts", async ({ page }) => {
+  const current: Partial<Run> = { status: "running", report: null, progress: {} };
+  await mock(page, { run: current });
+  await page.goto("/runs/run");
+  const stats = page.getByLabel("Run statistics");
+  await expect(stats).toHaveText("Duration: 1m 30sAwaiting review results");
+  current.progress = { selected: 8 };
+  await page.reload();
+  await expect(stats).toContainText("— of 8 files reviewed · — reused · — failed · Token usage pending");
+  current.progress = { selected: 8, completed: 0, reused: 0, failed: 0 };
+  await page.reload();
+  await expect(stats).toContainText("0 of 8 files reviewed · 0 reused · 0 failed · Token usage pending");
   await noOverflow(page);
 });
 
@@ -2954,6 +3024,26 @@ test("run coverage updates file rows through polling and hides them after access
   await expect(page.getByRole("alert").filter({ hasText: "Repository access revoked" })).toBeVisible();
   await expect(row).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Coverage", exact: true })).toHaveCount(0);
+});
+
+test("review run polls file progress without moving the stage layout", async ({ page }) => {
+  await page.clock.install();
+  const current: Partial<Run> = { status: "running", report: null, finished_at: null,
+    progress: { selected: 8, completed: 0, reused: 0, failed: 0 } };
+  await mock(page, { run: current });
+  await page.goto("/runs/run");
+  const stage = page.getByRole("region", { name: "Review stages", exact: true });
+  const count = stage.getByLabel("Review progress count", { exact: true });
+  await expect(count).toHaveText("0 / 8 files");
+  const initial = await stage.boundingBox();
+  for (const completed of [1, 3]) {
+    current.progress = { selected: 8, completed, reused: 0, failed: 1 };
+    await page.clock.fastForward(5000);
+    await expect(count).toHaveText(`${completed} / 8 files`);
+    await expect(page.getByLabel("Run statistics")).toContainText(`${completed} of 8 files reviewed · 0 reused · 1 failed`);
+    expect((await stage.boundingBox())?.height).toBe(initial?.height);
+  }
+  await noOverflow(page);
 });
 
 test("review run retains live progress and recovery actions while evidence is pending", async ({ page }, info) => {

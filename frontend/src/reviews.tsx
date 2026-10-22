@@ -794,14 +794,19 @@ function tokenUsage(tokens: number | null | undefined, status: string) {
 
 function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
   const coverage = coverageFiles(run);
-  const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : "Unknown";
+  const knownCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const count = (value: unknown) => knownCount(value) ? value.toLocaleString() : "—";
   const selected = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
   const completed = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "completed").length : run.progress.completed;
   const reused = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "reused").length : run.progress.reused;
   const failed = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "failed").length : run.progress.failed;
+  const hasMetrics = [selected, completed, reused, failed, tokens].some(knownCount);
+  const awaitingResults = active(run.status) || run.status === "blocked";
   return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
     <span>Duration: <ExecutionDuration run={run} /></span>
-    <span>{count(completed)} of {count(selected)} files reviewed · {count(reused)} reused · {count(failed)} failed · {tokens == null ? "Unknown" : tokens.toLocaleString()} tokens</span>
+    <span>{hasMetrics
+      ? <>{count(completed)} of {count(selected)} files reviewed · {count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
+      : awaitingResults ? "Awaiting review results" : "Review statistics unavailable"}</span>
   </p>;
 }
 

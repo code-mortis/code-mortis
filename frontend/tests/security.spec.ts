@@ -1332,10 +1332,24 @@ test("read-only repository users can inspect a running scan", async ({ page }) =
 });
 
 test("running scan stages explain validated file progress without changing the scan", async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   const writes = await mock(page, { running: true });
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   const stages = page.getByRole("region", { name: "Scan stages" });
+  const animation = () => stages.locator(".stage-divider").evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
+  });
+  await expect(stages).toHaveAttribute("data-motion", "active");
+  expect(await animation()).toMatchObject({ name: "stage-sweep", state: "running" });
+  const start = await animation();
+  await expect.poll(async () => (await animation()).transform).not.toBe(start.transform);
+  const height = (await stages.boundingBox())!.height;
+  await page.screenshot({ path: info.outputPath("security-stage-animation.png") });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect((await animation()).name).toBe("none");
+  expect((await stages.boundingBox())!.height).toBe(height);
   await expect(stages.getByLabel("Scan progress count")).toHaveText("11 / 163 files");
   await expect(stages.getByRole("group", { name: "Scan progress details" })).toContainText("Analysis");
   await expect(stages.getByRole("group", { name: "Previous stage" })).toHaveCount(0);
@@ -1387,6 +1401,7 @@ test("focus strip updates validated progress and the current stage across pollin
 });
 
 test("focus strip keeps its rows and report tabs fixed across every stage and outcome", async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.clock.install({ time: new Date("2026-10-18T15:00:48Z") });
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page, { running: true });
@@ -1418,6 +1433,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
     await expect(current).toContainText("Waiting to start");
     await expect(stages.locator("p")).toHaveText("Waiting for a worker to start the scan.");
     await expect(count).toHaveText("—");
+    expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
     const initial = await geometry();
     saved.status = "running";
     await page.clock.fastForward(5000);
@@ -1430,6 +1446,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
       await page.clock.fastForward(5000);
       await expect(current).toContainText(names[index] === "verification" ? "Fix verification" : names[index][0].toUpperCase() + names[index].slice(1));
       await expect(stages.locator("p")).toHaveText(explanations[index]);
+      expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("stage-sweep");
       expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
       await expect(count).toHaveText("—");
       expect(await geometry()).toEqual(initial);
@@ -1449,6 +1466,7 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
       saved.stages.analysis = { status: status === "completed" ? "completed" : status, total: 163, completed: 117 };
       await page.clock.fastForward(5000);
       await expect(current).toContainText(title);
+      expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
       await expect(stages).not.toContainText("Report ready");
       expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
       await expect(count).toHaveText("117 / 163 files");

@@ -16,6 +16,7 @@ import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
 import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
+import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
@@ -100,22 +101,14 @@ function ScanStages({ scan }: { scan: Scan }) {
         : scan.status === "blocked" ? "Waiting to continue. Completed results are saved."
           : scan.status === "failed" ? "Scan stopped after an error. Review Activity for details."
             : scan.status === "cancelled" ? "Scan cancelled. Completed results remain available." : "Stage details are not available yet.";
-  return <section className="@container my-5 rounded-lg bg-muted/40 p-4 text-xs" aria-label="Scan stages">
-    <div role="status" className="grid grid-cols-1 gap-x-4 @min-[500px]:grid-cols-[minmax(0,1fr)_auto]">
-      <div className="min-w-0">
-        <div className="h-12 @min-[500px]:h-6">
-          <SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
-            <span role="group" aria-label="Scan progress details" className="inline-flex items-start gap-2 text-base font-medium leading-6">
-              <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span>{title}</span>
-              {progressStage && <span className="sr-only">: {label(progressStage.status)}{progress ? ` · ${progress}` : ""}</span>}
-            </span>
-          </SecurityBadge>
-        </div>
-      </div>
-      <span className="h-9 whitespace-nowrap text-sm font-medium tabular-nums leading-6 @min-[500px]:h-6" aria-label={progress ? "Scan progress count" : "Stage progress unavailable"}>{progress ?? "—"}</span>
-    </div>
-    <div className="mt-3 border-t pt-3"><p className="h-9 leading-4.5 text-muted-foreground @min-[500px]:h-5">{explanation}</p></div>
-  </section>;
+  return <StageCard label="Scan stages" status={scan.status} progress={progress ?? null}
+    progressLabel={progress ? "Scan progress count" : "Stage progress unavailable"} explanation={explanation}
+    title={<SecurityBadge description={<>{progressStage?.description ?? "Stage status has not been recorded yet."}<span className="mt-1 block">{progressStage ? `${label(progressStage.status)}${progress ? ` · ${progress}` : ""}` : label(scan.status)}</span></>}>
+      <span role="group" aria-label="Scan progress details" className="inline-flex items-start gap-2 text-base font-medium leading-6">
+        <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span>{title}</span>
+        {progressStage && <span className="sr-only">: {label(progressStage.status)}{progress ? ` · ${progress}` : ""}</span>}
+      </span>
+    </SecurityBadge>} />;
 }
 
 

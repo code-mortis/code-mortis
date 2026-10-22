@@ -71,6 +71,7 @@ def command(
     env: dict,
     timeout: int | None = 60,
     stopped: Callable[[], bool] = lambda: False,
+    poll: Callable[[], None] = lambda: None,
 ) -> tuple[int, str, str]:
     if args and args[0] == settings().ocr_binary and any(part in {"review", "scan"} for part in args[1:2]):
         env = {**env, "CM_OCR_REDACTION_FILE": str(Path.home() / ".opencodereview" / "redaction.json")}
@@ -93,6 +94,7 @@ def command(
                     raise TimeoutError("The operation exceeded its configured time limit.")
                 if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                     raise ValueError("Review output exceeded the 20 MB safety limit.")
+                poll()
                 time.sleep(0.2)
             output.seek(0)
             errors.seek(0)
@@ -387,6 +389,72 @@ def file_limit_result(paths, maximum):
     }, []
 
 
+def review_progress(repo: Path, base: str, head: str, paths: list[str], progress: Callable[[dict], None]):
+    # Only OCR's persisted file checkpoints count, never model responses or tool logs.
+    folder = Path.home() / ".opencodereview" / "sessions" / str(repo).lstrip("/").replace("/", "-")
+    ignored = set()
+    offsets, outcomes = {}, {}
+    selected = set(paths)
+    kinds = {"review_item_done": "completed", "review_item_reused": "reused", "review_item_failed": "failed"}
+    last = {"selected": len(selected), "completed": 0, "reused": 0, "failed": 0}
+    progress(dict(last))
+    next_poll = 0.0
+
+    def poll(*, force=False):
+        nonlocal next_poll, last
+        if not force and time.monotonic() < next_poll:
+            return
+        next_poll = time.monotonic() + 1
+        for path in folder.glob("*.jsonl"):
+            if path in ignored or path.is_symlink():
+                continue
+            try:
+                with path.open("rb") as stream:
+                    if path not in offsets:
+                        line = stream.readline(MAX_OUTPUT + 1)
+                        if len(line) > MAX_OUTPUT:
+                            ignored.add(path)
+                            continue
+                        if not line.endswith(b"\n"):
+                            continue
+                        header = json.loads(line)
+                        if (not isinstance(header, dict) or header.get("type") != "session_start"
+                            or header.get("cwd") != str(repo) or header.get("sessionId") != path.stem
+                            or header.get("reviewMode") != "range" or header.get("diffFrom") != base
+                            or header.get("diffTo") != head):
+                            ignored.add(path)
+                            continue
+                        offsets[path] = stream.tell()
+                    stream.seek(offsets[path])
+                    start = stream.tell()
+                    while stream.tell() - start < MAX_OUTPUT:
+                        line = stream.readline(MAX_OUTPUT + 1)
+                        if len(line) > MAX_OUTPUT:
+                            ignored.add(path)
+                            break
+                        if not line.endswith(b"\n"):
+                            break  # A concurrent write is not a complete checkpoint yet.
+                        offsets[path] = stream.tell()
+                        row = json.loads(line)
+                        if not isinstance(row, dict) or row.get("sessionId") != path.stem:
+                            continue
+                        kind = kinds.get(row.get("type")) if isinstance(row.get("type"), str) else None
+                        file, fingerprint = row.get("filePath"), row.get("fingerprint")
+                        if (kind and isinstance(file, str) and file in selected and isinstance(fingerprint, str)
+                            and re.fullmatch(r"[0-9a-f]{64}", fingerprint)):
+                            previous = outcomes.get(file)
+                            outcomes[file] = "failed" if previous and previous != kind else kind
+            except (OSError, ValueError):
+                # Progress is best effort; the final report still undergoes full validation.
+                ignored.add(path)
+        value = {"selected": len(selected), **{kind: sum(item == kind for item in outcomes.values()) for kind in kinds.values()}}
+        if value != last:
+            progress(value)
+            last = value
+
+    return poll
+
+
 def review(
     full_name: str,
     number: int,
@@ -515,31 +583,32 @@ def review(
         limited = None
         credentials.setdefault("redaction_values", []).append(token)
         with configuration(connection, credentials, review_settings, stopped) as update_redaction:
-            if review_settings.get("max_files") is not None:
-                code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
-                if code:
-                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
-                try:
-                    preview = json.loads(output)
-                except ValueError as exc:
-                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.") from exc
-                if not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
-                    raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
-                if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
-                    raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
-                paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
-                limited = file_limit_result(paths, review_settings["max_files"])
-                if limited and isinstance(preview.get("excluded_files"), list):
-                    limited[1]["excluded_files"] = preview["excluded_files"]
+            code, output, _ = command([*args, "--preview"], repo, env, stopped=stopped)
+            if code:
+                raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
+            try:
+                preview = json.loads(output)
+            except ValueError as exc:
+                raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.") from exc
+            if not isinstance(preview, dict) or not isinstance(preview.get("files"), list):
+                raise ValueError("The review engine could not prepare the files and rules for review. Check file exclusions and review rules, then start a new review.")
+            if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
+                raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
+            paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
+            limited = file_limit_result(paths, review_settings.get("max_files"))
+            if limited and isinstance(preview.get("excluded_files"), list):
+                limited[1]["excluded_files"] = preview["excluded_files"]
             if before_analysis:
                 before_analysis(limited)
             if limited is None:
                 if credentials.get("redaction_rules"):
                     prepare_ocr_redaction(repo, env, merge_base, head_sha, credentials, stopped)
                     update_redaction()
+                poll = review_progress(repo, base_sha, head_sha, paths, progress)
                 code, output, _ = command(
-                    args, repo, env, timeout=None, stopped=stopped
+                    args, repo, env, timeout=None, stopped=stopped, poll=poll
                 )
+                poll(force=True)
         if limited is not None:
             return complete(limited)
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())

@@ -228,6 +228,8 @@ def main():
             head = git("rev-parse", "HEAD")
             git("checkout", "--detach", base)
             with ocr.configuration(connection, {"api_key": "fake-test-key"}, {}):
+                progress_events = []
+                poll = ocr.review_progress(root, base, head, ["main.py"], progress_events.append)
                 code, output, errors = ocr.command(
                     [
                         "ocr",
@@ -252,12 +254,18 @@ def main():
                     root,
                     env,
                     timeout=60,
+                    poll=poll,
                 )
+                poll(force=True)
             assert code == 0, errors[-2000:]
             status, report, findings = ocr.parse_report(output, code)
             assert status == "completed", report
             assert len(report["manifest"]["coverage"]["selected"]) == 1
             assert len(report["manifest"]["coverage"]["completed"]) == 1
+            assert progress_events == [
+                {"selected": 1, "completed": 0, "reused": 0, "failed": 0},
+                {"selected": 1, "completed": 1, "reused": 0, "failed": 0},
+            ], progress_events
             assert findings == []
             verification_mode = "review_budget"
             with ocr.configuration(connection, {"api_key": "fake-test-key"}, {}):
