@@ -14,7 +14,7 @@ export function Pagination({ page, pageSize, total, loading = false, error = nul
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   if (pages === 1 && page === 1 && !error) return null;
-  return <div className="space-y-2 px-5 py-3" data-slot="pagination">
+  return <div className="space-y-2 px-4 py-3 sm:px-5" data-slot="pagination">
     <ErrorNotice error={error} />
     {error && onRetry && <Button variant="outline" size="sm" disabled={loading} onClick={() => onRetry()}>Retry {label}</Button>}
     {(pages > 1 || page > 1) && <nav aria-label={`${label} pagination`} aria-busy={loading} className="flex flex-wrap items-center justify-between gap-3">

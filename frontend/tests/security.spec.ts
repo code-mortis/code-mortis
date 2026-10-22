@@ -791,7 +791,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(cards).toHaveCount(3);
     await expect(cards.first()).toContainText("Dockerfile");
     await expect(cards.first()).toContainText("No HEALTHCHECK defined");
-    await expect(cards.first().locator('[data-slot="badge"]')).toHaveCount(3);
+    await expect(cards.first().locator('[data-slot="badge"]')).toHaveCount(2);
     await expect(report.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Inspect finding", exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /^(Remediation|Verification)$/ })).toHaveCount(0);
@@ -1581,7 +1581,7 @@ test("security grades and scan stages keep their help while finding and scan sta
   await expect(latest.getByText("running", { exact: true })).toBeVisible();
   const card = page.locator('[data-slot="finding-card"]');
   await expect(card).toBeVisible();
-  await expect(card.locator('[data-slot="badge"]')).toHaveCount(3);
+  await expect(card.locator('[data-slot="badge"]')).toHaveCount(2);
   await expect(page.locator('main [data-slot="tooltip-trigger"]')).toHaveCount(1);
   await expect(page.locator('main [data-slot="badge"][tabindex="0"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
