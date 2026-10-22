@@ -2004,7 +2004,7 @@ test("security scan tabs count findings and activity independently of report sna
     actor_id: null, action: "scan_stage", detail: { stage: "analysis", status: "completed" }, created_at: at }));
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
     repository, scan: { ...scan, report: { findings: findings.slice(0, 3).map((finding) => ({ ...finding, finding_id: finding.id, outcome: "present" })) } },
-    can_write: true, finding_count: 23, activity_count: 201, activity,
+    can_write: true, finding_count: 23, finding_state_counts: { open: 23 }, activity_count: 201, activity,
   } }));
   await page.route("**/api/v1/security/scans/scan/findings?**", (route) => {
     if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
@@ -2626,7 +2626,7 @@ test("scan activity shows milestones while individual events stay in finding his
     { id: "started", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_stage", detail: { stage: "analysis", status: "running" }, created_at: at },
   ];
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
-    repository, scan, can_write: true, finding_count: 1, activity_count: 2, activity: rows,
+    repository, scan, can_write: true, finding_count: 1, finding_state_counts: { open: 1 }, activity_count: 2, activity: rows,
   } }));
   await page.goto("/security/scans/scan?tab=activity");
   const timeline = page.getByRole("list", { name: "Activity events" });
@@ -2661,13 +2661,21 @@ test("scan activity uses compact rows and preserves partial outcomes and diagnos
   await page.goto("/security/scans/scan?tab=activity");
   const timeline = page.getByRole("list", { name: "Activity events" });
   await expect(timeline.locator("li p.font-medium")).toHaveText(["Scan finished with incomplete work", "Scan failed", "Analysis started"]);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 3");
   await expect(timeline.locator("time").first()).toHaveAttribute("datetime", at);
   await timeline.getByText("Technical details", { exact: true }).click();
   await expect(timeline.getByRole("region", { name: "Scan failed technical details" })).toHaveText(failure);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("scan-activity.png"), fullPage: true });
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  items.unshift({ id: "cancelled", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_cancelled", detail: { status: "cancelled" }, created_at: at });
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 4");
+  await page.getByRole("tab", { name: "Activity 4", exact: true }).click();
+  await expect(timeline.getByRole("listitem")).toHaveCount(4);
   items = [];
   await page.clock.fastForward(5000);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 0");
   await expect(page.getByText("No activity recorded yet.")).toBeVisible();
   unavailable = true;
   await page.clock.fastForward(5000);

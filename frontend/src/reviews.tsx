@@ -82,7 +82,7 @@ import {
 import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { coverageFiles, RunCoverage } from "./components/run-coverage";
-import { RunActivity } from "./components/run-activity";
+import { RunActivity, runActivityEvents } from "./components/run-activity";
 import { RunStages } from "./components/run-stages";
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
@@ -829,7 +829,8 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "activity", "details"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details", "activity"], "findings");
+  const activityEvents = runActivityEvents(run);
   const findingId = params.get("finding");
   const finding = findingId ? { finding_id: findingId, snapshot: occurrences.find((item) => item.finding_id === findingId)?.snapshot } : null;
   const candidateId = params.get("candidate");
@@ -868,6 +869,31 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     : run.summary ?? run.stages?.summary;
   const summaryDiagnostics = [summaryStage?.error, run.summary?.diagram_warning, pr.summary_error]
     .filter(Boolean).join("\n\n");
+  const summaryPublication = pr.latest_run?.id === run.id && summaryStage?.status === "completed"
+    ? pr.summary_error ? "failed" : pr.summary_pending ? "pending" : undefined : undefined;
+  const stageDetails = <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
+    {summaryStage && <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        {pr.summary_url ? <a className="inline-flex items-center gap-1 rounded-sm font-medium no-underline outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring" href={pr.summary_url} target="_blank" rel="noreferrer">PR summary<ArrowUpRight aria-hidden="true" className="size-3" /></a> : <span className="font-medium">PR summary</span>}
+        <Status value={summaryStage.status} />
+      </div>
+      <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
+      {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
+      {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
+      {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+      {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
+    </div>}
+    {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
+      const stage = run.stages?.[key];
+      if (!stage) return null;
+      const status = key === "assessment" ? assessmentStatus : stage.status;
+      return <div key={key} className="space-y-2">
+        <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
+        <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
+        {stage.error && <TechnicalDetails error={stage.error} name={name} />}
+      </div>;
+    })}
+  </PopoverContent>;
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
@@ -910,6 +936,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
+          <RunStages variant="badge" run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublication={summaryPublication}>{stageDetails}</RunStages>
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
             {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
@@ -926,41 +953,15 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </header>
     <ErrorNotice error={action.error || error} />
     <ErrorNotice error={run.error} />
-    <RunStages run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage}
-      summaryPublication={pr.latest_run?.id === run.id && summaryStage?.status === "completed"
-        ? pr.summary_error ? "failed" : pr.summary_pending ? "pending" : undefined : undefined}>
-      <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
-        {summaryStage && <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            {pr.summary_url ? <a className="inline-flex items-center gap-1 rounded-sm font-medium no-underline outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring" href={pr.summary_url} target="_blank" rel="noreferrer">PR summary<ArrowUpRight aria-hidden="true" className="size-3" /></a> : <span className="font-medium">PR summary</span>}
-            <Status value={summaryStage.status} />
-          </div>
-          <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
-          {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
-          {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
-          {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
-          {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
-        </div>}
-        {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
-          const stage = run.stages?.[key];
-          if (!stage) return null;
-          const status = key === "assessment" ? assessmentStatus : stage.status;
-          return <div key={key} className="space-y-2">
-            <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
-            <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
-            {stage.error && <TechnicalDetails error={stage.error} name={name} />}
-          </div>;
-        })}
-      </PopoverContent>
-    </RunStages>
+    <RunStages run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublication={summaryPublication}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.resolved ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
-        <TabsTrigger value="activity">Activity</TabsTrigger>
         <TabsTrigger value="details">Details</TabsTrigger>
+        <TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{activityEvents.length}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings recorded in this run, with their saved evidence. Later status changes do not change this list.</p>
@@ -975,7 +976,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         <RunCoverage run={run} />
       </TabsContent>
       <TabsContent value="activity" className="min-w-0">
-        <RunActivity run={run} />
+        <RunActivity events={activityEvents} />
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">

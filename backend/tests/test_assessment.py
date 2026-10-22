@@ -1061,6 +1061,56 @@ def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pip
         assert len(set(identities)) == 2
 
 
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("outcome", ["corrected", "unavailable", "repeated"])
+@pytest.mark.parametrize("parallel", [False, True])
+def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline, monkeypatch, kind, outcome, parallel):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    missing, available = "frontend/tsconfig.app.json", "frontend/tsconfig.json"
+    sources = {available: '{"compilerOptions":{"strict":true}}', "frontend/private.json": "excluded",
+               "frontend/linked.json": "symlink", "elsewhere/unrelated.json": "unrelated"}
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"frontend/private.json"})
+    def git(repo, env, *args, stopped):
+        assert not stopped()
+        if args[0] == "ls-tree":
+            paths = sources if "-r" in args else [args[-1]] if args[-1] in sources else []
+            return "\0".join(f"{'120000' if path.endswith('linked.json') else '100644'} blob {'a' * 40}\t{path}" for path in paths)
+        if args[0] == "show":
+            return sources[args[1].split(":", 1)[1]]
+        assert args[0] == "diff"
+        return ""
+    monkeypatch.setattr(ocr, "git", git)
+    def respond(context):
+        if pipeline["calls"] == 1:
+            return verdict(context, verdict="uncertain", required_paths=[missing])
+        if outcome == "corrected" and pipeline["calls"] == 3:
+            assert context["sources"]["current"][available] == sources[available]
+            assert "validation_feedback" not in context
+            return verdict(context, verdict="rejected", required_paths=[])
+        feedback = context["validation_feedback"]
+        assert feedback["field"] == "required_paths" and feedback["path"] == missing
+        assert feedback["available_paths"] == [available]
+        assert missing not in context["sources"]["current"]
+        return verdict(context, verdict="uncertain", required_paths=
+                       [available] if outcome == "corrected" else [missing] if outcome == "repeated" else [])
+    pipeline["respond"] = respond
+    identity = new_run(assessed=True, parallel=parallel)
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    expected_calls = 2 if outcome == "unavailable" else 3
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert row.status == "completed" and row.error is None and row.finding_id is None
+        assert row.result["verdict"] == ("rejected" if outcome == "corrected" else "uncertain")
+        assert row.usage == {"tokens": 25 * expected_calls}
+    assert pipeline["calls"] == expected_calls and pipeline["analysis_calls"] == 1
+    assert pipeline["allowances"] == [pipeline["allowances"][0] - 25 * index for index in range(expected_calls)]
+    assert not pipeline["reviews"]
+
+
 @pytest.mark.parametrize("failure", ["limit", "unknown_usage", "excluded", "round_limit"])
 def test_followup_failure_never_publishes_or_reuses_spent_allowance(pipeline, monkeypatch, failure):
     calls = []

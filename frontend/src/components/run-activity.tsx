@@ -2,7 +2,7 @@ import type { Run } from "../api";
 import { label } from "../lib/inbox-filters";
 import { ActivityTimeline, type ActivityEvent } from "./activity-timeline";
 
-export function RunActivity({ run }: { run: Run }) {
+export function runActivityEvents(run: Run): ActivityEvent[] {
   const events: ActivityEvent[] = [{ id: "queued", title: "Review queued", at: run.created_at, status: "queued" }];
   if (run.started_at) events.push({ id: "started", title: "Review started", at: run.started_at, status: "running" });
   const terminal = ["completed", "partial", "failed", "skipped", "cancelled"];
@@ -20,7 +20,10 @@ export function RunActivity({ run }: { run: Run }) {
     title: run.status === "partial" ? "Review finished with incomplete work" : `Review ${run.status}`,
     at: run.finished_at, status: run.status, error: run.error });
   // shortcut: stage records retain only the latest attempt; a full retry history needs persisted events.
-  events.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return events.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+export function RunActivity({ events }: { events: ActivityEvent[] }) {
   return <section aria-label="Review activity" className="space-y-4">
     <p className="text-xs leading-relaxed text-muted-foreground">Saved run and stage milestones, newest first. Only recorded timestamps are shown; earlier retry attempts are not retained.</p>
     <ActivityTimeline events={events} />

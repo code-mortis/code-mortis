@@ -554,7 +554,8 @@ test("review activity shows saved milestones in order and follows stage retries"
     } };
   await mock(page, { run: saved });
   await page.goto("/runs/run?tab=activity");
-  await expect(page.getByRole("tab", { name: "Activity", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Activity 5", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 5");
   const timeline = page.getByRole("list", { name: "Activity events" });
   await expect(timeline.locator("li p.font-medium")).toHaveText([
     "Assessment started", "Code review completed", "Code review started", "Review started", "Review queued",
@@ -566,6 +567,8 @@ test("review activity shows saved milestones in order and follows stage retries"
   Object.assign(saved, { status: "partial", finished_at: "2026-10-05T13:22:00Z",
     stages: { ...saved.stages, assessment: { tokens: 0, status: "failed", started_at: "2026-10-05T13:21:00Z", finished_at: "2026-10-05T13:21:50Z", error: failure } } });
   await page.clock.fastForward(5000);
+  await expect(page.getByRole("tab", { name: "Activity 7", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(timeline.getByRole("listitem")).toHaveCount(7);
   await expect(timeline.locator("li p.font-medium").first()).toHaveText("Review finished with incomplete work");
   const failed = timeline.getByRole("listitem").filter({ hasText: "Assessment failed" });
   await failed.getByText("Technical details", { exact: true }).click();
@@ -574,7 +577,11 @@ test("review activity shows saved milestones in order and follows stage retries"
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("review-activity.png"), fullPage: true });
   await page.getByRole("tab", { name: "Details", exact: true }).click();
-  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  saved.stages!.verification!.finished_at = "2026-10-05T13:22:01Z";
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 8");
+  await page.getByRole("tab", { name: "Activity 8", exact: true }).click();
+  await expect(timeline.getByRole("listitem")).toHaveCount(8);
   await expect(page).toHaveURL(/tab=activity/);
 });
 
@@ -586,6 +593,7 @@ test("review activity preserves cancellation and does not invent history for leg
   await expect(timeline.locator("li p.font-medium")).toHaveText(["Review cancelled", "Review started", "Review queued"]);
   await expect(timeline).toContainText("Stopped by the repository administrator.");
   await expect(timeline.locator("time")).toHaveCount(3);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 3");
   await page.route("**/api/v1/runs/run", (route) => route.fulfill({ status: 403, json: { detail: "Access denied" } }));
   await page.clock.fastForward(5000);
   await expect(page.getByRole("alert").filter({ hasText: "Access denied" })).toBeVisible();
@@ -1705,7 +1713,7 @@ test("PR summary comes first inside review stages and retries synchronization wi
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
   await expect(publication.getByText("PR summary", { exact: true })).toHaveCount(0);
   await expect(publication.getByRole("button", { name: /^PR summary details:/ })).toHaveCount(0);
-  const trigger = page.getByRole("region", { name: "Review stages", exact: true }).getByRole("button", { name: "Review stage details", exact: true });
+  const trigger = publication.getByRole("button", { name: "Review stages: partial", exact: true });
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
@@ -1740,6 +1748,43 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await page.keyboard.press("Escape");
   await expect(details).not.toBeVisible();
   await expect(trigger).toBeFocused();
+});
+
+test("review stages badge restores the summary dropdown alongside the live stage card", async ({ page }, info) => {
+  await page.clock.install();
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const state: Partial<Run> = { status: "completed", publication: "published", publication_error: null,
+    check_status: "completed", check_conclusion: "success", check_pending: false, check_error: null,
+    stages: { summary: { status: "completed", tokens: 6449 }, ocr: { status: "completed", tokens: 133071 },
+      assessment: { status: "completed", tokens: 0 }, verification: { status: "skipped", tokens: 0 } } };
+  await mock(page, { run: state, overview: { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10" } });
+  await page.goto("/runs/run");
+  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  const trigger = publication.getByRole("button", { name: /^Review stages:/ });
+  await expect(trigger).toHaveText("completed");
+  await expect(trigger.locator(".lucide-chevron-down")).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Review stages", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 3");
+  await trigger.focus();
+  await trigger.press("Enter");
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details.getByText(/^(PR summary|OCR|Assessment|Fix verification)$/)).toHaveText(["PR summary", "OCR", "Assessment", "Fix verification"]);
+  await expect(details.getByText(/tokens$/)).toHaveText(["6,449 tokens", "133,071 tokens", "0 tokens", "0 tokens"]);
+  await expect(details.locator('[data-slot="badge"]')).toHaveText(["completed", "completed", "completed", "skipped"]);
+  await noOverflow(page);
+  await page.screenshot({ path: info.outputPath("review-stages-badge.png") });
+  await page.keyboard.press("Escape");
+  await expect(details).toBeHidden();
+  await expect(trigger).toBeFocused();
+  state.status = "running";
+  state.stages!.assessment!.status = "running";
+  await page.clock.fastForward(5000);
+  await expect(trigger).toHaveText("running");
+  await trigger.click();
+  await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
 });
 
 test("run status tooltips stay concise and PR summary failure preserves read-only details", async ({ page }, info) => {
