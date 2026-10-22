@@ -2508,8 +2508,7 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   await expect(card.locator("div, p")).toHaveCount(0);
   await expect(card).not.toContainText("Not observed in latest review");
   await expect(card).not.toContainText("View details");
-  await expect(card.getByText("Custom rule", { exact: true })).toBeVisible();
-  await expect(card.locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ })).toHaveCount(0);
+  await expect(card.locator('[data-slot=badge]').filter({ hasText: /^Custom rule$/ }).locator('svg[aria-hidden=true]')).toHaveClass(/lucide-tag/);
   await noOverflow(page);
   await card.press("Space");
   await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(content);

@@ -20,14 +20,16 @@ export function FindingCard({ evidence, state, onClick }: {
     className="group grid w-full min-w-0 gap-x-4 gap-y-1.5 bg-card px-4 py-3 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
     <span className="line-clamp-2 min-w-0 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground sm:col-start-1 sm:flex-nowrap">
-      {evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="shrink-0">Proposed finding</span>}
+      <span className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0">
+        {evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="shrink-0">Proposed finding</span>}
+        {!!evidence.category && <FindingCategory value={String(evidence.category)} />}
+      </span>
       <span className="flex min-w-0 items-baseline gap-2 font-mono max-sm:order-first max-sm:basis-full">
         <span className="min-w-0 truncate" title={path}>
           {slash >= 0 && <span>{path.slice(0, slash + 1)}</span>}<span className="font-medium text-card-foreground">{path.slice(slash + 1)}</span>
         </span>
         {evidence.start_line != null && <span className="shrink-0">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
       </span>
-      {!!evidence.category && <span className="min-w-0 truncate" title={label(String(evidence.category))}>{label(String(evidence.category))}</span>}
     </span>
     <span className="flex min-w-0 items-start justify-self-start sm:col-start-2 sm:row-start-1 sm:row-span-2 sm:max-w-48 sm:justify-self-end">{state}</span>
   </button>;
