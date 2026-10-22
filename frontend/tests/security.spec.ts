@@ -689,6 +689,7 @@ test("saved scan exposes findings, resolved, coverage and report downloads", asy
   await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
   await expect(page.getByRole("dialog", { name: "Finding details", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Code snippet" })).toContainText("return orders.find(id)");
+  await expect(page.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-finding-${info.project.name}.png`, fullPage: true });
 });
@@ -876,6 +877,7 @@ test("uncertain security candidates keep their assessment and evidence in a disc
   await expect(disclosure.getByText("Required deployment configuration was unavailable.", { exact: true })).toBeVisible();
   await expect(disclosure.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
   await expect(disclosure.getByRole("region", { name: "Code snippet", exact: true })).toContainText("return orders.find(id);");
+  await expect(disclosure.locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await expect(page.getByRole("button", { name: "Create GitHub issue", exact: true })).toHaveCount(0);
   expect(writes).toHaveLength(0);
 });
@@ -2262,6 +2264,7 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   await expect(page.getByRole("tooltip")).toHaveText("The evidence did not support this proposed issue.");
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   await expect(drawer.getByRole("tabpanel", { name: "Evidence 1" }).getByText("return orders.find(id);", { exact: false })).toBeVisible();
+  await expect(drawer.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await drawer.getByText("Original proposal", { exact: true }).click();
   await expect(drawer.getByText("Remediation", { exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-security-assessment-${info.project.name}.png`, fullPage: true });

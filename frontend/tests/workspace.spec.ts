@@ -2089,7 +2089,10 @@ test("finding code shows a unified diff and safe Markdown highlighting in both t
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const panel = page.getByRole("dialog");
   const patch = panel.getByRole("region", { name: "Suggested change diff" });
-  await expect(patch).toContainText("@@ -1,3 +1,3 @@");
+  await expect(patch).toContainText("@@ -42,3 +42,3 @@");
+  expect(await patch.locator('[data-slot="code-line-numbers"]').textContent()).toBe("\n42\n43\n\n\n44");
+  await expect(patch.locator('[data-slot="code-line-numbers"]')).toHaveAttribute("aria-hidden", "true");
+  await expect(patch.locator('[data-slot="code-line-numbers"]')).toHaveCSS("user-select", "none");
   await expect(patch).not.toContainText("--- original");
   await expect(patch).not.toContainText("No newline at end of file");
   await expect(panel.getByLabel("Changed lines")).toHaveText("+2−2");
@@ -2116,6 +2119,7 @@ for (const example of [
   { name: "suggestion only", original: "", suggested: "const limit = 3;\n", path: "retry.tsx", language: "typescript", count: 1 },
   { name: "identical", original: "return True\n", suggested: "return True\n", path: "retry.py", language: "python", count: 1 },
   { name: "no suggestion", original: "FROM alpine\n", suggested: "", path: "Dockerfile", language: "dockerfile", count: 1 },
+  { name: "blank lines", original: "/* original\n\n * comment */\nconst value = 1;\n", suggested: "", path: "retry.ts", language: "typescript", count: 1 },
   { name: "unknown language", original: "", suggested: '<script>alert(1)</script>\n\n' + "long line ".repeat(80), path: "file.unknown", language: null, count: 1 },
   { name: "no snippets", original: "", suggested: "", path: "retry.ts", language: null, count: 0 },
   { name: "large comparison", original: "a\n".repeat(16000), suggested: "b\n".repeat(16000), path: "file.txt", language: null, count: 2 },
@@ -2129,7 +2133,14 @@ for (const example of [
     await expect(panel.locator("pre")).toHaveCount(example.count);
     if (example.count) {
       const code = panel.locator("pre").last();
-      expect(await code.textContent()).toBe(example.suggested || example.original);
+      expect(await code.locator("code").textContent()).toBe(example.suggested || example.original);
+      const gutter = panel.locator('[data-slot="code-line-numbers"]');
+      if (example.original) {
+        const numbers = (await gutter.textContent())!.split("\n");
+        expect(numbers[0]).toBe("42");
+        expect(numbers).toHaveLength(example.original.trimEnd().split("\n").length);
+        expect(numbers.at(-1)).toBe(String(41 + numbers.length));
+      } else await expect(gutter).toHaveCount(0);
       await expect(code.locator(".hljs")).toHaveCount(example.language ? 1 : 0);
       if (example.language) await expect(code.locator("code")).toHaveClass(`hljs language-${example.language}`);
       await expect(code.locator("script, img")).toHaveCount(0);
@@ -2137,6 +2148,36 @@ for (const example of [
     await noOverflow(page);
   });
 }
+
+test("finding diff keeps original line numbers across insertions and separate hunks", async ({ page }) => {
+  const original = Array.from({ length: 30 }, (_, index) => `const value${index + 1} = ${index + 1};`);
+  const suggested = [...original];
+  suggested.splice(1, 0, "const inserted = true;");
+  suggested[29] = "const value29 = 0;";
+  await mock(page, { finding: { existing_code: original.join("\n"), suggestion: suggested.join("\n"), start_line: 100, end_line: 129 } });
+  await page.goto("/pulls/pr?finding=finding");
+  const patch = page.getByRole("dialog").getByRole("region", { name: "Suggested change diff" });
+  const source = await patch.locator("code").textContent();
+  const numbers = (await patch.locator('[data-slot="code-line-numbers"]').textContent())!.split("\n");
+  const lines = source!.split("\n");
+  expect(lines.filter((line) => line.startsWith("@@"))).toHaveLength(2);
+  expect(numbers).toHaveLength(lines.length);
+  expect(numbers[lines.indexOf(" const value1 = 1;")]).toBe("100");
+  expect(numbers[lines.indexOf("+const inserted = true;")]).toBe("");
+  expect(numbers[lines.indexOf("-const value29 = 29;")]).toBe("128");
+  expect(numbers[lines.indexOf("+const value29 = 0;")]).toBe("");
+  expect(numbers[lines.indexOf(" const value30 = 30;")]).toBe("129");
+  await noOverflow(page);
+});
+
+test("finding snippets without a saved source location stay unnumbered", async ({ page }) => {
+  await mock(page, { finding: { existing_code: "const value = 1;", suggestion: "", start_line: undefined } });
+  await page.goto("/pulls/pr?finding=finding");
+  const code = page.getByRole("dialog").getByRole("region", { name: "Code at detection" });
+  await expect(code.locator("code")).toHaveText("const value = 1;");
+  await expect(code.locator('[data-slot="code-line-numbers"]')).toHaveCount(0);
+  await expect(code).not.toHaveAttribute("aria-description");
+});
 
 test("pull filters, history tabs, and finding tabs survive reload and browser history", async ({ page }) => {
   await mock(page);
@@ -4461,7 +4502,8 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await sheet.getByRole("tab", { name: "Evidence 1" }).click();
   await expect(sheet.getByText("Current evidence: backend/retry.py:7–8", { exact: true })).toBeVisible();
   const code = sheet.getByRole("region", { name: "Code snippet" });
-  await expect(code).toHaveText(source);
+  await expect(code.locator("code")).toHaveText(source);
+  expect(await code.locator('[data-slot="code-line-numbers"]').textContent()).toBe("7\n8");
   await expect(code.locator("code")).toHaveClass(/language-python/);
   await expect(code.locator(".hljs-keyword").first()).toHaveText("while");
   await expect(sheet.getByRole("alert")).toHaveCount(0);
@@ -4629,8 +4671,10 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   expect({ list: listReads, detail: detailReads }).toEqual(settledReads);
   await expect(sheet).toContainText("Not supported");
   const code = sheet.getByRole("region", { name: "Code snippet" });
-  await expect(code.nth(0)).toHaveText(source);
-  await expect(code.nth(1)).toHaveText("export const unchanged = true;");
+  await expect(code.nth(0).locator("code")).toHaveText(source);
+  await expect(code.nth(1).locator("code")).toHaveText("export const unchanged = true;");
+  expect(await code.nth(0).locator('[data-slot="code-line-numbers"]').textContent()).toBe("10\n11");
+  await expect(code.nth(1).locator('[data-slot="code-line-numbers"]')).toHaveText("10");
   await code.nth(0).focus();
   await expect(code.nth(0)).toBeFocused();
   await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
@@ -5694,6 +5738,7 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
   await expect(page.getByText("Automatic resolution: failed")).toBeVisible();
   await page.getByText("Current evidence: src/retry.ts:1–1").click();
   await expect(page.getByText("for (let attempt = 0; attempt < 3; attempt++) {", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("1");
   await expect(page.locator("pre .language-typescript .hljs-keyword").first()).toHaveText("for");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/verification-${info.project.name}.png`, fullPage: false });

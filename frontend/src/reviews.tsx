@@ -555,7 +555,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
                 <summary className="cursor-pointer break-all">
                   {evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}
                 </summary>
-                <div className="mt-2"><Code path={evidence.path}>{evidence.quote}</Code></div>
+                <div className="mt-2"><Code path={evidence.path} startLine={evidence.start_line}>{evidence.quote}</Code></div>
               </details>
             ))}
             <p className="text-sm text-muted-foreground">
@@ -603,7 +603,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
 function FindingEvidence({ evidence }: { evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"] }) {
   return <>
     <section className="space-y-3"><h3 className="text-sm font-semibold">Explanation</h3><Markdown>{String(evidence.content ?? "")}</Markdown></section>
-    <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} />
+    <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} startLine={Number(evidence.start_line)} />
     <p className="flex items-center gap-2 text-xs leading-relaxed text-muted-foreground"><History className="size-3.5 shrink-0" aria-hidden="true" />Each review keeps its original evidence.</p>
   </>;
 }
@@ -751,7 +751,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
           <section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>.</p></section>
           {result?.evidence.length ? result.evidence.map((evidence, index) => <section key={`${evidence.revision}-${evidence.path}-${evidence.start_line}-${index}`} className="space-y-3">
             <p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
-            <Code path={evidence.path}>{evidence.quote}</Code>
+            <Code path={evidence.path} startLine={evidence.start_line}>{evidence.quote}</Code>
           </section>) : <p className="text-sm text-muted-foreground">{active(candidate.status) ? "Evidence will appear when assessment completes." : "No supporting evidence was recorded."}</p>}
         </TabsContent>
         <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Original proposal</summary><div className="mt-3 max-w-[75ch]"><Markdown>{String(snapshot.content ?? "No proposal text was recorded.")}</Markdown></div></details>
