@@ -1321,6 +1321,67 @@ test("review stage animation follows execution, visibility and reduced motion", 
   await noOverflow(page);
 });
 
+test("review stage title follows parallel work and summary publication without changing layout", async ({ page }, info) => {
+  await page.clock.install();
+  const state: Partial<Run> = { status: "running", report: null, progress: { selected: 8, completed: 3 },
+    publication: "pending", publication_error: null, check_enabled: false,
+    config: { ...run.config, pipeline_version: 2 },
+    summary: { status: "pending", tokens: 0, limited_context: false }, stages: {
+      ocr: { status: "running", tokens: 0 }, summary: { status: "running", tokens: 0 },
+      assessment: { status: "pending", tokens: 0 }, verification: { status: "pending", tokens: 0 },
+    } };
+  const overview: Partial<Schema["PullRequestOut"]> = { summary_pending: false, summary_error: null };
+  await mock(page, { run: state, overview });
+  await page.goto("/runs/run");
+  const card = page.getByRole("region", { name: "Review stages", exact: true });
+  const title = card.getByRole("button", { name: "Review stage details", exact: true });
+  const count = card.getByLabel("Review progress count", { exact: true });
+  const geometry = async () => {
+    const box = (await card.boundingBox())!;
+    return { height: box.height, count: (await count.boundingBox())!.y - box.y,
+      explanation: (await card.locator(".stage-divider").boundingBox())!.y - box.y,
+      tabs: (await page.getByRole("tablist").boundingBox())!.y - box.y };
+  };
+  await expect(title).toHaveText("Code review · PR summary");
+  const original = await geometry();
+  await page.screenshot({ path: info.outputPath("parallel-stage-title.png") });
+  const check = async (text: string) => {
+    await expect(title).toHaveText(text);
+    expect(await geometry()).toEqual(original);
+    await expect(card.locator('[data-slot="badge"], .lucide-loader-circle, .lucide-chevron-down')).toHaveCount(0);
+    await noOverflow(page);
+  };
+  state.stages!.assessment!.status = "running";
+  state.stages!.verification!.status = "running";
+  await page.clock.fastForward(5000);
+  await check("Code review · Assessment · Fix verification · PR summary");
+  await page.screenshot({ path: info.outputPath("all-active-stage-title.png") });
+  state.stages!.ocr!.status = "completed";
+  state.stages!.summary!.status = "completed";
+  overview.summary_pending = true;
+  await page.clock.fastForward(5000);
+  await check("Assessment · Fix verification · GitHub summary pending");
+  state.status = "partial";
+  await page.reload();
+  await check("Assessment · Fix verification · GitHub summary pending");
+  state.stages!.assessment!.status = "completed";
+  state.stages!.verification!.status = "completed";
+  await page.reload();
+  await check("GitHub summary pending");
+  overview.summary_error = "GitHub sync failed";
+  await page.reload();
+  await check("Summary publication failed");
+  overview.latest_run = { ...run, id: "newer-run" };
+  await page.reload();
+  await check("Review complete with warnings");
+  overview.latest_run = { ...run, id: "run" };
+  overview.summary_error = null;
+  overview.summary_pending = false;
+  state.status = "completed";
+  await page.reload();
+  await check("Review complete");
+});
+
 test("review stage card keeps a fixed layout through every stage and terminal state", async ({ page }, info) => {
   const state: Partial<Run> = { status: "queued", report: null, progress: {}, publication: "pending",
     publication_error: null, check_enabled: false, config: { ...run.config, pipeline_version: 2 },
@@ -1694,7 +1755,7 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
     [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
-    [stages, "View stage details."],
+    [stages, "Review complete with warnings. View stage details."],
   ] as const;
   for (const [trigger, text] of tooltips) {
     if (info.project.name === "desktop") {

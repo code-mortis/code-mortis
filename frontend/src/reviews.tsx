@@ -926,7 +926,9 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </header>
     <ErrorNotice error={action.error || error} />
     <ErrorNotice error={run.error} />
-    <RunStages run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage}>
+    <RunStages run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage}
+      summaryPublication={pr.latest_run?.id === run.id && summaryStage?.status === "completed"
+        ? pr.summary_error ? "failed" : pr.summary_pending ? "pending" : undefined : undefined}>
       <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
         {summaryStage && <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
