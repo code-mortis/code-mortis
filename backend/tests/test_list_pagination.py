@@ -198,7 +198,78 @@ def test_resolved_pages_filter_confirmed_run_history_on_server(seed, github_stub
     assert client.get("/api/v1/runs/missing/resolved").status_code == 404
 
 
-def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch):
+def test_run_findings_preserve_historical_membership_evidence_counts_and_pages(seed, github_stub, client):
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        current = run(db, pr, "completed", "current")
+        original = run(db, pr, "completed", "original")
+        for status, size in [("open", 12), ("resolved", 12), ("dismissed", 1)]:
+            for index in range(size):
+                finding = Finding(id=f"{status}-{index}", pr_id=pr.id, fingerprint=f"{status}-{index}",
+                    status=status, path=f"src/{status}-{index}.py", content=f"Saved issue {index}",
+                    severity="high", category="bug", start_line=1, end_line=1, last_seen_run_id=current.id)
+                db.add(finding)
+                db.flush()
+                db.add(Occurrence(id=f"occ-{finding.id}", run_id=current.id, finding_id=finding.id,
+                    snapshot={"content": "Immutable original evidence", "path": finding.path, "severity": "high", "category": "bug"}))
+        for status in ["open", "resolved"]:
+            finding = Finding(id=f"fixed-{status}", pr_id=pr.id, fingerprint=f"fixed-{status}", status=status,
+                path=f"src/fixed-{status}.py", content="Verified fix", category="bug", severity="low",
+                start_line=1, end_line=1, last_seen_run_id=original.id)
+            db.add(finding)
+            db.flush()
+            db.add(Occurrence(id=f"occ-{finding.id}", run_id=original.id, finding_id=finding.id, snapshot={"content": "Original issue", "path": finding.path, "severity": "low", "category": "bug"}))
+            db.flush()
+            db.add(FindingVerification(finding_id=finding.id, run_id=current.id, occurrence_id=f"occ-{finding.id}",
+                head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+        db.flush()
+        db.add(FindingVerification(finding_id="resolved-0", run_id=current.id, occurrence_id="occ-resolved-0",
+            head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+        db.add(Finding(id="unrelated", pr_id=pr.id, fingerprint="unrelated", status="open", path="unrelated.py",
+            content="Not part of this run", start_line=1, end_line=1, last_seen_run_id=original.id))
+        db.add(ReviewCandidate(run_id=current.id, position=0, snapshot={}, finding_id="open-0", is_new=True))
+        db.add(ReviewCandidate(run_id=current.id, position=1, snapshot={}, finding_id="resolved-0", is_new=False))
+    path = "/api/v1/runs/current/findings"
+    before = client.get("/api/v1/runs/current").json()
+    assert before["finding_state_counts"] == {"open": 25, "resolved": 3}
+    responses = {}
+    for status, total in [("open", 25), ("resolved", 3)]:
+        responses[status] = [client.get(path, params={"status": status, "page": page}).json()
+                             for page in range(1, (total + 9) // 10 + 1)]
+        assert responses[status][0]["registered_total"] == responses[status][0]["total"] == total
+        ids = [item["finding_id"] for page in responses[status] for item in page["items"]]
+        assert len(set(ids)) == total and "unrelated" not in ids
+        assert all(page["revision"] == before["findings_revision"] for page in responses[status])
+        assert client.get(path, params={"status": status, "page": 1000000}).json()["page"] == len(responses[status])
+    assert {item["finding_id"] for item in responses["resolved"][0]["items"]} == {"fixed-open", "fixed-resolved", "resolved-0"}
+    filtered = client.get(path, params={"outcome": "new", "severity": "high", "category": "bug", "q": "open-0.py"}).json()
+    assert filtered["total"] == 1 and filtered["items"][0]["finding_id"] == "open-0"
+    assert filtered["registered_total"] == 25
+    for outcome in ["repeated", "open_repeat", "resolved_repeat", "dismissed_repeat"]:
+        repeated = client.get(path, params={"outcome": outcome}).json()
+        assert repeated["total"] == 1 and repeated["items"][0]["finding_id"] == "resolved-0"
+    with transaction() as db:
+        db.get(Finding, "open-0").status = "resolved"
+        fixed = db.get(Finding, "fixed-resolved")
+        fixed.status, fixed.content, fixed.path, fixed.severity = "open", "Changed later", "later.py", "critical"
+        db.get(Finding, "dismissed-0").status = "open"
+    after = client.get("/api/v1/runs/current").json()
+    assert after["finding_state_counts"] == before["finding_state_counts"]
+    assert after["findings_revision"] == before["findings_revision"]
+    for status, pages in responses.items():
+        for page, expected in enumerate(pages, 1):
+            assert client.get(path, params={"status": status, "page": page}).json() == expected
+    assert all(item["snapshot"]["content"] == "Immutable original evidence" for item in after["occurrences"])
+    history = client.get("/api/v1/runs/current/resolved").json()
+    assert history["registered_total"] == 3
+    assert {item["id"] for item in history["items"]} == {"fixed-open", "fixed-resolved", "resolved-0"}
+    assert client.get("/api/v1/runs/missing/findings").status_code == 404
+    for params in [{"status": "dismissed"}, {"page": 0}, {"q": "x" * 257}, {"outcome": "invalid"}, {"severity": "urgent"}, {"unknown": "ignored"}]:
+        assert client.get(path, params=params).status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["resolved", "findings"])
+def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch, endpoint):
     with transaction() as db:
         run(db, db.get(PullRequest, "pr"), "completed", "run")
 
@@ -206,7 +277,7 @@ def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch):
         raise HTTPException(403, "Repository access revoked")
 
     monkeypatch.setattr(github, "authorize_repo", denied)
-    response = client.get("/api/v1/runs/run/resolved?page=2")
+    response = client.get(f"/api/v1/runs/run/{endpoint}?page=2")
     assert response.status_code == 403 and response.json() == {"detail": "Repository access revoked"}
 
 

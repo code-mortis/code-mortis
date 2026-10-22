@@ -280,17 +280,15 @@ function useLegacyFindingTabs(scan = false) {
   const [params, setParams] = useSearchParams();
   useEffect(() => {
     const oldTab = params.get("tab");
-    const legacyScanTab = scan && ["resolved", "accepted_risk", "false_positive"].includes(oldTab ?? "");
+    const legacyScanTab = scan ? params.get("findings_tab") : null;
     if (!params.has("state") && !params.has("resolved_state") && !legacyScanTab) return;
     const next = new URLSearchParams(params);
     const legacyState = params.get("state");
     const view = findingViews.find((view) => view.state === legacyState);
-    if (legacyScanTab) {
-      next.delete("tab");
-      next.set("findings_tab", oldTab!);
-    } else if (view && (!oldTab || oldTab === "findings") && (!scan || !params.has("findings_tab"))) {
-      const key = scan ? "findings_tab" : "tab";
-      if (view.value === "findings") next.delete(key); else next.set(key, view.value);
+    if (legacyScanTab && findingTabValues.includes(legacyScanTab as typeof findingTabValues[number]) && (!oldTab || oldTab === "findings")) {
+      if (legacyScanTab === "findings") next.delete("tab"); else next.set("tab", legacyScanTab);
+    } else if (view && (!oldTab || oldTab === "findings")) {
+      if (view.value === "findings") next.delete("tab"); else next.set("tab", view.value);
       if (view.state !== "open") for (const key of ["search", "severity", "kind", "outcome", "ordering"]) {
         if (!next.has(`${view.state}_${key}`)) for (const value of params.getAll(key)) next.append(`${view.state}_${key}`, value);
         next.delete(key);
@@ -298,6 +296,7 @@ function useLegacyFindingTabs(scan = false) {
     }
     next.delete("state");
     next.delete("resolved_state");
+    if (scan) next.delete("findings_tab");
     setParams(next, { replace: true });
   }, [params, setParams, scan]);
 }
@@ -437,10 +436,10 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
     setParams(next, { replace: key === "search" });
   }
   const description = {
-    open: scanId ? "Findings recorded by this scan that still need attention. Saved evidence remains available in each finding." : null,
-    accepted_risk: "Real issues accepted without a fix. These still count toward the current repository grade.",
-    false_positive: "Reports marked as invalid. These do not count toward the current repository grade.",
-    resolved: "Findings with verified fixes. Reopened findings return to Findings.",
+    open: scanId ? "Findings open when this scan was recorded. Later status changes do not change this list." : null,
+    accepted_risk: scanId ? "Findings recorded as accepted risks in this scan." : "Real issues accepted without a fix. These still count toward the current repository grade.",
+    false_positive: scanId ? "Findings recorded as false positives in this scan." : "Reports marked as invalid. These do not count toward the current repository grade.",
+    resolved: scanId ? "Findings recorded as resolved in this scan. Later status changes do not change this list." : "Findings with verified fixes. Reopened findings return to Findings.",
   }[state];
   return <div className="pt-4">
     {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
@@ -452,7 +451,7 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
         { key: "kind", label: "Type", values: filters.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
       ]}><span role="status" className="sr-only">{total} of {registeredTotal} findings</span></FilterBar></div>
     {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} />{!denied && <Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry findings</Button>}</div>}
-    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} aria-busy={query.isPlaceholderData}>
+    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Findings recorded in this scan" : "Repository findings"} aria-busy={query.isPlaceholderData}>
       {groups.filter((group) => group.total > 0).map((group) => <section key={group.state} aria-label={`${label(group.state)} findings`}>
         <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
           {group.items.map((finding) => <FindingCard key={finding.id} evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
@@ -506,7 +505,6 @@ export function SecurityScan({ user }: { user: User }) {
   const [retrying, setRetrying] = useState<"retry" | "new">();
   useLegacyFindingTabs(true);
   const [tab, setTab] = useUrlTab("tab", [...findingTabValues, "assessment", "coverage", "activity"], "findings");
-  const [findingTab, setFindingTab] = useUrlTab("findings_tab", findingTabValues, "findings");
   const [params, setParams] = useSearchParams();
   const assessmentTrigger = useRef<HTMLButtonElement | null>(null);
   const assessmentTab = useRef<HTMLButtonElement | null>(null);
@@ -532,14 +530,15 @@ export function SecurityScan({ user }: { user: User }) {
     </PageTitle>
     <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />
-    <Tabs value={findingTabValues.includes(tab as typeof findingTabValues[number]) ? "findings" : tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
+    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}>
+      {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
+      <TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><div className="space-y-6">
-        <Tabs value={findingTab} onValueChange={setFindingTab} className="pt-3"><TabsList aria-label="Finding states" variant="line" className={findingTabsClass}>
-          {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.state === "open" ? "Open" : view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
-        </TabsList>{findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} scanId={scan.id} state={view.state} /></TabsContent>)}</Tabs>
+        <Findings repositoryId={repo.id} scanId={scan.id} state="open" />
           {entries(report.unsettled_candidates).length > 0 && <section className="space-y-3"><h2 className="text-sm font-semibold">Requires verification</h2>{entries(report.unsettled_candidates).map((row, index) => <details className={disclosure} key={index}><summary className={disclosureSummary}><span className="min-w-0 break-words [overflow-wrap:anywhere]">{text(object(row.proposal).title) || "Security candidate"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><div className="mt-5 space-y-6"><section className="space-y-3"><h3 className="text-sm font-semibold">Assessment</h3><Markdown>{text(object(row.assessment).explanation)}</Markdown></section><SecurityEvidence title={text(object(row.proposal).title)} evidence={object(row.proposal)} commit={scan.head_sha} /></div></details>)}</section>}
           {reportProblems.length > 0 && <section><h2 className="mb-3 text-base font-semibold">Incomplete analysis</h2><ul className="space-y-2">{reportProblems.map((problem, index) => <li key={index}><ErrorNotice error={problem} /></li>)}</ul></section>}
       </div></TabsContent>
+      {findingViews.filter((view) => view.state !== "open").map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} scanId={scan.id} state={view.state} /></TabsContent>)}
       <TabsContent value="assessment"><SecurityAssessments scan={scan} summary={query.data.assessment} onOpen={(id, trigger) => { assessmentTrigger.current = trigger; const next = new URLSearchParams(params); next.set("assessment", id); next.delete("assessment_tab"); setParams(next); }} /></TabsContent>
       <TabsContent value="coverage"><Coverage scan={scan} /></TabsContent>
       <TabsContent value="activity"><ScanActivity rows={query.data.activity} /></TabsContent>

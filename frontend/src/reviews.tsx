@@ -1,5 +1,5 @@
 import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { useRunPages, useRunResource } from "./hooks/use-run-resource";
@@ -90,7 +90,7 @@ import { SecurityGrade } from "./components/security-grade";
 import { Pagination } from "./components/pagination";
 import { usePagedList } from "./hooks/use-paged-list";
 import { FindingCard, FindingCategory } from "./components/finding-card";
-import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
+import { candidateOutcomes, findingSeverities, runFindingOutcomes } from "./lib/review-filters";
 import { runDuration } from "./lib/run-duration";
 
 function RunFeedback({ run, repositoryId, admin }: {
@@ -278,7 +278,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "history"], "findings");
   const resolved = tab === "resolved";
   const filters = useReviewFilters(resolved ? "resolved" : "pull");
-  const statuses = resolved ? ["resolved"] : filters.params.getAll("status").filter((value) => value !== "all");
+  const status = resolved ? "resolved" : "open";
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const search = filters.params.get("q") ?? "";
@@ -292,8 +292,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     if (value) next.set("finding", value); else next.delete("finding");
     setParams(next, { state: location.state });
   }
-  const availableStatuses = resolved ? ["resolved"] : findingStatuses.filter((status) => status !== "resolved");
-  const pages = Object.fromEntries(availableStatuses.map((status) => {
+  const pages = Object.fromEntries([status].map((status) => {
     const page = Number(params.get(`${status}_page`) ?? 1);
     return [status, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
   }));
@@ -304,7 +303,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   }
   const findingFilters = new URLSearchParams(filters.params);
   findingFilters.delete("status");
-  for (const status of statuses.length ? statuses : availableStatuses) findingFilters.append("status", status);
+  findingFilters.set("status", status);
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
     queryKey: ["pull-findings", id, resolved, filters.canonical, pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pages, signal),
@@ -335,9 +334,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const latest = pr.latest_run;
   const term = search.trim().toLowerCase();
   const count = (state: string) => counts?.[state] ?? 0;
-  const scopeTotal = resolved ? count("resolved") : count("open") + count("dismissed");
+  const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
-  const noOpenFindings = !resolved && total > 0 && (!statuses.length || statuses.includes("open")) && !count("open") && !severities.length && !categories.length && !term;
+  const noOpenFindings = !resolved && total > 0 && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
@@ -411,7 +410,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">
-        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") + count("dismissed") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
+        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
@@ -419,9 +418,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
         <div className="mb-4">
           <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
-              ...(!resolved ? [{ key: "status" as const, label: "Status", values: statuses.length ? statuses : availableStatuses,
-                active: statuses.length !== 1 || statuses[0] !== "open", clearValues: ["open"],
-                choices: availableStatuses.map((value) => ({ value, name: label(value), count: count(value) })) }] : []),
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
@@ -448,7 +444,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
             </section>;
           })}
         </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : scopeTotal ? "No findings match these filters" : resolved ? "No resolved findings" : run_count ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : scopeTotal ? "Try another search, status, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. Their saved evidence and history are preserved." : scopeTotal ? "Try another search, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
           {noOpenFindings && count("resolved") > 0 ? <Button variant="outline" className="mt-4" onClick={() => setTab("resolved")}>View resolved findings</Button> : scopeTotal > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>Clear filters</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
@@ -614,35 +610,37 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
-function ResolvedList({ runId, running, revision, tick, onOpen }: {
-  runId: string; running: boolean; revision: string; tick: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
+function RunFindings({ runId, state, running, revision, tick, searchInput, onOpen }: {
+  runId: string; state: "open" | "resolved"; running: boolean; revision: string; tick: number;
+  searchInput: RefObject<HTMLInputElement | null>; onOpen: (finding: Schema["OccurrenceOut"], trigger: HTMLButtonElement) => void;
 }) {
-  const filters = useReviewFilters("resolved");
+  const resolved = state === "resolved";
+  const filters = useReviewFilters(resolved ? "resolved" : "run");
   const { params, canonical } = filters;
-  const searchInput = useRef<HTMLInputElement>(null);
-  const query = useRunPages<Schema["ResolvedPage"]>(
-    `/runs/${runId}/resolved?${canonical}`, revision, tick,
+  const query = useRunPages<Schema["RunFindingPage"]>(
+    `/runs/${runId}/findings?status=${state}&${canonical}`, revision, tick, `${state}_page`,
   );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  const first = query.data;
-  const last = query.data;
-  const findings = query.data?.items ?? [];
+  const data = query.data;
+  const findings = data?.items ?? [];
   return <div className="space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: params.get("ordering"), defaultValue: "-severity", options: resolved ? findingOrderings : runFindingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search run findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
-        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
-        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
+        ...(!resolved ? [{ key: "outcome" as const, label: "Result", values: params.getAll("outcome"), choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
+          name: value === "repeated" ? "Repeated findings" : value === "recorded" ? "Unclassified findings" : `${name}s`, count: data?.outcome_counts[value] ?? 0 })) }] : []),
+        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: data?.severity_counts[value] })) },
+        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(data?.category_counts ?? {}), searchPlaceholder: "Search types…" },
       ]} onChange={filters.change}>
-      {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} resolved findings</span>}
+      {data && <span role="status" className="sr-only">{data.total} of {data.registered_total} {resolved ? "resolved findings" : "findings"}</span>}
     </FilterBar>
-    <section aria-label="Findings resolved by this run" className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
-      {!last && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
-        state={<Status value={item.status} label={item.status === "resolved" ? "Resolved" : `Currently ${words(item.status)}`} />}
-        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No resolved findings match these filters" : running ? "No confirmed resolutions yet" : "No findings resolved by this run"}>
-        <p>{first?.registered_total ? "Try another search, severity, or type." : "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved."}</p>
-        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
+    <section aria-label={resolved ? "Findings resolved by this run" : "Findings at this run"} className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
+      {!data && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
+        state={<Status value={resolved ? "resolved" : "recorded"} label={resolved ? "Resolved" : item.is_new === true ? "New finding" : item.is_new === false ? "Repeated finding" : "Recorded finding"} />}
+        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={data?.registered_total ? resolved ? "No resolved findings match these filters" : "No findings match these filters" : !resolved && running ? "Review in progress" : resolved ? "No findings resolved by this run" : "No findings recorded in this run"}>
+        <p>{data?.registered_total ? "Try another search, severity, or type." : resolved ? "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved." : running ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result. Saved evidence and finding history are preserved."}</p>
+        {!!data?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
       </Empty>}
-      <Pagination {...query.pagination} label="resolved findings" />
+      <Pagination {...query.pagination} label={`${state} findings`} />
     </section>
   </div>;
 }
@@ -805,38 +803,13 @@ const checkDescriptions: Record<string, string> = {
   action_required: "The review or GitHub synchronization needs attention.",
 };
 
-function runFindingOutcome(item: Schema["OccurrenceOut"]): keyof typeof runFindingOutcomes {
-  if (item.is_new === true) return "new";
-  if (item.is_new !== false) return "recorded";
-  switch (item.current_status) {
-    case "open": return "open_repeat";
-    case "resolved": return "resolved_repeat";
-    case "dismissed": return "dismissed_repeat";
-    default: return "repeated";
-  }
-}
-
-function runFindingLabel(item: Schema["OccurrenceOut"]) {
-  return runFindingOutcomes[runFindingOutcome(item)];
-}
-
 function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
-  const { run, pull_request: pr, occurrences, resolved_count = 0, assessment_revision = 0, resolved_revision = "", assessment, can_write } = detail;
-  const findingCounts = new Map<string, number>();
-  for (const item of occurrences) {
-    const name = runFindingLabel(item).toLowerCase();
-    findingCounts.set(name, (findingCounts.get(name) ?? 0) + 1);
-  }
+  const { run, pull_request: pr, occurrences, finding_state_counts = {}, findings_revision = "", assessment_revision = 0, assessment, can_write } = detail;
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "activity", "details"], "findings");
-  const filters = useReviewFilters("run");
-  const search = filters.params.get("q") ?? "";
-  const outcomes = filters.params.getAll("outcome");
-  const severities = filters.params.getAll("severity");
-  const categories = filters.params.getAll("category");
   const findingId = params.get("finding");
   const finding = findingId ? { finding_id: findingId, snapshot: occurrences.find((item) => item.finding_id === findingId)?.snapshot } : null;
   const candidateId = params.get("candidate");
@@ -890,13 +863,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     .filter(Boolean).join("\n\n");
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
-  const term = search.trim().toLowerCase();
-  const filtered = occurrences.filter((item) => !outcomes.length || outcomes.includes(runFindingOutcome(item)))
-    .filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
-    && (!categories.length || categories.includes(String(snapshot.category)))
-    && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
-  const categoryCounts = Object.fromEntries([...new Set(occurrences.map(({ snapshot }) => String(snapshot.category ?? "")).filter(Boolean))]
-    .map((value) => [value, occurrences.filter(({ snapshot }) => snapshot.category === value).length]));
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
@@ -992,39 +958,21 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </p>}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
-        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
-        <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
+        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>
+        <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.resolved ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
         <TabsTrigger value="activity">Activity</TabsTrigger>
         <TabsTrigger value="details">Details</TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
-        <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: runFindingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
-          filters={[
-            { key: "outcome", label: "Result", values: outcomes, choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
-              name: value === "repeated" ? "Repeats with unknown status" : value === "recorded" ? "Unclassified findings" : `${name}s`,
-              count: findingCounts.get(name.toLowerCase()) ?? 0 })) },
-            { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
-            { key: "category", label: "Type", values: categories, choices: findingTypeChoices(categoryCounts), searchPlaceholder: "Search types…" },
-          ]}
-          onChange={filters.change}>
-          <span role="status" className="sr-only">{filtered.length} of {occurrences.length} findings</span>
-        </FilterBar></div>
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings recorded in this run, with their saved evidence. Later status changes do not change this list.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-        {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
-          {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
-            state={<Status value={item.current_status ?? "unknown"} />}
-            onClick={(event) => { findingTrigger.current = event.currentTarget; showSheet("finding", item.finding_id); }} />)}
-        </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
-          <p>{occurrences.length ? "Try another search, result, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
-          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
-        </Empty>}
+        <RunFindings runId={run.id} state="open" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="resolved" className="min-w-0">
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings automatically resolved by this run after fix verification and GitHub confirmation. Open a finding to inspect its current status and verification history.</p>
-        <ResolvedList runId={run.id} running={active(run.status)} revision={resolved_revision} tick={tick} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings resolved by this run after fix verification and GitHub confirmation. Later status changes do not change this list.</p>
+        <RunFindings runId={run.id} state="resolved" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />

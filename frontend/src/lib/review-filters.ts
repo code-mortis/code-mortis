@@ -1,13 +1,9 @@
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./ordering";
 import { INBOX_QUERY_MAX_LENGTH } from "./inbox-filters";
 
-export const findingStatuses = ["open", "resolved", "dismissed"] as const;
 export const findingSeverities = ["critical", "high", "medium", "low"];
 export const runFindingOutcomes = {
   new: "New finding",
-  open_repeat: "Open repeat",
-  resolved_repeat: "Resolved repeat",
-  dismissed_repeat: "Dismissed repeat",
   repeated: "Repeated finding",
   recorded: "Recorded finding",
 };
@@ -37,11 +33,11 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
     if (key === "q" || key === "ordering") continue;
     let values = [...new Set(input.getAll(`${prefix}${key}`))];
     if (key === "status") {
-      values = values.includes("all") ? ["all"] : values.filter((value) => findingStatuses.some((status) => status !== "resolved" && status === value));
-      if (!values.length) values = ["open"];
+      values = ["open"];
     }
     if (key === "severity") values = values.filter((value) => findingSeverities.includes(value));
     if (key === "outcome") {
+      if (scope === "run") values = values.map((value) => ["open_repeat", "resolved_repeat", "dismissed_repeat"].includes(value) ? "repeated" : value);
       const outcomes = scope === "run" ? Object.keys(runFindingOutcomes) : candidateOutcomes.map((outcome) => outcome.value);
       values = values.filter((value) => outcomes.includes(value));
     }

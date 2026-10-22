@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { INBOX_MAX_PAGES } from "../lib/inbox-filters";
 
 // The run's successful poll is the clock for its visible lists and assessment drawer.
 export function useRunResource<T extends { revision?: number | string }>(
@@ -41,18 +43,27 @@ export function useRunResource<T extends { revision?: number | string }>(
 }
 
 export function useRunPages<T extends { revision?: number | string; page: number; page_size: number; total: number }>(
-  path: string, revision: number | string, tick: number,
+  path: string, revision: number | string, tick: number, pageKey?: string,
 ) {
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const [selection, setSelection] = useState({ path, page: 1 });
   if (selection.path !== path) setSelection({ path, page: 1 });
-  const page = selection.path === path ? selection.page : 1;
+  const requested = pageKey ? Number(params.get(pageKey) ?? 1) : selection.path === path ? selection.page : 1;
+  const page = Number.isInteger(requested) && requested >= 1 && requested <= INBOX_MAX_PAGES ? requested : 1;
   const query = useRunResource<T>(`${path}&page=${page}`, revision, tick, { scope: path });
+  function changePage(nextPage: number, replace = false) {
+    if (!pageKey) { setSelection({ path, page: nextPage }); return; }
+    const next = new URLSearchParams(params);
+    if (nextPage > 1) next.set(pageKey, String(nextPage)); else next.delete(pageKey);
+    setParams(next, { replace, state: location.state });
+  }
   useEffect(() => {
-    if (query.data && !query.isFetching && !query.error && query.data.page !== page) setSelection({ path, page: query.data.page });
-  }, [query.data, query.isFetching, query.error, page, path]);
+    if (query.data && !query.isFetching && !query.error && query.data.page !== requested) changePage(query.data.page, true);
+  }, [query.data, query.isFetching, query.error, requested, path, params, setParams, pageKey, location.state]);
   return { ...query, pagination: {
     page: query.data?.page ?? page, pageSize: query.data?.page_size ?? 10, total: query.data?.total ?? 0,
     loading: query.isFetching && (query.data?.page !== page || !!query.error), error: query.error, onRetry: query.refetch,
-    onPageChange: (next: number) => { if (next === page) void query.refetch(); else setSelection({ path, page: next }); },
+    onPageChange: (next: number) => { if (next === page) void query.refetch(); else changePage(next); },
   } };
 }

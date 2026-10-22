@@ -110,6 +110,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   if (options.longPath) current.path = `services/${"long-directory-name/".repeat(10)}account-order-ownership-with-a-very-long-filename.ts`;
   if (options.secret) current = { ...current, kind: "secret", title: "Exposed credential material", evidence: { ...current.evidence, identity: "keyed-digest" } };
   if (options.issue) current.issue = options.issue;
+  const historical = structuredClone(current);
   const state = { ...(options.partial ? { ...summary, state: "incomplete", grade_scan_id: "previous", latest_status: "partial", counts: { critical: 1 } } : summary),
     ...(options.latestStatus ? { latest_status: options.latestStatus } : {}), ...options.summary };
   state.coverage = options.summary?.coverage ?? (state.state === "not_scanned" ? "not_scanned" : state.state === "incomplete" || state.latest_status !== "completed" ? "incomplete" : "complete");
@@ -148,10 +149,13 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
     else if (path === "/security/repositories") json = { items: [{ repository, summary: state }], total: 1, registered_total: 1, grade_counts: { [state.grade ?? "unrated"]: 1 }, status_counts: { [state.state]: 1 }, page: 1, page_size: 10 };
     else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, finding_state_counts: { [current.state]: 1 }, scan_count: 1 };
     else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 10 };
-    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") json = { items: url.searchParams.get("state") === current.state ? [current] : [], total: url.searchParams.get("state") === current.state ? 1 : 0, registered_total: 1, state_counts: { [current.state]: 1 }, page: 1, page_size: 10 };
+    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") {
+      const row = path.includes("/scans/") ? historical : current;
+      json = { items: url.searchParams.get("state") === row.state ? [row] : [], total: url.searchParams.get("state") === row.state ? 1 : 0, registered_total: 1, state_counts: { [row.state]: 1 }, page: 1, page_size: 10 };
+    }
     else if (path === "/security/scans/scan" || path === "/security/scans/queued") json = { repository, scan: path.endsWith("queued") ? { ...scan, id: "queued", status: "queued", grade: null, report: {} }
       : { ...saved, coverage: { ...saved.coverage, inventory_count: Object.keys(saved.coverage.inventory as object).length }, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
-      finding_state_counts: path.endsWith("queued") ? {} : { [current.state]: 1 }, report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
+      finding_state_counts: path.endsWith("queued") ? {} : { [historical.state]: 1 }, report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
     else if (path === "/security/findings/finding") json = { repository, finding: current, can_write: options.canWrite ?? true,
       observations: [{ scan_id: "scan", outcome: "present", created_at: at, snapshot: {} }], activity: options.activity ?? [] };
     else if (path === "/security/scans/scan/activity") json = { items: [], total: 0, page: 1, page_size: 10 };
@@ -710,7 +714,7 @@ test("saved scan exposes findings, resolved, coverage and report downloads", asy
   await expect(page.getByRole("menuitem", { name: "Download Markdown" })).toHaveAttribute("href", /format=markdown/);
   await expect(page.getByRole("menuitem", { name: "Download JSON" })).toHaveAttribute("href", /format=json/);
   await page.keyboard.press("Escape");
-  const report = page.getByRole("region", { name: "Current findings for this scan", exact: true });
+  const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await expect(report.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Remediation", exact: true })).toHaveCount(0);
   await report.getByRole("button").click();
@@ -734,13 +738,13 @@ test("saved scan exposes findings, resolved, coverage and report downloads", asy
   await page.screenshot({ path: `/private/tmp/code-mortis-security-finding-${info.project.name}.png`, fullPage: true });
 });
 
-test("scan state tabs separate reopened findings from resolved findings and retain saved evidence", async ({ page }, info) => {
+test("scan state tabs paginate saved findings and retain historical evidence", async ({ page }, info) => {
   const writes = await mock(page);
   const rows = [
-    { ...finding, result: "present", state: "resolved", title: "Fixed by a later scan" },
+    { ...finding, result: "present", state: "resolved", title: "Resolved at this scan" },
     { ...finding, id: "unverified", result: "not_observed", title: "Absent but unverified" },
     ...Array.from({ length: 13 }, (_, index) => ({ ...finding, id: `fixed-${index}`, result: "fixed", state: "resolved", title: `Verified fix ${index}` })),
-    { ...finding, id: "reopened", result: "fixed", state: "open", title: "Verified fix reopened later" },
+    { ...finding, id: "reopened", result: "fixed", state: "open", title: "Open at this scan" },
   ];
   const requests: URLSearchParams[] = [];
   let failure = 0;
@@ -758,27 +762,27 @@ test("scan state tabs separate reopened findings from resolved findings and reta
       registered_total: rows.length, page: number, page_size: 10, state_counts: { open: 2, resolved: 14 } } });
   });
   await page.goto("/security/scans/scan?tab=report&assessment_outcome=withheld");
-  await expect(page.getByRole("tab", { name: "Findings 16", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Findings 2", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page).not.toHaveURL(/tab=report/);
   const cards = page.locator('[data-slot="finding-card"]');
   await expect(cards).toHaveCount(2);
-  await expect(page.getByText("Verified fix reopened later", { exact: true })).toBeVisible();
+  await expect(page.getByText("Open at this scan", { exact: true })).toBeVisible();
   await expect(page.getByText("Absent but unverified", { exact: true })).toBeVisible();
-  await expect(page.getByText("Fixed by a later scan", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Resolved at this scan", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Some files could not be analyzed.", { exact: true })).toBeVisible();
-  await page.getByRole("textbox", { name: "Search scan findings", exact: true }).fill("reopened");
+  await page.getByRole("textbox", { name: "Search scan findings", exact: true }).fill("Open at");
   await expect(cards).toHaveCount(1);
   await page.getByRole("tab", { name: "Resolved 14", exact: true }).click();
   await expect(cards).toHaveCount(10);
-  await expect(page.getByText("Fixed by a later scan", { exact: true })).toBeVisible();
-  await expect(page.getByText("Verified fix reopened later", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Resolved at this scan", { exact: true })).toBeVisible();
+  await expect(page.getByText("Open at this scan", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Next resolved findings", exact: true }).click();
   await expect(cards).toHaveCount(4);
   await expect(page.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 14 total");
   const search = page.getByRole("textbox", { name: "Search resolved findings", exact: true });
-  await search.fill("Fixed by");
+  await search.fill("Resolved at");
   await expect(cards).toHaveCount(1);
-  await expect(page).toHaveURL((url) => url.searchParams.get("resolved_search") === "Fixed by" && url.searchParams.get("search") === "reopened");
+  await expect(page).toHaveURL((url) => url.searchParams.get("resolved_search") === "Resolved at" && url.searchParams.get("search") === "Open at");
   await page.reload();
   await expect(cards).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -791,7 +795,7 @@ test("scan state tabs separate reopened findings from resolved findings and reta
   await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(search).toBeFocused();
   await expect(cards).toHaveCount(10);
-  await page.getByRole("tab", { name: "Open 2", exact: true }).click();
+  await page.getByRole("tab", { name: "Findings 2", exact: true }).click();
   await expect(cards).toHaveCount(1);
   failure = 503;
   await page.reload();
@@ -825,7 +829,7 @@ for (const theme of ["light", "dark"] as const) {
       can_write: true, finding_count: 3, activity_count: 0, activity: [] } }));
     await page.goto("/security/scans/scan");
     await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-    const report = page.getByRole("region", { name: "Current findings for this scan", exact: true });
+    const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
     const cards = report.locator('[data-slot="finding-card"]');
     await expect(cards).toHaveCount(3);
     await expect(cards.first()).toContainText("Dockerfile");
@@ -855,7 +859,7 @@ test("saved report details preserve original evidence separately from current st
     finding: { ...finding, state: "resolved", version: 7, path: "src/account-orders.ts", evidence: { ...finding.evidence,
       source_sha: currentSha, remediation: "Current remediation after the verified fix." } }, can_write: true, observations: [], activity: [] } }));
   await page.goto("/security/scans/scan");
-  const card = page.getByRole("region", { name: "Current findings for this scan", exact: true }).getByRole("button");
+  const card = page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).getByRole("button");
   await card.focus();
   await page.keyboard.press("Enter");
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
@@ -885,7 +889,7 @@ test("saved uncertain verification explains the blocker separately from remediat
   await mockReportFindings(page, [{ ...finding, finding_id: finding.id, outcome: "uncertain",
     verification: { verdict: "uncertain", explanation } }]);
   await page.goto("/security/scans/scan");
-  await page.getByRole("region", { name: "Current findings for this scan", exact: true }).getByRole("button").click();
+  await page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).getByRole("button").click();
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
   const verification = sheet.getByRole("region", { name: "Fix verification", exact: true });
   await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
@@ -1991,7 +1995,7 @@ test("security scan tabs count findings and activity independently of report sna
   });
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Current findings for this scan", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await expect(page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(10);
   await expect(page.getByRole("tab", { name: "Findings 23", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Activity 201", exact: true })).toBeVisible();
   const tabList = await page.getByRole("tablist", { name: "Security scan", exact: true }).boundingBox();
@@ -2044,7 +2048,7 @@ test("scan findings filter new and repeated observations like review runs withou
       total: selected.length, registered_total: rows.length, state_counts: { open: 24, resolved: 2, false_positive: 1, accepted_risk: 1 }, page: pageNumber, page_size: 10, result_counts: resultCounts } });
   });
   await page.goto("/security/scans/scan?tab=findings&assessment_outcome=withheld");
-  const list = page.getByRole("region", { name: "Current findings for this scan", exact: true });
+  const list = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await expect(page.getByRole("tab", { name: "Findings 28", exact: true })).toBeVisible();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -2085,7 +2089,7 @@ test("scan findings filter new and repeated observations like review runs withou
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await page.getByRole("tab", { name: "Resolved 2", exact: true }).click();
   await expect(list).toContainText("Verification fixed");
-  await page.getByRole("tab", { name: "Open 24", exact: true }).click();
+  await page.getByRole("tab", { name: "Findings 24", exact: true }).click();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   expect(writes).toHaveLength(0);
 });
@@ -2905,7 +2909,7 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} finding stat
       registered_total: rows.length, state_counts: stateCounts, severity_counts: { critical: 4, high: 48 }, kind_counts: { code: 52 }, page: number, page_size: 10 } });
   });
   await page.goto(url);
-  const names = [scope === "repository" ? "Findings" : "Open", "Accepted risk", "False positives", "Resolved"];
+  const names = ["Findings", "Accepted risk", "False positives", "Resolved"];
   const states = Object.keys(stateCounts);
   const cards = page.locator('[data-slot="finding-card"]');
   const pagination = page.getByRole("navigation", { name: /findings pagination/ }).getByRole("status");
@@ -2955,10 +2959,10 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} finding stat
   await expect(cards).toHaveCount(0, { timeout: 10000 });
 });
 
-for (const scope of ["repository", "scan"] as const) test(`${scope} triage moves findings between counted state tabs immediately`, async ({ page }) => {
+for (const scope of ["repository"] as const) test(`${scope} triage moves findings between counted state tabs immediately`, async ({ page }) => {
   const writes = await mock(page);
   await page.goto(scope === "repository" ? "/security/repositories/22" : "/security/scans/scan");
-  const openName = scope === "repository" ? "Findings" : "Open";
+  const openName = "Findings";
   let previous = openName;
   for (const [state, name] of [["accepted_risk", "Accepted risk"], ["false_positive", "False positives"], ["open", openName]]) {
     await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
@@ -2983,7 +2987,7 @@ for (const scope of ["repository", "scan"] as const) test(`${scope} legacy state
   await mock(page);
   const url = scope === "repository" ? "/security/repositories/22" : "/security/scans/scan";
   await page.goto(`${url}?state=false_positive&search=guard&false_positive_page=2`);
-  const key = scope === "repository" ? "tab" : "findings_tab";
+  const key = "tab";
   await expect(page).toHaveURL((url) => url.searchParams.get(key) === "false_positive" && !url.searchParams.has("state") && url.searchParams.get("false_positive_search") === "guard");
   await expect(page.getByRole("tab", { name: "False positives 0", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("textbox", { name: "Search false positive findings", exact: true })).toHaveValue("guard");
@@ -3018,4 +3022,27 @@ for (const state of ["current", "unavailable"] as const) test(`unrated security 
   await expect(page.getByRole("tooltip")).toContainText("No security grade is available.");
   await expect(page.getByLabel("Scan coverage", { exact: true })).toHaveText("Coverage complete");
   await expect(page.getByLabel("Scan freshness", { exact: true })).toHaveText(state === "current" ? "Current commit" : "Freshness unverified");
+});
+
+
+test("scan findings remain historical after triage while the repository updates", async ({ page }) => {
+  await mock(page);
+  await page.goto("/security/scans/scan");
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist")).toHaveCount(1);
+  await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await sheet.getByLabel("Decision", { exact: true }).selectOption("false_positive");
+  await sheet.getByLabel("Reason", { exact: true }).fill("Reviewed the saved evidence and current implementation.");
+  await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
+  await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("false positive");
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "False positives 0", exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await page.goto("/security/repositories/22?tab=false_positive");
+  await expect(page.getByRole("tab", { name: "Findings 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "False positives 1", exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
 });

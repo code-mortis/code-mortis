@@ -413,6 +413,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Saved Findings */
+        get: operations["run_saved_findings_api_v1_runs__run_id__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/resolved": {
         parameters: {
             query?: never;
@@ -2514,9 +2531,53 @@ export interface components {
              * @default
              */
             resolved_revision: string;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Findings Revision
+             * @default
+             */
+            findings_revision: string;
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
+        };
+        /** RunFindingPage */
+        RunFindingPage: {
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+            /** Items */
+            items: components["schemas"]["OccurrenceOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
         };
         /** RunLimits */
         RunLimits: {
@@ -4171,6 +4232,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_saved_findings_api_v1_runs__run_id__findings_get: {
+        parameters: {
+            query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
+                q?: string;
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                page?: number;
+                page_size?: number;
+                status?: "open" | "resolved";
+                outcome?: ("new" | "open_repeat" | "resolved_repeat" | "dismissed_repeat" | "repeated" | "recorded")[];
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunFindingPage"];
                 };
             };
             /** @description Validation Error */

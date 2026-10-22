@@ -590,7 +590,7 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
         for index in range(25):
             finding = saved_finding(db, seed, scan, state=["open", "resolved", "false_positive", "accepted_risk"][index % 4])
             db.add(SecurityOccurrence(scan_id=scan.id if index < 21 else other.id, finding_id=finding.id,
-                                      outcome="present", snapshot={}))
+                                      outcome="present", snapshot=security.finding_snapshot(finding)))
         db.add_all([SecurityActivity(scan_id=scan.id, action="scan_stage") for _ in range(205)])
         db.add(SecurityActivity(scan_id=other.id, action="scan_created"))
         repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
@@ -675,25 +675,26 @@ def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pa
         for state in ("open", "resolved"):
             finding = saved_finding(db, seed, scan, state=state)
             identities["new"].append(finding.id)
-            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={"title": "Original evidence"}))
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
         for state in ("open", "resolved", "false_positive", "accepted_risk", "legacy"):
             key = f"{state}_repeat" if state != "legacy" else "repeated"
             for index in range(21 if state == "open" else 1):
                 finding = saved_finding(db, seed, earlier, state=state, title=f"Earlier defect {index}",
                     severity="medium" if index == 20 else "high", kind="infrastructure" if index == 20 else "code")
                 identities[key].append(finding.id)
-                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={"title": "Original evidence"}))
+                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
         for outcome in ("fixed", "not_observed", "uncertain", "legacy"):
             finding = saved_finding(db, seed, earlier)
             identities[outcome if outcome != "legacy" else "recorded"].append(finding.id)
-            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome=outcome, snapshot={}))
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome=outcome, snapshot=security.finding_snapshot(finding)))
         saved_finding(db, seed, earlier)
+        scan.report = security.report_data(db, scan, [])
+        report = deepcopy(scan.report)
         repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
         db.add(repo)
         db.flush()
         foreign = saved_finding(db, {**seed, "repo": repo}, earlier)
-        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=foreign.id, outcome="present", snapshot={}))
-        scan.report = {"findings": [{"title": "Original report"}]}
+        db.add(SecurityOccurrence(scan_id=scan.id, finding_id=foreign.id, outcome="present", snapshot=security.finding_snapshot(foreign)))
     path = f"/api/v1/security/scans/{scan_id}/findings"
     page = client.get(path).json()
     assert page["total"] == 31 and len(page["items"]) == 10
@@ -711,7 +712,7 @@ def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pa
     with transaction() as db:
         db.get(SecurityFinding, identities["resolved_repeat"][0]).state = "open"
     page = client.get(path, params={"outcome": "resolved_repeat"}).json()
-    assert page["total"] == 0 and page["result_counts"]["open_repeat"] == 22
+    assert page["total"] == 1 and page["result_counts"]["open_repeat"] == 21
     resolved = client.get(path, params={"resolved": True}).json()
     assert resolved["total"] == resolved["registered_total"] == 1
     assert resolved["items"][0]["id"] == identities["fixed"][0]
@@ -726,8 +727,8 @@ def test_scan_finding_results_distinguish_new_repeats_and_verification_before_pa
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 31 and detail["resolved_count"] == 1
     with transaction() as db:
-        assert db.get(SecurityScan, scan_id).report == {"findings": [{"title": "Original report"}]}
-        assert db.scalar(select(SecurityOccurrence.snapshot).where(SecurityOccurrence.finding_id == identities["new"][0])) == {"title": "Original evidence"}
+        assert db.get(SecurityScan, scan_id).report == report
+        assert db.scalar(select(SecurityOccurrence.snapshot).where(SecurityOccurrence.finding_id == identities["new"][0]))["state"] == "open"
 
 
 def test_unfinished_scan_exposes_saved_observation_without_claiming_a_report(seed, security_github, client):
@@ -742,7 +743,7 @@ def test_unfinished_scan_exposes_saved_observation_without_claiming_a_report(see
     assert rows["items"] == [{**snapshot, "finding_id": finding_id, "outcome": "present"}]
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 1 and detail["resolved_count"] == detail["report_count"] == 0
-    assert detail["finding_state_counts"] == {"resolved": 1}
+    assert detail["finding_state_counts"] == {"open": 1}
     assert client.get(f"/api/v1/security/scans/{scan_id}/report").status_code == 409
 
 
@@ -1054,7 +1055,9 @@ def test_triage_updates_live_grades_without_changing_scan_history_or_coverage(se
         assert client.get("/api/v1/repositories").json()[0]["security"] == summary
         current_states[identity] = state
         detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
-        assert detail["finding_state_counts"] == {value: list(current_states.values()).count(value) for value in set(current_states.values())}
+        assert detail["finding_state_counts"] == {"open": 1, "accepted_risk": 1}
+        repository = client.get("/api/v1/security/repositories/22").json()
+        assert repository["finding_state_counts"] == {**{value: list(current_states.values()).count(value) for value in set(current_states.values())}, "resolved": 1}
         saved = detail["scan"]
         assert saved["grade"] == saved["report"]["grade"] == "F"
         assert client.get(f"/api/v1/security/scans/{scan_id}/report").json() == report
@@ -3259,7 +3262,7 @@ def test_security_finding_multiselect_uses_union_within_filters_and_intersection
                 ("medium", "secret", "resolved") if index < 23 else
                 ("low", "infrastructure", "accepted_risk") if index < 25 else ("unknown", "dependency", "false_positive"))
             finding = saved_finding(db, seed, scan, severity=severity, kind=kind, state=state)
-            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
         unrelated = saved_scan(db, seed, status="completed")
         saved_finding(db, seed, unrelated, severity="critical", kind="dependency")
     repository_path = "/api/v1/security/repositories/22/findings"
@@ -3276,7 +3279,7 @@ def test_security_finding_multiselect_uses_union_within_filters_and_intersection
         assert first["severity_counts"]["low"] == 2 and first["kind_counts"]["infrastructure"] == 2
         assert first["registered_total"] == (27 if path == repository_path else 26)
         assert second["severity_counts"] == first["severity_counts"]
-        assert client.get(path, params=filters + [("page", "4")]).json()["items"] == []
+        assert client.get(path, params=filters + [("page", "4")]).json()["page"] == (4 if path == repository_path else 3)
         for invalid in ([("severity", "high"), ("severity", "invalid")], [("kind", "code"), ("kind", "invalid")], [("page", "0")]):
             assert client.get(path, params=invalid).status_code == 422
     assert client.get(repository_path, params=[("state", "open"), ("state", "resolved")]).json()["total"] == 24
@@ -3335,7 +3338,7 @@ def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(s
         scan_id, finding_id = scan.id, finding.id
         for index in range(25):
             observation_scan = scan if index == 0 else saved_scan(db, seed, status="completed")
-            db.add(SecurityOccurrence(scan_id=observation_scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+            db.add(SecurityOccurrence(scan_id=observation_scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
             db.add(SecurityActivity(scan_id=scan.id, finding_id=finding.id, action="finding_observed", created_at=now() - timedelta(seconds=index)))
             db.add(SecurityActivity(scan_id=scan.id, action="scan_stage", created_at=now() - timedelta(seconds=index)))
         other = saved_scan(db, seed, status="completed")
@@ -3418,7 +3421,7 @@ def test_security_ordering_sorts_full_lists_and_preserves_saved_evidence(seed, s
             db.flush()
             rows.append({"id": finding.id, "finding_id": finding.id, "severity": severity,
                          "path": finding.path, "title": f"Saved title {index}"})
-            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+            db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
         scan.report = {"findings": rows}
         scan.stages = {"analysis": {"status": "completed"}}
         scan.coverage = {"inventory": {"app.py": {}}}
@@ -3453,7 +3456,7 @@ def test_security_current_state_filters_and_default_severity_sort_before_paging(
                 finding = saved_finding(db, seed, scan, state=state,
                     severity="critical" if index == total - 1 else "low", path=f"{state}/{index}.py")
                 db.flush()
-                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot={}))
+                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id, outcome="present", snapshot=security.finding_snapshot(finding)))
         scan_id = scan.id
     path = "/api/v1/security/repositories/22/findings" if scope == "repository" else f"/api/v1/security/scans/{scan_id}/findings"
     for state, total in [("open", 13), ("resolved", 15)]:
@@ -3492,3 +3495,39 @@ def test_report_state_groups_use_saved_states_and_preserve_unknown_history(seed,
     assert [row["state"] for row in legacy["items"]] == ["unknown", "unknown"]
     assert [row["outcome"] for row in legacy["items"]] == ["fixed", "not_observed"]
     assert client.get(f"/api/v1/security/scans/{scan_id}/report").json()["findings"] == rows
+
+
+@pytest.mark.parametrize("reported", [True, False])
+def test_scan_findings_and_counts_are_historical_while_repository_is_current(seed, security_github, client, reported):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed" if reported else "running")
+        for state in ("open", "resolved", "accepted_risk", "false_positive"):
+            for index in range(12):
+                finding = saved_finding(db, seed, scan, state=state, title=f"Saved {state} {index}", path=f"{state}/{index}.py")
+                db.add(SecurityOccurrence(scan_id=scan.id, finding_id=finding.id,
+                    outcome="fixed" if state == "resolved" else "present", snapshot=security.finding_snapshot(finding)))
+        db.flush()
+        if reported:
+            scan.report = security.report_data(db, scan, [])
+        scan_id = scan.id
+    path = f"/api/v1/security/scans/{scan_id}"
+    before = client.get(path).json()
+    pages = {(state, page): client.get(path + "/findings", params={"state": state, "page": page}).json()
+             for state in ("open", "resolved", "accepted_risk", "false_positive") for page in (1, 2)}
+    assert before["finding_state_counts"] == {state: 12 for state in ("open", "resolved", "accepted_risk", "false_positive")}
+    for (state, page), result in pages.items():
+        assert result["total"] == 12 and len(result["items"]) == (10 if page == 1 else 2)
+        assert all(item["state"] == state and item["title"].startswith("Saved") for item in result["items"])
+    with transaction() as db:
+        for finding in db.scalars(select(SecurityFinding).where(SecurityFinding.repository_id == 22)):
+            finding.state = "resolved" if finding.state == "open" else "open"
+            finding.title, finding.path, finding.severity = "Changed later", "later.py", "critical"
+            finding.version += 1
+    after = client.get(path).json()
+    assert after["finding_state_counts"] == before["finding_state_counts"]
+    assert after["finding_count"] == before["finding_count"]
+    for (state, page), expected in pages.items():
+        assert client.get(path + "/findings", params={"state": state, "page": page}).json() == expected
+    current = client.get("/api/v1/security/repositories/22").json()
+    assert current["finding_state_counts"] == {"open": 36, "resolved": 12}
+    assert client.get("/api/v1/security/repositories/22/findings", params={"state": "open"}).json()["items"][0]["title"] == "Changed later"

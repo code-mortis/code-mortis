@@ -284,6 +284,7 @@ async function mock(
   } = {},
 ) {
   const current: Schema["FindingOut"] = { ...structuredClone(finding), sync_intent: null, ...options.finding };
+  const fixedSnapshots = new Map<string, Schema["OccurrenceOut"]>();
   const requests: {
     path: string;
     method: string;
@@ -295,6 +296,14 @@ async function mock(
     const path = new URL(request.url()).pathname.replace("/api/v1", "");
     const method = request.method();
     const currentRun = { ...run, ...options.run };
+    const observations: Schema["OccurrenceOut"][] = options.occurrences ?? (currentRun.status === "skipped" ? [] : [
+      { finding_id: "finding", snapshot: finding, inline_line: 46 },
+    ]);
+    const fixed = (options.resolved ?? []).map((item) => {
+      if (!fixedSnapshots.has(item.id)) fixedSnapshots.set(item.id, { finding_id: item.id, snapshot: structuredClone(item), inline_line: null });
+      return fixedSnapshots.get(item.id)!;
+    });
+    const savedRevision = String(fixtureRevision([options.candidates ?? [], observations.map(({ finding_id, snapshot, is_new }) => ({ finding_id, snapshot, is_new })), fixed]));
     if (method !== "GET")
       requests.push({
         path,
@@ -387,15 +396,26 @@ async function mock(
         run: currentRun,
         pull_request: { ...pr, ...options.overview },
         repository: repo,
-        occurrences: options.occurrences ?? (currentRun.status === "skipped" ? [] : [
-          { finding_id: "finding", snapshot: finding, inline_line: 46 },
-        ]),
+        occurrences: observations,
+        finding_state_counts: { open: observations.length, resolved: fixed.length },
+        findings_revision: savedRevision,
         assessment: options.assessment ?? null,
         resolved_count: options.resolved?.length ?? 0,
         resolved_revision: String(fixtureRevision(options.resolved ?? [])),
         assessment_revision: fixtureRevision(options.candidates ?? []),
         can_write: options.canWrite !== false,
       };
+    else if (path === "/runs/run/findings") {
+      const params = new URL(request.url()).searchParams;
+      const rows = params.get("status") === "resolved" ? fixed : observations;
+      const result = (item: Schema["OccurrenceOut"]) => item.is_new === true ? "new" : item.is_new === false ? "repeated" : "recorded";
+      const selected = rows.filter((item) => !params.has("outcome") || params.getAll("outcome").includes(result(item)));
+      const paged = resolvedPage(selected.map((item) => ({ ...finding, ...item.snapshot, id: item.finding_id })), params);
+      data = { ...paged, revision: savedRevision, registered_total: rows.length,
+        items: paged.items.map((item) => rows.find((row) => row.finding_id === item.id)),
+        outcome_counts: Object.fromEntries(["new", "repeated", "recorded"].map((value) => [value, rows.filter((item) => result(item) === value).length])),
+      };
+    }
     else if (path === "/runs/run/resolved") data = resolvedPage(options.resolved ?? [], new URL(request.url()).searchParams);
     else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
     else if (path.startsWith("/runs/run/candidates/")) data = { ...options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1)), revision: fixtureRevision(options.candidates ?? []) };
@@ -2182,54 +2202,28 @@ test("finding snippets without a saved source location stay unnumbered", async (
 test("pull filters, history tabs, and finding tabs survive reload and browser history", async ({ page }) => {
   await mock(page);
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [run],
-    findings: [
-      { ...finding, status: "dismissed", severity: "high", category: "bug" },
-      { ...finding, id: "open", status: "open", severity: "high", category: "bug" },
-      { ...finding, id: "resolved", status: "resolved", severity: "high", category: "bug" },
-    ],
+    findings: [{ ...finding }, { ...finding, id: "fixed", status: "resolved" }, { ...finding, id: "dismissed", status: "dismissed" }],
   }));
   await page.goto("/pulls/pr?q=retry&status=dismissed&severity=high&category=bug");
-  const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
-  await expect(dismissed.getByRole("button")).toHaveCount(1);
-  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("retry");
-  await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
-  await page.reload();
-  await expect(dismissed.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Edit Status: Dismissed", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Open/ }).click();
-  await page.keyboard.press("Escape");
-  await expect(page).toHaveURL((url) => url.searchParams.getAll("status").includes("open") && url.searchParams.getAll("status").includes("dismissed"));
-  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
-  await page.goBack();
-  await expect(page.getByRole("button", { name: "Edit Status: Dismissed", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toHaveCount(0);
-  await page.goForward();
-  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
-  await dismissed.getByRole("button").click();
+  const open = page.getByRole("region", { name: "Open findings", exact: true });
+  await expect(open.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
+  await open.getByRole("button").click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await sheet.getByRole("button", { name: "View activity", exact: true }).click();
-  await expect(page).toHaveURL((url) => url.searchParams.get("finding") === "finding" && url.searchParams.get("finding_tab") === "activity");
   await page.reload();
   await expect(sheet.getByRole("tab", { name: "Activity 1", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.goBack();
-  await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
-  await expect(page).toHaveURL((url) => !url.searchParams.has("finding") && !url.searchParams.has("finding_tab") && url.searchParams.get("q") === "retry");
+  await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await page.goBack();
+  await expect(page.getByLabel("Search findings", { exact: true })).toHaveValue("retry");
   await page.getByRole("tab", { name: /Run history/ }).click();
-  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "history");
   await page.reload();
   await expect(page.getByRole("tab", { name: /Run history/ })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: /^Findings/ }).click();
-  await expect(dismissed.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
-  await expect(dismissed).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Open findings", exact: true })).toBeVisible();
-  await page.goto("/pulls/pr?status=all");
-  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Remove Status filter", exact: true }).click();
-  await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
 });
 
 test("run tabs and independent finding and assessment filters survive shared URLs", async ({ page }, info) => {
@@ -2320,7 +2314,7 @@ test("run resolved tab preserves verification history and a finding's current st
   await page.keyboard.press("Escape");
   await expect(tab).toBeFocused();
   const card = page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("button");
-  await expect(card).toContainText("Currently open");
+  await expect(card).toContainText("Resolved");
   await card.focus();
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
@@ -2340,7 +2334,7 @@ test(`run resolved tab catches late confirmations after opening a ${status} revi
   const mutations = await mock(page, { resolved, occurrences: [], run: currentRun });
   let reads = 0;
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/v1/runs/run/resolved") reads++;
+    if (new URL(request.url()).pathname === "/api/v1/runs/run/findings") reads++;
   });
   await page.goto("/runs/run?tab=resolved");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
@@ -2380,7 +2374,7 @@ test("late resolutions refresh loaded pages without resetting resolved filters",
   const requests: URLSearchParams[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/runs/run/resolved") requests.push(url.searchParams);
+    if (url.pathname === "/api/v1/runs/run/findings") requests.push(url.searchParams);
   });
   await page.goto("/runs/run?tab=resolved&resolved_q=sync&resolved_severity=high");
   const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
@@ -2388,6 +2382,7 @@ test("late resolutions refresh loaded pages without resetting resolved filters",
   await expect(cards).toHaveCount(10);
   await list.getByRole("button", { name: "Next resolved findings", exact: true }).click();
   await expect(cards).toHaveCount(10);
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
   resolved.push({ ...finding, id: "new-resolution", path: "src/sync-new.ts", created_at: "2026-10-06T13:20:00Z", status: "resolved", sync_intent: null });
   resolved.push({ ...finding, id: "unmatched-resolution", path: "src/other.ts", severity: "low", status: "resolved", sync_intent: null });
   await page.clock.runFor(5500);
@@ -2414,7 +2409,7 @@ test("resolved findings use independent backend filters and reset pagination", a
   const requests: URLSearchParams[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/runs/run/resolved") requests.push(url.searchParams);
+    if (url.pathname === "/api/v1/runs/run/findings") requests.push(url.searchParams);
   });
   await page.goto("/runs/run?tab=resolved&q=retry&severity=high&resolved_q=handler-1&resolved_severity=low&resolved_category=custom_rule");
   const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
@@ -2463,7 +2458,7 @@ for (const status of ["running", "completed"] as const) {
     await mock(page, { run: { status }, resolved: [] });
     let reads = 0;
     page.on("request", (request) => {
-      if (new URL(request.url()).pathname === "/api/v1/runs/run/resolved") reads++;
+      if (new URL(request.url()).pathname === "/api/v1/runs/run/findings") reads++;
     });
     await page.goto("/runs/run?tab=resolved");
     await expect(page.getByRole("region", { name: "Findings resolved by this run", exact: true }).getByRole("heading")).toBeVisible();
@@ -2477,10 +2472,10 @@ test("resolved pages preserve loaded cards on failure and hide them on access de
   const resolved = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `resolved-${index}`, status: "resolved", sync_intent: null }));
   await mock(page, { resolved });
   let failure = 500;
-  await page.route("**/api/v1/runs/run/resolved?**", (route) => {
+  await page.route("**/api/v1/runs/run/findings?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
     return failure && Number(params.get("page")) > 1 ? route.fulfill({ status: failure, json: { detail: "Resolved page unavailable" } })
-      : route.fulfill({ json: resolvedPage(resolved, params) });
+      : route.fallback();
   });
   await page.goto("/runs/run?tab=resolved");
   const list = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
@@ -2571,42 +2566,37 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   expect(requests).toEqual([]);
 });
 
-test("run finding badges show only the current status", async ({ page }, info) => {
-  const occurrences = [
-    { finding_id: "new-1", snapshot: { ...finding, content: "First new finding" }, inline_line: 46, is_new: true, current_status: "resolved" },
-    { finding_id: "new-2", snapshot: { ...finding, content: "Second new finding" }, inline_line: 46, is_new: true, current_status: "open" },
-    { finding_id: "repeat", snapshot: { ...finding, content: "Earlier finding reported again" }, inline_line: 46, is_new: false, current_status: "resolved" },
-  ];
-  await mock(page, {
-    occurrences, finding: { status: "resolved" },
-    run: { status: "completed", publication: "published", publication_error: null, check_pending: false, check_error: null, check_status: "completed", check_conclusion: "success" },
-    assessment: { candidates: 3, new_findings: 2, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 0, pending: 0, incomplete: 0, published_comments: 2 },
-  });
+test("run findings preserve historical results after resolution and reopening", async ({ page }, info) => {
+  await page.clock.install();
+  const occurrences = Array.from({ length: 13 }, (_, index) => ({ finding_id: `found-${index}`,
+    snapshot: { ...finding, content: `Saved finding ${index}`, path: `saved/${index}.ts` }, inline_line: 46,
+    is_new: index === 0, current_status: "open" }));
+  const resolved = Array.from({ length: 12 }, (_, index) => ({ ...finding, id: `fixed-${index}`, status: "resolved", content: `Saved fix ${index}` }));
+  await mock(page, { occurrences, resolved, run: { status: "completed" } });
   await page.goto("/runs/run");
+  await expect(page.getByRole("tab", { name: "Findings 13", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 12", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist")).toHaveCount(1);
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  await expect(page.getByText("2 new findings · 1 resolved repeat", { exact: true })).toHaveCount(0);
-  await expect(list.getByText("open", { exact: true })).toHaveCount(1);
-  await expect(list.getByText("resolved", { exact: true })).toHaveCount(2);
-  await expect(list).not.toContainText("Inline comment");
-  await noOverflow(page);
-  await page.screenshot({ path: `/private/tmp/run-findings-${info.project.name}.png`, fullPage: true });
-  await page.getByLabel("Search run findings").fill("Earlier");
-  await expect(list.getByRole("button")).toHaveCount(1);
-  await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  await list.getByRole("button").click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  for (const status of ["open", "dismissed"]) {
-    occurrences[2].current_status = status;
-    await page.goto("/runs/run");
-    const repeat = list.getByRole("button", { name: /Earlier finding reported again/ });
-    await expect(repeat.getByText(status, { exact: true })).toBeVisible();
-    await expect(repeat.getByText("resolved", { exact: true })).toHaveCount(0);
-  }
-  occurrences[1].is_new = false;
-  occurrences[1].current_status = "dismissed";
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await list.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(list.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 13 total");
+  await page.getByRole("tab", { name: "Resolved 12", exact: true }).click();
+  const fixes = page.getByRole("region", { name: "Findings resolved by this run", exact: true });
+  await fixes.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(fixes.getByRole("status")).toHaveText("Page 2 of 2 · 12 total");
+  const before = await fixes.textContent();
+  occurrences.forEach((item) => { item.current_status = "resolved"; });
+  resolved.forEach((item) => { item.status = "open"; item.content = "Changed after this run"; });
+  await page.clock.runFor(5500);
+  await expect(fixes).toHaveText(before!);
+  await page.getByRole("tab", { name: "Findings 13", exact: true }).click();
+  await expect(list.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 13 total");
+  await expect(list).not.toContainText("Changed after this run");
   await page.reload();
-  await expect(list.getByText("dismissed", { exact: true })).toHaveCount(2);
+  await expect(list.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 13 total");
+  await noOverflow(page);
+  await page.screenshot({ path: info.outputPath("historical-run.png"), fullPage: true });
 });
 
 test("run finding result filters combine with other filters and survive navigation", async ({ page }, info) => {
@@ -2622,33 +2612,33 @@ test("run finding result filters combine with other filters and survive navigati
   await page.goto("/runs/run?assessment_outcome=withheld&outcome=invalid");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
-  await expect(list.getByText("unknown", { exact: true })).toBeVisible();
+  await expect(list.getByText("Recorded finding", { exact: true })).toBeVisible();
   await expect(page).toHaveURL((url) => !url.searchParams.has("outcome"));
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Result", exact: true }).click();
-  await expect(page.getByRole("group", { name: "Result", exact: true }).getByRole("checkbox")).toHaveCount(6);
-  await page.getByRole("checkbox", { name: /^Resolved repeats/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Resolved repeats/ })).toBeChecked();
-  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(page.getByRole("group", { name: "Result", exact: true }).getByRole("checkbox")).toHaveCount(3);
+  await page.getByRole("checkbox", { name: /^Repeated findings/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Repeated findings/ })).toBeChecked();
+  await expect(list.getByRole("button")).toHaveCount(4);
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/run-finding-filters-${info.project.name}.png`, fullPage: true });
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Edit Result: Resolved repeats", exact: true })).toBeFocused();
-  await expect(page).toHaveURL((url) => url.searchParams.get("outcome") === "resolved_repeat" && url.searchParams.get("assessment_outcome") === "withheld");
+  await expect(page.getByRole("button", { name: "Edit Result: Repeated findings", exact: true })).toBeFocused();
+  await expect(page).toHaveURL((url) => url.searchParams.get("outcome") === "repeated" && url.searchParams.get("assessment_outcome") === "withheld");
   await page.reload();
-  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(list.getByRole("button")).toHaveCount(4);
   await page.getByRole("tab", { name: /^Assessment/ }).click();
   await expect(page.getByRole("button", { name: "Edit Result: Withheld", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Findings 6", exact: true }).click();
-  await page.getByRole("button", { name: "Edit Result: Resolved repeats", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Result: Repeated findings", exact: true }).click();
   await page.getByRole("checkbox", { name: /^New findings/ }).click();
   await expect(page.getByRole("checkbox", { name: /^New findings/ })).toBeChecked();
-  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list.getByRole("button")).toHaveCount(5);
   await page.keyboard.press("Escape");
   await page.goBack();
-  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(list.getByRole("button")).toHaveCount(4);
   await page.goForward();
-  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list.getByRole("button")).toHaveCount(5);
   await page.getByLabel("Search run findings").fill("New defect");
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -2661,11 +2651,9 @@ test("run finding result filters combine with other filters and survive navigati
   await expect(list.getByRole("button")).toHaveCount(6);
   await expect(page.getByLabel("Search run findings")).toHaveValue("");
   await expect(page).toHaveURL((url) => !url.searchParams.has("outcome") && !url.searchParams.has("severity") && url.searchParams.get("assessment_outcome") === "withheld");
-  for (const [value, name] of [["open_repeat", "Open repeated defect"], ["dismissed_repeat", "Dismissed repeated defect"], ["recorded", finding.content], ["repeated", finding.content]]) {
-    await page.goto(`/runs/run?outcome=${value}`);
-    await expect(list.getByRole("button")).toHaveCount(1);
-    await expect(list.getByRole("button")).toContainText(name);
-  }
+  await page.goto("/runs/run?outcome=recorded");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(list.getByRole("button")).toContainText(finding.content);
 });
 
 test("review run workspace filters saved findings and separates original evidence from current status", async ({ page }, info) => {
@@ -2714,6 +2702,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByRole("tab", { name: "Assessment", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Coverage", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("region", { name: "Reviewed files", exact: true }).locator("summary").click();
   await expect(page.getByRole("region", { name: "Reviewed files", exact: true }).getByText("src/config.ts", { exact: true })).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/run-coverage-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -8199,19 +8188,10 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("region")).toHaveCount(1);
   await expect(list.getByRole("button")).toHaveCount(1);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: "Findings 2", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
-  await page.keyboard.press("Escape");
-  await expect(list.getByRole("region")).toHaveCount(2);
-  await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("dismissed");
-  await expect(list.getByRole("button", { name: /Batch dispatches/ })).toContainText("Sync needs attention");
-  await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
-  await page.getByLabel("Search findings", { exact: true }).fill("performance");
-  await expect(list.getByRole("button")).toHaveCount(1);
+  await page.getByLabel("Search findings", { exact: true }).fill("no matching issue");
+  await expect(list.getByRole("button")).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
   await page.getByRole("checkbox", { name: "High", exact: true }).click();
@@ -8221,14 +8201,6 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(page.getByLabel("Search findings", { exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: /Remove (Status|Severity|Type) filter/ })).toHaveCount(0);
   await expect(list.getByRole("button")).toHaveCount(1);
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: /^Open/ })).toBeChecked();
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
-  await expect(page.getByRole("checkbox", { name: /^Resolved/ })).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Filters", exact: true })).toBeFocused();
   await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("Validate the response");
   await expect(list).toHaveCount(0);
@@ -8243,7 +8215,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
     await expect(page.getByRole("button", { name: "Next run history" })).toHaveCount(0);
     await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   }
-  await page.getByRole("tab", { name: "Findings 2", exact: true }).click();
+  await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
   await list.getByRole("button", { name: /retry loop has no upper bound/ }).press("Enter");
   await expect(page.getByRole("dialog", { name: "Finding details" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -8472,7 +8444,7 @@ test("pull detail keeps independent findings and resolved backend filters, order
   const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
   const dismissed = page.getByRole("region", { name: "Dismissed findings", exact: true });
   const rows = (section: typeof open) => section.locator('[data-slot="finding-card"]');
-  const findingsTab = page.getByRole("tab", { name: "Findings 42", exact: true });
+  const findingsTab = page.getByRole("tab", { name: "Findings 21", exact: true });
   const resolvedTab = page.getByRole("tab", { name: "Resolved 21", exact: true });
   await expect(findingsTab).toHaveAttribute("aria-selected", "true");
   await expect(rows(open)).toHaveCount(10);
@@ -8483,7 +8455,7 @@ test("pull detail keeps independent findings and resolved backend filters, order
   await open.getByRole("button", { name: "Next open findings", exact: true }).click();
   await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
   await resolvedTab.click();
-  await expect(findingsTab).toHaveText("Findings 42");
+  await expect(findingsTab).toHaveText("Findings 21");
   await expect(resolvedTab).toHaveText("Resolved 21");
   holdResolved = false;
   release();
@@ -8540,25 +8512,11 @@ test("pull detail keeps independent findings and resolved backend filters, order
   await page.goForward();
   await expect(panel.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   await panel.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Dismissed/ }).click();
+  await expect(page.getByRole("menuitem", { name: "Status", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(panel.getByRole("button", { name: "Edit Status: Open, Dismissed", exact: true })).toBeVisible();
-  await expect(rows(open)).toHaveCount(10);
-  await expect(rows(dismissed)).toHaveCount(10);
-  await expect(resolved).toHaveCount(0);
-  await open.getByRole("button", { name: "Next open findings", exact: true }).click();
-  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
-  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
-  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
-  await panel.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("checkbox", { name: /^Custom rule/ }).click();
-  await page.getByRole("checkbox", { name: /^Performance/ }).click();
-  await page.keyboard.press("Escape");
-  for (const section of [open, dismissed]) await expect(rows(section)).toHaveCount(2);
-  await resolvedTab.click();
-  await expect(resolved.getByRole("status")).toHaveText("Page 2 of 2 · 20 total");
+  await expect(dismissed).toHaveCount(0);
+  await expect(page.getByRole("tablist")).toHaveCount(1);
+
 });
 
 for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {
@@ -8741,23 +8699,23 @@ test("live refresh checks the backend when opening a stale terminal assessment",
   expect(reads).toBe(1);await expect(sheet.getByText("Finished assessment evidence",{exact:true})).toBeVisible();
 });
 
-test("live refresh updates Resolved current status when its total stays unchanged",async({page})=>{
+test("live refresh preserves historical Resolved after current status changes",async({page})=>{
   await page.clock.install();const resolved=[{...structuredClone(finding),status:"resolved"}];
   await mock(page,{resolved,run:{status:"completed"}});
-  let reads=0;await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return r.fallback();});
+  let reads=0;await page.route("**/api/v1/runs/run/findings?**",r=>{reads++;return r.fallback();});
   await page.goto("/runs/run?tab=resolved");
   const list=page.getByRole("region",{name:"Findings resolved by this run"});
   await expect(list.getByText("Resolved",{exact:true})).toHaveCount(1);
   resolved[0].status="open";const before=reads;await ticks(page);
-  expect(reads).toBe(before + 1);await expect(list.getByText("Currently open",{exact:true})).toHaveCount(1);
-  await expect(list.getByText("Resolved",{exact:true})).toHaveCount(0);
+  expect(reads).toBe(before);await expect(list.getByText("Resolved",{exact:true})).toHaveCount(1);
+  await expect(list.getByText("Currently open",{exact:true})).toHaveCount(0);
 });
 
 test("live refresh recovers Resolved from an error after completion",async({page})=>{
   await page.clock.install();const resolved:Schema["FindingOut"][]=[];
   await mock(page,{resolved,run:{status:"completed"}});
   let reads=0;let fail=true;
-  await page.route("**/api/v1/runs/run/resolved?**",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary resolved outage"}}):r.fallback();});
+  await page.route("**/api/v1/runs/run/findings?**",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary resolved outage"}}):r.fallback();});
   await page.goto("/runs/run?tab=resolved");await expect(page.getByRole("alert").filter({hasText:"Temporary resolved outage"})).toBeVisible();
   fail=false;resolved.push({...structuredClone(finding),status:"resolved"});const before=reads;await ticks(page);
   await expect(page.getByRole("tab",{name:"Resolved 1",exact:true})).toBeVisible();
@@ -8784,7 +8742,7 @@ for(const tab of ["findings","coverage","details"]) {
     occurrences[0].current_status="resolved";
     (state.report as any).manifest.coverage.completed.push({path:"src/late.ts"});
     await ticks(page,1);await expect(page.locator("main h1")).toContainText("completed");
-    if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"}).getByText("resolved",{exact:true})).toBeVisible();
+    if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"}).getByText("Repeated finding",{exact:true})).toBeVisible();
     if(tab==="coverage") await expect(page.getByRole("region",{name:"Coverage",exact:true})).toContainText("src/late.ts");
     if(tab==="details") await expect(page.getByRole("region",{name:"Execution",exact:true})).not.toContainText("Not finished");
     await expect(page.getByRole("region",{name:"GitHub publication"})).toContainText("Published");
@@ -8869,7 +8827,7 @@ test("live refresh respects Retry-After and recovers after completion without ma
   const resolved = [{ ...structuredClone(finding), status: "resolved", sync_intent: null }];
   await mock(page, { resolved, run: { status: "completed" } });
   let reads = 0;
-  await page.route("**/api/v1/runs/run/resolved?**", (route) => {
+  await page.route("**/api/v1/runs/run/findings?**", (route) => {
     reads++;
     return reads === 1 ? route.fulfill({ status: 503, headers: { "Retry-After": "12" }, json: { detail: "Temporary outage" } }) : route.fallback();
   });
@@ -8919,7 +8877,7 @@ test("live refresh backs off temporary failures to thirty seconds and then recov
   await page.clock.install();
   await mock(page, { resolved: [{ ...finding, status: "resolved" }], run: { status: "completed" } });
   const times: number[] = [];
-  await page.route("**/api/v1/runs/run/resolved?**", async (route) => {
+  await page.route("**/api/v1/runs/run/findings?**", async (route) => {
     times.push(await page.evaluate(() => Date.now()));
     if (times.length === 3) return route.abort("failed");
     if (times.length <= 5) return route.fulfill({ status: times.length === 1 ? 429 : 503, json: { detail: "Temporary outage" } });
@@ -9022,11 +8980,10 @@ for (const resource of ["candidates", "resolved"] as const) {
     let releasePage!: () => void;
     const background = new Promise<void>((resolve) => { releaseBackground = resolve; });
     let nextPage = new Promise<void>((resolve) => { releasePage = resolve; });
-    await page.route(`**/api/v1/runs/run/${resource}?**`, async (route) => {
+    await page.route(`**/api/v1/runs/run/${resource === "resolved" ? "findings" : resource}?**`, async (route) => {
       const params = new URL(route.request().url()).searchParams;
       const size = Number(params.get("page"));
       sizes.push(size);
-      const data = resource === "candidates" ? candidatePage(candidates, params) : resolvedPage(resolved, params);
       if (failNext) {
         failNext = false;
         return route.fulfill({ status: 503, json: { detail: "Temporary list failure" } });
@@ -9038,11 +8995,10 @@ for (const resource of ["candidates", "resolved"] as const) {
         holdPage = false;
         await nextPage;
       }
-      await route.fulfill({ json: data }).catch(() => null);
+      await route.fallback().catch(() => null);
     });
     const changeRevision = () => {
       candidates[0].progress_phase = candidates[0].progress_phase ? null : "validating";
-      resolved[0].sync_version++;
     };
     await page.goto(`/runs/run?tab=${resource === "candidates" ? "assessment" : "resolved"}`);
     const list = page.getByRole("region", { name: resource === "candidates" ? "Candidate assessment" : "Findings resolved by this run", exact: true });
@@ -9090,7 +9046,7 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
     const occurrences = rows.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null }));
     await mock(page, { candidates, resolved: rows, occurrences, assessment: auditSummary(23) });
     if (area === "pull") await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, findings: rows, runs: [] }));
-    const endpoint = area === "pull" ? "/pulls/pr/findings" : `/runs/run${area === "run" ? "" : area === "assessment" ? "/candidates" : "/resolved"}`;
+    const endpoint = area === "pull" ? "/pulls/pr/findings" : `/runs/run/${area === "assessment" ? "candidates" : "findings"}`;
     const requests: URLSearchParams[] = [];
     await page.route(`**/api/v1${endpoint}**`, (route) => {
       const url = new URL(route.request().url());
@@ -9102,10 +9058,9 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
       const shown = ordered.slice((pageNumber - 1) * 10, pageNumber * 10);
       const data = area === "pull" ? findingPage(rows, params) : area === "assessment" ? candidatePage(candidates, params) : resolvedPage(rows, params);
       if (area === "pull") (data as Schema["FindingsOut"]).groups[0].items = shown;
-      else if (area !== "run") (data as Schema["ResolvedPage"] | Schema["CandidatePage"]).items = area === "assessment"
-        ? shown.map((row) => candidates[rows.indexOf(row)]) : shown;
-      return route.fulfill({ json: area === "run" ? { run, pull_request: pr, repository: repo,
-        occurrences: ordered.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null })), can_write: true } : data });
+      else if (area === "assessment") (data as Schema["CandidatePage"]).items = shown.map((row) => candidates[rows.indexOf(row)]);
+      return route.fulfill({ json: area === "run" || area === "resolved" ? { ...data,
+        items: shown.map((row) => ({ finding_id: row.id, snapshot: row, inline_line: null })), outcome_counts: {} } : data });
     });
     await page.goto(area === "pull" ? "/pulls/pr?ordering=-created_at" : `/runs/run?tab=${area === "run" ? "findings" : area === "assessment" ? "assessment&assessment_ordering=position" : "resolved&resolved_ordering=-created_at"}`);
     const panel = page.getByRole("tabpanel");

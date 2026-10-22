@@ -565,6 +565,8 @@ class RunDetail(BaseModel):
     resolved_count: int = 0
     assessment_revision: int = 0
     resolved_revision: str = ""
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
+    findings_revision: str = ""
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -615,6 +617,11 @@ class ResolvedFilters(StrictModel):
     page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
 
 
+class RunFindingFilters(ResolvedFilters):
+    status: Literal["open", "resolved"] = "open"
+    outcome: list[Literal["new", "open_repeat", "resolved_repeat", "dismissed_repeat", "repeated", "recorded"]] = Field(default_factory=list, max_length=6)
+
+
 class ResolvedPage(BaseModel):
     revision: str = ""
     items: list[FindingOut]
@@ -625,6 +632,11 @@ class ResolvedPage(BaseModel):
     page: int
     has_more: bool
     page_size: int = LIST_PAGE_SIZE
+
+
+class RunFindingPage(ResolvedPage):
+    items: list[OccurrenceOut]
+    outcome_counts: dict[str, int]
 
 
 InboxGroup = Literal["active", "merged", "closed", "all"]
