@@ -83,7 +83,7 @@ async function mockSecurityAssessments(page: Page) {
   }
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: { ...scan, status: "running", grade: null,
     stages: { ...scan.stages, assessment: { status: "running", total: state.rows.length, completed: summary().status_counts.completed ?? 0 } } },
-    can_write: false, finding_count: 1, activity_count: 0, activity: [], assessment: summary() } }));
+    can_write: false, finding_count: 1, finding_state_counts: { open: 1 }, activity_count: 0, activity: [], assessment: summary() } }));
   await page.route("**/api/v1/security/scans/scan/assessments**", (route) => {
     const url = new URL(route.request().url());
     state.requests.push(url.pathname + url.search);
@@ -2328,6 +2328,14 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   const list = page.getByRole("region", { name: "Security assessments", exact: true });
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(7);
   await expect(page.getByRole("status", { name: "Assessment progress" })).toContainText("1 queued · 2 running · 3 completed · 1 failed");
+  for (const id of [4, 6]) {
+    const assessing = list.getByRole("button", { name: new RegExp(`Security candidate ${id}`) }).getByText("Assessing", { exact: true });
+    await expect(assessing).toBeVisible();
+    await expect(assessing).toHaveClass(/bg-primary/);
+  }
+  const queued = list.getByRole("button", { name: /Security candidate 5/ }).getByText("Awaiting assessment", { exact: true });
+  await expect(queued).toBeVisible();
+  await expect(queued).not.toHaveClass(/bg-primary/);
   const rejected = list.getByRole("button", { name: /Security candidate 1/ });
   await rejected.getByText("Not supported", { exact: true }).hover();
   await expect(page.getByRole("tooltip")).toHaveText("The evidence did not support this proposed issue.");
@@ -2367,11 +2375,12 @@ test("security assessments and open drawer update live through validation withou
   await page.goto("/security/scans/scan?tab=assessment&assessment=4");
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
   await expect(drawer.getByText("Assessment is being checked against source evidence and finding history.")).toBeVisible();
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
   state.rows[4] = securityAssessment("4", { status: "running", progress_phase: "validating", outcome: "pending", result: { verdict: "confirmed", explanation: "Validated response", evidence: finding.evidence.evidence } });
   state.revision++;
   await page.clock.fastForward(5100);
   await expect(drawer.getByText("Response received; validating against the current source and finding history.")).toBeVisible();
-  await expect(drawer.getByText("Validating", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
   await expect(drawer.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   state.rows[4] = securityAssessment("4", { outcome: "confirmed", finding_id: "finding", result: { verdict: "confirmed", finding_id: null, explanation: "Accepted", evidence: [{ revision: "current", path: "src/orders.ts", start_line: 14, end_line: 14, quote: "return acceptedOrder;" }] } });
