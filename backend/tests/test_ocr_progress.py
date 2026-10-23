@@ -148,3 +148,34 @@ def test_live_counts_reach_run_api_before_report_is_saved(seed, github_stub, cli
     monkeypatch.setattr(ocr, "review", review)
     reviews.perform_review(identity)
     assert client.get(f"/api/v1/runs/{identity}").json()["run"]["report"] == {"message": "final report"}
+
+
+@pytest.mark.parametrize("failure", ["callback", "filesystem"])
+def test_progress_failures_do_not_interrupt_ocr_and_can_recover(live_progress, tmp_path, monkeypatch, failure):
+    _, _, _, header, write = live_progress
+    delivered, attempts = [], []
+    failing = True
+    original_glob = Path.glob
+
+    def callback(value):
+        attempts.append(value)
+        if failing and failure == "callback":
+            raise RuntimeError("Progress transaction unavailable")
+        delivered.append(value)
+
+    def glob(path, *args, **kwargs):
+        if failing and failure == "filesystem":
+            attempts.append(None)
+            raise OSError("Checkpoint directory unavailable")
+        return original_glob(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    poll = ocr.review_progress(Path(header["cwd"]), header["diffFrom"], header["diffTo"], ["a.py"], callback)
+    write()
+    code, output, _ = ocr.command([sys.executable, "-c", "import time; time.sleep(0.3); print('final report')"],
+                                 tmp_path, os.environ.copy(), timeout=5, poll=lambda: poll(force=True))
+    poll(force=True)
+    assert attempts and code == 0 and output == "final report\n"
+    failing = False
+    poll(force=True)
+    assert delivered[-1] == {"selected": 1, "completed": 1, "reused": 0, "failed": 0}

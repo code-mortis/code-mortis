@@ -396,11 +396,10 @@ def review_progress(repo: Path, base: str, head: str, paths: list[str], progress
     offsets, outcomes = {}, {}
     selected = set(paths)
     kinds = {"review_item_done": "completed", "review_item_reused": "reused", "review_item_failed": "failed"}
-    last = {"selected": len(selected), "completed": 0, "reused": 0, "failed": 0}
-    progress(dict(last))
+    last = None
     next_poll = 0.0
 
-    def poll(*, force=False):
+    def read(*, force=False):
         nonlocal next_poll, last
         if not force and time.monotonic() < next_poll:
             return
@@ -452,6 +451,14 @@ def review_progress(repo: Path, base: str, head: str, paths: list[str], progress
             progress(value)
             last = value
 
+    def poll(*, force=False):
+        try:
+            read(force=force)
+        except Exception:
+            # Filesystem and progress delivery failures must not abort OCR or its final report.
+            pass
+
+    poll(force=True)
     return poll
 
 
