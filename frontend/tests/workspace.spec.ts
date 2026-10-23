@@ -4658,17 +4658,21 @@ test("assessment result tooltips preserve card activation and keyboard access", 
     { label: "Repeated observation", description: "Matches an existing finding from review history.", finding_id: "finding" },
     { label: "Not supported", description: "The evidence did not support this proposed issue.", result },
     { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." },
-    { label: "Awaiting assessment", description: "Queued or being checked against evidence.", status: "queued" },
+    { label: "Awaiting assessment", description: "Queued for assessment.", status: "queued" },
+    { label: "Assessing", description: "Checking evidence before accepting this proposed finding.", status: "running" },
+    { label: "Assessing", description: "Checking evidence before accepting this proposed finding.", status: "running", progress_phase: "validating" as const },
   ];
   const writes = await mock(page, { candidates: outcomes.map((outcome, index) => ({
     id: `result-${index}`, snapshot: { path: `src/result-${index}.ts`, content: `Proposal ${index}` },
     status: "completed", result: null, finding_id: null, is_new: false, error: null, retryable: false, ...outcome,
-  })), assessment: { candidates: 5, new_findings: 1, repeated_observations: 1, rejected_candidates: 1, withheld_candidates: 1,
-    pending: 1, incomplete: 0, published_comments: 0 } });
+  })), assessment: { candidates: 7, new_findings: 1, repeated_observations: 1, rejected_candidates: 1, withheld_candidates: 1,
+    pending: 3, incomplete: 0, published_comments: 0 } });
   await page.goto("/runs/run?tab=assessment");
-  for (const { label, description } of outcomes) {
-    const card = page.getByRole("button", { name: new RegExp(label) });
+  for (const [index, { label, description, status }] of outcomes.entries()) {
+    const card = page.getByRole("button", { name: new RegExp(`Proposal ${index}`) });
     const badge = card.getByText(label, { exact: true });
+    if (status === "running") await expect(badge).toHaveClass(/bg-primary/);
+    if (status === "queued") await expect(badge).not.toHaveClass(/bg-primary/);
     await expect(badge).toHaveCSS("cursor", "pointer");
     await expect(card.locator("button, a, input, [tabindex]")).toHaveCount(0);
     await expect(card).toHaveAccessibleName(new RegExp(description));
@@ -9049,7 +9053,7 @@ test("live refresh catches final assessment statuses after parent completion",as
   await page.clock.fastForward(2000);
   await page.getByRole("tab",{name:/Assessment/}).click();
   const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
-  await expect(list.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  await expect(list.getByText("Assessing",{exact:true})).toHaveCount(1);
   const before=reads;
   finish(candidate);assessment.pending=0;assessment.rejected_candidates=1;state.status="completed";
   const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run"));
@@ -9068,7 +9072,7 @@ test("live refresh recovers the open assessment drawer from a transient error",a
   await page.route("**/api/v1/runs/run/candidates/audit-0",r=>{reads++;return fail?r.fulfill({status:503,json:{detail:"Temporary audit outage"}}):r.fallback();});
   await page.goto("/runs/run?tab=assessment");await page.getByRole("button",{name:/Audit proposal 0/}).click();
   const sheet=page.getByRole("dialog",{name:"Assessment details"});
-  await expect(sheet.getByText("Awaiting assessment",{exact:true})).toHaveCount(1);
+  await expect(sheet.getByText("Assessing",{exact:true})).toHaveCount(1);
   await ticks(page,2);await expect(sheet.getByRole("alert")).toContainText("Temporary audit outage");
   fail=false;finish(candidate);const before=reads;await ticks(page);
   expect(reads).toBeGreaterThan(before);
@@ -9193,7 +9197,7 @@ for (const count of [10, 50, 110]) {
     expect(requests).toHaveLength(initial);
     candidates.at(-1)!.progress_phase = "validating";
     await ticks(page, 1);
-    await expect(cards.last()).toContainText("Validating");
+    await expect(cards.last()).toContainText("Assessing");
     expect(requests).toHaveLength(initial + 1);
     expect(requests.at(-1)!.searchParams.get("page")).toBe(String(count / 10));
     const openResponse = page.waitForResponse((response) => response.url().endsWith(`/candidates/audit-${count - 1}`));

@@ -10,8 +10,8 @@ function feedback(candidate: Assessment) {
   if (candidate.finding_id && candidate.is_new) return { label: "New validated finding", description: "Confirmed by evidence and saved as a new finding." };
   if (candidate.finding_id) return { label: "Repeated observation", description: "Matches an existing finding from review history." };
   if (candidate.result?.verdict === "rejected") return { label: "Not supported", description: "The evidence did not support this proposed issue." };
-  if (candidate.progress_phase === "validating") return { label: "Validating", description: "Processing finished. Final validation must finish before a finding can be accepted." };
-  if (active(candidate.status)) return { label: "Awaiting assessment", description: "Queued or being checked against evidence." };
+  if (candidate.status === "running" || candidate.progress_phase === "validating") return { label: "Assessing", description: "Checking evidence before accepting this proposed finding." };
+  if (candidate.status === "queued") return { label: "Awaiting assessment", description: "Queued for assessment." };
   return { label: "Withheld", description: "Not accepted as a finding because assessment was uncertain or incomplete." };
 }
 
