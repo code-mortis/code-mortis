@@ -14,15 +14,16 @@ export const candidateOutcomes = [
   { value: "withheld", name: "Withheld" },
   { value: "pending", name: "Awaiting assessment" },
 ];
-export type ReviewFilterScope = "pull" | "run" | "assessment" | "resolved";
+export type ReviewFilterScope = "pull" | "run" | "assessment" | "resolved" | "dismissed";
 export type ReviewFilterKey = "q" | "status" | "severity" | "category" | "outcome" | "ordering";
 export const reviewFilterKeys = {
   pull: ["q", "status", "severity", "category", "ordering"],
   run: ["q", "outcome", "severity", "category", "ordering"],
   assessment: ["q", "outcome", "severity", "category", "ordering"],
   resolved: ["q", "severity", "category", "ordering"],
+  dismissed: ["q", "severity", "category", "ordering"],
 } as const;
-export const reviewFilterPrefixes = { pull: "", run: "", assessment: "assessment_", resolved: "resolved_" };
+export const reviewFilterPrefixes = { pull: "", run: "", assessment: "assessment_", resolved: "resolved_", dismissed: "dismissed_" };
 
 export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilterScope) {
   const result = new URLSearchParams();
@@ -53,6 +54,12 @@ export function normalizeReviewFilters(input: URLSearchParams, scope: ReviewFilt
 
 export function withReviewFilters(input: URLSearchParams, filters: URLSearchParams, scope: ReviewFilterScope) {
   const result = new URLSearchParams(input);
+  if (scope === "pull" && !input.has("tab") && input.get("status") === "dismissed") {
+    result.set("tab", "dismissed");
+    for (const key of reviewFilterKeys.dismissed) if (!input.has(`dismissed_${key}`)) {
+      for (const value of filters.getAll(key)) result.append(`dismissed_${key}`, value);
+    }
+  }
   const prefix = reviewFilterPrefixes[scope];
   for (const key of reviewFilterKeys[scope]) result.delete(`${prefix}${key}`);
   for (const [key, value] of filters) result.append(`${prefix}${key}`, value);

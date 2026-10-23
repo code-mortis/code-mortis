@@ -2507,7 +2507,7 @@ test("pull filters, history tabs, and finding tabs survive reload and browser hi
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs: [run],
     findings: [{ ...finding }, { ...finding, id: "fixed", status: "resolved" }, { ...finding, id: "dismissed", status: "dismissed" }],
   }));
-  await page.goto("/pulls/pr?q=retry&status=dismissed&severity=high&category=bug");
+  await page.goto("/pulls/pr?q=retry&status=open&severity=high&category=bug");
   const open = page.getByRole("region", { name: "Open findings", exact: true });
   await expect(open.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
@@ -8919,7 +8919,32 @@ test("pull detail keeps independent findings and resolved backend filters, order
   await page.keyboard.press("Escape");
   await expect(dismissed).toHaveCount(0);
   await expect(page.getByRole("tablist")).toHaveCount(1);
-
+  const dismissedTab = page.getByRole("tab", { name: "Dismissed 21", exact: true });
+  await dismissedTab.click();
+  await expect(rows(dismissed)).toHaveCount(10);
+  await expect(dismissed.getByRole("status")).toHaveText("Page 1 of 3 · 21 total");
+  expect(requests.at(-1)?.getAll("status")).toEqual(["dismissed"]);
+  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
+  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await findingsTab.click();
+  await expect(open.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await dismissedTab.click();
+  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await panel.getByLabel("Search dismissed findings", { exact: true }).fill("dismissed");
+  await expect(dismissed.getByRole("status")).toHaveText("Page 1 of 3 · 21 total");
+  await dismissed.getByRole("button", { name: "Next dismissed findings", exact: true }).click();
+  await page.reload();
+  await expect(dismissedTab).toHaveAttribute("aria-selected", "true");
+  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(panel.getByLabel("Search dismissed findings", { exact: true })).toHaveValue("dismissed");
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/code-mortis-pr-dismissed-${info.project.name}.png`, fullPage: true });
+  await page.goto("/pulls/pr?status=dismissed&dismissed_page=2&q=handler&ordering=path");
+  await expect(dismissedTab).toHaveAttribute("aria-selected", "true");
+  await expect(dismissed.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(panel.getByLabel("Search dismissed findings", { exact: true })).toHaveValue("handler");
+  await expect(panel.getByRole("button", { name: "Sort by File", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist")).toHaveCount(1);
 });
 
 for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] as const) {

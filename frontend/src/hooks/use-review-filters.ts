@@ -20,7 +20,7 @@ export function useReviewFilters(scope: ReviewFilterScope) {
     if (needsNormalization) setParams(normalized, { replace: true, state: location.state });
   }, [needsNormalization, normalized, setParams, location.state]);
   function resetPages(params: URLSearchParams) {
-    for (const status of scope === "pull" || scope === "run" ? ["open"] : scope === "resolved" ? ["resolved"] : []) params.delete(`${status}_page`);
+    for (const status of scope === "pull" || scope === "run" ? ["open"] : scope === "resolved" || scope === "dismissed" ? [scope] : []) params.delete(`${status}_page`);
     return params;
   }
   const search = useCallback((value: string) => {

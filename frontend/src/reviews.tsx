@@ -277,10 +277,11 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "history"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history"], "findings");
   const resolved = tab === "resolved";
-  const filters = useReviewFilters(resolved ? "resolved" : "pull");
-  const status = resolved ? "resolved" : "open";
+  const dismissed = tab === "dismissed";
+  const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull");
+  const status = resolved ? "resolved" : dismissed ? "dismissed" : "open";
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const search = filters.params.get("q") ?? "";
@@ -307,13 +308,13 @@ export function PullDetail({ admin }: { admin: boolean }) {
   findingFilters.delete("status");
   findingFilters.set("status", status);
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
-    queryKey: ["pull-findings", id, resolved, filters.canonical, pages],
+    queryKey: ["pull-findings", id, status, filters.canonical, pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pages, signal),
     enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
     staleTime: 0,
     refetchInterval: 5000,
     retry: false,
-    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id && previousQuery?.queryKey[2] === resolved ? previous : undefined,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id && previousQuery?.queryKey[2] === status ? previous : undefined,
   });
   const savedCounts = useRef<{ id: typeof id; counts: Record<string, number> } | null>(null);
   if (findingsQuery.data) savedCounts.current = { id, counts: findingsQuery.data.status_counts };
@@ -338,7 +339,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const count = (state: string) => counts?.[state] ?? 0;
   const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
-  const noOpenFindings = !resolved && total > 0 && !count("open") && !severities.length && !categories.length && !term;
+  const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
@@ -414,11 +415,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
       <TabsList className="mb-4 max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
+        <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
-      {["findings", "resolved"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
+      {["findings", "resolved", "dismissed"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : dismissed ? "Search dismissed findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
@@ -445,8 +447,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
               </div>
             </section>;
           })}
-        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : scopeTotal ? "No findings match these filters" : resolved ? "No resolved findings" : run_count ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. Their saved evidence and history are preserved." : scopeTotal ? "Try another search, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : scopeTotal ? "No findings match these filters" : resolved ? "No resolved findings" : dismissed ? "No dismissed findings" : run_count ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. Their saved evidence and history are preserved." : scopeTotal ? "Try another search, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : dismissed ? "Dismissed findings retain their evidence and dismissal reason." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
           {noOpenFindings && count("resolved") > 0 ? <Button variant="outline" className="mt-4" onClick={() => setTab("resolved")}>View resolved findings</Button> : scopeTotal > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>Clear filters</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
