@@ -263,12 +263,21 @@ def test_run_findings_preserve_historical_membership_evidence_counts_and_pages(s
     history = client.get("/api/v1/runs/current/resolved").json()
     assert history["registered_total"] == 3
     assert {item["id"] for item in history["items"]} == {"fixed-open", "fixed-resolved", "resolved-0"}
+    saved = client.get(path + "/fixed-resolved?status=resolved")
+    assert saved.status_code == 200
+    assert saved.json()["snapshot"]["content"] == "Original issue"
+    assert saved.json()["snapshot"]["path"] == "src/fixed-resolved.py"
+    assert client.get(path + "/fixed-resolved").status_code == 404
+    assert client.get(path + "/unrelated?status=resolved").status_code == 404
+    assert client.get(path + "/missing?status=resolved").status_code == 404
+    assert client.get(path + "/open-0").json()["snapshot"]["content"] == "Immutable original evidence"
+    assert client.get("/api/v1/runs/missing/findings/open-0").status_code == 404
     assert client.get("/api/v1/runs/missing/findings").status_code == 404
     for params in [{"status": "dismissed"}, {"page": 0}, {"q": "x" * 257}, {"outcome": "invalid"}, {"severity": "urgent"}, {"unknown": "ignored"}]:
         assert client.get(path, params=params).status_code == 422
 
 
-@pytest.mark.parametrize("endpoint", ["resolved", "findings"])
+@pytest.mark.parametrize("endpoint", ["resolved", "findings", "findings/example"])
 def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch, endpoint):
     with transaction() as db:
         run(db, db.get(PullRequest, "pr"), "completed", "run")

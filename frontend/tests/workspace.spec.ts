@@ -418,6 +418,11 @@ async function mock(
         outcome_counts: Object.fromEntries(["new", "repeated", "recorded"].map((value) => [value, rows.filter((item) => result(item) === value).length])),
       };
     }
+    else if (path.startsWith("/runs/run/findings/")) {
+      const rows = new URL(request.url()).searchParams.get("status") === "resolved" ? fixed : observations;
+      data = rows.find((item) => item.finding_id === path.split("/").at(-1));
+      if (!data) return route.fulfill({ status: 404, json: { detail: "Finding not recorded in this run." } });
+    }
     else if (path === "/runs/run/resolved") data = resolvedPage(options.resolved ?? [], new URL(request.url()).searchParams);
     else if (path === "/runs/run/candidates") data = candidatePage(options.candidates ?? [], new URL(request.url()).searchParams);
     else if (path.startsWith("/runs/run/candidates/")) data = { ...options.candidates?.find((candidate) => candidate.id === path.split("/").at(-1)), revision: fixtureRevision(options.candidates ?? []) };
@@ -2594,7 +2599,7 @@ test("run tabs and independent finding and assessment filters survive shared URL
 test("run resolved tab preserves verification history and a finding's current status", async ({ page }, info) => {
   const requests = await mock(page, {
     canWrite: false, occurrences: [], finding: { status: "open" },
-    resolved: [{ ...finding, status: "open", sync_intent: null }],
+    resolved: [{ ...finding, status: "open", sync_intent: null, content: "Original evidence preserved from the earlier review." }],
     verifications: [{
       id: "verification", run_id: "run", head_sha: run.head_sha, status: "completed", verdict: "fixed",
       resolution: "resolved", error: null, created_at: at, finished_at: at,
@@ -2607,7 +2612,8 @@ test("run resolved tab preserves verification history and a finding's current st
   await expect(tab).toHaveAttribute("aria-selected", "true");
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByText("open", { exact: true })).toBeVisible();
-  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveCount(0);
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
   await sheet.getByRole("button", { name: "View verification", exact: true }).click();
   await expect(sheet).toContainText("The retry loop now stops after three attempts.");
   await expect(sheet).toContainText("Automatic resolution: resolved");
@@ -2620,8 +2626,13 @@ test("run resolved tab preserves verification history and a finding's current st
   await card.focus();
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
+  await page.reload();
+  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
   await page.keyboard.press("Escape");
-  await expect(card).toBeFocused();
+  await expect(tab).toBeFocused();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/run-resolved-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   expect(requests).toEqual([]);

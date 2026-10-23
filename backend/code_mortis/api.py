@@ -3,7 +3,7 @@ import json
 import secrets
 from datetime import timedelta
 from importlib.resources import files
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -678,6 +678,20 @@ def run_saved_findings(run_id: str, db: DB, user: USER, filters: Annotated[RunFi
         raise HTTPException(404, "Review run not found.")
     pr_access(db, user, run.pr_id)
     return run_findings.list_findings(db, run, filters)
+
+
+@router.get("/runs/{run_id}/findings/{finding_id}", response_model=OccurrenceOut)
+def run_saved_finding(run_id: str, finding_id: str, db: DB, user: USER,
+    status: Literal["open", "resolved"] = "open",
+):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    item = db.scalar(run_findings.scope(run, status).where(Occurrence.finding_id == finding_id))
+    if not item:
+        raise HTTPException(404, "Finding not recorded in this run.")
+    return OccurrenceOut.model_validate(item)
 
 
 @router.get("/runs/{run_id}/resolved", response_model=ResolvedPage)

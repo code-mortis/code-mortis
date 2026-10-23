@@ -832,7 +832,14 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details", "activity"], "findings");
   const activityEvents = runActivityEvents(run);
   const findingId = params.get("finding");
-  const finding = findingId ? { finding_id: findingId, snapshot: occurrences.find((item) => item.finding_id === findingId)?.snapshot } : null;
+  const [findingSeed, setFindingSeed] = useState<{ item: Schema["OccurrenceOut"]; tab: string } | null>(null);
+  const savedFinding = findingSeed?.tab === tab && findingSeed.item.finding_id === findingId ? findingSeed.item
+    : tab !== "resolved" ? occurrences.find((item) => item.finding_id === findingId) : undefined;
+  const findingQuery = useApi<Schema["OccurrenceOut"]>(
+    `/runs/${run.id}/findings/${encodeURIComponent(findingId ?? "")}?status=${tab === "resolved" ? "resolved" : "open"}`,
+    false, !!findingId && !savedFinding,
+  );
+  const finding = findingId ? savedFinding ?? findingQuery.data : undefined;
   const candidateId = params.get("candidate");
   const [candidateSeed, setCandidateSeed] = useState<Schema["CandidateOut"] | null>(null);
   function showSheet(key: "finding" | "candidate", value: string | null) {
@@ -966,11 +973,11 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       <TabsContent value="findings" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings recorded in this run, with their saved evidence. Later status changes do not change this list.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-        <RunFindings runId={run.id} state="open" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.finding_id); }} />
+        <RunFindings runId={run.id} state="open" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFindingSeed({ item, tab }); showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="resolved" className="min-w-0">
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings resolved by this run after fix verification and GitHub confirmation. Later status changes do not change this list.</p>
-        <RunFindings runId={run.id} state="resolved" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.finding_id); }} />
+        <RunFindings runId={run.id} state="resolved" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFindingSeed({ item, tab }); showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />
@@ -1020,16 +1027,16 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         </details>
       </TabsContent>
     </Tabs>
-    <Sheet open={!!finding || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
+    <Sheet open={!!findingId || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
       <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : tab === "resolved" ? resolvedTab.current : searchInput.current)?.focus(); }}>
         <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
-          {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
-          <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>
-          <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
+          {findingId && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
+          <SheetTitle>{findingId ? "Finding details" : "Assessment details"}</SheetTitle>
+          <SheetDescription className="sr-only">{findingId ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
         {candidateId && <ErrorNotice error={candidateQuery.error} />}
         {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
-        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
+        {findingId ? finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : <div className="px-6">{findingQuery.isPending ? <Loading /> : <ErrorNotice error={findingQuery.error} />}</div> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
           canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>
