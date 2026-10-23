@@ -2358,11 +2358,7 @@ for (const entry of ["history", "feedback", "start"] as const) {
     await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
-    if (entry === "feedback") {
-      await page.getByRole("link", { name: "#148 · Add retry handling for payment webhooks", exact: true }).click();
-    } else {
-      await (await breadcrumbAncestor(page, "Pull request #148")).click();
-    }
+    await (await breadcrumbAncestor(page, "Pull request #148")).click();
     await expect(page).toHaveURL((url) => url.pathname === "/pulls/pr");
     await openNavigation(page);
     await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
