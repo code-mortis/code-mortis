@@ -869,8 +869,10 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     : run.summary ?? run.stages?.summary;
   const summaryDiagnostics = [summaryStage?.error, run.summary?.diagram_warning, pr.summary_error]
     .filter(Boolean).join("\n\n");
-  const summaryPublication = pr.latest_run?.id === run.id && summaryStage?.status === "completed"
-    ? pr.summary_error ? "failed" : pr.summary_pending ? "pending" : undefined : undefined;
+  const currentSummary = pr.latest_run?.id === run.id && summaryStage?.status === "completed";
+  // A sync job can reconcile an already published comment without changing it.
+  const summaryPublicationPending = currentSummary && !pr.summary_url && pr.summary_pending;
+  const summarySyncFailed = currentSummary && Boolean(pr.summary_error);
   const stageDetails = <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
     {summaryStage && <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -951,7 +953,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </header>
     <ErrorNotice error={action.error || error} />
     <ErrorNotice error={run.error} />
-    <RunStages run={run} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublication={summaryPublication}>{stageDetails}</RunStages>
+    <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>

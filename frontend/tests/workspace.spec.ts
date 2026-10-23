@@ -1343,7 +1343,7 @@ test("review stage title follows parallel work and summary publication without c
   await page.goto("/runs/run");
   const card = page.getByRole("region", { name: "Review stages", exact: true });
   const title = card.getByRole("button", { name: "Review stage details", exact: true });
-  const count = card.getByLabel("Review progress count", { exact: true });
+  const count = card.getByLabel(/^(Review progress count|Stage progress unavailable)$/);
   const geometry = async () => {
     const box = (await card.boundingBox())!;
     return { height: box.height, count: (await count.boundingBox())!.y - box.y,
@@ -1354,7 +1354,7 @@ test("review stage title follows parallel work and summary publication without c
   const original = await geometry();
   await page.screenshot({ path: info.outputPath("parallel-stage-title.png") });
   const check = async (text: string) => {
-    await expect(title).toContainText(text);
+    await expect(title.locator(".line-clamp-2")).toHaveText(text);
     expect(await geometry()).toEqual(original);
     await expect(card.locator('[data-slot="badge"], .lucide-loader-circle')).toHaveCount(0);
     await expect(title.locator(".lucide-chevron-down")).toBeVisible();
@@ -1369,41 +1369,86 @@ test("review stage title follows parallel work and summary publication without c
   state.stages!.summary!.status = "completed";
   overview.summary_pending = true;
   await page.clock.fastForward(5000);
-  await check("Assessment · Fix verification · GitHub summary pending");
+  await check("Assessment · Fix verification");
+  state.stages!.verification!.status = "completed";
+  await page.clock.fastForward(5000);
+  await check("Assessment");
+  await page.screenshot({ path: info.outputPath("assessment-with-summary-sync-queued.png") });
+  for (const pending of [false, true]) {
+    overview.summary_pending = pending;
+    await page.clock.fastForward(5000);
+    await check("Assessment");
+  }
+  overview.summary_error = "GitHub sync failed";
+  await page.clock.fastForward(5000);
+  await check("Assessment · Summary sync failed");
+  overview.summary_error = null;
   state.status = "partial";
   await page.reload();
-  await check("Assessment · Fix verification · GitHub summary pending");
+  await check("Assessment");
   state.stages!.assessment!.status = "completed";
-  state.stages!.verification!.status = "completed";
   await page.reload();
-  await check("GitHub summary pending");
+  await check("Review complete with warnings");
+  await expect(card).toHaveAttribute("data-status", "partial");
+  await expect(card.locator(".lucide-pause")).toHaveCount(0);
+  await expect(card.locator(".stage-divider")).toHaveText("Waiting to publish the summary to GitHub.");
+  state.status = "running";
+  await page.clock.fastForward(5000);
+  await check("Finalizing review");
+  await expect(card).toHaveAttribute("data-status", "running");
+  await expect(card.locator(".lucide-pause")).toHaveCount(0);
+  state.status = "completed";
+  overview.summary_url = "https://github.com/acme/payments/pull/148#issuecomment-10";
+  for (const pending of [true, false, true]) {
+    overview.summary_pending = pending;
+    await page.clock.fastForward(5000);
+    await check("Review complete");
+    await expect(card).toHaveAttribute("data-status", "completed");
+    await expect(card.locator(".lucide-circle-check")).toBeVisible();
+    await expect(card.locator(".lucide-pause")).toHaveCount(0);
+    await expect(count).toHaveText("3 / 8 files");
+    await expect(card.locator(".stage-divider")).toHaveText("Review findings and coverage below.");
+  }
+  await page.screenshot({ path: info.outputPath("completed-review-summary-sync-pending.png") });
+  state.status = "partial";
+  await page.reload();
+  await check("Review complete with warnings");
+  await expect(card.locator(".stage-divider")).toHaveText("Some review work could not be completed.");
+  overview.summary_pending = false;
   overview.summary_error = "GitHub sync failed";
   await page.reload();
-  await check("Summary publication failed");
+  await check("Summary sync failed");
+  await title.click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details.getByRole("link", { name: "PR summary", exact: true })).toHaveAttribute("href", overview.summary_url);
+  await expect(details.getByRole("button", { name: "Retry GitHub sync" })).toBeVisible();
+  await page.keyboard.press("Escape");
   overview.latest_run = { ...run, id: "newer-run" };
   await page.reload();
   await check("Review complete with warnings");
   overview.latest_run = { ...run, id: "run" };
   overview.summary_error = null;
-  overview.summary_pending = false;
+  overview.summary_pending = true;
   state.status = "completed";
   await page.reload();
   await check("Review complete");
+  await expect(card.locator(".stage-divider")).toHaveText("Review findings and coverage below.");
 });
 
 test("review stage card keeps a fixed layout through every stage and terminal state", async ({ page }, info) => {
   const state: Partial<Run> = { status: "queued", report: null, progress: {}, publication: "pending",
     publication_error: null, check_enabled: false, config: { ...run.config, pipeline_version: 2 },
     summary: { status: "pending", tokens: 0, limited_context: false }, stages: {} };
-  await mock(page, { run: state });
+  await mock(page, { run: state, assessment: { candidates: 7, pending: 4, incomplete: 0,
+    new_findings: 2, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 0, published_comments: 0 } });
   let height = 0;
   const steps: [string, string | null, string, string][] = [
     ["queued", null, "Waiting to start", "—"],
     ["running", "ocr", "Code review", "3 / 8 files"],
-    ["running", "assessment", "Assessment", "3 / 8 files"],
-    ["running", "verification", "Fix verification", "3 / 8 files"],
-    ["running", "summary", "PR summary", "3 / 8 files"],
-    ["running", "waiting", "PR summary waiting", "3 / 8 files"],
+    ["running", "assessment", "Assessment", "3 / 7 candidates"],
+    ["running", "verification", "Fix verification", "1 / 3 findings"],
+    ["running", "summary", "PR summary", "—"],
+    ["running", "waiting", "PR summary waiting", "—"],
     ["blocked", null, "Review paused", "3 / 8 files"],
     ["completed", null, "Review complete", "2 / 2 files"],
     ["partial", null, "Review complete with warnings", "3 / 8 files"],
@@ -1414,7 +1459,7 @@ test("review stage card keeps a fixed layout through every stage and terminal st
   ];
   for (const [status, stage, title, count] of steps) {
     state.status = status;
-    state.progress = status === "queued" ? {} : { selected: 8, completed: 3 };
+    state.progress = status === "queued" ? {} : { selected: 8, completed: 3, verification: { selected: 3, completed: 1 } };
     state.stages = Object.fromEntries(["ocr", "assessment", "verification", "summary"].map((key) => [key,
       { status: key === stage ? "running" : stage === "waiting" && key === "summary" ? "waiting" : "completed", tokens: 0 }]));
     state.report = status === "completed" ? { manifest: { coverage: { selected: [{ path: "one.ts" }, { path: "two.ts" }],
@@ -1422,7 +1467,7 @@ test("review stage card keeps a fixed layout through every stage and terminal st
     await page.goto("/runs/run");
     const card = page.getByRole("region", { name: "Review stages", exact: true });
     await expect(card.getByRole("button", { name: "Review stage details", exact: true })).toContainText(title);
-    await expect(card.getByLabel(count === "—" ? "File progress unavailable" : "Review progress count", { exact: true })).toHaveText(count);
+    await expect(card.getByLabel(count === "—" ? "Stage progress unavailable" : "Review progress count", { exact: true })).toHaveText(count);
     await expect(card.locator('[data-slot="badge"], .lucide-loader-circle')).toHaveCount(0);
     await expect(card.locator(".lucide-chevron-down")).toBeVisible();
     const box = (await card.boundingBox())!;
@@ -1438,7 +1483,44 @@ test("review stage card keeps a fixed layout through every stage and terminal st
   state.report = null;
   state.progress = { selected: -1, completed: 5, phase: "__proto__" };
   await page.goto("/runs/run");
-  await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("File progress unavailable")).toHaveText("—");
+  await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("Stage progress unavailable")).toHaveText("—");
+});
+
+test("assessment progress counts candidates while polling instead of completed review files", async ({ page }, info) => {
+  await page.clock.install();
+  const state: Partial<Run> = { status: "running", report: null, progress: { selected: 45, completed: 45 },
+    stages: { ocr: { status: "completed", tokens: 100 }, assessment: { status: "running", tokens: 0 },
+      verification: { status: "completed", tokens: 20 }, summary: { status: "completed", tokens: 10 } } };
+  const assessment = { candidates: 7, pending: 7, incomplete: 0, new_findings: 0, repeated_observations: 0,
+    rejected_candidates: 0, withheld_candidates: 0, published_comments: 0 };
+  const options = { run: state, assessment: assessment as Schema["AssessmentSummary"] | null };
+  await mock(page, options);
+  await page.goto("/runs/run?tab=assessment");
+  const card = page.getByRole("region", { name: "Review stages", exact: true });
+  const count = card.getByLabel(/^(Review progress count|Stage progress unavailable)$/);
+  await expect(count).toHaveText("0 / 7 candidates");
+  const geometry = async () => ({ height: (await card.boundingBox())!.height, tabs: (await page.getByRole("tablist").boundingBox())!.y });
+  const original = await geometry();
+  for (const pending of [4, 0]) {
+    assessment.pending = pending;
+    assessment.rejected_candidates = 7 - pending;
+    await page.clock.fastForward(5000);
+    await expect(count).toHaveText(`${7 - pending} / 7 candidates`);
+    await expect(page.getByRole("tab", { name: "Assessment 7", exact: true })).toBeVisible();
+    expect(await geometry()).toEqual(original);
+    if (pending === 4) await page.screenshot({ path: info.outputPath("assessment-candidate-progress.png") });
+  }
+  for (const pending of [8, -1, 0.5]) {
+    assessment.pending = pending;
+    await page.clock.fastForward(5000);
+    await expect(count).toHaveText("—");
+    expect(await geometry()).toEqual(original);
+  }
+  options.assessment = null;
+  await page.clock.fastForward(5000);
+  await expect(count).toHaveText("—");
+  await expect(card).not.toContainText("45 / 45 files");
+  await noOverflow(page);
 });
 
 for (const [ocr, assessment, verification, expected] of [

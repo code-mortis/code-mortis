@@ -11,9 +11,11 @@ const descriptions = {
   summary: ["PR summary", "Preparing the pull request summary."],
 } as const;
 
-export function RunStages({ run, assessmentStatus, summaryStage, summaryPublication, children }: {
+export function RunStages({ run, assessment, assessmentStatus, summaryStage, summaryPublicationPending, summarySyncFailed, children }: {
   run: Run; assessmentStatus: string; summaryStage?: Schema["StageState"] | Schema["SummaryState"]; children: ReactNode;
-  summaryPublication?: "pending" | "failed";
+  assessment?: Schema["AssessmentSummary"] | null;
+  summaryPublicationPending?: boolean;
+  summarySyncFailed?: boolean;
 }) {
   const stages = (Object.keys(descriptions) as (keyof typeof descriptions)[]).flatMap((key) => {
     const stage = key === "summary" ? summaryStage : run.stages?.[key];
@@ -46,21 +48,39 @@ export function RunStages({ run, assessmentStatus, summaryStage, summaryPublicat
   if (running.length && status === "running") {
     titles.running = running.map((stage) => descriptions[stage.key][0]).join(" · ");
   }
-  if (summaryPublication && ["running", "completed", "partial"].includes(run.status)) {
-    const publicationTitle = summaryPublication === "pending" ? "GitHub summary pending" : "Summary publication failed";
-    if (status === "running") titles.running += ` · ${publicationTitle}`;
-    else if (!current) {
-      status = summaryPublication === "pending" ? "waiting" : "partial";
-      titles[status] = publicationTitle;
-      explanations[status] = summaryPublication === "pending" ? "Waiting to sync the summary comment to GitHub." : "Open stage details to retry publishing the summary.";
+  if (["running", "completed", "partial"].includes(run.status)) {
+    if (summarySyncFailed) {
+      if (status === "running" && current) titles.running += " · Summary sync failed";
+      else if (!current) {
+        status = "partial";
+        titles[status] = "Summary sync failed";
+        explanations[status] = "Open stage details to retry GitHub sync.";
+      }
+    } else if (summaryPublicationPending && !current) {
+      explanations[status] = "Waiting to publish the summary to GitHub.";
     }
   }
   const coverage = coverageFiles(run);
-  const total = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
-  const completed = coverage.hasScope ? coverage.counts.completed + coverage.counts.reused : run.progress.completed;
+  const progressPhase = ["running", "pending", "waiting"].includes(status)
+    ? current?.key ?? (summaryPublicationPending ? "summary" : phase) : "ocr";
+  let unit = "files";
+  let total = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
+  let completed = coverage.hasScope ? coverage.counts.completed + coverage.counts.reused : run.progress.completed;
+  if (progressPhase === "assessment") {
+    unit = "candidates";
+    total = assessment?.candidates;
+    completed = assessment && typeof assessment.pending === "number" ? assessment.candidates - assessment.pending : undefined;
+  } else if (progressPhase === "verification") {
+    unit = "findings";
+    const verification = run.progress.verification;
+    total = verification && typeof verification === "object" && "selected" in verification ? verification.selected : undefined;
+    completed = verification && typeof verification === "object" && "completed" in verification ? verification.completed : undefined;
+  } else if (progressPhase === "summary") {
+    total = completed = undefined;
+  }
   const progress = status !== "queued" && typeof total === "number" && typeof completed === "number"
     && Number.isSafeInteger(total) && Number.isSafeInteger(completed) && total >= 0 && completed >= 0 && completed <= total
-    ? `${completed.toLocaleString()} / ${total.toLocaleString()} files` : null;
+    ? `${completed.toLocaleString()} / ${total.toLocaleString()} ${unit}` : null;
   const Icon = status === "completed" ? CircleCheck : status === "running" ? CircleDot : status === "failed" ? CircleX
     : status === "partial" ? TriangleAlert : ["blocked", "waiting"].includes(status) ? Pause : ["cancelled", "superseded", "skipped"].includes(status) ? CircleSlash : Circle;
   const color = status === "completed" ? "text-emerald-700 dark:text-emerald-300" : status === "failed" ? "text-red-700 dark:text-red-300"
@@ -68,7 +88,7 @@ export function RunStages({ run, assessmentStatus, summaryStage, summaryPublicat
   const titleText = titles[status] ?? "Review status unavailable";
   const title = <><Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{titleText}</span></>;
   return <StageCard label="Review stages" status={status} progress={progress} detailsLabel="Review stage details"
-    progressLabel={progress ? "Review progress count" : "File progress unavailable"}
+    progressLabel={progress ? "Review progress count" : "Stage progress unavailable"}
     explanation={explanations[status] ?? "Stage details are not available yet."}
     title={<span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}</span>}>
     {stages.length ? children : null}
