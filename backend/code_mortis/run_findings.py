@@ -58,8 +58,8 @@ def list_findings(db: Session, run: ReviewRun, filters: RunFindingFilters) -> Ru
     size = filters.page_size
     page = min(filters.page, max(1, (total + size - 1) // size))
     rows = db.execute(query.add_columns(is_new).order_by(*list_order(filters.ordering, {
-        "created_at": FindingVerification.created_at if filters.status == "resolved" else Occurrence.id,
-        "updated_at": FindingVerification.finished_at if filters.status == "resolved" else Occurrence.id,
+        "created_at": FindingVerification.created_at if filters.status == "resolved" else Finding.created_at,
+        "updated_at": FindingVerification.finished_at if filters.status == "resolved" else Finding.updated_at,
         "severity": severity, "path": Occurrence.snapshot["path"].as_string(),
     }, Occurrence.id)).offset((page - 1) * size).limit(size))
     return RunFindingPage(

@@ -5987,7 +5987,7 @@ export interface operations {
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
-                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
                 resolved?: boolean | null;
             };
             header?: never;

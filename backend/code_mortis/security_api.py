@@ -333,7 +333,7 @@ def scan_findings(scan_id: str, db: DB, user: USER,
                                    "repeated", "recorded", "fixed", "not_observed", "uncertain"]] | None, Query(max_length=100)] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
-    search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-severity",
+    search: Annotated[str, Query(max_length=200)] = "", ordering: SnapshotOrdering = "-severity",
     resolved: bool | None = None,
 ):
     scan, _, _ = scan_access(db, user, scan_id)

@@ -2918,8 +2918,14 @@ for (const area of ["repository", "scan", "assessment"] as const) {
     const label = area === "assessment" ? "assessments" : "open findings";
     await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
     await expect(panel.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
-    const field = area === "assessment" ? "Assessment order" : "Updated";
+    const field = area === "assessment" ? "Assessment order" : area === "scan" ? "Severity" : "Updated";
     await panel.getByRole("button", { name: `Sort by ${field}`, exact: true }).click();
+    if (area === "scan") {
+      await expect(page.getByRole("menuitemradio", { name: "Created", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("menuitemradio", { name: "Updated", exact: true })).toHaveCount(0);
+      await page.getByRole("menuitemradio", { name: "Report order", exact: true }).click();
+      await panel.getByRole("button", { name: "Sort by Report order", exact: true }).click();
+    }
     await page.getByRole("menuitemradio", { name: "Severity", exact: true }).click();
     await expect.poll(() => requests.at(-1)?.get("ordering") ?? "-severity").toBe("-severity");
     expect(requests.at(-1)?.get("page")).toBe("1");

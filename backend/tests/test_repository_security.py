@@ -3443,6 +3443,9 @@ def test_security_ordering_sorts_full_lists_and_preserves_saved_evidence(seed, s
                 values = [row["path"] for row in items]
             assert values == sorted(values, reverse=ordering.startswith("-"))
         assert client.get("/api/v1/security" + path, params={"ordering": "invalid"}).status_code == 422
+        if path.startswith("/scans/"):
+            for ordering in ("created_at", "-created_at", "updated_at", "-updated_at"):
+                assert client.get("/api/v1/security" + path, params={"ordering": ordering}).status_code == 422
     with transaction() as db:
         assert db.get(SecurityScan, scan_id).report["findings"] == rows
 
@@ -3531,3 +3534,13 @@ def test_scan_findings_and_counts_are_historical_while_repository_is_current(see
     current = client.get("/api/v1/security/repositories/22").json()
     assert current["finding_state_counts"] == {"open": 36, "resolved": 12}
     assert client.get("/api/v1/security/repositories/22/findings", params={"state": "open"}).json()["items"][0]["title"] == "Changed later"
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "completed"])
+def test_security_repository_updated_order_accepts_nullable_scan_times(seed, security_github, client, monkeypatch, status):
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: [db.get(Repository, 22)])
+    with transaction() as db:
+        saved_scan(db, seed, status=status, created_at=now(), started_at=None, finished_at=None)
+    response = client.get("/api/v1/security/repositories?ordering=-updated_at")
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["repository"]["id"] == 22

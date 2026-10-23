@@ -422,7 +422,8 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
   const prefix = state === "open" ? "" : `${state}_`;
   const filters = new URLSearchParams();
   for (const key of ["search", "severity", "kind", "outcome", "ordering"]) for (const value of params.getAll(`${prefix}${key}`)) filters.append(key, value);
-  const ordering = normalizeOrdering(filters.get("ordering"), findingOrderings, "-severity");
+  const orderings = scanId ? snapshotOrderings : findingOrderings;
+  const ordering = normalizeOrdering(filters.get("ordering"), orderings, "-severity");
   const queryParams = new URLSearchParams(filters);
   queryParams.set("ordering", ordering);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
@@ -445,7 +446,7 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
   return <div className="pt-4">
     {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
     <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={state === "open" ? scanId ? "Search scan findings" : "Search findings" : `Search ${label(state).toLowerCase()} findings`} searchPlaceholder="Search findings…" searchInputRef={searchInput}
-      ordering={{ value: ordering, defaultValue: "-severity", options: findingOrderings, onChange: (value) => changeFilter("ordering", [value]) }}
+      ordering={{ value: ordering, defaultValue: "-severity", options: orderings, onChange: (value) => changeFilter("ordering", [value]) }}
       onSearch={(value) => changeFilter("search", [value])} onChange={changeFilter} filters={[
         ...(scanId ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
         { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },

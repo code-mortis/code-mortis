@@ -453,7 +453,7 @@ def test_run_lists_fetch_loaded_window_in_one_request(seed, github_stub, client,
             assert client.get(path, params={"page_size": invalid}).status_code == 422
 
 
-@pytest.mark.parametrize("path", ["/pulls/pr/findings", "/runs/run/resolved", "/runs/run/candidates", "/runs/run"])
+@pytest.mark.parametrize("path", ["/pulls/pr/findings", "/runs/run/findings", "/runs/run/resolved", "/runs/run/candidates", "/runs/run"])
 def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub, client, path):
     at = now()
     with transaction() as db:
@@ -497,7 +497,10 @@ def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub,
         assert values == sorted(values, reverse=ordering.startswith("-"))
         assert read(ordering) == read(ordering)
     if path != "/runs/run":
-        assert read("-created_at")[0]["id"].endswith("20")
+        key = "finding_id" if path == "/runs/run/findings" else "id"
+        assert read("-created_at")[0][key].endswith("20")
+        assert read("created_at")[0][key].endswith("00")
         if path != "/runs/run/candidates":
-            assert read("-updated_at")[0]["id"].endswith("00")
+            assert read("-updated_at")[0][key].endswith("00")
+            assert read("updated_at")[0][key].endswith("20")
     assert client.get("/api/v1" + path, params={"ordering": "invalid"}).status_code == 422
