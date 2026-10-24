@@ -739,7 +739,7 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")
     if not CandidateOut.model_validate(candidate).retryable:
-        raise HTTPException(409, "Only failed assessments without a completed result can be retried.")
+        raise HTTPException(409, "Only failed assessments or history conflicts without a completed result can be retried.")
     if (run.status not in {"completed", "partial"} or run.cancel_requested
         or not assessment.enabled(run) or not run.progress.get("analysis_saved")):
         raise HTTPException(409, "Finish the review before retrying an assessment.")
@@ -760,19 +760,26 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
         raise HTTPException(403, str(exc)) from exc
     current = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}",
                              github.installation_token(db, repo.installation_id))
-    if current["state"] != "open" or current["head"]["sha"] != run.head_sha or current["base"]["sha"] != run.base_sha:
+    assessment_only = current["state"] == "closed" and current.get("merged") is True
+    if (current["state"] != "open" and not assessment_only) or current["head"]["sha"] != run.head_sha or current["base"]["sha"] != run.base_sha:
         raise HTTPException(409, "The pull request changed or closed. Start a review of the current commit.")
     budget, known = assessment.remaining_budget(db, run)
     if budget is not None and (not known or budget <= 0):
         raise HTTPException(409, "The saved run's remaining AI budget cannot support another assessment. Start a new review.")
     candidate.attempts = [*candidate.attempts, {
         "status": candidate.status, "result": candidate.result, "error": candidate.error,
+        "failure_reason": candidate.failure_reason,
         "context": candidate.context, "usage": candidate.usage, "actor_id": execution_identity(run)[0],
         "finished_at": candidate.finished_at.isoformat() if candidate.finished_at else None,
     }]
     candidate.status, candidate.result, candidate.error, candidate.finished_at = "queued", None, None, None
-    candidate.context, candidate.usage = {}, {}
-    run.progress = {**run.progress, "assessment_retry": {"candidate_id": candidate.id, "actor_id": user.id}}
+    candidate.failure_reason = None
+    candidate.context, candidate.usage = ({"assessment_only": True} if assessment_only else {}), {}
+    run.progress = {**run.progress, "assessment_retry": {
+        "candidate_id": candidate.id, "actor_id": user.id, "assessment_only": assessment_only,
+    }}
+    if assessment_only:
+        pr.state = "merged"
     run.status, run.error, run.blocked_reason = "queued", None, None
     if pipeline.enabled(run):
         pipeline.update(run, "assessment", "pending", started_at=None, finished_at=None, error=None, execution=None)
@@ -1248,6 +1255,7 @@ def add_member(body: MemberInput, db: DB, user: ADMIN) -> dict:
 @router.delete("/members/{user_id}")
 def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
     from .repository_security import cancel_access
+    from .reviews import stop_review
 
     memberships = lock_memberships(db, user)
     membership = memberships.get(user_id)
@@ -1269,7 +1277,7 @@ def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
         .with_for_update()
     ):
         run.cancel_requested = True
-        run.status, run.publication, run.finished_at = "cancelled", "not_applicable", now()
+        stop_review(db, run, "cancelled", "The requesting user's access was removed.")
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
     return {"ok": True}
 

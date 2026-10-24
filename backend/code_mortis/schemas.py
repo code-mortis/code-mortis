@@ -354,6 +354,7 @@ class StageState(StrictModel):
     finished_at: datetime | None = None
     tokens: int | None = 0
     error: str | None = None
+    waiting_for: Literal["verification"] | None = None
 
 
 class RunOut(ORMModel):
@@ -519,6 +520,7 @@ class AssessmentResult(StrictModel):
 class CandidateAttemptOut(BaseModel):
     status: str
     error: str | None
+    failure_reason: str | None = None
     result: AssessmentResult | None
     usage: dict[str, Any]
     finished_at: datetime | None
@@ -532,13 +534,21 @@ class CandidateOut(ORMModel):
     finding_id: str | None
     is_new: bool
     error: str | None
+    failure_reason: str | None = None
     attempts: list[CandidateAttemptOut] = Field(default_factory=list)
     retryable: bool = False
     progress_phase: Literal["validating"] | None = None
+    assessment_only: bool = False
 
     @model_validator(mode="after")
     def technical_failure(self):
-        self.retryable = self.status == "failed" and self.result is None and self.finding_id is None
+        # Older runs used this combined message for several stale-context guards.
+        # Retrying still requires fresh commit, permission, connection and budget checks.
+        history_conflict = self.failure_reason == "history_changed" or self.error in {
+            "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review.",
+            "Finding history changed before the assessment could be corrected.",
+        }
+        self.retryable = (self.status == "failed" or (self.status == "skipped" and history_conflict)) and self.result is None and self.finding_id is None
         return self
 
 
@@ -554,6 +564,8 @@ class AssessmentSummary(StrictModel):
     withheld_candidates: int = 0
     pending: int = 0
     incomplete: int = 0
+    failed: int = 0
+    skipped: int = 0
     published_comments: int = 0
 
 

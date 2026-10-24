@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import or_, select
 
 from . import github, verification
-from .db import now, transaction
+from .db import transaction
 from .models import Installation, Job, Membership, PullRequest, Repository, ReviewRun, User
 from .schemas import InstallationOut
 
@@ -166,7 +166,9 @@ def remove_installation(db, identity):
 
 
 def deactivate_repositories(db, repositories, reason):
+    from .assessment import assessment_only
     from .repository_security import cancel_access
+    from .reviews import stop_review
 
     ids = []
     for repo in repositories:
@@ -186,12 +188,14 @@ def deactivate_repositories(db, repositories, reason):
     ).with_for_update(of=ReviewRun)):
         run.cancel_requested = True
         if run.status in {"queued", "running", "blocked"}:
-            run.status, run.finished_at = "cancelled", now()
+            stop_review(db, run, "cancelled", reason,
+                        publication="published" if run.publication == "published" else "partially_published" if run.review_ids else "not_applicable")
             run.error = reason
-        if run.publication != "published":
+        else:
+            verification.skip_pending(db, run, reason)
+        if run.publication != "published" and not assessment_only(run):
             run.publication = "partially_published" if run.review_ids else "not_applicable"
             run.publication_error = reason
-        verification.skip_pending(db, run, reason)
 
 
 def deactivate(db, installation, reason):

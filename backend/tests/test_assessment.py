@@ -33,6 +33,7 @@ from code_mortis.models import (
     ConnectionGrant,
     Finding,
     Job,
+    Membership,
     Occurrence,
     PullRequest,
     Repository,
@@ -69,7 +70,10 @@ def pipeline(seed, github_stub, monkeypatch):
 
     def request(method, path, token, **kwargs):
         if method == "GET":
-            return remote(state["head"])
+            data = remote(state["head"])
+            data.update(state=state.get("pr_state", "open"), merged=state.get("merged", False))
+            data["base"]["sha"] = state.get("base", data["base"]["sha"])
+            return data
         item = {"id": len(state["reviews"]) + 1, "body": kwargs["json"]["body"],
                 "user": {"login": "mortis-test[bot]"}, "comments": kwargs["json"]["comments"]}
         state["reviews"].append(item)
@@ -211,8 +215,9 @@ def test_sensitivity_change_reassesses_confirmations_without_resolving_findings(
         assert candidate.result["verdict"] == "rejected" and "policy" in candidate.result["explanation"]
 
 
+@pytest.mark.parametrize("merged", [False, True])
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
-def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipeline, client, kind):
+def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipeline, client, kind, merged):
     if kind != "api":
         with transaction() as db:
             connection = db.get(Connection, "connection")
@@ -240,13 +245,17 @@ def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipe
         run = db.get(ReviewRun, identity)
         original_plan = copy.deepcopy(run.publication_plan)
         original_report, original_finished = run.report, run.finished_at
+        publication_jobs = db.scalar(select(func.count()).select_from(Job).where(Job.kind == "publish"))
         run.started_at -= timedelta(days=1)
         db.get(Repository, 22).connection_id = None
     assert len(pipeline["reviews"]) == 1
+    if merged:
+        pipeline.update(pr_state="closed", merged=True)
     path = f"/api/v1/runs/{identity}/candidates/{target_id}"
     response = client.post(path + "/retry")
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "queued"
+    assert response.json()["assessment_only"] is merged
     assert response.json()["attempts"][0]["error"] == original_error
     assert "context" not in response.json()["attempts"][0]
     assert client.post(path + "/retry").status_code == 409
@@ -260,12 +269,13 @@ def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipe
     assert pipeline["calls"] == calls + 1
     if kind == "api":
         assert pipeline["allowances"][-1] == 199800
-    assert len(pipeline["reviews"]) == 2
+    assert len(pipeline["reviews"]) == (1 if merged else 2)
     if kind != "api":
         assert pipeline["native_ids"][-1] not in native_ids
     with transaction() as db:
         target = db.get(ReviewCandidate, target_id)
-        assert target.status == "completed" and target.finding_id
+        assert target.status == "completed" and bool(target.finding_id) is not merged
+        assert target.assessment_only is merged
         assert target.attempts[0]["usage"] == original_usage
         assert target.attempts[0]["context"] and target.attempts[0]["finished_at"]
         assert [(db.get(ReviewCandidate, key).id, db.get(ReviewCandidate, key).status,
@@ -277,6 +287,17 @@ def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipe
         assert run.publication_plan[:len(original_plan)] == original_plan
         assert run.publication == "published"
         assert db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity))
+        if merged:
+            assert run.publication_plan == original_plan
+            assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "publish")) == publication_jobs
+            assert db.scalar(select(func.count()).select_from(Finding)) == 1
+            assert db.scalar(select(func.count()).select_from(Occurrence)) == 1
+            payload = checks.check_payload(run, 1)
+            assert payload["conclusion"] == "success"
+            assert payload["output"]["title"] == "Assessment complete at original commit"
+            assert payload["completed_at"] == run.progress["assessment_retry"]["finished_at"]
+            assert "without creating findings" in payload["output"]["summary"]
+    assert client.get(path).json()["assessment_only"] is merged
 
 
 @pytest.mark.parametrize("decision", ["uncertain", "rejected"])
@@ -291,6 +312,320 @@ def test_completed_withheld_assessment_cannot_be_retried(pipeline, client, decis
     with transaction() as db:
         candidate = db.get(ReviewCandidate, candidate_id)
         assert candidate.attempts == [] and candidate.result["verdict"] == decision
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_assessment_retry_waits_for_previous_worker_to_release_its_claim(pipeline, client, merged):
+    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
+        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidate_id = db.scalar(select(ReviewCandidate.id))
+        previous = reviews.enqueue(db, "review", {"run_id": identity})
+        previous.status, previous.attempts, previous.lease_until = "running", 1, now() + timedelta(minutes=5)
+        previous_id = previous.id
+        run = db.get(ReviewRun, identity)
+        run.progress = {**run.progress, "execution": f"{previous.id}:1"}
+    pipeline.update(pr_state="closed" if merged else "open", merged=merged, decision={})
+    assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
+    with transaction() as db:
+        retry_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.id != previous_id))
+    calls = pipeline["calls"]
+    jobs.execute_job(retry_id)
+    with transaction() as db:
+        assert db.get(Job, retry_id).status == "queued"
+        assert db.get(Job, retry_id).attempts == 0
+        assert db.get(ReviewRun, identity).status == "queued"
+        assert "started_at" not in db.get(ReviewRun, identity).progress["assessment_retry"]
+        assert db.get(ReviewCandidate, candidate_id).status == "queued"
+        assert pipeline["calls"] == calls
+        db.get(Job, previous_id).status = "done"
+        db.get(Job, retry_id).available_at = now()
+    jobs.execute_job(retry_id)
+    with transaction() as db:
+        assert db.get(Job, retry_id).status == "done"
+        assert db.get(ReviewCandidate, candidate_id).status == "completed"
+        assert pipeline["calls"] == calls + 1
+        assert pipeline["analysis_calls"] == 1
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_history_conflict_retry_reuses_analysis_and_preserves_attempt(pipeline, client, legacy):
+    pipeline["comments"] += [{**COMMENT, "path": "unrelated.py"}]
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidates = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        candidate, untouched = candidates
+        candidate.status, candidate.result = "skipped", None
+        candidate.failure_reason = None if legacy else "history_changed"
+        candidate.error = ("The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
+                           if legacy else str(assessment.HistoryChanged()))
+        candidate_id, usage, context, error = candidate.id, candidate.usage, candidate.context, candidate.error
+        untouched_state = (untouched.status, untouched.result, untouched.usage)
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "pipeline_version": 2}
+        run.stages = {stage: {"status": "completed", "tokens": 0} for stage in ("ocr", "assessment", "verification", "summary")}
+        run.stages["assessment"] = {"status": "partial", "tokens": 50}
+        run.progress = {**run.progress, "pipeline_finalized": True, "assessment_deferred": True}
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert client.get(path).json()["retryable"]
+    response = client.post(path + "/retry")
+    assert response.status_code == 202, response.text
+    assert response.json()["failure_reason"] is None
+    assert client.post(path + "/retry").status_code == 409
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert candidate.status == "completed" and candidate.failure_reason is None
+        assert candidate.attempts[0]["usage"] == usage
+        assert candidate.attempts[0]["context"] == context
+        assert candidate.attempts[0]["error"] == error
+        other = db.scalar(select(ReviewCandidate).where(ReviewCandidate.id != candidate_id))
+        assert (other.status, other.result, other.usage) == untouched_state
+        run = db.get(ReviewRun, identity)
+        assert run.stages["assessment"]["status"] == "completed"
+        assert run.stages["assessment"]["tokens"] == 75
+        assert checks.check_payload(run, 0)["conclusion"] == "success"
+    assert pipeline["analysis_calls"] == 1 and pipeline["calls"] == 3
+    assert pipeline["reviews"] == []
+
+
+@pytest.mark.parametrize("status,reason,error", [
+    ("skipped", None, "The run was cancelled."),
+    ("skipped", None, "Assessment exceeded the time limit."),
+    ("skipped", None, "Access to the repository or AI connection changed."),
+    ("queued", "history_changed", str(assessment.HistoryChanged())),
+    ("running", "history_changed", str(assessment.HistoryChanged())),
+    ("completed", "history_changed", str(assessment.HistoryChanged())),
+])
+def test_only_terminal_history_conflicts_are_retryable(pipeline, client, status, reason, error):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        row.status, row.failure_reason, row.error, row.result = status, reason, error, None
+        candidate_id = row.id
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert not client.get(path).json()["retryable"]
+    assert client.post(path + "/retry").status_code == 409
+
+
+@pytest.mark.parametrize("outcome", ["uncertain", "rejected", "failed", "skipped"])
+def test_check_distinguishes_withheld_decisions_from_processing_errors(pipeline, outcome):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        if outcome in {"failed", "skipped"}:
+            row.status, row.result = outcome, None
+        else:
+            row.result = {**row.result, "verdict": outcome}
+        db.flush()
+        run = db.get(ReviewRun, identity)
+        assessment.record_summary(db, run)
+        payload = checks.check_payload(run, 0)
+        assert payload["conclusion"] == ("neutral" if outcome in {"failed", "skipped"} else "success")
+        if outcome in {"failed", "skipped"}:
+            assert payload["output"]["title"] == "Assessment incomplete"
+            assert "retry eligible assessments" in payload["output"]["summary"]
+
+
+@pytest.mark.parametrize("decision", ["confirmed", "uncertain", "rejected"])
+def test_merged_retry_keeps_existing_finding_state_and_survives_sync(pipeline, client, monkeypatch, decision):
+    original = run_and_publish()
+    pipeline["comments"][0]["content"] = "Rephrased proposed issue."
+    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
+        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    identity = new_run(assessed=True, parallel=True)
+    reviews.perform_review(identity)
+    # These focused fixtures do not execute asynchronous summary/verification jobs.
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status = "completed"
+        run.stages = {**run.stages, "verification": {"status": "skipped", "tokens": 0}, "summary": {"status": "skipped", "tokens": 0}}
+    reviews.publish_run(identity)
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        # The candidate may have been deferred behind verification, so start from the saved conflict.
+        row.status, row.result, row.error, row.failure_reason = "skipped", None, str(assessment.HistoryChanged()), "history_changed"
+        candidate_id = row.id
+        finding = db.scalar(select(Finding))
+        finding.status, finding.desired_status = "dismissed", None
+        before = (finding.id, finding.last_seen_run_id, finding.sync_version, finding.status, finding.desired_status)
+        assert finding.last_seen_run_id == original
+    pipeline.update(pr_state="closed", merged=True)
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert client.post(path + "/retry").status_code == 202
+    pipeline["decision"] = {"verdict": decision}
+
+    def concurrent_sync():
+        with transaction() as db:
+            data = github.request("GET", "/pull", "token")
+            data.update(title="Merged PR", html_url="https://github.com/acme/repo/pull/1", user={"login": "owner"})
+            pr = reviews.upsert_pr(db, db.get(Repository, 22), data)
+            assert pr.state == "merged"
+            assert not db.get(ReviewRun, identity).cancel_requested
+        # A late finalizer must not take over this targeted retry.
+        from code_mortis import pipeline as stages
+        stages.finalize(identity)
+
+    pipeline["during_assessment"] = concurrent_sync
+    def unexpected(*a, **k):
+        pytest.fail("Historical retry must not execute summary or verification")
+    monkeypatch.setattr(verification, "perform", unexpected)
+    monkeypatch.setattr(reviews.pr_summary, "generate", unexpected)
+    calls, published = pipeline["analysis_calls"], len(pipeline["reviews"])
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        row = db.get(ReviewCandidate, candidate_id)
+        assert row.status == "completed" and row.result["verdict"] == decision
+        assert row.assessment_only and row.finding_id is None
+        if decision == "confirmed":
+            assert row.result["relationship"] == "duplicate" and row.result["finding_id"] == before[0]
+        finding = db.get(Finding, before[0])
+        assert (finding.id, finding.last_seen_run_id, finding.sync_version, finding.status, finding.desired_status) == before
+        assert db.scalar(select(func.count()).select_from(Occurrence)) == 1
+        run = db.get(ReviewRun, identity)
+        assert run.status == run.stages["assessment"]["status"] == "completed"
+        assert checks.check_payload(run, 0)["conclusion"] == "success"
+        # Even a stale publication delivery with pending state is fenced before remote access.
+        run.publication = "pending"
+    monkeypatch.setattr(github, "request", unexpected)
+    monkeypatch.setattr(github, "pages", unexpected)
+    reviews.publish_run(identity)
+    assert pipeline["analysis_calls"] == calls and len(pipeline["reviews"]) == published
+
+
+@pytest.mark.parametrize("change", ["closed_unmerged", "head", "base", "permission", "cancel", "ignored"])
+def test_merged_retry_revalidates_target_and_access_at_execution(pipeline, client, monkeypatch, change):
+    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
+        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidate_id = db.scalar(select(ReviewCandidate.id))
+    pipeline.update(pr_state="closed", merged=True)
+    assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
+    calls = pipeline["calls"]
+    if change == "closed_unmerged":
+        pipeline["merged"] = False
+    elif change == "head":
+        pipeline["head"] = "c" * 40
+    elif change == "base":
+        pipeline["base"] = "c" * 40
+    elif change == "permission":
+        monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(403, "Denied")))
+    else:
+        with transaction() as db:
+            if change == "cancel":
+                reviews.cancel_review(db, db.get(ReviewRun, identity))
+            else:
+                db.get(PullRequest, "pr").ignored = True
+    with transaction() as db:
+        job_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity))
+    jobs.execute_job(job_id)
+    assert pipeline["calls"] == calls and pipeline["reviews"] == []
+    with transaction() as db:
+        assert db.get(ReviewCandidate, candidate_id).result is None
+
+
+@pytest.mark.parametrize("merged,published", [(False, True), (True, True), (True, False)])
+@pytest.mark.parametrize("stop", ["cancel_queued", "cancel_running", "sync_queued", "sync_running", "remote", "worker",
+                                 "connection_queued", "installation_queued", "member_queued"])
+def test_stopped_assessment_retry_finishes_stage_and_preserves_historical_publication(pipeline, client, monkeypatch, merged, published, stop):
+    from code_mortis import api, installations, subscriptions
+    from code_mortis import pipeline as stages
+
+    pipeline["comments"] += [{**COMMENT, "path": "src/failed.py"}]
+    pipeline["respond"] = lambda context: verdict(context, **({"evidence": [{"revision": "current",
+        "path": "src/failed.py", "start_line": 7, "end_line": 7, "quote": "invented"}]}
+        if context["finding"]["path"] == "src/failed.py" else {"verdict": "uncertain", "relationship": "uncertain"} if not published else {}))
+    identity = new_run(assessed=True, parallel=True)
+    reviews.perform_review(identity)
+    with transaction() as db:
+        # This fixture only executes OCR/assessment; finish the independent summary stage.
+        stages.update(db.get(ReviewRun, identity), "summary", "skipped", tokens=0)
+    stages.finalize(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.status == "completed" and run.publication == ("published" if published else "no_new_comments")
+        original = (run.publication, run.finished_at, run.report, run.publication_plan, run.review_ids)
+        other_stages = {key: value for key, value in run.stages.items() if key != "assessment"}
+        candidate_id = db.scalar(select(ReviewCandidate.id).where(ReviewCandidate.status == "failed"))
+    pipeline.update(pr_state="closed" if merged else "open", merged=merged)
+    assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
+    retried_at = now()
+
+    def interrupt():
+        if stop.startswith("cancel"):
+            assert client.post(f"/api/v1/runs/{identity}/cancel").status_code == 200
+        elif stop.startswith("connection"):
+            with transaction() as db:
+                subscriptions.cancel_connection_runs(db, "connection")
+        elif stop.startswith("installation"):
+            with transaction() as db:
+                installations.deactivate_repositories(db, [db.get(Repository, 22)], "Installation removed.")
+        elif stop.startswith("member"):
+            with transaction() as db:
+                admin = User(id=8, login="admin", role="admin", access_token="token")
+                db.add_all([admin, Membership(github_id=8, login="admin", role="admin")])
+                db.flush()
+                api.remove_member(7, db, admin)
+        else:
+            with transaction() as db:
+                data = github.request("GET", "/pull", "token")
+                data["head"]["sha"] = "c" * 40
+                reviews.upsert_pr(db, db.get(Repository, 22), data)
+
+    if stop.endswith("queued"):
+        interrupt()
+    elif stop.endswith("running"):
+        pipeline["during_assessment"] = interrupt
+    elif stop == "remote":
+        pipeline["head"] = "c" * 40
+    else:
+        monkeypatch.setattr(ocr, "review", lambda *a, **k: (_ for _ in ()).throw(ocr.ReviewStopped("Stopped during checkout")))
+    reviews.perform_review(identity)
+    stages.finalize(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert run.status == ("superseded" if stop.startswith("sync") or stop in {"remote", "worker"} else "cancelled")
+        assert candidate.status == "skipped" and candidate.result is None
+        assert run.stages["assessment"]["status"] == "cancelled"
+        assert run.stages["assessment"]["finished_at"]
+        assert {key: value for key, value in run.stages.items() if key != "assessment"} == other_stages
+        assert (run.report, run.publication_plan, run.review_ids) == original[2:]
+        payload = checks.check_payload(run, int(published))
+        assert payload["status"] == "completed" and payload["conclusion"] == "cancelled"
+        if merged:
+            assert (run.publication, run.finished_at) == original[:2]
+            assert payload["output"]["title"] == "Assessment cancelled or superseded"
+            assert payload["completed_at"] == run.progress["assessment_retry"]["finished_at"]
+            assert payload["completed_at"] >= retried_at.isoformat()
+        assert db.scalar(select(func.count()).select_from(Finding)) == int(published)
+        assert db.scalar(select(func.count()).select_from(Occurrence)) == int(published)
+    assert len(pipeline["reviews"]) == int(published)
+
+
+def test_assessment_conflict_migration_preserves_existing_candidates(pipeline):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    run_and_publish()
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        identity, snapshot, result, context = candidate.id, candidate.snapshot, candidate.result, candidate.context
+    config = Config("alembic.ini")
+    command.downgrade(config, "20261022_installation_removal")
+    command.upgrade(config, "head")
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, identity)
+        assert (candidate.snapshot, candidate.result, candidate.context) == (snapshot, result, context)
+        assert candidate.failure_reason is None
 
 
 def test_assessment_attempt_migration_preserves_existing_candidates(pipeline):
@@ -344,13 +679,20 @@ def test_manual_assessment_retry_can_resume_an_automatic_run_without_an_automati
         assert db.get(ReviewRun, identity).trigger == "automatic"
 
 
-@pytest.mark.parametrize("change", ["commit", "connection", "budget", "unknown_usage", "permission"])
-def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client, monkeypatch, change):
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("conflict", [False, True])
+@pytest.mark.parametrize("change", ["commit", "base", "closed", "connection", "budget", "unknown_usage", "permission"])
+def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client, monkeypatch, change, conflict, merged):
     pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
         "start_line": 7, "end_line": 7, "quote": "invented"}]}
     identity = run_and_publish()
+    if merged:
+        pipeline.update(pr_state="closed", merged=True)
     with transaction() as db:
         candidate_id = db.scalar(select(ReviewCandidate.id))
+        if conflict:
+            candidate = db.get(ReviewCandidate, candidate_id)
+            candidate.status, candidate.failure_reason, candidate.error = "skipped", "history_changed", str(assessment.HistoryChanged())
         run = db.get(ReviewRun, identity)
         if change == "connection":
             db.get(Connection, "connection").base_url = "https://changed.example.com"
@@ -360,12 +702,16 @@ def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client,
             db.get(ReviewCandidate, candidate_id).usage = {"tokens": None}
     if change == "commit":
         pipeline["head"] = "c" * 40
+    elif change == "base":
+        pipeline["base"] = "c" * 40
+    elif change == "closed":
+        pipeline.update(pr_state="closed", merged=False)
     if change == "permission":
         monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(403, "Denied")))
     response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
     assert response.status_code in {403, 409}, response.text
     with transaction() as db:
-        assert db.get(ReviewCandidate, candidate_id).status == "failed"
+        assert db.get(ReviewCandidate, candidate_id).status == ("skipped" if conflict else "failed")
         assert db.get(ReviewCandidate, candidate_id).attempts == []
 
 
@@ -457,7 +803,7 @@ def test_unsupported_candidates_never_become_findings(pipeline, decision):
         assert counts.rejected_candidates == int(rejected)
         assert counts.withheld_candidates == int(not rejected)
         assert run.publication == "no_new_comments"
-        assert checks.check_payload(run, 0)["conclusion"] == "success"
+        assert checks.check_payload(run, 0)["conclusion"] == ("neutral" if counts.failed or counts.skipped else "success")
     assert pipeline["reviews"] == []
 
 
@@ -487,19 +833,19 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
     assert response.json()["assessment"] == {
         "candidates": 10, "new_findings": 3, "repeated_observations": 0,
         "rejected_candidates": 5, "withheld_candidates": 2, "pending": 0,
-        "incomplete": 2, "published_comments": 0,
+        "incomplete": 2, "failed": 1, "skipped": 0, "published_comments": 0,
     }
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.status, run.publication = "completed", "published"
         payload = checks.check_payload(run, 3)
-        assert (payload["status"], payload["conclusion"]) == ("completed", "success")
-        assert payload["output"]["title"] == "Review complete: 3 new validated findings"
+        assert (payload["status"], payload["conclusion"]) == ("completed", "neutral")
+        assert payload["output"]["title"] == "Assessment incomplete"
         assert "Not supported candidates: 5. Withheld candidates: 2." in payload["output"]["summary"]
         run.progress = {**run.progress, "verification": {"uncertain": 1}}
         payload = checks.check_payload(run, 3)
         assert payload["conclusion"] == "neutral"
-        assert payload["output"]["title"] == "Review complete"
+        assert payload["output"]["title"] == "Assessment incomplete"
 
 
 def test_bad_suggestion_is_preserved_as_input_but_not_published(pipeline):
@@ -608,6 +954,7 @@ def test_concurrent_history_change_invalidates_new_identity(pipeline):
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate))
         assert row.status == "skipped" and "history changed during assessment" in row.error
+        assert row.failure_reason == "history_changed"
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
     assert not pipeline["reviews"]
 

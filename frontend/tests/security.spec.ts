@@ -826,7 +826,7 @@ for (const theme of ["light", "dark"] as const) {
     });
     await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository,
       scan: { ...scan, status: "partial", grade: null, report: { commit: sha, status: "partial", grade: null, findings: rows } },
-      can_write: true, finding_count: 3, activity_count: 0, activity: [] } }));
+      can_write: true, finding_count: 3, finding_state_counts: { open: 3 }, activity_count: 0, activity: [] } }));
     await page.goto("/security/scans/scan");
     await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
     const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
@@ -2086,7 +2086,7 @@ test("scan findings filter new and repeated observations like review runs withou
   });
   await page.goto("/security/scans/scan?tab=findings&assessment_outcome=withheld");
   const list = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
-  await expect(page.getByRole("tab", { name: "Findings 28", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Findings 24", exact: true })).toBeVisible();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Result", exact: true }).click();

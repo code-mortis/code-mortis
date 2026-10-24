@@ -75,6 +75,8 @@ def queue_check_changes(db, _context, _instances):
 
 
 def check_payload(run: ReviewRun, findings: int) -> dict:
+    from .assessment import assessment_only
+
     status, conclusion, title = "completed", "failure", "Review failed"
     if run.status in {"cancelled", "superseded"} or run.failure_reason == "superseded" or (
         run.status in {"completed", "partial"} and run.publication == "not_applicable"
@@ -123,8 +125,22 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
             f"Withheld candidates: {assessment['withheld_candidates']}. "
             f"Comments published: {assessment['published_comments']}."
         )
+        if (status == "completed" and conclusion in {"success", "neutral"} and (
+            assessment.get("failed") or assessment.get("skipped")
+            or run.stages.get("assessment", {}).get("status") in {"partial", "failed", "cancelled"}
+        )):
+            conclusion, title = "neutral", "Assessment incomplete"
+            lines.append("Some proposed findings could not be assessed. Open the run to inspect errors and retry eligible assessments.")
         if status == "completed" and conclusion == "success":
             title = f"Review complete: {assessment['new_findings']} new validated findings"
+    if assessment_only(run):
+        lines.append("Assessment retried against the original commit after merge. Historical verdicts are saved without creating findings, publishing comments, or changing resolution states.")
+        if status == "completed" and conclusion == "success":
+            title = "Assessment complete at original commit"
+        elif conclusion == "cancelled":
+            title = "Assessment cancelled or superseded"
+        elif run.status == "running":
+            title = "Assessing original commit"
     if verification.get("selected"):
         lines.append(
             f"Fix verification: {verification.get('completed', 0)} of {verification['selected']} completed; "
@@ -141,7 +157,8 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         )
     if conclusion == "success":
         lines.append(
-            ("Review completed; no additional comments were needed. " if run.publication == "no_new_comments"
+            ("Historical assessment completed; no new comments were published. " if assessment_only(run)
+             else "Review completed; no additional comments were needed. " if run.publication == "no_new_comments"
              else "Review completed and comments published. ")
             + "Findings are informational; this is not approval to merge."
         )
@@ -164,6 +181,8 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
     payload["completed_at"] = (
         (run.finished_at or run.started_at or run.created_at).isoformat() if conclusion else None
     )
+    if assessment_only(run) and conclusion and (finished := run.progress["assessment_retry"].get("finished_at")):
+        payload["completed_at"] = finished
     return payload
 
 
