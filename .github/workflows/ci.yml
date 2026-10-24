@@ -13,11 +13,40 @@ concurrency:
 jobs:
   export-openapi:
     runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      image: ${{ steps.changes.outputs.image }}
     defaults:
       run:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        id: changes
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          # Use Git so large PRs are not limited by the API's changed-file cap.
+          token: ''
+          # On pushes compare the whole push; on PRs compare the merge checkout to its base.
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
+          filters: |
+            backend:
+              - '.github/workflows/ci.yml'
+              - '.github/ci-filters.test.ts'
+              - 'backend/**'
+              - 'compose.test.yaml'
+            image:
+              - '.github/workflows/ci.yml'
+              - '.github/ci-filters.test.ts'
+              - 'Dockerfile'
+              - 'Dockerfile.dockerignore'
+              - '.dockerignore'
+              - 'backend/**'
+              - 'frontend/**'
+              - 'build/ocr/**'
+              - 'LICENSE'
+              - 'LICENSES/**'
+              - 'THIRD_PARTY_NOTICES.md'
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with: { version: '0.9.14' }
       - run: uv sync --frozen --python 3.13
@@ -27,15 +56,11 @@ jobs:
           name: openapi
           path: openapi.json
           if-no-files-found: error
-  backend-tests:
+  backend:
+    needs: export-openapi
+    # Missing filter output (manual run or detection failure) must run the checks.
+    if: ${{ !cancelled() && needs.export-openapi.outputs.backend != 'false' }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      PYTEST_SHARD_INDEX: ${{ strategy.job-index }}
-      PYTEST_SHARD_COUNT: ${{ strategy.job-total }}
     services:
       postgres:
         image: mirror.gcr.io/library/postgres:17-alpine
@@ -58,15 +83,6 @@ jobs:
       - run: uv sync --frozen --python 3.13
       - run: uv run ruff check .
       - run: uv run python -m pytest -q --durations=20
-  backend:
-    needs: backend-tests
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every backend shard to pass
-        env:
-          RESULT: ${{ needs.backend-tests.result }}
-        run: test "$RESULT" = success
   frontend:
     needs: export-openapi
     env:
@@ -80,6 +96,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with: { bun-version: '1.4.2' }
       - run: bun install --frozen-lockfile
+      - run: bun test ../.github/ci-filters.test.ts
       - uses: actions/download-artifact@v4
         with:
           name: openapi
@@ -92,6 +109,8 @@ jobs:
       - if: github.event_name == 'workflow_dispatch'
         run: bun run test
   image:
+    needs: export-openapi
+    if: ${{ !cancelled() && needs.export-openapi.outputs.image != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
