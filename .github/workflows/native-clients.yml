@@ -1,0 +1,36 @@
+name: Verify native clients
+# shortcut: GitHub filters inspect at most 3,000 files; dispatch manually for larger diffs.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - '.github/workflows/native-clients.yml'
+      - '.github/ci-filters.test.ts'
+      - 'Dockerfile.runner'
+      - 'Dockerfile.runner.dockerignore'
+      - '.dockerignore'
+      - 'backend/code_mortis/**'
+      - 'backend/pyproject.toml'
+      - 'backend/uv.lock'
+      - 'backend/tests/native_runner_smoke.py'
+  pull_request:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-clients:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -f Dockerfile.runner -t code-mortis-runner:test .
+      - run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:mode=1777,size=256m
+          --tmpfs /profiles:uid=10001,gid=10001,mode=0700,size=64m
+          --tmpfs /home/mortis:uid=10001,gid=10001,mode=0700,size=64m
+          code-mortis-runner:test python -m tests.native_runner_smoke

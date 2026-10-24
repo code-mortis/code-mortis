@@ -1,0 +1,44 @@
+name: Verify backend
+# shortcut: GitHub filters inspect at most 3,000 files; dispatch manually for larger diffs.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - '.github/workflows/backend.yml'
+      - '.github/ci-filters.test.ts'
+      - 'backend/**'
+      - 'compose.test.yaml'
+  pull_request:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:17-alpine
+        env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
+        ports: [55439:5432]
+        # Match compose.test.yaml: test data is disposable, so avoid disk I/O on every reset/commit.
+        options: >-
+          --tmpfs /var/lib/postgresql/data
+          --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10
+      redis:
+        image: mirror.gcr.io/library/redis:7-alpine
+        ports: [56389:6379]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with: { version: '0.9.14' }
+      - run: uv sync --frozen --python 3.13
+      - run: uv run ruff check .
+      - run: uv run python -m pytest -q --durations=20

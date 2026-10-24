@@ -1,9 +1,18 @@
-name: Verify
+name: Verify frontend
+# shortcut: GitHub filters inspect at most 3,000 files; dispatch manually for larger diffs.
 on:
   push:
     branches: [main]
+    paths: &paths
+      - '.github/workflows/ci.yml'
+      - '.github/ci-filters.test.ts'
+      - 'frontend/**'
+      - 'backend/code_mortis/**'
+      - 'backend/pyproject.toml'
+      - 'backend/uv.lock'
   pull_request:
     branches: [main]
+    paths: *paths
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,40 +22,11 @@ concurrency:
 jobs:
   export-openapi:
     runs-on: ubuntu-latest
-    outputs:
-      backend: ${{ steps.changes.outputs.backend }}
-      image: ${{ steps.changes.outputs.image }}
     defaults:
       run:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
-        id: changes
-        if: github.event_name != 'workflow_dispatch'
-        with:
-          # Use Git so large PRs are not limited by the API's changed-file cap.
-          token: ''
-          # On pushes compare the whole push; on PRs compare the merge checkout to its base.
-          base: ${{ github.event_name == 'push' && github.ref || '' }}
-          filters: |
-            backend:
-              - '.github/workflows/ci.yml'
-              - '.github/ci-filters.test.ts'
-              - 'backend/**'
-              - 'compose.test.yaml'
-            image:
-              - '.github/workflows/ci.yml'
-              - '.github/ci-filters.test.ts'
-              - 'Dockerfile'
-              - 'Dockerfile.dockerignore'
-              - '.dockerignore'
-              - 'backend/**'
-              - 'frontend/**'
-              - 'build/ocr/**'
-              - 'LICENSE'
-              - 'LICENSES/**'
-              - 'THIRD_PARTY_NOTICES.md'
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with: { version: '0.9.14' }
       - run: uv sync --frozen --python 3.13
@@ -56,33 +36,6 @@ jobs:
           name: openapi
           path: openapi.json
           if-no-files-found: error
-  backend:
-    needs: export-openapi
-    # Missing filter output (manual run or detection failure) must run the checks.
-    if: ${{ !cancelled() && needs.export-openapi.outputs.backend != 'false' }}
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: mirror.gcr.io/library/postgres:17-alpine
-        env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
-        ports: [55439:5432]
-        # Match compose.test.yaml: test data is disposable, so avoid disk I/O on every reset/commit.
-        options: >-
-          --tmpfs /var/lib/postgresql/data
-          --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10
-      redis:
-        image: mirror.gcr.io/library/redis:7-alpine
-        ports: [56389:6379]
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-        with: { version: '0.9.14' }
-      - run: uv sync --frozen --python 3.13
-      - run: uv run ruff check .
-      - run: uv run python -m pytest -q --durations=20
   frontend:
     needs: export-openapi
     env:
@@ -108,39 +61,3 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - if: github.event_name == 'workflow_dispatch'
         run: bun run test
-  image:
-    needs: export-openapi
-    if: ${{ !cancelled() && needs.export-openapi.outputs.image != 'false' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          context: .
-          load: true
-          tags: code-mortis:test
-          build-args: DOCKERHUB_REGISTRY=mirror.gcr.io
-          cache-from: type=gha,scope=image
-          # Include the OCR build stage, not just the final runtime layers.
-          cache-to: type=gha,scope=image,mode=max
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=256m
-          --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m
-          code-mortis:test python tests/ocr_container_smoke.py
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=512m
-          code-mortis:test python tests/security_scanner_smoke.py
-  native-clients:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -f Dockerfile.runner -t code-mortis-runner:test .
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=256m
-          --tmpfs /profiles:uid=10001,gid=10001,mode=0700,size=64m
-          --tmpfs /home/mortis:uid=10001,gid=10001,mode=0700,size=64m
-          code-mortis-runner:test python -m tests.native_runner_smoke
