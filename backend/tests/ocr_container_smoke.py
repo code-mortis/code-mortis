@@ -21,9 +21,11 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import assessment, background, checks, ocr, security_engine, verification
-from code_mortis.db import now
+from code_mortis.core.db import now
+from code_mortis.integrations import ocr
 from code_mortis.models import ReviewRun
+from code_mortis.reviews import assessment, background, checks, verification
+from code_mortis.security_scans import engine as security_engine
 
 calls = []
 verification_mode = "fixed"
@@ -284,8 +286,9 @@ def main():
                             report=limited_report, progress={}, created_at=now())
             assert checks.check_payload(run, 0)["conclusion"] == "failure"
             print("Pinned OCR grace-round completion retained its budget warning and could not produce a successful GitHub check.")
-            from code_mortis import delegated, runner_client
-            from code_mortis.schemas import RepoSettings
+            from code_mortis.integrations import runner_client
+            from code_mortis.reviews import delegated
+            from code_mortis.schemas.common import RepoSettings
 
             original = runner_client.review
             runner_client.review = lambda *args: ({"comments": []}, {"tokens": 10})

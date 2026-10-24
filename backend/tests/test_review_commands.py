@@ -9,8 +9,9 @@ from sqlalchemy import func, select
 from test_checks import rerun_body
 from test_review_flow import new_run, remote
 
-from code_mortis import checks, github, jobs, ocr, reviews
-from code_mortis.db import transaction
+from code_mortis import jobs
+from code_mortis.core.db import transaction
+from code_mortis.integrations import github, ocr
 from code_mortis.models import (
     AppConfig,
     Connection,
@@ -22,7 +23,9 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.schemas import RepoSettings
+from code_mortis.reviews import checks
+from code_mortis.reviews import service as reviews
+from code_mortis.schemas.common import RepoSettings
 
 
 def skipped_run(monkeypatch):

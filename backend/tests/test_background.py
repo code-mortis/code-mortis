@@ -6,9 +6,11 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from code_mortis import background, github, jobs, native_runner, ocr, runner_client
-from code_mortis.db import now, transaction
+from code_mortis import jobs, native_runner
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import Connection, ConnectionGrant, Job, Membership, Repository, ReviewRun, User
+from code_mortis.reviews import background
 
 
 @pytest.fixture

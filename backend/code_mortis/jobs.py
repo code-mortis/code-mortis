@@ -9,20 +9,12 @@ from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, or_, select
 
-from . import (
-    background,
-    checks,
-    github,
-    installations,
-    ocr,
-    pipeline,
-    pr_summary,
-    runner_client,
-    verification,
-)
-from .config import settings
-from .db import now, transaction
-from .models import (
+from code_mortis.core.config import settings
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import unseal
+from code_mortis.core.telemetry import init_sentry
+from code_mortis.integrations import github, installations, ocr, runner_client
+from code_mortis.models import (
     Connection,
     ConnectionGrant,
     Finding,
@@ -34,7 +26,9 @@ from .models import (
     SecurityFinding,
     SecurityScan,
 )
-from .reviews import (
+from code_mortis.reviews import background, checks, pipeline, verification
+from code_mortis.reviews import summary as pr_summary
+from code_mortis.reviews.service import (
     complete_saved_review,
     connection_snapshot,
     create_run,
@@ -46,8 +40,6 @@ from .reviews import (
     synchronize_finding,
     upsert_pr,
 )
-from .security import unseal
-from .telemetry import init_sentry
 
 init_sentry("worker")
 
@@ -245,15 +237,15 @@ def process_webhook(payload: dict):
 
 def execute(kind: str, payload: dict):
     if kind == "security_scan":
-        from .repository_security import perform
+        from code_mortis.security_scans.service import perform
 
         perform(payload["scan_id"], payload["_claim"])
     elif kind == "security_refresh":
-        from .repository_security import refresh_repository
+        from code_mortis.security_scans.service import refresh_repository
 
         refresh_repository(payload["repository_id"])
     elif kind in {"security_issue_publish", "security_issue_sync"}:
-        from . import security_issues
+        from code_mortis.security_scans import issues as security_issues
 
         (security_issues.publish if kind == "security_issue_publish" else security_issues.sync)(payload["finding_id"])
     elif kind == "review":
@@ -305,7 +297,7 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
-        from . import mcp_provenance as _mcp
+        from code_mortis.mcp import provenance as _mcp
 
         if _mcp.job_revoked(db, job, repository_id=_mcp.repository_id_for_job(db, job)):
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -336,7 +328,7 @@ def execute_job(job_id: str):
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
-    from . import mcp_provenance as _mcp
+    from code_mortis.mcp import provenance as _mcp
 
     _token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
     try:
@@ -407,7 +399,7 @@ def execute_job(job_id: str):
                         run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
                         run.failure_reason = "timeout" if isinstance(exc, TimeoutError) else "execution"
             elif kind == "security_scan":
-                from .repository_security import interrupt_work, report_data
+                from code_mortis.security_scans.service import interrupt_work, report_data
 
                 scan = db.get(SecurityScan, payload["scan_id"])
                 if scan and scan.status in {"queued", "running", "blocked"}:
@@ -490,7 +482,7 @@ def dispatch():
             .with_for_update(skip_locked=True)
         ):
             if job.kind == "security_scan":
-                from .repository_security import interrupt_work, report_data
+                from code_mortis.security_scans.service import interrupt_work, report_data
 
                 job.status, job.error, job.lease_until = "failed", "Security worker stopped. Retry explicitly; inference usage may have been consumed.", None
                 scan = db.get(SecurityScan, job.payload["scan_id"])
@@ -579,7 +571,7 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
-        from . import mcp_auth as _mcp_auth
+        from code_mortis.mcp import auth as _mcp_auth
 
         _mcp_auth.cleanup(db)
         for identity in db.scalars(select(SecurityScan.repository_id).join(Repository)

@@ -13,9 +13,10 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from code_mortis import github, jobs, native_runner, security_engine, security_issues
-from code_mortis import repository_security as security
-from code_mortis.db import now, transaction, uid
+from code_mortis import jobs, native_runner
+from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.security import digest
+from code_mortis.integrations import github
 from code_mortis.models import (
     ConnectionGrant,
     Job,
@@ -27,8 +28,10 @@ from code_mortis.models import (
     SecurityScan,
     User,
 )
-from code_mortis.security import digest
-from code_mortis.security_schemas import SecurityScanInput
+from code_mortis.schemas.security import SecurityScanInput
+from code_mortis.security_scans import engine as security_engine
+from code_mortis.security_scans import issues as security_issues
+from code_mortis.security_scans import service as security
 
 SHA = "a" * 40
 OLD = "b" * 40
@@ -2916,7 +2919,7 @@ def test_scanner_database_freshness_and_trusted_options(tmp_path, monkeypatch, d
     assert bool(result["problems"]) == (data_age != 1)
     scan = next(args for args in calls if "--format" in args)
     assert "--offline-scan" in scan and "--skip-check-update" in scan and "--skip-java-db-update" in scan
-    assert "code_mortis.security_scanner" in scan and "--show-secrets" not in scan
+    assert "code_mortis.security_scans.scanner" in scan and "--show-secrets" not in scan
 
 
 def test_unknown_severity_prevents_completion_and_grade(seed, security_github):

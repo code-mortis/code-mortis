@@ -1,5 +1,4 @@
 """Candidate gating, canonical identity, and publication recovery across review engines."""
-
 import copy
 import json
 import subprocess
@@ -16,18 +15,11 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import (
-    assessment,
-    checks,
-    github,
-    jobs,
-    ocr,
-    review_policy,
-    reviews,
-    runner_client,
-    verification,
-)
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.api.routers import members as members_routes
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import seal
+from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -41,8 +33,10 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.schemas import RepoSettings
-from code_mortis.security import seal
+from code_mortis.reviews import assessment, checks, verification
+from code_mortis.reviews import policy as review_policy
+from code_mortis.reviews import service as reviews
+from code_mortis.schemas.common import RepoSettings
 
 SOURCE = "\n" * 6 + "while True:\n    retry()\n    logger.error(api_key)"
 
@@ -469,7 +463,7 @@ def test_merged_retry_keeps_existing_finding_state_and_survives_sync(pipeline, c
             assert pr.state == "merged"
             assert not db.get(ReviewRun, identity).cancel_requested
         # A late finalizer must not take over this targeted retry.
-        from code_mortis import pipeline as stages
+        from code_mortis.reviews import pipeline as stages
         stages.finalize(identity)
 
     pipeline["during_assessment"] = concurrent_sync
@@ -536,8 +530,9 @@ def test_merged_retry_revalidates_target_and_access_at_execution(pipeline, clien
 @pytest.mark.parametrize("stop", ["cancel_queued", "cancel_running", "sync_queued", "sync_running", "remote", "worker",
                                  "connection_queued", "installation_queued", "member_queued"])
 def test_stopped_assessment_retry_finishes_stage_and_preserves_historical_publication(pipeline, client, monkeypatch, merged, published, stop):
-    from code_mortis import api, installations, subscriptions
-    from code_mortis import pipeline as stages
+    from code_mortis.api.routers import subscriptions
+    from code_mortis.integrations import installations
+    from code_mortis.reviews import pipeline as stages
 
     pipeline["comments"] += [{**COMMENT, "path": "src/failed.py"}]
     pipeline["respond"] = lambda context: verdict(context, **({"evidence": [{"revision": "current",
@@ -574,7 +569,7 @@ def test_stopped_assessment_retry_finishes_stage_and_preserves_historical_public
                 admin = User(id=8, login="admin", role="admin", access_token="token")
                 db.add_all([admin, Membership(github_id=8, login="admin", role="admin")])
                 db.flush()
-                api.remove_member(7, db, admin)
+                members_routes.remove_member(7, db, admin)
         else:
             with transaction() as db:
                 data = github.request("GET", "/pull", "token")

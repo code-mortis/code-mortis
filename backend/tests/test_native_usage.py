@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_mortis import native_runner, runner_client
+from code_mortis import native_runner
+from code_mortis.integrations import runner_client
 
 
 @pytest.mark.parametrize("status", ["completed", "failed"])

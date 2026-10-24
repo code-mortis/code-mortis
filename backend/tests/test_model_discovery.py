@@ -7,8 +7,10 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from code_mortis import model_discovery, native_runner, reviews, runner_client
-from code_mortis.db import transaction
+from code_mortis import native_runner
+from code_mortis.core.db import transaction
+from code_mortis.core.security import seal
+from code_mortis.integrations import model_discovery, runner_client
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -18,8 +20,8 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.schemas import ModelCatalog, ModelDiscoveryInput
-from code_mortis.security import seal
+from code_mortis.reviews import service as reviews
+from code_mortis.schemas.common import ModelCatalog, ModelDiscoveryInput
 
 
 def provider(monkeypatch, handler):
@@ -263,7 +265,7 @@ def test_personal_setup_requires_effective_model_and_keeps_run_snapshot(
 ):
     from test_review_flow import remote
 
-    from code_mortis import github
+    from code_mortis.integrations import github
 
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: remote())
     result = client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"})

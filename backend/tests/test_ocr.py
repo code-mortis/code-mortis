@@ -7,9 +7,9 @@ from uuid import UUID
 
 import pytest
 
-from code_mortis import ocr
-from code_mortis.config import settings
-from code_mortis.security import safe_endpoint
+from code_mortis.core.config import settings
+from code_mortis.core.security import safe_endpoint
+from code_mortis.integrations import ocr
 
 
 def report(state="complete"):

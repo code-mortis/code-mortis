@@ -6,11 +6,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from code_mortis import api, github
-from code_mortis.db import now, transaction
+from code_mortis.api.routers import members as members_routes
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import digest, seal
+from code_mortis.integrations import github
 from code_mortis.models import LoginSession, Membership, User
-from code_mortis.schemas import MemberInput
-from code_mortis.security import digest, seal
+from code_mortis.schemas.common import MemberInput
 
 
 @pytest.mark.parametrize("operation", ["remove", "demote"])
@@ -77,9 +78,9 @@ def test_concurrent_member_changes_recheck_administrator_access(seed, monkeypatc
                 admitted.wait(timeout=5)
                 target = 8 if identity == 7 else 7
                 if operations[identity - 7] == "remove":
-                    api.remove_member(target, db, user)
+                    members_routes.remove_member(target, db, user)
                 else:
-                    api.add_member(MemberInput(login="second" if target == 8 else "owner", role="member"), db, user)
+                    members_routes.add_member(MemberInput(login="second" if target == 8 else "owner", role="member"), db, user)
             return 200
         except HTTPException as error:
             return error.status_code
@@ -113,7 +114,7 @@ def test_concurrent_invites_reuse_the_new_membership(seed, monkeypatch):
         with transaction() as db:
             user = db.get(User, 7)
             admitted.wait(timeout=5)
-            return api.add_member(MemberInput(login="second"), db, user)
+            return members_routes.add_member(MemberInput(login="second"), db, user)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(pool.map(invite, range(2))) == [{"ok": True}, {"ok": True}]

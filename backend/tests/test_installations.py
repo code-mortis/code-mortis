@@ -6,8 +6,9 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
 
-from code_mortis import github, installations, jobs, reviews
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github, installations
 from code_mortis.models import (
     Finding,
     Installation,
@@ -18,6 +19,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
+from code_mortis.reviews import service as reviews
 
 
 @pytest.fixture

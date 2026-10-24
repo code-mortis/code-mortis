@@ -13,11 +13,15 @@ import pytest
 from fastapi import HTTPException, Request
 from sqlalchemy import event, select
 
-from code_mortis import github, mcp_auth, mcp_server, mcp_tools, reviews
-from code_mortis.db import engine, now, transaction
-from code_mortis.mcp_models import McpAuthorization, McpClient, McpGrant, McpToken
+from code_mortis.core.db import engine, now, transaction
+from code_mortis.core.security import digest
+from code_mortis.integrations import github
+from code_mortis.mcp import auth as mcp_auth
+from code_mortis.mcp import server as mcp_server
+from code_mortis.mcp import tools as mcp_tools
+from code_mortis.mcp.models import McpAuthorization, McpClient, McpGrant, McpToken
 from code_mortis.models import AppConfig, Job, Membership, Repository, ReviewRun
-from code_mortis.security import digest
+from code_mortis.reviews import service as reviews
 
 VERIFIER = "a" * 64
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).rstrip(b"=").decode()
@@ -564,16 +568,16 @@ def test_action_approval_is_human_bound_exact_once_and_retryable(enabled, client
 
 
 def test_tool_errors_and_results_do_not_expose_saved_credentials(enabled, client, monkeypatch):
-    from code_mortis import mcp_tools
+    from code_mortis.mcp import tools as mcp_tools
 
     tokens = credentials(client)
-    monkeypatch.setattr(mcp_tools.review_routes, "pull_detail", lambda *args: (_ for _ in ()).throw(
+    monkeypatch.setattr(mcp_tools.pulls_routes, "pull_detail", lambda *args: (_ for _ in ()).throw(
         github.GitHubError(502, "Provider error containing provider-secret")))
     response = rpc(client, tokens["access_token"], method="tools/call",
         arguments={"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}})
     assert "provider-secret" not in response.text
     assert response.json()["result"]["isError"] is True
-    monkeypatch.setattr(mcp_tools.review_routes, "pull_detail", lambda *args: {"unsafe": "provider-secret"})
+    monkeypatch.setattr(mcp_tools.pulls_routes, "pull_detail", lambda *args: {"unsafe": "provider-secret"})
     response = rpc(client, tokens["access_token"], method="tools/call",
         arguments={"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}})
     assert "provider-secret" not in response.text
@@ -581,7 +585,7 @@ def test_tool_errors_and_results_do_not_expose_saved_credentials(enabled, client
 
 
 def test_approved_disconnect_commits_revocation_and_replays_without_native_logout(enabled, client, monkeypatch):
-    from code_mortis import runner_client
+    from code_mortis.integrations import runner_client
     from code_mortis.models import Connection
 
     with transaction() as db:
@@ -619,8 +623,8 @@ def test_preregistered_https_client_does_not_require_metadata_fetch(enabled, mon
 
 
 def test_scan_request_keys_are_isolated_between_mcp_grants(enabled, client, monkeypatch):
-    from code_mortis import repository_security
     from code_mortis.models import SecurityScan
+    from code_mortis.security_scans import service as repository_security
 
     monkeypatch.setattr(repository_security, "branch_head", lambda *args: {
         "default_branch": "main", "head_sha": "a" * 40, "checked_at": now().isoformat()})

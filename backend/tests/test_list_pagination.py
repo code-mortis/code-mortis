@@ -5,8 +5,8 @@ from fastapi import HTTPException
 from sqlalchemy import update
 from test_inbox import pull, run
 
-from code_mortis import github
-from code_mortis.db import now, transaction
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github
 from code_mortis.models import (
     Finding,
     FindingVerification,
@@ -396,7 +396,7 @@ def test_page_requests_revalidate_github_access(seed, client, monkeypatch, path)
 
 
 def test_run_resource_revisions_track_changes_without_count_changes(seed, github_stub, client):
-    from code_mortis import assessment
+    from code_mortis.reviews import assessment
 
     with transaction() as db:
         current = run(db, db.get(PullRequest, "pr"), "running", "run")

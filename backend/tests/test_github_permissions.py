@@ -11,11 +11,11 @@ import pytest
 from redis import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from code_mortis import github
-from code_mortis.config import settings
-from code_mortis.db import now, transaction
+from code_mortis.core.config import settings
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import digest, seal
+from code_mortis.integrations import github
 from code_mortis.models import Installation, LoginSession, Membership, Repository, User
-from code_mortis.security import digest, seal
 
 PATH = "/repos/team/project"
 TOKEN = "github-user-token"

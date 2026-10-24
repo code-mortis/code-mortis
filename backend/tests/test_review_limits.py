@@ -14,10 +14,13 @@ from sqlalchemy import select
 from test_ocr import report
 from test_review_flow import new_run
 
-from code_mortis import jobs, native_runner, ocr, review_policy, reviews, runner_client
-from code_mortis.db import now, transaction
+from code_mortis import jobs, native_runner
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import ocr, runner_client
 from code_mortis.models import Job, PullRequest, Repository, ReviewRun
-from code_mortis.schemas import RepoSettings
+from code_mortis.reviews import policy as review_policy
+from code_mortis.reviews import service as reviews
+from code_mortis.schemas.common import RepoSettings
 
 
 def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
@@ -290,7 +293,7 @@ def test_long_reviews_renew_only_the_current_job_lease(seed, github_stub, monkey
 
 @pytest.mark.parametrize("byte_budget", [4096, 800000, None])
 def test_native_prompt_limit_preserves_token_budget_and_ignores_legacy_byte_limit(tmp_path, monkeypatch, byte_budget):
-    from code_mortis import delegated
+    from code_mortis.reviews import delegated
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
     def command(args, *a, **kw):
         data = ({"schema_version": "1", "reviewable_count": 2,
@@ -326,7 +329,7 @@ def test_native_prompt_limit_preserves_token_budget_and_ignores_legacy_byte_limi
 @pytest.mark.parametrize("budget", [1000, None])
 @pytest.mark.parametrize("failure", [None, "unknown", "quota"])
 def test_subscription_token_budget_counts_failed_calls_and_survives_resume(tmp_path, monkeypatch, budget, failure):
-    from code_mortis import delegated
+    from code_mortis.reviews import delegated
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
     paths = ["a.py", "b.py", "c.py"]
 
@@ -380,7 +383,7 @@ def test_subscription_token_budget_counts_failed_calls_and_survives_resume(tmp_p
 
 @pytest.mark.parametrize("tokens", [None, True, -1])
 def test_subscription_legacy_or_invalid_usage_cannot_reset_finite_budget(tmp_path, monkeypatch, tokens):
-    from code_mortis import delegated
+    from code_mortis.reviews import delegated
     monkeypatch.setattr(ocr, "check_version", lambda *a: None)
     monkeypatch.setattr(ocr, "command", lambda *a, **kw: (0, json.dumps({
         "schema_version": "1", "reviewable_count": 1, "reviewable_files": [{"path": "a.py"}],

@@ -15,9 +15,12 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
-from code_mortis import assessment, ocr, review_context, security_engine, verification
-from code_mortis.security_engine import model_schema
-from code_mortis.security_schemas import SecurityAnalysis
+from code_mortis.integrations import ocr
+from code_mortis.reviews import assessment, verification
+from code_mortis.reviews import context as review_context
+from code_mortis.schemas.security import SecurityAnalysis
+from code_mortis.security_scans import engine as security_engine
+from code_mortis.security_scans.engine import model_schema
 
 RESULT = {"findings": [], "required_paths": []}
 original_command = ocr.command

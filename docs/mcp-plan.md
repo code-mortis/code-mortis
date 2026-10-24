@@ -70,7 +70,7 @@ Disabling a domain revokes its grants and refresh families. Re-enabling it requi
 
 ## Review workflow coverage
 
-The existing review surface is primarily in [api.py](../backend/code_mortis/api.py), with lifecycle commands in [reviews.py](../backend/code_mortis/reviews.py). Tools should have clear names such as `reviews_list_pull_requests`, `reviews_get_finding`, `reviews_start_review` and `reviews_set_finding_status`. Keep separate operations separate when their permissions or side effects differ.
+The existing review surface is primarily in [review routers](../backend/code_mortis/api/routers/), with lifecycle commands in [review lifecycle](../backend/code_mortis/reviews/service.py). Tools should have clear names such as `reviews_list_pull_requests`, `reviews_get_finding`, `reviews_start_review` and `reviews_set_finding_status`. Keep separate operations separate when their permissions or side effects differ.
 
 | Frontend capability | Existing route or service to reuse | Permission |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Move only inline business actions needed by both transports into the correspondi
 
 ## Security workflow coverage
 
-Reuse [security_api.py](../backend/code_mortis/security_api.py), [repository_security.py](../backend/code_mortis/repository_security.py), [security_issues.py](../backend/code_mortis/security_issues.py) and [security_schemas.py](../backend/code_mortis/security_schemas.py).
+Reuse [security router](../backend/code_mortis/api/routers/security.py), [scan lifecycle](../backend/code_mortis/security_scans/service.py), [security issues](../backend/code_mortis/security_scans/issues.py) and [security schemas](../backend/code_mortis/schemas/security.py).
 
 | Frontend capability | Existing route or service to reuse | Permission |
 | --- | --- | --- |

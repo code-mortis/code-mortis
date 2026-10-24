@@ -7,8 +7,10 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 
-from code_mortis import github, jobs, ocr, reviews
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import unseal
+from code_mortis.integrations import github, ocr
 from code_mortis.models import (
     Activity,
     Connection,
@@ -23,7 +25,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.security import unseal
+from code_mortis.reviews import service as reviews
 
 
 def test_settings_failed_jobs_include_saved_metadata_without_payloads(seed, client):
@@ -51,7 +53,7 @@ def test_settings_failed_jobs_include_saved_metadata_without_payloads(seed, clie
 def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatch):
     from urllib.parse import parse_qs, urlsplit
 
-    from code_mortis.config import settings
+    from code_mortis.core.config import settings
 
     assert client.post("/api/v1/setup/manifest", json={}).status_code == 403
     wrong_origin = client.post(
@@ -108,7 +110,7 @@ def test_manifest_setup_requires_bootstrap_and_one_time_state(client, monkeypatc
 def test_login_redirects_to_public_host_before_setting_state(seed, client, monkeypatch):
     from urllib.parse import parse_qs, urlsplit
 
-    from code_mortis.config import settings
+    from code_mortis.core.config import settings
 
     monkeypatch.setattr(settings(), "public_url", "https://reviews.example.com")
     monkeypatch.setattr(settings(), "cookie_secure", True)
@@ -354,7 +356,7 @@ def test_auth_csrf_roles_and_repository_boundary(seed, client, monkeypatch):
 
 
 def test_api_credentials_encrypted_and_never_returned(seed, client, monkeypatch):
-    monkeypatch.setattr("code_mortis.api.safe_endpoint", lambda value: value)
+    monkeypatch.setattr("code_mortis.api.routers.connections.safe_endpoint", lambda value: value)
     body = {
         "name": "Private",
         "provider": "custom",
@@ -378,7 +380,7 @@ def test_api_credentials_encrypted_and_never_returned(seed, client, monkeypatch)
 
 
 def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(seed, client, github_stub, monkeypatch):
-    monkeypatch.setattr("code_mortis.api.safe_endpoint", lambda value: value)
+    monkeypatch.setattr("code_mortis.api.routers.connections.safe_endpoint", lambda value: value)
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     first = client.post("/api/v1/pulls/pr/runs", json={}).json()
     body = {
@@ -837,7 +839,7 @@ def test_queued_review_cannot_send_rotated_credentials_to_old_endpoint(seed, git
 
 
 def test_rotated_oauth_credentials_survive_later_request_failure(seed, monkeypatch):
-    from code_mortis.security import seal
+    from code_mortis.core.security import seal
 
     with transaction() as db:
         user = db.get(User, 7)

@@ -22,7 +22,7 @@ Read the source-of-truth docs before touching a related area:
 | `frontend/` | React 19, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS v4, shadcn/ui, Playwright, `bun` |
 | top-level | Docker Compose (prod, dev, test), pinned OCR/native-client versions |
 
-`backend/code_mortis/` holds the application modules (`api.py`, `models.py`, `ocr.py`, `reviews.py`, `github.py`, `subscriptions.py`, `native_runner.py`, `jobs.py`, `manage.py`, …). `frontend/src/` holds pages (`reviews.tsx`, `settings.tsx`, `subscriptions.tsx`), `components/`, and `lib/`.
+`backend/code_mortis/` groups HTTP routers and dependencies in `api/`, infrastructure in `core/`, external adapters in `integrations/`, workflows in `reviews/` and `security_scans/`, MCP in `mcp/`, and shared Pydantic contracts in `schemas/`. `main.py`, `native_runner.py`, `jobs.py`, and `manage.py` remain runtime entry points; `models.py` holds shared SQLAlchemy models. See [docs/architecture.md](docs/architecture.md) for placement and import rules. `frontend/src/` holds pages (`reviews.tsx`, `settings.tsx`, `subscriptions.tsx`), `components/`, and `lib/`.
 
 ## Commands
 

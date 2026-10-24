@@ -11,7 +11,8 @@ os.environ.setdefault("CM_TRIVY_CACHE_DIR", "/tmp/security-scanner-cache")
 os.environ.setdefault("CM_BOOTSTRAP_TOKEN", "isolated-scanner-smoke-only")
 os.environ.setdefault("CM_OWNER_GITHUB_LOGIN", "synthetic-scanner-test")
 
-from code_mortis import ocr, security_engine
+from code_mortis.integrations import ocr
+from code_mortis.security_scans import engine as security_engine
 
 with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
     root = Path(directory)
@@ -55,6 +56,6 @@ with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
     assert result["metadata"]["directory_summaries"]
     print(json.dumps({"kinds": sorted(kinds), "metadata": result["metadata"], "problems": result["problems"]}, indent=2))
 
-process = subprocess.run(["python", "-c", "from code_mortis.security_scanner import deny_network; import socket; deny_network(); socket.socket()"], capture_output=True)
+process = subprocess.run(["python", "-c", "from code_mortis.security_scans.scanner import deny_network; import socket; deny_network(); socket.socket()"], capture_output=True)
 assert process.returncode and b"Operation not permitted" in process.stderr
 print("Pinned Trivy detected synthetic exposed material and infrastructure, reported dependency coverage, ignored repository scanner policies, and denied scanner networking.")

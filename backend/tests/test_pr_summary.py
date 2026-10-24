@@ -9,18 +9,9 @@ from alembic.config import Config
 from sqlalchemy import event, select, text
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import (
-    assessment,
-    github,
-    jobs,
-    native_runner,
-    ocr,
-    pr_summary,
-    reviews,
-    runner_client,
-    verification,
-)
-from code_mortis.db import engine, now, transaction
+from code_mortis import jobs, native_runner
+from code_mortis.core.db import engine, now, transaction
+from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
     Finding,
@@ -31,7 +22,10 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.schemas import PullRequestOut, RepoSettings
+from code_mortis.reviews import assessment, verification
+from code_mortis.reviews import service as reviews
+from code_mortis.reviews import summary as pr_summary
+from code_mortis.schemas.common import PullRequestOut, RepoSettings
 
 RESULT = {"narrative": "Retries now stop after cancellation.", "groups": [
     {"title": "Cancellation", "description": "Stop pending retries.", "paths": ["src/retry.py"]},

@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, column_property, mapped_column
 
-from .db import Base, now, uid
+from code_mortis.core.db import Base, now, uid
 
 
 class AppConfig(Base):
