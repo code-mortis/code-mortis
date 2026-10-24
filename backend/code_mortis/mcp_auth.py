@@ -387,7 +387,11 @@ def fetch_client_metadata(client_id, allowed_domains):
             connection.close()
         if data.get("client_id") != client_id or data.get("token_endpoint_auth_method", "none") != "none":
             raise ValueError("Client identity does not match")
-        return McpClientInput(client_id=client_id, client_name=data["client_name"], redirect_uris=data["redirect_uris"])
+        client = McpClientInput(client_id=client_id, client_name=data["client_name"], redirect_uris=data["redirect_uris"])
+        allowed = {"localhost", "127.0.0.1", "::1", *allowed_domains}
+        if any(urlsplit(uri).hostname not in allowed for uri in client.redirect_uris):
+            raise ValueError("Client callback hostname is not allowed")
+        return client
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:
         raise HTTPException(400, "The client metadata could not be safely verified.") from exc
 

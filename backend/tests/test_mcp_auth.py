@@ -1,6 +1,8 @@
 import base64
 import hashlib
+import json
 from datetime import timedelta
+from unittest.mock import Mock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
@@ -312,6 +314,48 @@ def test_cimd_refuses_unallowed_or_private_hosts(monkeypatch):
         ("https://allowed.example/", ["allowed.example"])]:
         with pytest.raises(HTTPException):
             mcp_auth.fetch_client_metadata(url, domains)
+
+
+@pytest.mark.parametrize("callbacks,allowed", [
+    (["https://client.example/callback"], True),
+    (["https://callback.example/callback"], True),
+    ([CALLBACK], True),
+    (["http://localhost:8765/callback"], True),
+    (["http://[::1]:8765/callback"], True),
+    (["https://evil.example/callback"], False),
+    (["https://sub.client.example/callback"], False),
+    (["https://localhost.evil.example/callback"], False),
+    ([CALLBACK, "https://evil.example/callback"], False),
+])
+def test_cimd_callback_allowlist_on_creation_and_refresh(enabled, monkeypatch, callbacks, allowed):
+    client_id = "https://client.example/metadata.json"
+    metadata = {"client_id": client_id, "client_name": "Metadata client", "redirect_uris": callbacks}
+    connection = Mock()
+    connection.getresponse.return_value.status = 200
+    connection.getresponse.return_value.read.side_effect = lambda size: json.dumps(metadata).encode()
+    monkeypatch.setattr(mcp_auth.socket, "getaddrinfo", lambda *args, **kwargs: [
+        (2, 1, 6, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr(mcp_auth.socket, "create_connection", Mock())
+    monkeypatch.setattr(mcp_auth.ssl, "create_default_context", Mock())
+    monkeypatch.setattr(mcp_auth.http.client, "HTTPSConnection", Mock(return_value=connection))
+    with transaction() as db:
+        config = db.get(AppConfig, 1)
+        config.mcp_settings = {**config.mcp_settings,
+            "allowed_client_domains": ["client.example", "callback.example"]}
+        if not allowed:
+            with pytest.raises(HTTPException) as error:
+                mcp_auth.resolve_client(db, client_id)
+            assert error.value.status_code == 400
+            assert db.get(McpClient, client_id) is None
+            return
+        client = mcp_auth.resolve_client(db, client_id)
+        assert client.metadata_managed is True
+        assert client.redirect_uris == callbacks
+        metadata["redirect_uris"] = ["https://evil.example/callback"]
+        with pytest.raises(HTTPException) as error:
+            mcp_auth.resolve_client(db, client_id)
+        assert error.value.status_code == 400
+        assert client.redirect_uris == callbacks
 
 
 def test_browser_settings_keep_csrf_and_admin_checks(enabled, client):
