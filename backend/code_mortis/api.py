@@ -739,7 +739,7 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")
     if not CandidateOut.model_validate(candidate).retryable:
-        raise HTTPException(409, "Only failed assessments without a completed result can be retried.")
+        raise HTTPException(409, "Only failed assessments or history conflicts without a completed result can be retried.")
     if (run.status not in {"completed", "partial"} or run.cancel_requested
         or not assessment.enabled(run) or not run.progress.get("analysis_saved")):
         raise HTTPException(409, "Finish the review before retrying an assessment.")
@@ -767,10 +767,12 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
         raise HTTPException(409, "The saved run's remaining AI budget cannot support another assessment. Start a new review.")
     candidate.attempts = [*candidate.attempts, {
         "status": candidate.status, "result": candidate.result, "error": candidate.error,
+        "failure_reason": candidate.failure_reason,
         "context": candidate.context, "usage": candidate.usage, "actor_id": execution_identity(run)[0],
         "finished_at": candidate.finished_at.isoformat() if candidate.finished_at else None,
     }]
     candidate.status, candidate.result, candidate.error, candidate.finished_at = "queued", None, None, None
+    candidate.failure_reason = None
     candidate.context, candidate.usage = {}, {}
     run.progress = {**run.progress, "assessment_retry": {"candidate_id": candidate.id, "actor_id": user.id}}
     run.status, run.error, run.blocked_reason = "queued", None, None

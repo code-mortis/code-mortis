@@ -22,7 +22,7 @@ from .security import unseal
 
 TERMINAL = {"completed", "partial", "failed", "skipped", "cancelled"}
 STAGES = ("ocr", "assessment", "verification", "summary")
-KINDS = {"verify_fixes": "verification", "summarize_review": "summary"}
+KINDS = {"verify_fixes": "verification", "summarize_review": "summary", "assess_candidates": "assessment"}
 
 
 def enabled(run):
@@ -60,6 +60,8 @@ def enqueue_stages(db, run):
     from .reviews import enqueue
 
     for kind, stage in KINDS.items():
+        if stage == "assessment":
+            continue  # Only the finalizer schedules assessments deferred behind verification.
         if run.stages.get(stage, {}).get("status") != "pending":
             continue
         if stage == "verification" and not db.scalar(select(FindingVerification.id).where(
@@ -83,7 +85,8 @@ def enqueue_stages(db, run):
 def review_done(db, run, error=None):
     status = run.progress.get("analysis_status", "failed")
     update(run, "ocr", status, tokens=ocr.report_tokens(run.report), error=error)
-    assessment_done(db, run, error)
+    if error or not run.progress.get("assessment_deferred"):
+        assessment_done(db, run, error)
     enqueue_finalizer(db, run)
 
 
@@ -95,7 +98,8 @@ def assessment_done(db, run, error=None):
     amounts = [item.usage.get("tokens", 0 if not item.usage else None) for item in rows]
     amounts += [attempt["usage"].get("tokens", 0 if not attempt["usage"] else None) for item in rows for attempt in item.attempts]
     outcome = "skipped" if status not in {"completed", "partial"} else "partial" if any(row.status != "completed" for row in rows) else "completed"
-    update(run, "assessment", outcome, tokens=usage(amounts), error=error)
+    update(run, "assessment", outcome, tokens=usage(amounts), error=None if outcome == "completed" else error,
+           waiting_for=None)
 
 
 def fail_stage(db, run, stage, error):
@@ -108,9 +112,27 @@ def fail_stage(db, run, stage, error):
     update(run, stage, "failed", error=error)
     if stage == "verification":
         verification.skip_pending(db, run, error)
+    elif stage == "assessment":
+        assessment_done(db, run, error)
     else:
         run.summary = {**run.summary, "status": "failed", "error": error}
     enqueue_finalizer(db, run)
+
+
+def defer_assessment(db, run):
+    if run.progress.get("assessment_deferred"):
+        return True  # A recovered OCR job must not take ownership from the assessment job.
+    if (run.config["connection"]["kind"] != "api"
+        or run.stages.get("verification", {}).get("status") in TERMINAL
+        or not db.scalar(select(ReviewCandidate.id).where(
+            ReviewCandidate.run_id == run.id, ReviewCandidate.status == "queued",
+        ).limit(1))):
+        return False
+    # Verification appends finding history; taking the assessment snapshot now races those writes.
+    run.progress = {**run.progress, "assessment_deferred": True}
+    update(run, "assessment", "waiting", waiting_for="verification", execution=None, started_at=None)
+    enqueue_finalizer(db, run)
+    return True
 
 
 def perform(payload):
@@ -141,7 +163,7 @@ def perform(payload):
             raise ValueError("The selected connection changed. Start a new review with the current settings.")
         # Personal profiles are serialized; OCR/assessment keep priority within this run.
         if connection.kind != "api":
-            predecessors = ["ocr", "assessment"] + (["verification"] if stage == "summary" else [])
+            predecessors = ["ocr"] + ([] if stage == "assessment" else ["assessment"]) + (["verification"] if stage == "summary" else [])
             if any(run.stages.get(name, {}).get("status") not in TERMINAL for name in predecessors):
                 raise runner_client.RunnerBlocked("busy")
             if connection.auth_status != "connected":
@@ -164,7 +186,7 @@ def perform(payload):
         from .review_context import execution_credentials
 
         credentials = execution_credentials(db, repo.id, json.loads(unseal(connection.secret)), token)
-        update(run, stage, "running", execution=claim, started_at=now().isoformat(), error=None)
+        update(run, stage, "running", execution=claim, started_at=now().isoformat(), error=None, waiting_for=None)
         options = dict(run.config["settings"])
         if stage == "summary":
             options["timeout_seconds"] = options.get("summary_timeout_seconds", 180)
@@ -178,6 +200,8 @@ def perform(payload):
     def after_checkout(_result, repo_path, env, fetch_env):
         if stage == "verification":
             verification.perform(run_id, repo_path, env, fetch_env, snapshot, credentials, claim)
+        elif stage == "assessment":
+            assessment.perform(run_id, repo_path, env, fetch_env, snapshot, credentials, claim, stage=stage)
         else:
             pr_summary.generate(run_id, repo_path, env, snapshot, credentials, claim, stage="summary")
 
@@ -189,6 +213,8 @@ def perform(payload):
             return
         if stage == "summary":
             update(run, stage, run.summary["status"], tokens=run.summary.get("tokens"), error=run.summary.get("error"))
+        elif stage == "assessment":
+            assessment_done(db, run)
         else:
             rows = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == run_id)))
             outcome = "failed" if any(row.status == "failed" for row in rows) else "skipped" if all(row.status == "skipped" for row in rows) else "completed"
@@ -200,7 +226,7 @@ def perform(payload):
 
 
 def finalize(run_id):
-    from .reviews import complete_saved_review
+    from .reviews import complete_saved_review, enqueue
 
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
@@ -213,11 +239,22 @@ def finalize(run_id):
         elif pr.ignored or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             run.status, run.cancel_requested, run.publication, run.finished_at = "cancelled", True, "not_applicable", now()
         if run.cancel_requested or run.status in {"cancelled", "superseded"}:
+            assessment.withhold_pending(db, run, "Assessment stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
             for stage in STAGES:
                 if run.stages.get(stage, {}).get("status") not in TERMINAL:
-                    update(run, stage, "cancelled")
+                    update(run, stage, "cancelled", waiting_for=None)
             run.progress = {**run.progress, "pipeline_finalized": True}
             return
+        if (run.progress.get("assessment_deferred")
+            and run.stages.get("assessment", {}).get("status") == "waiting"
+            and run.stages.get("assessment", {}).get("waiting_for") == "verification"
+            and run.stages.get("ocr", {}).get("status") in TERMINAL
+            and run.stages.get("verification", {}).get("status") in TERMINAL):
+            if not db.scalar(select(Job.id).where(
+                Job.kind == "assess_candidates", Job.payload["run_id"].as_string() == run.id,
+            ).limit(1)):
+                enqueue(db, "assess_candidates", {"run_id": run.id})
+            update(run, "assessment", "pending", waiting_for=None)
         if any(run.stages.get(stage, {}).get("status") not in TERMINAL for stage in STAGES):
             return
         run.progress = {**run.progress, "pipeline_finalized": True}

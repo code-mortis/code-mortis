@@ -250,6 +250,7 @@ class ReviewCandidate(Base):
     finding_id: Mapped[str | None] = mapped_column(ForeignKey("findings.id"), index=True)
     is_new: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str | None] = mapped_column(Text)
+    failure_reason: Mapped[str | None] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

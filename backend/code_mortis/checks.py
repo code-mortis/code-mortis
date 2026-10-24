@@ -123,6 +123,12 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
             f"Withheld candidates: {assessment['withheld_candidates']}. "
             f"Comments published: {assessment['published_comments']}."
         )
+        if (status == "completed" and conclusion in {"success", "neutral"} and (
+            assessment.get("failed") or assessment.get("skipped")
+            or run.stages.get("assessment", {}).get("status") in {"partial", "failed", "cancelled"}
+        )):
+            conclusion, title = "neutral", "Assessment incomplete"
+            lines.append("Some proposed findings could not be assessed. Open the run to inspect errors and retry eligible assessments.")
         if status == "completed" and conclusion == "success":
             title = f"Review complete: {assessment['new_findings']} new validated findings"
     if verification.get("selected"):

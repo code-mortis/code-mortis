@@ -293,6 +293,105 @@ def test_completed_withheld_assessment_cannot_be_retried(pipeline, client, decis
         assert candidate.attempts == [] and candidate.result["verdict"] == decision
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_history_conflict_retry_reuses_analysis_and_preserves_attempt(pipeline, client, legacy):
+    pipeline["comments"] += [{**COMMENT, "path": "unrelated.py"}]
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        candidates = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
+        candidate, untouched = candidates
+        candidate.status, candidate.result = "skipped", None
+        candidate.failure_reason = None if legacy else "history_changed"
+        candidate.error = ("The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
+                           if legacy else str(assessment.HistoryChanged()))
+        candidate_id, usage, context, error = candidate.id, candidate.usage, candidate.context, candidate.error
+        untouched_state = (untouched.status, untouched.result, untouched.usage)
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "pipeline_version": 2}
+        run.stages = {stage: {"status": "completed", "tokens": 0} for stage in ("ocr", "assessment", "verification", "summary")}
+        run.stages["assessment"] = {"status": "partial", "tokens": 50}
+        run.progress = {**run.progress, "pipeline_finalized": True, "assessment_deferred": True}
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert client.get(path).json()["retryable"]
+    response = client.post(path + "/retry")
+    assert response.status_code == 202, response.text
+    assert response.json()["failure_reason"] is None
+    assert client.post(path + "/retry").status_code == 409
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    reviews.publish_run(identity)
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert candidate.status == "completed" and candidate.failure_reason is None
+        assert candidate.attempts[0]["usage"] == usage
+        assert candidate.attempts[0]["context"] == context
+        assert candidate.attempts[0]["error"] == error
+        other = db.scalar(select(ReviewCandidate).where(ReviewCandidate.id != candidate_id))
+        assert (other.status, other.result, other.usage) == untouched_state
+        run = db.get(ReviewRun, identity)
+        assert run.stages["assessment"]["status"] == "completed"
+        assert run.stages["assessment"]["tokens"] == 75
+        assert checks.check_payload(run, 0)["conclusion"] == "success"
+    assert pipeline["analysis_calls"] == 1 and pipeline["calls"] == 3
+    assert pipeline["reviews"] == []
+
+
+@pytest.mark.parametrize("status,reason,error", [
+    ("skipped", None, "The run was cancelled."),
+    ("skipped", None, "Assessment exceeded the time limit."),
+    ("skipped", None, "Access to the repository or AI connection changed."),
+    ("queued", "history_changed", str(assessment.HistoryChanged())),
+    ("running", "history_changed", str(assessment.HistoryChanged())),
+    ("completed", "history_changed", str(assessment.HistoryChanged())),
+])
+def test_only_terminal_history_conflicts_are_retryable(pipeline, client, status, reason, error):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        row.status, row.failure_reason, row.error, row.result = status, reason, error, None
+        candidate_id = row.id
+    path = f"/api/v1/runs/{identity}/candidates/{candidate_id}"
+    assert not client.get(path).json()["retryable"]
+    assert client.post(path + "/retry").status_code == 409
+
+
+@pytest.mark.parametrize("outcome", ["uncertain", "rejected", "failed", "skipped"])
+def test_check_distinguishes_withheld_decisions_from_processing_errors(pipeline, outcome):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    identity = run_and_publish()
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate))
+        if outcome in {"failed", "skipped"}:
+            row.status, row.result = outcome, None
+        else:
+            row.result = {**row.result, "verdict": outcome}
+        db.flush()
+        run = db.get(ReviewRun, identity)
+        assessment.record_summary(db, run)
+        payload = checks.check_payload(run, 0)
+        assert payload["conclusion"] == ("neutral" if outcome in {"failed", "skipped"} else "success")
+        if outcome in {"failed", "skipped"}:
+            assert payload["output"]["title"] == "Assessment incomplete"
+            assert "retry eligible assessments" in payload["output"]["summary"]
+
+
+def test_assessment_conflict_migration_preserves_existing_candidates(pipeline):
+    pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
+    run_and_publish()
+    with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate))
+        identity, snapshot, result, context = candidate.id, candidate.snapshot, candidate.result, candidate.context
+    config = Config("alembic.ini")
+    command.downgrade(config, "20261022_installation_removal")
+    command.upgrade(config, "head")
+    with transaction() as db:
+        candidate = db.get(ReviewCandidate, identity)
+        assert (candidate.snapshot, candidate.result, candidate.context) == (snapshot, result, context)
+        assert candidate.failure_reason is None
+
+
 def test_assessment_attempt_migration_preserves_existing_candidates(pipeline):
     pipeline["decision"] = {"verdict": "uncertain", "relationship": "uncertain", "finding_id": None}
     run_and_publish()
@@ -344,13 +443,17 @@ def test_manual_assessment_retry_can_resume_an_automatic_run_without_an_automati
         assert db.get(ReviewRun, identity).trigger == "automatic"
 
 
+@pytest.mark.parametrize("conflict", [False, True])
 @pytest.mark.parametrize("change", ["commit", "connection", "budget", "unknown_usage", "permission"])
-def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client, monkeypatch, change):
+def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client, monkeypatch, change, conflict):
     pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
         "start_line": 7, "end_line": 7, "quote": "invented"}]}
     identity = run_and_publish()
     with transaction() as db:
         candidate_id = db.scalar(select(ReviewCandidate.id))
+        if conflict:
+            candidate = db.get(ReviewCandidate, candidate_id)
+            candidate.status, candidate.failure_reason, candidate.error = "skipped", "history_changed", str(assessment.HistoryChanged())
         run = db.get(ReviewRun, identity)
         if change == "connection":
             db.get(Connection, "connection").base_url = "https://changed.example.com"
@@ -365,7 +468,7 @@ def test_assessment_retry_rejects_unsafe_or_unfunded_execution(pipeline, client,
     response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
     assert response.status_code in {403, 409}, response.text
     with transaction() as db:
-        assert db.get(ReviewCandidate, candidate_id).status == "failed"
+        assert db.get(ReviewCandidate, candidate_id).status == ("skipped" if conflict else "failed")
         assert db.get(ReviewCandidate, candidate_id).attempts == []
 
 
@@ -457,7 +560,7 @@ def test_unsupported_candidates_never_become_findings(pipeline, decision):
         assert counts.rejected_candidates == int(rejected)
         assert counts.withheld_candidates == int(not rejected)
         assert run.publication == "no_new_comments"
-        assert checks.check_payload(run, 0)["conclusion"] == "success"
+        assert checks.check_payload(run, 0)["conclusion"] == ("neutral" if counts.failed or counts.skipped else "success")
     assert pipeline["reviews"] == []
 
 
@@ -487,19 +590,19 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
     assert response.json()["assessment"] == {
         "candidates": 10, "new_findings": 3, "repeated_observations": 0,
         "rejected_candidates": 5, "withheld_candidates": 2, "pending": 0,
-        "incomplete": 2, "published_comments": 0,
+        "incomplete": 2, "failed": 1, "skipped": 0, "published_comments": 0,
     }
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.status, run.publication = "completed", "published"
         payload = checks.check_payload(run, 3)
-        assert (payload["status"], payload["conclusion"]) == ("completed", "success")
-        assert payload["output"]["title"] == "Review complete: 3 new validated findings"
+        assert (payload["status"], payload["conclusion"]) == ("completed", "neutral")
+        assert payload["output"]["title"] == "Assessment incomplete"
         assert "Not supported candidates: 5. Withheld candidates: 2." in payload["output"]["summary"]
         run.progress = {**run.progress, "verification": {"uncertain": 1}}
         payload = checks.check_payload(run, 3)
         assert payload["conclusion"] == "neutral"
-        assert payload["output"]["title"] == "Review complete"
+        assert payload["output"]["title"] == "Assessment incomplete"
 
 
 def test_bad_suggestion_is_preserved_as_input_but_not_published(pipeline):
@@ -608,6 +711,7 @@ def test_concurrent_history_change_invalidates_new_identity(pipeline):
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate))
         assert row.status == "skipped" and "history changed during assessment" in row.error
+        assert row.failure_reason == "history_changed"
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
     assert not pipeline["reviews"]
 

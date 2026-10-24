@@ -442,7 +442,7 @@ def job_queue(kind, payload=None):
         return "verification"
     if kind in {"summarize_review", "generate_summary"}:
         return "summaries"
-    if kind in {"review", "test_connection", "generate_background"}:
+    if kind in {"review", "assess_candidates", "test_connection", "generate_background"}:
         return "reviews"
     if kind in {"sync_repositories", "scan_repository"} or (kind == "sync_pr" and not (payload or {}).get("sender_type")):
         return "sync"

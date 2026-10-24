@@ -474,6 +474,8 @@ def perform_review(run_id: str, claim: str | None = None):
                     if current.progress.get("execution") != claim or current.cancel_requested:
                         return
                     pipeline.update(current, "ocr", result[0], tokens=ocr.report_tokens(result[1]))
+                    if pipeline.defer_assessment(db, current):
+                        return
                     pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
                 progress({"phase": "assessment"})
                 assessment.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)

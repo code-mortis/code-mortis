@@ -696,8 +696,8 @@ function InferenceError({ error, withheld = false, stage = "assessment" }: {
 }
 
 
-function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }: {
-  candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; onOpenFinding: () => void;
+function AssessmentPanel({ candidate, headSha, runId, canRetry, waitingForVerification, onOpenFinding }: {
+  candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; waitingForVerification: boolean; onOpenFinding: () => void;
 }) {
   const [tab, setTab] = useUrlTab("assessment_tab", ["assessment", "evidence"], "assessment");
   const retry = useAction<Schema["CandidateOut"]>();
@@ -738,7 +738,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Changed conditions</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.changed_conditions || "No changed conditions were recorded."}</p></section>
-          </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{candidate.progress_phase === "validating" ? "Response received; validating against the current pull request and finding history." : active(candidate.status) ? "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
+          </> : !candidate.error && <p role={active(candidate.status) ? "status" : undefined} className="text-sm text-muted-foreground">{candidate.progress_phase === "validating" ? "Response received; validating against the current pull request and finding history." : active(candidate.status) ? waitingForVerification ? "Waiting for fix verification to finish updating finding history." : "Assessment is waiting for the review worker." : "No assessment result was recorded."}</p>}
           {!!candidate.attempts?.length && <details className="space-y-4 text-sm">
             <summary className="cursor-pointer font-medium">Previous attempts ({candidate.attempts.length})</summary>
             {candidate.attempts.map((attempt, index) => <section key={index} className="space-y-3 border-t pt-4">
@@ -901,6 +901,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       return <div key={key} className="space-y-2">
         <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
         <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
+        {stage.waiting_for === "verification" && <p className="text-muted-foreground">Waiting for fix verification to finish updating finding history.</p>}
         {stage.error && <TechnicalDetails error={stage.error} name={name} />}
       </div>;
     })}
@@ -1039,6 +1040,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {candidateId && <ErrorNotice error={candidateQuery.error} />}
         {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
         {findingId ? finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : <div className="px-6">{findingQuery.isPending ? <Loading /> : <ErrorNotice error={findingQuery.error} />}</div> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
+          waitingForVerification={run.stages?.assessment?.waiting_for === "verification"}
           canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>
