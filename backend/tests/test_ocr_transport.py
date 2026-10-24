@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_mortis import github, ocr, security_engine, verification
+from code_mortis.integrations import github, ocr
+from code_mortis.reviews import verification
+from code_mortis.security_scans import engine as security_engine
 
 SESSION = "00000000-0000-4000-8000-000000000001"
 RESULT = {"findings": [], "required_paths": []}

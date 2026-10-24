@@ -5,8 +5,9 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event, func, select, text
 
-from code_mortis import github, jobs
-from code_mortis.db import engine, now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import engine, now, transaction
+from code_mortis.integrations import github
 from code_mortis.models import Finding, Installation, Job, PullRequest, Repository, ReviewRun
 
 

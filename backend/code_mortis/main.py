@@ -8,14 +8,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from redis import Redis
 from sqlalchemy import text
 
-from .api import router
-from .config import settings
-from .db import engine
-from .github import GitHubError
-from .mcp_server import install_mcp
-from .security_api import router as security_router
-from .subscriptions import router as subscriptions_router
-from .telemetry import init_sentry
+from code_mortis.api.router import router
+from code_mortis.core.config import settings
+from code_mortis.core.db import engine
+from code_mortis.core.telemetry import init_sentry
+from code_mortis.integrations.github import GitHubError
+from code_mortis.mcp.server import install_mcp
 
 init_sentry("api")
 
@@ -26,8 +24,6 @@ app = FastAPI(
     title="Code Mortis", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
 )
 app.include_router(router)
-app.include_router(subscriptions_router)
-app.include_router(security_router)
 install_mcp(app)
 
 

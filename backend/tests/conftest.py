@@ -21,8 +21,9 @@ os.environ["CM_SENTRY_DSN"] = ""
 os.environ["CM_SENTRY_FRONTEND_DSN"] = ""
 os.environ["CM_WEBHOOK_URL"] = "https://relay.example.com/github"
 
-from code_mortis.config import settings
-from code_mortis.db import Base, engine, now, transaction
+from code_mortis.core.config import settings
+from code_mortis.core.db import Base, engine, now, transaction
+from code_mortis.core.security import digest, seal
 from code_mortis.main import app
 from code_mortis.models import (
     AppConfig,
@@ -34,7 +35,6 @@ from code_mortis.models import (
     Repository,
     User,
 )
-from code_mortis.security import digest, seal
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -136,7 +136,7 @@ def client():
 
 @pytest.fixture
 def github_stub(monkeypatch):
-    from code_mortis import github
+    from code_mortis.integrations import github
 
     monkeypatch.setattr(
         github, "authorize_repo", lambda *args, **kwargs: {"permissions": {"pull": True, "push": True}}

@@ -5,9 +5,11 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from code_mortis import github, jobs, mcp_provenance, reviews, security_issues
-from code_mortis.db import now, transaction, uid
-from code_mortis.mcp_models import McpClient, McpGrant
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction, uid
+from code_mortis.integrations import github
+from code_mortis.mcp import provenance as mcp_provenance
+from code_mortis.mcp.models import McpClient, McpGrant
 from code_mortis.models import (
     AppConfig,
     Finding,
@@ -18,6 +20,8 @@ from code_mortis.models import (
     SecurityFinding,
     SecurityScan,
 )
+from code_mortis.reviews import service as reviews
+from code_mortis.security_scans import issues as security_issues
 
 
 @pytest.fixture

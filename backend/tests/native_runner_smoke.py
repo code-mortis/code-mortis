@@ -8,7 +8,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from code_mortis.delegated import output_schema
 from code_mortis.native_runner import (
     CLAUDE_VERSION,
     CODEX_VERSION,
@@ -23,8 +22,9 @@ from code_mortis.native_runner import (
     locks,
     run_codex,
 )
-from code_mortis.security_engine import model_schema
-from code_mortis.security_schemas import SecurityAnalysisSelection, SecurityFixSelection
+from code_mortis.reviews.delegated import output_schema
+from code_mortis.schemas.security import SecurityAnalysisSelection, SecurityFixSelection
+from code_mortis.security_scans.engine import model_schema
 
 
 async def codex_review_smoke(client, identity, model, task="review"):

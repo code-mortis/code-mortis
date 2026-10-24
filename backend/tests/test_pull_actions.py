@@ -9,10 +9,15 @@ from sqlalchemy import func, select
 from test_inbox import pull, run
 from test_review_flow import new_run, remote
 
-from code_mortis import api, github, jobs, ocr, pr_summary, reviews
-from code_mortis.db import transaction
+from code_mortis import jobs
+from code_mortis.api.routers import pulls as pull_routes
+from code_mortis.api.routers import runs as run_routes
+from code_mortis.core.db import transaction
+from code_mortis.integrations import github, ocr
 from code_mortis.models import Finding, Job, PullRequest, Repository, ReviewRun
-from code_mortis.schemas import RepoSettings
+from code_mortis.reviews import service as reviews
+from code_mortis.reviews import summary as pr_summary
+from code_mortis.schemas.common import RepoSettings
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -262,14 +267,14 @@ def test_retry_refreshes_cancellation_before_lock(seed, github_stub, client, mon
         review = db.get(ReviewRun, identity)
         review.status, review.publication = "completed", "failed"
         review.summary = {"status": "failed"}
-    original_access = api.review_pr_access
+    original_access = run_routes.review_pr_access
 
     def cancel_before_lock(*args):
         with transaction() as db:
             db.get(ReviewRun, identity).cancel_requested = True
         return original_access(*args)
 
-    monkeypatch.setattr(api, "review_pr_access", cancel_before_lock)
+    monkeypatch.setattr(run_routes, "review_pr_access", cancel_before_lock)
     response = client.post(f"/api/v1/runs/{identity}/{suffix}")
     assert response.status_code == 409, response.text
     with transaction() as db:
@@ -384,7 +389,7 @@ def test_ignored_pr_still_syncs_metadata_without_reviewing(seed, github_stub, cl
 
 def test_ignore_serializes_with_concurrent_start(seed, github_stub, client, monkeypatch):
     ignoring, starting, release = threading.Event(), threading.Event(), threading.Event()
-    original_cancel, original_access = api.cancel_pr_reviews, api.review_pr_access
+    original_cancel, original_access = pull_routes.cancel_pr_reviews, pull_routes.review_pr_access
 
     def cancel(*args):
         ignoring.set()
@@ -395,8 +400,8 @@ def test_ignore_serializes_with_concurrent_start(seed, github_stub, client, monk
         starting.set()
         return original_access(*args)
 
-    monkeypatch.setattr(api, "cancel_pr_reviews", cancel)
-    monkeypatch.setattr(api, "review_pr_access", access)
+    monkeypatch.setattr(pull_routes, "cancel_pr_reviews", cancel)
+    monkeypatch.setattr(pull_routes, "review_pr_access", access)
     with ThreadPoolExecutor(max_workers=2) as pool:
         ignored = pool.submit(client.put, "/api/v1/pulls/pr/ignore", json={"ignored": True})
         try:

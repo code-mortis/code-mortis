@@ -11,9 +11,12 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import checks, github, jobs, ocr, reviews
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github, ocr
 from code_mortis.models import Connection, Job, Membership, Repository, ReviewRun, User, WebhookDelivery
+from code_mortis.reviews import checks
+from code_mortis.reviews import service as reviews
 
 
 @pytest.mark.parametrize(

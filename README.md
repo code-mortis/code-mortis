@@ -46,6 +46,8 @@ API keys and extra headers are encrypted and never returned to the browser. Cust
 
 ## Architecture and checks
 
+The backend is organized into API routers, shared infrastructure, integrations, reviews, security scans, MCP, and schemas. See the [backend structure guide](docs/architecture.md) for the directory map and import rules.
+
 FastAPI serves the production React build and API from one origin. PostgreSQL owns users, credentials, immutable runs, findings, deliveries and durable jobs. Celery/Redis dispatch review and synchronization queues. One scheduler dispatches work every ten seconds and reconciles GitHub every five minutes. The isolated native runner has no database or GitHub credentials and persists only official-client profiles. Do not expose its port or mount the Docker socket.
 
 OCR is pinned to **1.13.1**, Codex to **0.160.1**, and Claude Code to **2.1.292**. Review workers use one process each because OCR configuration is process-global. The native runner uses one ASGI process to own its sessions, terminal processes and locks.

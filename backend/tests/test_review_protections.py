@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_mortis import assessment, review_context, verification
+from code_mortis.reviews import assessment, verification
+from code_mortis.reviews import context as review_context
 
 
 @pytest.mark.parametrize("stage", ["assessment", "verification"])
@@ -96,7 +97,7 @@ def test_unavailable_history_commit_does_not_abort_unrelated_current_assessment(
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 def test_native_transport_uses_selection_schema_and_returns_normalized_evidence(monkeypatch, kind):
-    from code_mortis import runner_client
+    from code_mortis.integrations import runner_client
 
     context = {"sources": {"current": {"app.py": "safe\n"}}, "diff": ""}
     sent = []
@@ -115,7 +116,7 @@ def test_native_transport_uses_selection_schema_and_returns_normalized_evidence(
 
 
 def test_older_pinned_ocr_build_cannot_silently_skip_context_guard(monkeypatch):
-    from code_mortis import ocr
+    from code_mortis.integrations import ocr
 
     monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-diagnostics)", ""))
     with pytest.raises(ValueError, match="context guard"):
@@ -125,7 +126,7 @@ def test_older_pinned_ocr_build_cannot_silently_skip_context_guard(monkeypatch):
 
 
 def test_historical_secret_matching_remains_in_worker_memory_and_keeps_usage():
-    from code_mortis import security_engine
+    from code_mortis.security_scans import engine as security_engine
 
     credential = "arbitrary historical credential 雪"
     credentials = {"redaction_rules": [{"rule_id": "fixture", "match_bytes": len(credential.encode()),

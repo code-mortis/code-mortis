@@ -2,9 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from code_mortis import github
-from code_mortis.analytics import amount, ordered, recorded_usage
-from code_mortis.db import transaction
+from code_mortis.core.db import transaction
+from code_mortis.integrations import github
 from code_mortis.models import (
     Finding,
     FindingVerification,
@@ -15,6 +14,7 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
+from code_mortis.reviews.analytics import amount, ordered, recorded_usage
 
 AT = datetime(2026, 10, 10, 12, tzinfo=UTC)
 QUERY = "?from_at=2026-10-01T00:00:00Z&to_at=2026-11-01T00:00:00Z&timezone=UTC"

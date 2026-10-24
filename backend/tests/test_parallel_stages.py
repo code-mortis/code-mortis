@@ -12,23 +12,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from test_assessment import SOURCE, verdict
 from test_assessment import pipeline as assessment_scenario  # noqa: F401
-from test_pr_summary import CONTEXT, RESULT, completed_run, overview_api  # noqa: F401
+from test_pr_summary import (
+    CONTEXT,
+    RESULT,
+    completed_run,
+    overview_api,  # noqa: F401
+)
 from test_review_flow import COMMENT, new_run, remote
 from test_verification import RESULT as FIXED
 from test_verification import scenario as verification_scenario  # noqa: F401
 
-from code_mortis import (
-    assessment,
-    github,
-    jobs,
-    ocr,
-    pipeline,
-    pr_summary,
-    reviews,
-    runner_client,
-    verification,
-)
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Activity,
     Connection,
@@ -40,7 +36,10 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.schemas import RepoSettings, StageState
+from code_mortis.reviews import assessment, pipeline, verification
+from code_mortis.reviews import service as reviews
+from code_mortis.reviews import summary as pr_summary
+from code_mortis.schemas.common import RepoSettings, StageState
 
 DIAGRAM = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
 

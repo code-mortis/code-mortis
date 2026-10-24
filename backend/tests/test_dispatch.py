@@ -9,9 +9,11 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import func, select
 from test_review_flow import remote
 
-from code_mortis import github, jobs, reviews
-from code_mortis.db import now, transaction
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github
 from code_mortis.models import Job
+from code_mortis.reviews import service as reviews
 
 
 @pytest.mark.parametrize("backlog", [0, 2834])

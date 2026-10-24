@@ -16,9 +16,10 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import checks, github, jobs, ocr, pipeline, reviews, runner_client, verification
-from code_mortis.db import now, transaction
-from code_mortis.github import threads as github_threads
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations.github import threads as github_threads
 from code_mortis.models import (
     Activity,
     Connection,
@@ -32,7 +33,9 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.schemas import RepoSettings
+from code_mortis.reviews import checks, pipeline, verification
+from code_mortis.reviews import service as reviews
+from code_mortis.schemas.common import RepoSettings
 
 HEAD = "c" * 40
 CONTEXT = {
@@ -1224,7 +1227,7 @@ def test_job_attempt_fence_prevents_stale_completion(scenario, monkeypatch, erro
 
 
 def test_manual_override_refreshes_verification_summary(scenario):
-    from code_mortis import checks
+    from code_mortis.reviews import checks
     _, finding, _ = perform(scenario)
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
@@ -1447,7 +1450,7 @@ def test_paginated_discussion_skips_sync_and_recovery(scenario):
 
 
 def test_github_sync_and_compensation_release_database_connections(scenario, monkeypatch):
-    from code_mortis.db import engine
+    from code_mortis.core.db import engine
     _, finding, _ = perform(scenario)
     old_request, old_threads = github.request, github.threads
     def request(*args, **kwargs):
@@ -1640,7 +1643,7 @@ def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, m
 def test_api_adapter_retains_structured_citation_feedback_before_truncation(tmp_path, monkeypatch):
     from contextlib import nullcontext
 
-    from code_mortis import assessment
+    from code_mortis.reviews import assessment
 
     context = {**CONTEXT, "history": []}
     raw = {"verdict": "rejected", "relationship": "new", "finding_id": None,
@@ -1758,7 +1761,7 @@ def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario,
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 def test_fix_verification_validates_against_redacted_request_context(scenario, monkeypatch, kind):
-    from code_mortis.security import seal
+    from code_mortis.core.security import seal
 
     credential = "synthetic-credential"
     with transaction() as db:

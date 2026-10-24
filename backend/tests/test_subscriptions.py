@@ -4,9 +4,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from sqlalchemy import select
 
-from code_mortis import github, jobs, reviews, runner_client
-from code_mortis.db import now, transaction
-from code_mortis.delegated import validate_result
+from code_mortis import jobs
+from code_mortis.core.db import now, transaction
+from code_mortis.core.security import seal
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -20,7 +21,8 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.native_runner import CODEX_CONFIG, environment, profile
-from code_mortis.security import seal
+from code_mortis.reviews import service as reviews
+from code_mortis.reviews.delegated import validate_result
 
 
 def personal(client, kind="chatgpt"):
@@ -226,7 +228,7 @@ def test_native_console_rejects_origin_and_replay(seed, client, monkeypatch):
 
     from starlette.websockets import WebSocketDisconnect
 
-    from code_mortis import subscriptions
+    from code_mortis.api.routers import subscriptions
 
     identity = personal(client, "claude_code")
     ticket = client.post(f"/api/v1/connections/{identity}/console-ticket").json()["ticket"]

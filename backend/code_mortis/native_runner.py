@@ -24,8 +24,8 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field
 
-from .model_discovery import MAX_BYTES, MAX_MODELS, choices
-from .schemas import ModelCatalog
+from code_mortis.integrations.model_discovery import MAX_BYTES, MAX_MODELS, choices
+from code_mortis.schemas.common import ModelCatalog
 
 CODEX_VERSION = "0.160.1"
 CLAUDE_VERSION = "2.1.292"

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from test_review_flow import new_run, remote
 
-from code_mortis import github, ocr, reviews
+from code_mortis.integrations import github, ocr
+from code_mortis.reviews import service as reviews
 
 
 @pytest.fixture

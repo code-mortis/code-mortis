@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from code_mortis import github
+from code_mortis.integrations import github
 from code_mortis.main import app
 
 

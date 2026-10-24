@@ -7,8 +7,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from code_mortis import mcp_tools
-from code_mortis.mcp_tools import (
+from code_mortis.mcp import tools as mcp_tools
+from code_mortis.mcp.tools import (
     CreateIssueInput,
     FindingScopedInput,
     FindingStatusInput,
@@ -24,7 +24,7 @@ TEST_USER_ID = 7
 
 
 def fake_invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, approval=False):
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
     from code_mortis.models import User
 
     CALLS.append({"domain": domain, "scope": scope, "name": name,
@@ -44,7 +44,7 @@ def stub_invoke_tool(monkeypatch):
 def stub_github(monkeypatch, seed):
     from sqlalchemy import select
 
-    from code_mortis import github
+    from code_mortis.integrations import github
     from code_mortis.models import Repository
 
     monkeypatch.setattr(
@@ -58,9 +58,9 @@ def stub_github(monkeypatch, seed):
 
 
 def seed_security_finding(seed):
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
     from code_mortis.models import SecurityFinding, SecurityScan
-    from code_mortis.security_engine import secure_digest
+    from code_mortis.security_scans.engine import secure_digest
 
     material = "synthetic-secret-material"
     with transaction() as db:
@@ -134,7 +134,7 @@ def test_reject_unknown_domain():
 
 
 def test_list_pull_requests_returns_seeded_pr(seed):
-    from code_mortis.schemas import InboxFilters
+    from code_mortis.schemas.common import InboxFilters
 
     result = mcp_tools.reviews_list_pull_requests(InboxFilters())
     assert result["total"] >= 1
@@ -142,9 +142,9 @@ def test_list_pull_requests_returns_seeded_pr(seed):
 
 
 def test_update_connection_preserves_credentials_and_target(seed):
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
+    from code_mortis.core.security import unseal
     from code_mortis.models import Connection
-    from code_mortis.security import unseal
 
     with transaction() as db:
         secret = json.loads(unseal(db.get(Connection, "connection").secret))
@@ -191,7 +191,7 @@ def test_triage_updates_state_and_rejects_stale_version(seed):
 def test_triage_redacts_connection_secret(seed):
     from sqlalchemy import select
 
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
     from code_mortis.models import SecurityActivity
 
     ids = seed_security_finding(seed)
@@ -211,7 +211,7 @@ def test_triage_redacts_connection_secret(seed):
 
 
 def test_create_issue_rejects_credential_material(seed, monkeypatch):
-    from code_mortis import github
+    from code_mortis.integrations import github
 
     monkeypatch.setattr(
         github, "authorize_repo",
@@ -229,7 +229,7 @@ def test_create_issue_rejects_credential_material(seed, monkeypatch):
 
 
 def test_admin_gates_preserved(seed):
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
     from code_mortis.models import Membership, User
 
     global TEST_USER_ID
@@ -251,7 +251,7 @@ def test_admin_gates_preserved(seed):
 
 
 def test_report_is_bounded(seed):
-    from code_mortis.db import transaction
+    from code_mortis.core.db import transaction
     from code_mortis.models import SecurityScan
 
     ids = seed_security_finding(seed)
@@ -264,7 +264,7 @@ def test_report_is_bounded(seed):
 
 
 def test_start_review_uses_request_key(seed, monkeypatch):
-    from code_mortis import github
+    from code_mortis.integrations import github
 
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: {
         "number": 3, "title": "Fix retry logic", "user": {"login": "owner"},

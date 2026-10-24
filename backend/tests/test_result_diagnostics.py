@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from code_mortis import result_diagnostics as diagnostic
+from code_mortis.reviews import diagnostics as diagnostic
 
 SESSION = "00000000-0000-4000-8000-000000000001"
 KEY = bytes.fromhex("ab" * 32)

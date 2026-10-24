@@ -8,11 +8,13 @@ import sentry_sdk
 from fastapi.testclient import TestClient
 from sentry_sdk.transport import Transport
 
-from code_mortis import github, jobs, main, telemetry
-from code_mortis.config import Settings, settings
-from code_mortis.db import now, transaction
+from code_mortis import jobs, main
+from code_mortis.core import telemetry
+from code_mortis.core.config import Settings, settings
+from code_mortis.core.db import now, transaction
+from code_mortis.integrations import github
 from code_mortis.models import Job
-from code_mortis.reviews import enqueue
+from code_mortis.reviews.service import enqueue
 
 DSN = "https://public@sentry.example.com:8443/1"
 

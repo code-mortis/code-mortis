@@ -140,74 +140,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/analytics/overview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Analytics Overview */
-        get: operations["analytics_overview_api_v1_analytics_overview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/analytics/findings": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Analytics Findings */
-        get: operations["analytics_findings_api_v1_analytics_findings_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/analytics/reviews": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Analytics Reviews */
-        get: operations["analytics_reviews_api_v1_analytics_reviews_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/analytics/usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Analytics Usage */
-        get: operations["analytics_usage_api_v1_analytics_usage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/repositories/{repository_id}": {
         parameters: {
             query?: never;
@@ -287,6 +219,74 @@ export interface paths {
         put?: never;
         /** Refresh Repository */
         post: operations["refresh_repository_api_v1_repositories__repository_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Overview */
+        get: operations["analytics_overview_api_v1_analytics_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Findings */
+        get: operations["analytics_findings_api_v1_analytics_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Reviews */
+        get: operations["analytics_reviews_api_v1_analytics_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Usage */
+        get: operations["analytics_usage_api_v1_analytics_usage_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -390,6 +390,23 @@ export interface paths {
         get: operations["pull_findings_api_v1_pulls__pr_id__findings_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Summary Sync */
+        post: operations["retry_summary_sync_api_v1_pulls__pr_id__summary_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -560,23 +577,6 @@ export interface paths {
         put?: never;
         /** Retry Publication */
         post: operations["retry_publication_api_v1_runs__run_id__publish_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pulls/{pr_id}/summary": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Retry Summary Sync */
-        post: operations["retry_summary_sync_api_v1_pulls__pr_id__summary_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3986,153 +3986,6 @@ export interface operations {
             };
         };
     };
-    analytics_overview_api_v1_analytics_overview_get: {
-        parameters: {
-            query?: {
-                ordering?: ("count" | "-count" | "key" | "-key") | null;
-                repo?: number[];
-                from_at?: string | null;
-                to_at?: string | null;
-                all_time?: boolean;
-                timezone?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AnalyticsOverview"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    analytics_findings_api_v1_analytics_findings_get: {
-        parameters: {
-            query?: {
-                ordering?: ("count" | "-count" | "key" | "-key") | null;
-                repo?: number[];
-                from_at?: string | null;
-                to_at?: string | null;
-                all_time?: boolean;
-                timezone?: string;
-                severity?: ("critical" | "high" | "medium" | "low")[];
-                category?: string[];
-                status?: ("open" | "resolved" | "dismissed")[];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AnalyticsFindings"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    analytics_reviews_api_v1_analytics_reviews_get: {
-        parameters: {
-            query?: {
-                ordering?: ("count" | "-count" | "key" | "-key") | null;
-                repo?: number[];
-                from_at?: string | null;
-                to_at?: string | null;
-                all_time?: boolean;
-                timezone?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AnalyticsReviews"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    analytics_usage_api_v1_analytics_usage_get: {
-        parameters: {
-            query?: {
-                ordering?: ("count" | "-count" | "key" | "-key") | null;
-                repo?: number[];
-                from_at?: string | null;
-                to_at?: string | null;
-                all_time?: boolean;
-                timezone?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AnalyticsUsage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     update_repository_api_v1_repositories__repository_id__put: {
         parameters: {
             query?: never;
@@ -4297,6 +4150,153 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_overview_api_v1_analytics_overview_get: {
+        parameters: {
+            query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_findings_api_v1_analytics_findings_get: {
+        parameters: {
+            query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                status?: ("open" | "resolved" | "dismissed")[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsFindings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_reviews_api_v1_analytics_reviews_get: {
+        parameters: {
+            query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsReviews"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_usage_api_v1_analytics_usage_get: {
+        parameters: {
+            query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsUsage"];
                 };
             };
             /** @description Validation Error */
@@ -4541,6 +4541,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_summary_sync_api_v1_pulls__pr_id__summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -4870,39 +4903,6 @@ export interface operations {
             header?: never;
             path: {
                 run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    retry_summary_sync_api_v1_pulls__pr_id__summary_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                pr_id: string;
             };
             cookie?: never;
         };
