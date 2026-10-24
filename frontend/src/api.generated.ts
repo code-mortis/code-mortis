@@ -3294,6 +3294,8 @@ export interface components {
             tokens: number | null;
             /** Error */
             error?: string | null;
+            /** Waiting For */
+            waiting_for?: "verification" | null;
         };
         /** StartRunInput */
         StartRunInput: {

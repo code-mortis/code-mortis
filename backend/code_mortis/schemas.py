@@ -354,6 +354,8 @@ class StageState(StrictModel):
     finished_at: datetime | None = None
     tokens: int | None = 0
     error: str | None = None
+    # Older pipelines persisted this dependency, including null after completion.
+    waiting_for: Literal["verification"] | None = None
 
 
 class RunOut(ORMModel):
