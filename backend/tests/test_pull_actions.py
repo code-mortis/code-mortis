@@ -58,15 +58,118 @@ def test_bot_webhooks_keep_human_sender_rules(seed, github_stub, monkeypatch, se
         assert db.scalar(select(func.count()).select_from(PullRequest)) == int(author_type == "User" or enabled)
 
 
-def test_bot_setting_defaults_off_and_enabling_scans_paused_repository(seed, github_stub, client):
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bot_setting_schedules_import_only_when_reviews_are_enabled(seed, github_stub, client, enabled):
     assert not RepoSettings().include_bot_prs
     response = client.put("/api/v1/repositories/22", json={
-        "enabled": False, "connection_id": "connection", "settings": {"include_bot_prs": True},
+        "enabled": enabled, "connection_id": "connection", "settings": {"include_bot_prs": True},
     })
     assert response.status_code == 200, response.text
     assert response.json()["settings"]["include_bot_prs"]
     with transaction() as db:
-        assert db.scalar(select(Job).where(Job.kind == "scan_repository"))
+        assert bool(db.scalar(select(Job).where(Job.kind == "scan_repository"))) is enabled
+
+
+@pytest.mark.parametrize("source", ["webhook", "scan"])
+@pytest.mark.parametrize("author_type", ["User", "Bot"])
+def test_pausing_repository_drops_queued_new_pr_imports(seed, github_stub, client, monkeypatch, source, author_type):
+    data = {**remote(), "number": 4, "user": {"login": "author", "type": author_type}}
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"include_bot_prs": True}
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [data])
+    if source == "webhook":
+        jobs.process_webhook({"event": "pull_request", "body": {
+            "action": "opened", "installation": {"id": 10}, "repository": {"id": 22},
+            "sender": {"type": author_type}, "pull_request": data,
+        }})
+    else:
+        jobs.scan_repository(22)
+    with transaction() as db:
+        identity = db.scalar(select(Job.id).where(Job.kind == "sync_pr", Job.payload["number"].as_integer() == 4))
+        assert identity
+    assert client.put("/api/v1/repositories/22", json={
+        "enabled": False, "connection_id": "connection", "settings": {"include_bot_prs": True},
+    }).status_code == 200
+    def unexpected(*a, **k):
+        pytest.fail("A paused repository must not fetch an untracked PR")
+    monkeypatch.setattr(github, "installation_token", unexpected)
+    monkeypatch.setattr(github, "request", unexpected)
+    jobs.execute_job(identity)
+    with transaction() as db:
+        assert db.get(Job, identity).status == "done"
+        assert db.scalar(select(func.count()).select_from(PullRequest)) == 1
+        assert db.get(PullRequest, "pr")
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
+
+
+def test_pausing_repository_stops_already_queued_discovery(seed, github_stub, monkeypatch):
+    with transaction() as db:
+        identity = reviews.enqueue(db, "scan_repository", {"repository_id": 22}).id
+        db.get(Repository, 22).enabled = False
+    monkeypatch.setattr(github, "installation_token", lambda *a, **k: pytest.fail("Paused discovery must not access GitHub"))
+    jobs.execute_job(identity)
+    with transaction() as db:
+        assert db.get(Job, identity).status == "done"
+        assert not db.scalar(select(Job.id).where(Job.kind == "sync_pr"))
+        assert db.get(PullRequest, "pr")
+
+
+@pytest.mark.parametrize("author_type", ["User", "Bot"])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_pause_during_pr_fetch_prevents_import(seed, github_stub, client, monkeypatch, author_type, automatic):
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"include_bot_prs": True}
+    def fetch(*a, **k):
+        assert client.put("/api/v1/repositories/22", json={
+            "enabled": False, "connection_id": "connection", "settings": {"include_bot_prs": True},
+        }).status_code == 200
+        return {**remote(), "number": 4, "user": {"login": "author", "type": author_type}}
+    monkeypatch.setattr(github, "request", fetch)
+    jobs.sync_pr(22, 4, automatic=automatic)
+    with transaction() as db:
+        assert not db.get(Repository, 22).enabled
+        assert db.scalar(select(func.count()).select_from(PullRequest)) == 1
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
+
+
+@pytest.mark.parametrize("author_type", ["User", "Bot"])
+def test_paused_repository_preserves_existing_pr_sync_and_review_history(seed, github_stub, monkeypatch, author_type):
+    identity = new_run()
+    with transaction() as db:
+        db.get(ReviewRun, identity).status = "completed"
+        db.get(Repository, 22).enabled = False
+    data = {**remote(), "state": "closed", "merged": True, "user": {"login": "author", "type": author_type}}
+    monkeypatch.setattr(github, "request", lambda *a, **k: data)
+    reconciled = []
+    monkeypatch.setattr(jobs, "reconcile_threads", lambda db, pr, *a: reconciled.append(pr.id))
+    jobs.sync_pr(22, 3)
+    with transaction() as db:
+        assert db.get(PullRequest, "pr").state == "merged"
+        assert db.get(ReviewRun, identity).status == "completed"
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+    assert reconciled == ["pr"]
+
+
+@pytest.mark.parametrize("author_type", ["User", "Bot"])
+def test_reenabled_repository_imports_prs_without_enabling_automatic_reviews(seed, github_stub, client, monkeypatch, author_type):
+    with transaction() as db:
+        db.get(Repository, 22).enabled = False
+    data = {**remote(), "number": 4, "user": {"login": "author", "type": author_type}}
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [data])
+    monkeypatch.setattr(github, "request", lambda method, path, *a, **k: data if path.endswith("/4") else remote())
+    assert client.put("/api/v1/repositories/22", json={
+        "enabled": True, "connection_id": "connection", "settings": {"include_bot_prs": True, "automatic": False},
+    }).status_code == 200
+    with transaction() as db:
+        identity = db.scalar(select(Job.id).where(Job.kind == "scan_repository"))
+    jobs.execute_job(identity)
+    with transaction() as db:
+        identities = list(db.scalars(select(Job.id).where(Job.kind == "sync_pr")))
+    for identity in identities:
+        jobs.execute_job(identity)
+    with transaction() as db:
+        assert set(db.scalars(select(PullRequest.number))) == {3, 4}
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
 
 
 def test_cancel_all_reviews_preserves_history(seed, github_stub, client):

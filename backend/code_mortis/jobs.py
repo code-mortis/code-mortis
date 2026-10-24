@@ -116,13 +116,22 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
         repo = db.get(Repository, repository_id)
         if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
             return
+        tracked = db.scalar(select(PullRequest.id).where(
+            PullRequest.repository_id == repo.id, PullRequest.number == number,
+        ))
+        if not repo.enabled and not tracked:
+            return
         token = github.installation_token(db, repo.installation_id)
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
+        if not tracked:
+            # Serialize new imports with settings changes after the remote fetch.
+            repo = db.scalar(select(Repository).where(Repository.id == repository_id)
+                             .with_for_update().execution_options(populate_existing=True))
+            if not repo or not repo.active or not repo.enabled:
+                return
         bot = data["user"].get("type") == "Bot"
         include_bots = repo.settings.get("include_bot_prs", False)
-        if bot and not include_bots and not db.scalar(select(PullRequest.id).where(
-            PullRequest.repository_id == repo.id, PullRequest.number == number,
-        )):
+        if bot and not include_bots and not tracked:
             return
         pr = upsert_pr(db, repo, data)
         reconcile_threads(db, pr, repo, token)
@@ -151,7 +160,7 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
 def scan_repository(repository_id: int):
     with transaction() as db:
         repo = db.get(Repository, repository_id)
-        if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
+        if not repo or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             return
         token = github.installation_token(db, repo.installation_id)
         remote = github.pages(f"/repos/{repo.full_name}/pulls?state=open", token)
