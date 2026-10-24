@@ -1,16 +1,20 @@
+import asyncio
 import base64
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
+from threading import Event, get_ident
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select
+from fastapi import HTTPException, Request
+from sqlalchemy import event, select
 
-from code_mortis import github, mcp_auth, reviews
-from code_mortis.db import now, transaction
+from code_mortis import github, mcp_auth, mcp_server, mcp_tools, reviews
+from code_mortis.db import engine, now, transaction
 from code_mortis.mcp_models import McpAuthorization, McpClient, McpGrant, McpToken
 from code_mortis.models import AppConfig, Job, Membership, Repository, ReviewRun
 from code_mortis.security import digest
@@ -107,6 +111,109 @@ def test_oauth_code_flow_hashes_tokens_and_authenticates_actual_transport(enable
     assert response.status_code == 200, response.text
     assert response.json()["result"]["serverInfo"]["name"] == "Code Mortis reviews"
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("operation", ["verify_token", "list_tools", "call_tool", "error"])
+def test_mcp_database_work_runs_off_event_loop_with_auth_context(enabled, client, monkeypatch, operation):
+    tokens = credentials(client)
+    verifier = mcp_auth.McpTokenVerifier("reviews")
+    token = asyncio.run(verifier.verify_token(tokens["access_token"]))
+    access = ContextVar("test_mcp_access", default=None)
+    monkeypatch.setattr(mcp_auth, "get_access_token", access.get)
+    monkeypatch.setattr(mcp_server, "get_access_token", access.get)
+    loop_thread = get_ident()
+    threads = []
+
+    @contextmanager
+    def checked_transaction():
+        threads.append(get_ident())
+        assert get_ident() != loop_thread, "Blocking database work ran on the event loop"
+        with transaction() as db:
+            yield db
+
+    monkeypatch.setattr(mcp_auth, "transaction", checked_transaction)
+    monkeypatch.setattr(mcp_server, "transaction", checked_transaction)
+    server = mcp_server.DomainServer("reviews")
+    mcp_tools.register_tools(server, "reviews")
+
+    async def check():
+        access.set(token)
+        if operation == "verify_token":
+            assert (await verifier.verify_token(tokens["access_token"])).client_id == "test-cli"
+        elif operation == "list_tools":
+            names = {tool.name for tool in await server.list_tools()}
+            assert "reviews_get_pull_request" in names
+            assert "reviews_start_review" not in names
+        else:
+            result = await server.call_tool("reviews_get_pull_request", {
+                "params": {"pr_id": "missing" if operation == "error" else "pr"}})
+            assert result.is_error is (operation == "error")
+            if operation == "error":
+                assert result.structured_content["error"]["status"] == 404
+            else:
+                assert result.structured_content["pull_request"]["id"] == "pr"
+
+    asyncio.run(check())
+    assert threads
+
+
+def test_slow_mcp_authorization_keeps_event_loop_responsive(enabled, client, monkeypatch):
+    tokens = credentials(client)
+    token = asyncio.run(mcp_auth.McpTokenVerifier("reviews").verify_token(tokens["access_token"]))
+    monkeypatch.setattr(mcp_auth, "get_access_token", lambda: token)
+    monkeypatch.setattr(mcp_server, "get_access_token", lambda: token)
+    entered, release = Event(), Event()
+    original = mcp_server.tool_access
+
+    def slow_access(*args):
+        entered.set()
+        assert release.wait(5), "The event loop could not release the blocked authorization"
+        return original(*args)
+
+    monkeypatch.setattr(mcp_server, "tool_access", slow_access)
+    server = mcp_server.DomainServer("reviews")
+    mcp_tools.register_tools(server, "reviews")
+
+    async def check():
+        task = asyncio.create_task(server.list_tools())
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            assert not task.done()
+        finally:
+            release.set()
+        assert await task
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("endpoint", ["token", "revoke"])
+def test_oauth_post_io_runs_off_event_loop(enabled, client, monkeypatch, endpoint):
+    tokens = credentials(client)
+    code = consent_code(client)
+    loop_threads = set()
+    original_body, original_parameters = Request.body, mcp_auth.oauth_parameters
+
+    async def body(request):
+        loop_threads.add(get_ident())
+        return await original_body(request)
+
+    def parameters(*args):
+        assert get_ident() not in loop_threads, "Redis rate limiting ran on the event loop"
+        return original_parameters(*args)
+
+    def query(*args):
+        assert get_ident() not in loop_threads, "Database query ran on the event loop"
+
+    monkeypatch.setattr(Request, "body", body)
+    monkeypatch.setattr(mcp_auth, "oauth_parameters", parameters)
+    event.listen(engine(), "before_cursor_execute", query)
+    try:
+        response = exchange(client, code) if endpoint == "token" else client.post("/oauth/revoke", data={
+            "client_id": "test-cli", "token": tokens["access_token"]})
+        assert response.status_code == 200, response.text
+        assert loop_threads
+    finally:
+        event.remove(engine(), "before_cursor_execute", query)
 
 
 @pytest.mark.parametrize("domain", ["reviews", "security"])

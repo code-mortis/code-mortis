@@ -176,7 +176,7 @@ class ManagementConnectionInput(ApprovalInput):
     request_key: str = Field(min_length=16, max_length=100)
 
     def to_connection_input(self) -> ConnectionInput:
-        data = self.model_dump(exclude={"request_key", "approval_id"})
+        data = self.model_dump(exclude={"request_key", "approval_id", "connection_id"})
         return ConnectionInput.model_validate({**data, "api_key": None, "extra_headers": None})
 
 

@@ -1,6 +1,7 @@
 """Tool behavior with seeded data; transport and authorization are tested separately."""
 
 import asyncio
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -138,6 +139,25 @@ def test_list_pull_requests_returns_seeded_pr(seed):
     result = mcp_tools.reviews_list_pull_requests(InboxFilters())
     assert result["total"] >= 1
     assert any(item["id"] == "pr" for page in result["groups"] for item in page["items"])
+
+
+def test_update_connection_preserves_credentials_and_target(seed):
+    from code_mortis.db import transaction
+    from code_mortis.models import Connection
+    from code_mortis.security import unseal
+
+    with transaction() as db:
+        secret = json.loads(unseal(db.get(Connection, "connection").secret))
+    result = mcp_tools.management_update_connection(mcp_tools.UpdateConnectionInput(
+        connection_id="connection", name="Renamed connection", provider="openai", protocol="openai",
+        model="updated-model", base_url="https://api.openai.com/v1", request_key="update-connection-key"))
+    assert result["id"] == "connection"
+    assert result["name"] == "Renamed connection"
+    assert result["model"] == "updated-model"
+    with transaction() as db:
+        assert json.loads(unseal(db.get(Connection, "connection").secret)) == secret
+    assert CALLS[-1] == {"domain": "reviews", "scope": "connections:manage",
+        "name": "management_update_connection", "request_key": "update-connection-key", "approval": True}
 
 
 def test_run_and_finding_not_found(seed):

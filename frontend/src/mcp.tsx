@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -444,6 +444,15 @@ export function McpSettingsSection({ canAdminister }: { canAdminister: boolean }
 export function McpAuthorizePage() {
   const [params] = useSearchParams();
   const requestId = params.get("request_id") ?? "";
+  return <McpAuthorizeRequest key={requestId} requestId={requestId} />;
+}
+
+function McpAuthorizeRequest({ requestId }: { requestId: string }) {
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
   const preview = useApi<McpAuthorizePreview>(`/mcp/authorize?request_id=${encodeURIComponent(requestId)}`, false, !!requestId);
   const [repos, setRepos] = useState<number[] | null>(null);
   const [scopeNames, setScopeNames] = useState<string[] | null>(null);
@@ -473,7 +482,7 @@ export function McpAuthorizePage() {
         scopes: approve ? selectedScopes : [],
         approve,
       });
-      window.location.assign(result.redirect_url);
+      if (active.current) window.location.assign(result.redirect_url);
     } catch (e) {
       setError(e);
       setBusy(false);
@@ -556,7 +565,11 @@ export function McpAuthorizePage() {
 
 export function McpApprovalPage() {
   const { id } = useParams();
-  const approval = useApi<McpApproval>(`/mcp/approvals/${encodeURIComponent(id ?? "")}`, false, !!id);
+  return <McpApprovalRequest key={id} id={id ?? ""} />;
+}
+
+function McpApprovalRequest({ id }: { id: string }) {
+  const approval = useApi<McpApproval>(`/mcp/approvals/${encodeURIComponent(id)}`, false, !!id);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
   const [decided, setDecided] = useState<boolean | null>(null);
@@ -564,7 +577,7 @@ export function McpApprovalPage() {
     setBusy(true);
     setError(undefined);
     try {
-      const result = await api<{ approved: boolean }>(`/mcp/approvals/${encodeURIComponent(id ?? "")}`, "POST", { approve });
+      const result = await api<{ approved: boolean }>(`/mcp/approvals/${encodeURIComponent(id)}`, "POST", { approve });
       setDecided(result.approved);
       void approval.refetch();
     } catch (e) {

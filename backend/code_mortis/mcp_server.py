@@ -11,6 +11,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Route
 
 from .config import settings
@@ -33,24 +34,31 @@ class DomainServer(MCPServer):
         tools = await super().list_tools()
         if not token:
             return []
-        with transaction() as db:
-            available = []
-            for tool in tools:
-                scope = (tool.meta or {}).get("scope")
-                try:
-                    tool_access(db, self.domain, scope)
-                except HTTPException:
-                    continue
-                available.append(tool)
-            return available
+
+        def permitted_tools():
+            with transaction() as db:
+                available = []
+                for tool in tools:
+                    scope = (tool.meta or {}).get("scope")
+                    try:
+                        tool_access(db, self.domain, scope)
+                    except HTTPException:
+                        continue
+                    available.append(tool)
+                return available
+
+        return await run_in_threadpool(permitted_tools)
 
     async def call_tool(self, name, arguments, context=None):
         try:
             tool = next((tool for tool in await super().list_tools() if tool.name == name), None)
             if not tool:
                 raise HTTPException(404, "This tool is not available on this MCP endpoint.")
-            with transaction() as db:
-                tool_access(db, self.domain, (tool.meta or {}).get("scope"))
+            def authorize_tool():
+                with transaction() as db:
+                    tool_access(db, self.domain, (tool.meta or {}).get("scope"))
+
+            await run_in_threadpool(authorize_tool)
             return await super().call_tool(name, arguments, context)
         except HTTPException as exc:
             message, code = str(exc.detail), exc.status_code
@@ -68,8 +76,11 @@ class DomainServer(MCPServer):
             else:
                 message, code = "Code Mortis could not complete this tool call. Refresh the item and check its state before retrying.", 500
         try:
-            with transaction() as db:
-                message = redact_tool_text(db, message)
+            def redact_error():
+                with transaction() as db:
+                    return redact_tool_text(db, message)
+
+            message = await run_in_threadpool(redact_error)
         except Exception:
             message, code = "Code Mortis could not safely return this error. Check the instance diagnostics.", 503
         error = {"error": {"status": code, "message": message}}

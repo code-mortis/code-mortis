@@ -364,3 +364,128 @@ test("approval previews exact arguments and records approve or deny", async ({ p
   await expect(page.getByRole("status")).toContainText("Denied. This action cannot run with this approval.");
   await expect(page.getByRole("button", { name: "Approve this action", exact: true })).toHaveCount(0);
 });
+
+test("changing consent requests resets selections and errors", async ({ page }, info) => {
+  const writes = await mockMcp(page);
+  await page.route("**/api/v1/mcp/authorize?request_id=req-2", (route) => route.fulfill({ json: {
+    ...authorizePreview, request_id: "req-2", client_name: "Second agent", domain: "security",
+    repositories: [{ id: 23, full_name: "acme/billing" }, { id: 24, full_name: "acme/orders" }],
+    scopes: [
+      { name: "security:read", label: "Read security", description: "Read saved scans." },
+      { name: "security:run", label: "Run scans", description: "Start security scans." },
+    ],
+  } }));
+  await page.route("**/api/v1/mcp/authorize", (route) => {
+    if (route.request().postDataJSON()?.request_id === "req-1") {
+      return route.fulfill({ status: 409, json: { detail: "First request changed." } });
+    }
+    return route.fallback();
+  });
+  await page.goto("/mcp/authorize?request_id=req-1");
+  await page.getByRole("checkbox", { name: /acme\/billing/ }).uncheck();
+  await page.getByRole("checkbox", { name: /Run reviews/ }).check();
+  await page.getByRole("button", { name: "Approve selected access", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("First request changed.");
+  await page.evaluate(() => {
+    history.pushState(history.state, "", "/mcp/authorize?request_id=req-2");
+    dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page.getByText("Second agent", { exact: false })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /acme\/billing/ })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /acme\/orders/ })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /Read security/ })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /Run scans/ })).not.toBeChecked();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/mcp-consent-reset-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Approve selected access", exact: true }).click();
+  await expect(page).toHaveURL(/authorized=1/);
+  expect(writes.find((write) => write.path === "/mcp/authorize" && write.method === "POST")?.body).toEqual({
+    request_id: "req-2", repository_ids: [23, 24], scopes: ["security:read"], approve: true,
+  });
+});
+
+for (const approve of [true, false]) {
+  test(`changing approval requests clears a previous ${approve ? "approval" : "denial"}`, async ({ page }, info) => {
+    await mockMcp(page);
+    await page.route("**/api/v1/mcp/approvals/approval-2", (route) => route.fulfill({ json: {
+      ...approvalDetail, id: "approval-2", summary: "Second pending action.",
+    } }));
+    await page.goto("/mcp/approvals/approval-1");
+    await page.getByRole("button", { name: approve ? "Approve this action" : "Deny", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText(approve ? "Approved." : "Denied.");
+    await page.evaluate(() => {
+      history.pushState(history.state, "", "/mcp/approvals/approval-2");
+      dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(page.getByText("Second pending action.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve this action", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Deny", exact: true })).toBeEnabled();
+    await expect(page.getByText(approve ? "Approved." : "Denied.", { exact: false })).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `/private/tmp/mcp-approval-reset-${approve}-${info.project.name}.png`, fullPage: true });
+  });
+}
+
+test("a late consent redirect cannot replace the current request", async ({ page }) => {
+  await mockMcp(page);
+  await page.route("**/api/v1/mcp/authorize?request_id=req-2", (route) => route.fulfill({ json: {
+    ...authorizePreview, request_id: "req-2", client_name: "Second agent",
+  } }));
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/mcp/authorize", async (route) => {
+    await pending;
+    return route.fulfill({ json: { redirect_url: "/settings?tab=mcp&stale=1" } });
+  });
+  await page.goto("/mcp/authorize?request_id=req-1");
+  const response = page.waitForResponse((result) => result.request().method() === "POST"
+    && new URL(result.url()).pathname === "/api/v1/mcp/authorize");
+  await page.getByRole("button", { name: "Approve selected access", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Working…", exact: true })).toBeDisabled();
+  try {
+    await page.evaluate(() => {
+      history.pushState(history.state, "", "/mcp/authorize?request_id=req-2");
+      dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(page.getByText("Second agent", { exact: false })).toBeVisible();
+  } finally {
+    release();
+  }
+  await (await response).finished();
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page).toHaveURL(/request_id=req-2/);
+  await expect(page.getByRole("button", { name: "Approve selected access", exact: true })).toBeEnabled();
+});
+
+test("a late approval decision cannot settle the next action", async ({ page }) => {
+  await mockMcp(page);
+  await page.route("**/api/v1/mcp/approvals/approval-2", (route) => route.fulfill({ json: {
+    ...approvalDetail, id: "approval-2", summary: "Second pending action.",
+  } }));
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/mcp/approvals/approval-1", async (route) => {
+    if (route.request().method() === "GET") return route.fallback();
+    await pending;
+    return route.fulfill({ json: { approved: true } });
+  });
+  await page.goto("/mcp/approvals/approval-1");
+  const response = page.waitForResponse((result) => result.request().method() === "POST"
+    && result.url().endsWith("/mcp/approvals/approval-1"));
+  await page.getByRole("button", { name: "Approve this action", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Working…", exact: true })).toBeDisabled();
+  try {
+    await page.evaluate(() => {
+      history.pushState(history.state, "", "/mcp/approvals/approval-2");
+      dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(page.getByText("Second pending action.")).toBeVisible();
+  } finally {
+    release();
+  }
+  await (await response).finished();
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page.getByRole("button", { name: "Approve this action", exact: true })).toBeEnabled();
+  await expect(page.getByText("Approved.", { exact: false })).toHaveCount(0);
+});

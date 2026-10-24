@@ -26,6 +26,7 @@ from pydantic import Field, field_validator
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import delete, func, select
+from starlette.concurrency import run_in_threadpool
 
 from . import github, security_engine
 from .api import ADMIN, DB, USER, current_user
@@ -201,6 +202,9 @@ class McpTokenVerifier(TokenVerifier):
     async def verify_token(self, token):
         if len(token) > 200:
             return None
+        return await run_in_threadpool(self._verify_token, token)
+
+    def _verify_token(self, token):
         with transaction() as db:
             record = db.get(McpToken, digest(token))
             if not record or record.expires_at <= now():
@@ -699,8 +703,11 @@ async def token_endpoint(request: Request, db: DB):
     raw = await request.body()
     if len(raw) > 16384 or request.headers.get("content-type", "").split(";")[0].strip() != "application/x-www-form-urlencoded":
         return JSONResponse({"error": "invalid_request"}, status_code=400)
-    data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
-    return McpAuthorizationServer(db).create_token_response(ProtocolRequest("POST", data))
+    def respond():
+        data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
+        return McpAuthorizationServer(db).create_token_response(ProtocolRequest("POST", data))
+
+    return await run_in_threadpool(respond)
 
 
 @router.post("/oauth/revoke")
@@ -708,13 +715,16 @@ async def revoke_token(request: Request, db: DB):
     raw = await request.body()
     if len(raw) > 16384:
         raise HTTPException(413, "The revocation request is too large.")
-    data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
-    fingerprint = digest(data.get("token", ""))
-    row = db.scalar(select(McpToken).where((McpToken.access_hash == fingerprint) | (McpToken.refresh_hash == fingerprint)))
-    if row:
-        grant = db.scalar(select(McpGrant).where(McpGrant.id == row.grant_id).with_for_update())
-        if grant.client_id == data.get("client_id"):
-            revoke_grant(db, grant)
+    def revoke():
+        data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
+        fingerprint = digest(data.get("token", ""))
+        row = db.scalar(select(McpToken).where((McpToken.access_hash == fingerprint) | (McpToken.refresh_hash == fingerprint)))
+        if row:
+            grant = db.scalar(select(McpGrant).where(McpGrant.id == row.grant_id).with_for_update())
+            if grant.client_id == data.get("client_id"):
+                revoke_grant(db, grant)
+
+    await run_in_threadpool(revoke)
     return JSONResponse({}, headers={"Cache-Control": "no-store"})
 
 
