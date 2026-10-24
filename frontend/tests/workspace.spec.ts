@@ -5854,7 +5854,7 @@ for (const role of ["admin", "member"]) {
     await page.goto("/settings");
     const navigation = page.getByRole("navigation", { name: "Settings sections" });
     await expect(navigation.getByRole("link")).toHaveText(role === "admin"
-      ? ["AI connections", "GitHub", "Team", "Appearance"] : ["AI connections", "Appearance"]);
+      ? ["AI connections", "MCP access", "GitHub", "Team", "Appearance"] : ["AI connections", "MCP access", "Appearance"]);
     await navigation.getByRole("link", { name: "Appearance", exact: true }).click();
     await expect(page).toHaveURL(/\/settings\?tab=appearance$/);
     await expect(page.getByRole("region", { name: "Appearance", exact: true })).toBeVisible();
@@ -6023,7 +6023,7 @@ test("members manage personal subscriptions without administrative controls", as
 }, info) => {
   await mock(page, { role: "member", personal: true });
   await page.goto("/settings");
-  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "Appearance"]);
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "MCP access", "Appearance"]);
   await expect(
     page.getByRole("link", { name: "GitHub", exact: true }),
   ).toHaveCount(0);
@@ -8030,7 +8030,7 @@ test("personal model and repository errors stay with their operation", async ({ 
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings?tab=team");
   const sections = page.getByRole("navigation", { name: "Settings sections" });
-  await expect(sections.getByRole("link")).toHaveText(["AI connections", "Appearance"]);
+  await expect(sections.getByRole("link")).toHaveText(["AI connections", "MCP access", "Appearance"]);
   await expect(sections.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
   await page.getByRole("tab", { name: "General", exact: true }).click();

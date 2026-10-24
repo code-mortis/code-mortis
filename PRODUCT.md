@@ -20,7 +20,7 @@ Turn OCR reviews into actionable GitHub comments while preserving review history
 
 ## Operating Context
 
-Users connect their own GitHub App, shared API credentials or personal ChatGPT and Claude Code subscriptions, enable repositories, and inspect automatic or manually started reviews. Resolving or reopening a linked thread in either GitHub or Code Mortis updates the other. Development uses localhost with a separate webhook relay and GitHub App; server execution continues without the user's computer.
+Users connect their own GitHub App, shared API credentials or personal ChatGPT and Claude Code subscriptions, enable repositories, and inspect automatic or manually started reviews. Resolving or reopening a linked thread in either GitHub or Code Mortis updates the other. Development uses localhost with a separate webhook relay and GitHub App; server execution continues without the user's computer. An external agent can also work through authenticated MCP endpoints after per-user browser consent, with reviews and security authorized independently.
 
 ## Capabilities and Constraints
 

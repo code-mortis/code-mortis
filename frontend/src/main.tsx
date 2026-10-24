@@ -29,6 +29,7 @@ import { AppHeader } from "./components/app-header";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
+import { McpAuthorizePage, McpApprovalPage } from "./mcp";
 import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
 import "./index.css";
 
@@ -281,6 +282,8 @@ function App() {
                 path="/settings"
                 element={<SettingsPage user={session.data} mode={mode} theme={colorTheme} dark={dark} onModeChange={setMode} onThemeChange={setColorTheme} />}
               />
+              <Route path="/mcp/authorize" element={<McpAuthorizePage />} />
+              <Route path="/mcp/approvals/:id" element={<McpApprovalPage />} />
               <Route
                 path="/setup"
                 element={<Navigate to="/settings?tab=github" replace />}

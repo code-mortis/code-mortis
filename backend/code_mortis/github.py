@@ -41,6 +41,9 @@ def visible_repositories(db: Session, user: User) -> list[Repository]:
         except GitHubError as exc:
             if exc.status not in {403, 404}:
                 raise
+    selected = getattr(user, "mcp_repository_ids", None)
+    if selected is not None:
+        visible.intersection_update(selected)
     return list(db.scalars(
         select(Repository).join(Installation).where(
             Repository.id.in_(visible), Repository.active.is_(True), Installation.active.is_(True)
@@ -322,6 +325,11 @@ def user_token(db: Session, user: User) -> str:
 
 
 def authorize_repo(db: Session, user: User, full_name: str, write: bool = False) -> dict:
+    selected = getattr(user, "mcp_repository_ids", None)
+    if selected is not None and not db.scalar(select(Repository.id).where(
+        Repository.id.in_(selected), Repository.full_name == full_name,
+    )):
+        raise GitHubError(403, "This repository was not selected for this MCP client.")
     result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write)
     permissions = result.get("permissions", {})
     if not permissions.get("pull") or (write and not permissions.get("push")):

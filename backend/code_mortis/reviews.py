@@ -44,7 +44,9 @@ CODE_LANGUAGES = {
 
 
 def enqueue(db: Session, kind: str, payload: dict) -> Job:
-    job = Job(id=uid(), kind=kind, payload=payload)
+    from . import mcp_provenance
+
+    job = Job(id=uid(), kind=kind, payload=mcp_provenance.bind_payload(payload))
     db.add(job)
     return job
 
@@ -174,6 +176,9 @@ def create_run(
         summary={"status": "pending", "tokens": 0},
         stages={stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES},
     )
+    from . import mcp_provenance
+
+    run.progress = mcp_provenance.attach_progress(run.progress)
     db.add(run)
     enqueue(db, "review", {"run_id": run.id})
     return run
@@ -324,6 +329,11 @@ def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool
         run = db.get(ReviewRun, run_id)
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
             return True
+        from . import mcp_provenance
+
+        if mcp_provenance.run_revoked(db, run):
+            run.cancel_requested = True
+            return True
         if claim and (not pipeline.owns(run, stage, claim) if stage else run.progress.get("execution") != claim):
             return True
         if stage and run.stages.get(stage, {}).get("status") != "running":
@@ -354,6 +364,11 @@ def perform_review(run_id: str, claim: str | None = None):
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.status not in ACTIVE or run.cancel_requested:
+            return
+        from . import mcp_provenance
+
+        if mcp_provenance.run_revoked(db, run, repository_id=db.get(PullRequest, run.pr_id).repository_id):
+            cancel_review(db, run)
             return
         prior_claim = run.progress.get("execution", "")
         if prior_claim and prior_claim != claim and ":" in prior_claim:
@@ -470,6 +485,13 @@ def perform_review(run_id: str, claim: str | None = None):
             token,
         )
     try:
+        with transaction() as db:
+            from . import mcp_provenance as _mcp
+
+            _run = db.get(ReviewRun, run_id)
+            if _run is not None and _mcp.run_revoked(db, _run):
+                _mcp.revoke_work(db, _mcp.provenance_from_run(_run)["grant_id"])
+                return
 
         def progress(value):
             with transaction() as db:
@@ -898,6 +920,12 @@ def publish_run(run_id: str):
         if (not run or run.cancel_requested or assessment.assessment_only(run) or run.progress.get("publication_stopped")
             or not can_publish(run) or run.publication in {"published", "no_new_comments"}):
             return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.run_revoked(db, run, repository_id=db.get(PullRequest, run.pr_id).repository_id):
+            run.publication = "partially_published" if run.review_ids else "not_applicable"
+            run.publication_error = _mcp.REVOKED_MESSAGE
+            return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         if pr.ignored:
@@ -927,6 +955,12 @@ def publish_run(run_id: str):
             if pr.ignored or run.cancel_requested or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
                 run.publication = "partially_published" if run.review_ids else "not_applicable"
                 run.publication_error = "GitHub access was removed or publication was cancelled."
+                return
+            from . import mcp_provenance as _mcp
+
+            if _mcp.run_revoked(db, run, repository_id=repo.id):
+                run.publication = "partially_published" if run.review_ids else "not_applicable"
+                run.publication_error = _mcp.REVOKED_MESSAGE
                 return
             token = github.installation_token(db, repo.installation_id)
             current = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
@@ -996,15 +1030,17 @@ def publish_run(run_id: str):
 
 
 def request_finding_status(db: Session, finding: Finding, status: str, actor: User, reason: str):
+    from . import mcp_provenance as _mcp
+
     verification.invalidate(db, finding, "A manual finding action superseded automatic resolution.")
     finding.sync_error = None
     finding.sync_intent = None
     if finding.thread_id:
         finding.desired_status = status
-        finding.sync_intent = {
+        finding.sync_intent = _mcp.with_provenance({
             "finding_id": finding.id, "version": finding.sync_version,
             "actor_id": actor.id, "reason": reason, "status": status,
-        }
+        }, _mcp.current_provenance())
         enqueue(db, "resolve", finding.sync_intent)
     else:
         finding.status, finding.updated_at = status, now()
@@ -1021,6 +1057,13 @@ def synchronize_finding(payload: dict):
     with transaction() as db:
         finding = db.scalar(select(Finding).where(Finding.id == payload["finding_id"]).with_for_update())
         if not finding or finding.sync_version != payload["version"] or not finding.desired_status:
+            return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or (
+                finding.sync_intent or {}).get(_mcp.PROVENANCE_KEY),
+                repository_id=db.get(PullRequest, finding.pr_id).repository_id):
+            finding.sync_error = _mcp.REVOKED_MESSAGE
             return
         actor = db.get(User, payload["actor_id"])
         if not actor or not actor.enabled:

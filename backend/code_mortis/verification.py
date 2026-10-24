@@ -749,6 +749,9 @@ def apply_resolution(db, row):
         and (not pipeline.enabled(run) or (run.status in {"completed", "partial"} and not observed))
     ):
         payload = {"finding_id": finding.id, "version": finding.sync_version, "verification_id": row.id}
+        from . import mcp_provenance as _mcp
+
+        payload = _mcp.with_provenance(payload, _mcp.provenance_from_run(run) or _mcp.current_provenance())
         finding.desired_status, finding.sync_error, finding.sync_intent = "resolved", None, payload
         row.resolution = "pending"
         enqueue(db, "resolve", payload)
@@ -1127,6 +1130,12 @@ def synchronize(payload):
             return
         if not resolution_authorized(db, run, repo) and not row.sync_attempt:
             abandon(db, row, finding, "Automatic resolution is no longer authorized or current.")
+            return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
+                        repository_id=repo.id):
+            abandon(db, row, finding, _mcp.REVOKED_MESSAGE)
             return
         recovering = bool(row.sync_attempt)
         row.resolution, row.error, finding.sync_error = "applying", None, None

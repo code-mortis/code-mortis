@@ -32,6 +32,7 @@ Production serves the compiled frontend and API from one HTTPS origin. Developme
 - Findings have current state and immutable historical occurrences. Missing later means not observed. Resolve/reopen in either system, dismiss with a reason, display pending GitHub changes and recover lost events periodically.
 - Preserve existing users, repositories, API credentials and history through additive migration. Document profile restoration/reconnection and structured diagnosis without secrets.
 - Keep English UI and configurable comment language. Public SaaS, billing, GitLab and automatic code changes are excluded.
+- Authenticated MCP access is part of the product: independent reviews and security endpoints plus separately authorized management tools, all default off, with per-user browser consent, explicit repository selection, exact-argument approvals for public or destructive actions, grant provenance with revocation, and audit retention. Operator setup and troubleshooting are in docs/operations.md; evidence boundaries are in docs/acceptance.md.
 
 ## Definition of done
 

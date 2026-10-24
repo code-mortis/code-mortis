@@ -17,6 +17,7 @@ import { BackgroundField } from "./components/background-field";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
+import { McpSettingsSection } from "./mcp";
 import type { ColorMode, ThemeId } from "./lib/appearance";
 import { Avatar, AvatarFallback } from "./components/ui/avatar";
 import { Badge } from "./components/ui/badge";
@@ -799,7 +800,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
 }) {
   const isAdmin = user.role === "admin";
   const [params] = useSearchParams();
-  const sections = [["connections", "AI connections"], ...(isAdmin ? [["github", "GitHub"], ["team", "Team"]] : []), ["appearance", "Appearance"]];
+  const sections = [["connections", "AI connections"], ["mcp", "MCP access"], ...(isAdmin ? [["github", "GitHub"], ["team", "Team"]] : []), ["appearance", "Appearance"]];
   const tab = sections.some(([value]) => value === params.get("tab"))
     ? params.get("tab")! : "connections";
   const query = useApi<Instance>("/settings", true, isAdmin && tab !== "appearance");
@@ -849,7 +850,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     <header className="mb-5">
       <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        {isAdmin ? "Manage AI connections, GitHub installations, team access, and appearance." : "Manage your AI connections, personal subscriptions, and appearance."}
+        {isAdmin ? "Manage AI connections, MCP access, GitHub installations, team access, and appearance." : "Manage your AI connections, personal subscriptions, MCP access, and appearance."}
       </p>
     </header>
     <div className="grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
@@ -864,6 +865,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
       <div className="settings-content min-w-0 space-y-6">
         {tab !== "appearance" && <ErrorNotice error={query.error} />}
         {tab === "appearance" && <AppearanceSettings mode={mode} theme={theme} dark={dark} onModeChange={onModeChange} onThemeChange={onThemeChange} />}
+        {tab === "mcp" && <McpSettingsSection canAdminister={isAdmin} />}
         {tab === "connections" && <section aria-labelledby="connections-heading" className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">

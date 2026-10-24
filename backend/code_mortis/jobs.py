@@ -305,6 +305,15 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.job_revoked(db, job, repository_id=_mcp.repository_id_for_job(db, job)):
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job and job.status == "queued":
+                job.status, job.error, job.lease_until, job.dispatched_at = "failed", _mcp.REVOKED_MESSAGE, None, None
+                job.available_at = now()
+                _mcp.cancel_origin(db, job)
+            return
         if job.kind in {"security_issue_publish", "security_issue_sync"}:
             db.scalar(select(SecurityFinding).where(SecurityFinding.id == job.payload["finding_id"]).with_for_update())
             if db.scalar(select(Job.id).where(Job.kind.in_(["security_issue_publish", "security_issue_sync"]),
@@ -327,6 +336,9 @@ def execute_job(job_id: str):
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
+    from . import mcp_provenance as _mcp
+
+    _token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
         execute(kind, execution if kind in {"review", "security_scan", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
@@ -431,15 +443,18 @@ def execute_job(job_id: str):
             job_id, kind, payload.get("run_id"), type(exc).__name__, retry
         )
         return
-    with transaction() as db:
-        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
-        if job.attempts != attempt or job.status != "running":
-            return
-        job.status, job.lease_until, job.error = "done", None, None
-        # Signed webhook payloads are only needed until they have been processed.
-        if kind == "webhook":
-            job.payload = {"event": payload["event"]}
-    log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
+    else:
+        with transaction() as db:
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job.attempts != attempt or job.status != "running":
+                return
+            job.status, job.lease_until, job.error = "done", None, None
+            # Signed webhook payloads are only needed until they have been processed.
+            if kind == "webhook":
+                job.payload = {"event": payload["event"]}
+        log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
+    finally:
+        _mcp.execution_context.reset(_token)
 
 
 def job_queue(kind, payload=None):
@@ -564,6 +579,9 @@ def dispatch():
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
     with transaction() as db:
+        from . import mcp_auth as _mcp_auth
+
+        _mcp_auth.cleanup(db)
         for identity in db.scalars(select(SecurityScan.repository_id).join(Repository)
                                    .where(Repository.active.is_(True)).distinct()):
             enqueue_reconciliation(db, "security_refresh", {"repository_id": identity})

@@ -29,6 +29,7 @@ class AppConfig(Base):
     client_secret: Mapped[str] = mapped_column(Text)
     private_key: Mapped[str] = mapped_column(Text)
     webhook_secret: Mapped[str] = mapped_column(Text)
+    mcp_settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
 
 
 class User(Base):
