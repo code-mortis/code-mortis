@@ -1,7 +1,7 @@
 import base64
 import hashlib
 from datetime import timedelta
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from fastapi import HTTPException
@@ -38,9 +38,9 @@ def authorization(client, *, domain="reviews", scopes=None, **overrides):
     return parse_qs(urlsplit(response.headers["location"]).query)["request_id"][0]
 
 
-def consent_code(client, *, domain="reviews", scopes=None):
+def consent_code(client, *, domain="reviews", scopes=None, **overrides):
     scopes = scopes or [domain + ":read"]
-    request_id = authorization(client, domain=domain, scopes=" ".join(scopes))
+    request_id = authorization(client, domain=domain, scopes=" ".join(scopes), **overrides)
     preview = client.get("/api/v1/mcp/authorize", params={"request_id": request_id})
     assert preview.status_code == 200, preview.text
     response = client.post("/api/v1/mcp/authorize", json={"request_id": request_id, "repository_ids": [22],
@@ -105,6 +105,36 @@ def test_oauth_code_flow_hashes_tokens_and_authenticates_actual_transport(enable
     assert response.status_code == 200, response.text
     assert response.json()["result"]["serverInfo"]["name"] == "Code Mortis reviews"
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("domain", ["reviews", "security"])
+def test_oauth_accepts_identical_repeated_resources(enabled, client, domain):
+    resource = "http://testserver/mcp/" + domain
+    code = consent_code(client, domain=domain, resource=[resource, resource])
+    response = exchange(client, code, resource=[resource, resource])
+    assert response.status_code == 200, response.text
+    response = client.post("/oauth/token", data={"grant_type": "refresh_token", "client_id": "test-cli",
+        "resource": [resource, resource], "refresh_token": response.json()["refresh_token"]})
+    assert response.status_code == 200, response.text
+    assert rpc(client, response.json()["access_token"], domain=domain).status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ["authorize", "token", "revoke"])
+@pytest.mark.parametrize("pairs", [
+    [("resource", "http://testserver/mcp/reviews"), ("resource", "http://testserver/mcp/security")],
+    [("resource", "http://testserver/mcp/security"), ("resource", "http://testserver/mcp/reviews")],
+    [("state", "same-state"), ("state", "same-state")],
+    [("redirect_uri", CALLBACK), ("redirect_uri", CALLBACK)],
+    [("resource", "a" * 4097)],
+])
+def test_oauth_rejects_conflicting_duplicate_or_unbounded_parameters(enabled, client, endpoint, pairs):
+    if endpoint == "authorize":
+        response = client.get("/oauth/authorize", params=pairs, follow_redirects=False)
+    else:
+        response = client.post("/oauth/" + endpoint, content=urlencode(pairs),
+            headers={"content-type": "application/x-www-form-urlencoded"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "OAuth parameters must be unique and bounded."
 
 
 def test_modern_transport_lists_tools_without_initialize_or_session(enabled, client):

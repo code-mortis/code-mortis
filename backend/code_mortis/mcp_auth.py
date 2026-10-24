@@ -540,7 +540,8 @@ class McpAuthorizationServer(AuthorizationServer):
 def oauth_parameters(request, pairs):
     data = {}
     for key, value in pairs:
-        if key in data or len(value) > 4096:
+        # RFC 8707 permits repeated resource indicators; keep a single audience.
+        if len(value) > 4096 or (key in data and (key != "resource" or data[key] != value)):
             raise HTTPException(400, "OAuth parameters must be unique and bounded.")
         data[key] = value
     rate_limit("oauth", request.client.host if request.client else "unknown", 120)
