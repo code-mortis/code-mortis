@@ -258,6 +258,10 @@ class ReviewCandidate(Base):
     def progress_phase(self):
         return "validating" if self.status == "running" and self.usage.get("response_received") else None
 
+    @property
+    def assessment_only(self):
+        return self.context.get("assessment_only") is True
+
 
 class Activity(Base):
     __tablename__ = "activities"

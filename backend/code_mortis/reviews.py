@@ -49,12 +49,23 @@ def enqueue(db: Session, kind: str, payload: dict) -> Job:
     return job
 
 
+def stop_review(db: Session, run: ReviewRun, status: str, reason: str, *, publication="not_applicable"):
+    run.status = status
+    if assessment.assessment_only(run):
+        retry = run.progress["assessment_retry"]
+        run.progress = {**run.progress, "assessment_retry": {**retry, "finished_at": retry.get("finished_at") or now().isoformat()}}
+    else:
+        run.publication, run.finished_at = publication, now()
+        verification.skip_pending(db, run, reason)
+    assessment.withhold_pending(db, run, reason)
+    if run.progress.get("assessment_retry") and pipeline.enabled(run):
+        pipeline.update(run, "assessment", "cancelled", waiting_for=None)
+
+
 def cancel_review(db: Session, run: ReviewRun):
-    run.cancel_requested, run.status, run.publication, run.finished_at = (
-        True, "cancelled", "partially_published" if run.review_ids else "not_applicable", now(),
-    )
-    verification.skip_pending(db, run, "The run was cancelled.")
-    assessment.withhold_pending(db, run, "The run was cancelled.")
+    run.cancel_requested = True
+    stop_review(db, run, "cancelled", "The run was cancelled.",
+                publication="partially_published" if run.review_ids else "not_applicable")
 
 
 def cancel_pr_reviews(db: Session, pr: PullRequest) -> list[ReviewRun]:
@@ -270,6 +281,11 @@ def execution_identity(run):
     return (retry["actor_id"], "manual") if retry else (run.actor_id, run.trigger)
 
 
+def target_matches(run, head_sha, base_sha, state):
+    return ((head_sha, base_sha) == (run.head_sha, run.base_sha)
+            and (state == "open" or (state == "merged" and assessment.assessment_only(run))))
+
+
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     created_at = data.get("created_at")
     if created_at is not None:
@@ -297,11 +313,9 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     db.flush()
     for run in db.scalars(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE))
                           .order_by(ReviewRun.id).with_for_update().execution_options(populate_existing=True)):
-        if run.head_sha != pr.head_sha or run.base_sha != pr.base_sha or pr.state != "open":
-            run.status, run.publication, run.cancel_requested = "superseded", "not_applicable", True
-            run.finished_at = now()
-            verification.skip_pending(db, run, "New commits replaced the code being verified. Check the latest review for fix verification results.")
-            assessment.withhold_pending(db, run, "New commits replaced the code being assessed. Check the latest review for assessment results.")
+        if not target_matches(run, pr.head_sha, pr.base_sha, pr.state):
+            run.cancel_requested = True
+            stop_review(db, run, "superseded", "New commits replaced the code being reviewed. Check the latest review.")
     return pr
 
 
@@ -326,7 +340,7 @@ def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool
         if pr.ignored or not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active:
             run.cancel_requested = True
             return True
-        if pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open":
+        if not target_matches(run, pr.head_sha, pr.base_sha, pr.state):
             return True
         if run.owner_id:
             owner = db.get(User, run.owner_id)
@@ -346,6 +360,8 @@ def perform_review(run_id: str, claim: str | None = None):
             job_id, attempt = prior_claim.rsplit(":", 1)
             prior_job = db.get(Job, job_id)
             if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
+                if run.progress.get("assessment_retry"):
+                    raise runner_client.RunnerBlocked("busy")
                 return
         if not pipeline.enabled(run) and run.summary.get("status") == "running":
             pr_summary.interrupt(run)
@@ -363,14 +379,9 @@ def perform_review(run_id: str, claim: str | None = None):
             github.authorize_repo(db, actor, repo.full_name, write=True)
         token = github.installation_token(db, repo.installation_id)
         current = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
-        if (
-            current["head"]["sha"] != run.head_sha
-            or current["base"]["sha"] != run.base_sha
-            or current["state"] != "open"
-        ):
-            run.status, run.publication, run.finished_at = "superseded", "not_applicable", now()
-            verification.skip_pending(db, run, "The PR changed before verification could resume.")
-            assessment.withhold_pending(db, run, "The PR changed before assessment could resume.")
+        remote_state = "merged" if current["state"] == "closed" and current.get("merged") is True else current["state"]
+        if not target_matches(run, current["head"]["sha"], current["base"]["sha"], remote_state):
+            stop_review(db, run, "superseded", "The PR changed before this review could resume.")
             return
         connection = db.get(Connection, run.config["connection"]["id"])
         if not connection:
@@ -491,8 +502,9 @@ def perform_review(run_id: str, claim: str | None = None):
                 if not retry:
                     progress({"phase": "fix verification"})
                     verification.perform(run_id, repo_path, env, fetch_env, args[4], credentials, claim)
-            progress({"phase": "summary"})
-            pr_summary.generate(run_id, repo_path, env, args[4], credentials, claim)
+            if not assessment.assessment_only(run):
+                progress({"phase": "summary"})
+                pr_summary.generate(run_id, repo_path, env, args[4], credentials, claim)
 
         def before_analysis(limited):
             if not parallel_stages:
@@ -520,9 +532,7 @@ def perform_review(run_id: str, claim: str | None = None):
                 return
             if run.status != "superseded":
                 run.status = "cancelled" if run.cancel_requested else "superseded"
-            run.publication, run.finished_at = "not_applicable", now()
-            verification.skip_pending(db, run, "Fix verification stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
-            assessment.withhold_pending(db, run, "Assessment stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
+            stop_review(db, run, run.status, "Review stopped because it was cancelled or replaced by a newer run. Check the latest review.")
         return
     save_analysis(run_id, claim, status, report, comments)
     with transaction() as db:
@@ -553,6 +563,12 @@ def complete_saved_review(db, run, interruption=None, *, finalizing=False):
         return True
     if not run.progress.get("analysis_saved") or not can_publish(run, status) or run.cancel_requested:
         return False
+    if assessment.assessment_only(run):
+        assessment.withhold_pending(db, run, interruption or "Assessment did not finish; candidate withheld.")
+        run.status = status
+        retry = run.progress["assessment_retry"]
+        run.progress = {**run.progress, "assessment_retry": {**retry, "finished_at": retry.get("finished_at") or now().isoformat()}}
+        return True
     if interruption:
         verification.skip_pending(db, run, interruption)
         pr_summary.interrupt(run)
@@ -879,7 +895,7 @@ def publish_run(run_id: str):
         db.scalar(select(PullRequest).where(PullRequest.id == candidate.pr_id).with_for_update())
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                         .execution_options(populate_existing=True))
-        if (not run or run.cancel_requested or run.progress.get("publication_stopped")
+        if (not run or run.cancel_requested or assessment.assessment_only(run) or run.progress.get("publication_stopped")
             or not can_publish(run) or run.publication in {"published", "no_new_comments"}):
             return
         pr = db.get(PullRequest, run.pr_id)

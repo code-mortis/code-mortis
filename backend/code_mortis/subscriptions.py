@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket
 from sqlalchemy import delete, select
 from websockets.asyncio.client import connect
 
-from . import runner_client, verification
+from . import runner_client
 from .api import DB, USER, manage_connection, repo_access
 from .config import settings
 from .db import now, transaction
@@ -35,6 +35,8 @@ def personal(db, user, identity):
 
 
 def cancel_connection_runs(db, identity, repository_id=None, *, security=True):
+    from .reviews import stop_review
+
     if security:
         from .repository_security import cancel_access
 
@@ -46,8 +48,7 @@ def cancel_connection_runs(db, identity, repository_id=None, *, security=True):
         query = query.join(PullRequest).where(PullRequest.repository_id == repository_id)
     for run in db.scalars(query.with_for_update()):
         run.cancel_requested = True
-        run.status, run.publication, run.finished_at = "cancelled", "not_applicable", now()
-        verification.skip_pending(db, run, "Subscription access was revoked.")
+        stop_review(db, run, "cancelled", "Subscription access was revoked.")
 
 
 @router.post("/connections/{identity}/auth")

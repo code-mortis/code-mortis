@@ -538,6 +538,7 @@ class CandidateOut(ORMModel):
     attempts: list[CandidateAttemptOut] = Field(default_factory=list)
     retryable: bool = False
     progress_phase: Literal["validating"] | None = None
+    assessment_only: bool = False
 
     @model_validator(mode="after")
     def technical_failure(self):

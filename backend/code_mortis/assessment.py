@@ -89,6 +89,10 @@ class HistoryChanged(ocr.ReviewStopped):
         super().__init__("Finding history changed during assessment. Retry this assessment to check the updated history.")
 
 
+def assessment_only(run):
+    return (run.progress.get("assessment_retry") or {}).get("assessment_only") is True
+
+
 def output_schema(context=None):
     schema = AssessmentResponse.model_json_schema()
     schema["required"] = list(schema["properties"])
@@ -426,6 +430,8 @@ def exact_repeat(context):
 
 
 def accept(db, run, row, result):
+    if assessment_only(run):
+        return  # Historical verdicts must not change current findings or publication plans.
     if result["verdict"] != "confirmed":
         return
     snapshot = dict(row.snapshot)
@@ -485,7 +491,7 @@ def independent_batch(rows, keys, concurrency):
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *, stage=None):
     from . import pipeline
-    from .reviews import authorize_connection, execution_identity, review_stopped
+    from .reviews import authorize_connection, execution_identity, review_stopped, target_matches
 
     def owns(run):
         if stage:
@@ -541,7 +547,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                 return None
             pr = db.get(PullRequest, run.pr_id)
             if (run.cancel_requested or run.status in {"cancelled", "superseded"}
-                or pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open"
+                or not target_matches(run, pr.head_sha, pr.base_sha, pr.state)
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
                 withhold_pending(db, run, "Assessment could not continue because the review stopped, was replaced by a newer run, or did not finish. Check the review outcome.")
                 return None
@@ -561,7 +567,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                 raise context
             if context is None:
                 context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
-            context = {**context, "review_sensitivity": options.get("review_sensitivity")}
+            context = {**context, "review_sensitivity": options.get("review_sensitivity"),
+                       **({"assessment_only": True} if assessment_only(run) else {})}
             result = exact_repeat(review_context.sanitize(context, credentials, stopped))
             unit = "tokens"
             consumed = 0
@@ -690,8 +697,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             current_connection = db.get(Connection, run.connection_id)
             # Compare once before this batch's own atomic history updates.
             stale = (run.cancel_requested or run.status in {"cancelled", "superseded"}
-                     or (deadline is not None and now().timestamp() >= deadline) or pr.head_sha != run.head_sha
-                     or pr.base_sha != run.base_sha or pr.state != "open" or not repo.enabled or not repo.active
+                     or (deadline is not None and now().timestamp() >= deadline)
+                     or not target_matches(run, pr.head_sha, pr.base_sha, pr.state) or not repo.enabled or not repo.active
                      or not db.get(Installation, repo.installation_id).active or not current_connection
                      or (current_connection.kind != "api" and current_connection.auth_status != "connected")
                      or any(connection[key] != getattr(current_connection, key)

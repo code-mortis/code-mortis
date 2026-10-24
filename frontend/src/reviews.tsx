@@ -696,15 +696,15 @@ function InferenceError({ error, withheld = false, stage = "assessment" }: {
 }
 
 
-function AssessmentPanel({ candidate, headSha, runId, canRetry, waitingForVerification, onOpenFinding }: {
-  candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; waitingForVerification: boolean; onOpenFinding: () => void;
+function AssessmentPanel({ candidate, headSha, runId, canRetry, waitingForVerification, merged, onOpenFinding }: {
+  candidate: Schema["CandidateOut"]; headSha: string; runId: string; canRetry: boolean; waitingForVerification: boolean; merged: boolean; onOpenFinding: () => void;
 }) {
   const [tab, setTab] = useUrlTab("assessment_tab", ["assessment", "evidence"], "assessment");
   const retry = useAction<Schema["CandidateOut"]>();
   const { snapshot, result } = candidate;
   const path = String(snapshot.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
-  const heading = candidate.finding_id ? candidate.is_new ? "Why it was validated" : "Why it is repeated" : result?.verdict === "rejected" ? "Why it was not supported" : "Why it was withheld";
+  const heading = candidate.finding_id ? candidate.is_new ? "Why it was validated" : "Why it is repeated" : candidate.assessment_only && result?.verdict === "confirmed" ? "Why it was confirmed at the original commit" : result?.verdict === "rejected" ? "Why it was not supported" : "Why it was withheld";
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="shrink-0 space-y-3 px-6 pb-5">
       <div className="flex min-w-0 items-center gap-2.5">
@@ -734,6 +734,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, waitingForVerifi
         <TabsContent value="assessment" className="space-y-6">
           {candidate.error && <InferenceError error={candidate.error} withheld={!candidate.finding_id} />}
           <ErrorNotice error={retry.error} />
+          {candidate.assessment_only && <p className="text-sm text-muted-foreground">This assessment checks the original commit after merge. Findings, comments, and resolution states are unchanged.</p>}
           {result ? <>
             <section className="space-y-3"><h3 className="text-sm font-semibold">{heading}</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.explanation}</p></section>
             <section className="space-y-3"><h3 className="text-sm font-semibold">Earlier reviews</h3><p className="max-w-[75ch] whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">{result.history_explanation || "No history explanation was recorded."}</p></section>
@@ -761,7 +762,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, waitingForVerifi
     </Tabs>
     <SheetFooter className="shrink-0 border-t px-6 py-4">
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs leading-relaxed text-muted-foreground">{canRetry && candidate.retryable ? "Retry uses the same connection and AI quota." : candidate.finding_id ? "Finding resolution is tracked separately." : "Not linked to a finding."}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{canRetry && candidate.retryable ? merged ? "Retry checks the original commit using the same connection and AI quota. No findings or comments will be created." : "Retry uses the same connection and AI quota." : candidate.finding_id ? "Finding resolution is tracked separately." : "Not linked to a finding."}</p>
         <div className="flex flex-wrap gap-2">
           {canRetry && candidate.retryable && <Button className="min-h-11 sm:min-h-9" disabled={retry.isPending} onClick={() => retry.mutate({ path: `/runs/${runId}/candidates/${candidate.id}/retry` })}>
             <RefreshCw aria-hidden="true" className={retry.isPending ? "motion-safe:animate-spin" : ""} />{retry.isPending ? "Retrying assessment…" : "Retry assessment"}
@@ -1040,6 +1041,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {candidateId && <ErrorNotice error={candidateQuery.error} />}
         {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
         {findingId ? finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : <div className="px-6">{findingQuery.isPending ? <Loading /> : <ErrorNotice error={findingQuery.error} />}</div> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
+          merged={pr.state === "merged"}
           waitingForVerification={run.stages?.assessment?.waiting_for === "verification"}
           canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}

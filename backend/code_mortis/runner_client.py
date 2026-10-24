@@ -14,7 +14,7 @@ class RunnerBlocked(ValueError):
         self.usage = {"tokens": tokens if type(tokens) is int and tokens >= 0 else None}
         super().__init__(
             {
-                "busy": "This personal connection is in use. The review will wait.",
+                "busy": "This run or connection is in use. The review will wait.",
                 "quota": "The subscription limit was reached. Retry when usage is available.",
                 "authentication": "This personal account needs to sign in again. Reconnect it in Settings, then retry.",
                 "prompt_limit": "The subscription prompt exceeds its conservative per-prompt token limit. Increase Prompt ceiling on the AI connection or reduce the supplied context.",

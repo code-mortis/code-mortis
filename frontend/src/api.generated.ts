@@ -1781,6 +1781,11 @@ export interface components {
             /** Progress Phase */
             progress_phase?: "validating" | null;
             /**
+             * Assessment Only
+             * @default false
+             */
+            assessment_only: boolean;
+            /**
              * Revision
              * @default 0
              */
@@ -1814,6 +1819,11 @@ export interface components {
             retryable: boolean;
             /** Progress Phase */
             progress_phase?: "validating" | null;
+            /**
+             * Assessment Only
+             * @default false
+             */
+            assessment_only: boolean;
         };
         /** CandidatePage */
         CandidatePage: {

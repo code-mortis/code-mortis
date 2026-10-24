@@ -70,6 +70,19 @@ def test_review_limit_warning_cannot_publish_a_successful_check():
     assert payload["output"]["title"] == "Review incomplete"
 
 
+@pytest.mark.parametrize("state,title", [
+    ("running", "Assessing original commit"),
+    ("completed", "Synchronizing verified fixes"),
+])
+def test_historical_assessment_check_preserves_pending_verification_status(state, title):
+    run = ReviewRun(id="run", head_sha="a" * 40, status=state, publication="published", created_at=now(),
+                    progress={"assessment_retry": {"assessment_only": True}, "verification": {"pending": 1}})
+    payload = checks.check_payload(run, 0)
+    assert payload["status"] == "in_progress" and payload["conclusion"] is None
+    assert payload["output"]["title"] == title
+    assert payload["completed_at"] is None
+
+
 @pytest.fixture
 def check_api(monkeypatch, github_stub):
     stored, writes = [], []

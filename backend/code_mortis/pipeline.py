@@ -230,7 +230,7 @@ def finalize(run_id):
 
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-        if not run or not enabled(run) or run.progress.get("pipeline_finalized"):
+        if not run or not enabled(run) or run.progress.get("pipeline_finalized") or run.progress.get("assessment_retry"):
             return
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
