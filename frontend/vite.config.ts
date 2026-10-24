@@ -13,6 +13,9 @@ export default defineConfig({
     proxy: {
       "/api": { target: process.env.CM_DEV_API_URL || "http://127.0.0.1:8080", ws: true },
       "/health": process.env.CM_DEV_API_URL || "http://127.0.0.1:8080",
+      "^/mcp/(reviews|security)(?:/|$)": process.env.CM_DEV_API_URL || "http://127.0.0.1:8080",
+      "/oauth": process.env.CM_DEV_API_URL || "http://127.0.0.1:8080",
+      "/.well-known": process.env.CM_DEV_API_URL || "http://127.0.0.1:8080",
     },
   },
 });

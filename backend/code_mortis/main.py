@@ -12,6 +12,7 @@ from .api import router
 from .config import settings
 from .db import engine
 from .github import GitHubError
+from .mcp_server import install_mcp
 from .security_api import router as security_router
 from .subscriptions import router as subscriptions_router
 from .telemetry import init_sentry
@@ -20,12 +21,14 @@ init_sentry("api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 app = FastAPI(
     title="Code Mortis", version="0.1.0", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json"
 )
 app.include_router(router)
 app.include_router(subscriptions_router)
 app.include_router(security_router)
+install_mcp(app)
 
 
 @app.exception_handler(GitHubError)
@@ -114,7 +117,7 @@ async def security_headers(request: Request, call_next):
             "Content-Security-Policy": f"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; {connect_src}; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com",
         }
     )
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith(("/api/", "/mcp/", "/oauth/", "/.well-known/")):
         response.headers["Cache-Control"] = "no-store"
     if settings().public_url.startswith("https://"):
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -141,7 +144,7 @@ def ready():
 def frontend(path: str):
     root = settings().frontend_dir.resolve()
     asset = (root / path).resolve()
-    if path.startswith(("api/", "health/")):
+    if path.startswith(("api/", "health/", "oauth/", ".well-known/", "mcp/reviews", "mcp/security")):
         return JSONResponse({"detail": "This API endpoint does not exist. Check the URL and try again."}, status_code=404)
     if asset.is_relative_to(root) and asset.is_file():
         return FileResponse(asset)

@@ -22,6 +22,8 @@ test.each([
   ["security scanning", ["backend/code_mortis/repository_security.py"], ["backend", "image"]],
   ["API routes", ["backend/code_mortis/api.py"], ["backend", "export-openapi", "frontend", "image"]],
   ["security routes", ["backend/code_mortis/security_api.py"], ["backend", "export-openapi", "frontend", "image"]],
+  ["MCP authorization routes", ["backend/code_mortis/mcp_auth.py"], ["backend", "export-openapi", "frontend", "image"]],
+  ["MCP registration", ["backend/code_mortis/mcp_server.py"], ["backend", "export-openapi", "frontend", "image"]],
   ["subscription routes", ["backend/code_mortis/subscriptions.py"], ["backend", "export-openapi", "frontend", "image"]],
   ["route registration", ["backend/code_mortis/main.py"], ["backend", "export-openapi", "frontend", "image"]],
   ["OpenAPI command", ["backend/code_mortis/manage.py"], ["backend", "export-openapi", "frontend", "image"]],

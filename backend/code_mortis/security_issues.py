@@ -89,6 +89,9 @@ def create(db, repo, finding, actor, body, *, new_only=False):
                      "publication_status": "pending", "sync_status": "pending", "started": recovering,
                      "approved_at": saved["approved_at"] if recovering else now().isoformat(),
                      **({"attempt_id": body.recovery_token, "recovery_approved": body.recovery_token} if recovering else {})}
+    from . import mcp_provenance as _mcp
+
+    finding.issue = _mcp.bind_intent(finding.issue)
     enqueue(db, "security_issue_publish", {"finding_id": finding.id})
     repository_security.activity(db, "issue_approved", finding=finding, actor=actor,
                                  operation_id=operation, title=title, body=content, public=body.public, version=body.version,
@@ -142,6 +145,12 @@ def publish(finding_id):
             finding = db.get(SecurityFinding, finding_id)
             if not finding or not finding.issue or finding.issue.get("number"):
                 return
+            from . import mcp_provenance as _mcp
+
+            if _mcp.revoked(db, (finding.issue or {}).get(_mcp.PROVENANCE_KEY),
+                            repository_id=finding.repository_id):
+                finding.issue = {**finding.issue, "sync_status": "failed", "error": _mcp.REVOKED_MESSAGE}
+                return
             approved = dict(finding.issue)
             attempt = approved.get("attempt_id", approved["operation_id"])
             full_name, token, login = identity(db, finding, publishing=not approved["started"])
@@ -174,6 +183,14 @@ def publish(finding_id):
             claimed = True
             with transaction() as db:
                 finding = db.get(SecurityFinding, finding_id)
+                from . import mcp_provenance as _mcp
+
+                if _mcp.revoked(db, (finding.issue or {}).get(_mcp.PROVENANCE_KEY),
+                                repository_id=finding.repository_id):
+                    finding.issue = {**finding.issue, "started": approved["started"],
+                                     "publication_status": "needs_review", "sync_status": "failed",
+                                     "error": _mcp.REVOKED_MESSAGE}
+                    return
                 full_name, token, login = identity(db, finding, publishing=True)
                 if finding.version != approved["version"] or finding.state not in {"open", "accepted_risk"}:
                     finding.issue = {**finding.issue, "started": approved["started"], "publication_status": "needs_review", "sync_status": "failed",
@@ -205,6 +222,12 @@ def sync(finding_id):
         with transaction() as db:
             finding = db.get(SecurityFinding, finding_id)
             if not finding or not finding.issue:
+                return
+            from . import mcp_provenance as _mcp
+
+            if _mcp.revoked(db, (finding.issue or {}).get(_mcp.PROVENANCE_KEY),
+                            repository_id=finding.repository_id):
+                finding.issue = {**finding.issue, "sync_status": "failed", "error": _mcp.REVOKED_MESSAGE}
                 return
             if not finding.issue.get("number"):
                 publish_pending = True
@@ -281,6 +304,11 @@ def sync(finding_id):
                 with transaction() as db:
                     finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
                     check_sync_approval(finding, saved)
+                    from . import mcp_provenance as _mcp
+
+                    if _mcp.revoked(db, (finding.issue or {}).get(_mcp.PROVENANCE_KEY),
+                                    repository_id=finding.repository_id):
+                        raise ValueError(_mcp.REVOKED_MESSAGE)
                     full_name, token, login = identity(db, finding)
                     if finding.version != version or finding.issue.get("intent_version") != version:
                         raise ValueError("The finding changed before the issue state request.")
@@ -307,7 +335,9 @@ def sync(finding_id):
 def retry(db, finding, actor):
     if not finding.issue:
         raise ValueError("This finding has no approved GitHub issue publication.")
-    finding.issue = {**finding.issue, "sync_status": "pending", "error": None}
+    from . import mcp_provenance as _mcp
+
+    finding.issue = _mcp.bind_intent({**finding.issue, "sync_status": "pending", "error": None})
     enqueue(db, "security_issue_sync", {"finding_id": finding.id})
     repository_security.activity(db, "issue_sync_retried", finding=finding, actor=actor)
 
@@ -331,6 +361,9 @@ def reapprove(db, finding, actor, body):
         raise ValueError("Enter a reason for taking responsibility for issue synchronization.")
     finding.issue = {**saved, "sync_approval": {"actor_id": actor.id, "revision": body.approval_revision + 1,
         "approved_at": now().isoformat(), "reason": reason}, "sync_status": "pending", "error": None}
+    from . import mcp_provenance as _mcp
+
+    finding.issue = _mcp.bind_intent(finding.issue)
     repository_security.activity(db, "issue_sync_reapproved", finding=finding, actor=actor,
         previous_actor_id=previous.get("actor_id", saved.get("actor_id")), operation_id=body.operation_id,
         approval_revision=body.approval_revision + 1, reason=reason)

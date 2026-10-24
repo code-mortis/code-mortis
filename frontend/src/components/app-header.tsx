@@ -67,10 +67,14 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     }
   } else if (path === "/analytics") {
     crumbs.push({ label: "Analytics", to: path + route.search });
+  } else if (path === "/mcp/authorize") {
+    crumbs.push({ label: "Agent authorization", to: path + route.search });
+  } else if (path.startsWith("/mcp/approvals/")) {
+    crumbs.push({ label: "Review action", to: path });
   } else if (path === "/settings") {
-    const tab = params.get("tab") === "appearance" || admin ? params.get("tab") : null;
+    const tab = params.get("tab") === "appearance" || params.get("tab") === "mcp" || admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });
-    const tabLabels = new Map([["github", "GitHub"], ["team", "Team"], ["appearance", "Appearance"]]);
+    const tabLabels = new Map([["mcp", "MCP access"], ["github", "GitHub"], ["team", "Team"], ["appearance", "Appearance"]]);
     crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI connections", to: path + route.search });
   } else if (path !== "/") {
     crumbs.push({ label: "Page not found", to: path });

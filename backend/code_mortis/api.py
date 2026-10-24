@@ -1,5 +1,6 @@
 import hmac
 import json
+import re
 import secrets
 from datetime import timedelta
 from importlib.resources import files
@@ -287,14 +288,20 @@ def manifest_callback(request: Request, db: DB, state: str = "", code: str = "")
 
 
 @router.get("/auth/login")
-def login(request: Request, db: DB, installation_id: int | None = None):
+def login(request: Request, db: DB, installation_id: int | None = None, return_to: str = "/"):
+    if return_to != "/" and not (
+        return_to.startswith("/mcp/authorize?request_id=")
+        and re.fullmatch(r"/mcp/authorize\?request_id=[a-f0-9-]{36}", return_to)
+    ):
+        raise HTTPException(400, "The sign-in return address is invalid.")
     # Compare hosts because TLS may terminate at a reverse proxy before reaching us.
     if request.url.netloc != urlsplit(settings().public_url).netloc:
-        query = f"?installation_id={installation_id}" if installation_id else ""
+        values = {"installation_id": installation_id} if installation_id else {"return_to": return_to} if return_to != "/" else {}
+        query = "?" + urlencode(values) if values else ""
         return RedirectResponse(settings().public_url + "/api/v1/auth/login" + query, status_code=303)
     response = RedirectResponse("/", status_code=303)
     return_path = (
-        f"/api/v1/installations/callback?installation_id={installation_id}" if installation_id else "/"
+        f"/api/v1/installations/callback?installation_id={installation_id}" if installation_id else return_to
     )
     state, verifier = start_attempt(request, response, db, "login", return_path)
     response.headers["location"] = github.login_url(db, state, verifier)
@@ -369,6 +376,9 @@ def logout(request: Request, response: Response, db: DB, user: USER) -> dict:
 
 
 def repo_access(db: Session, user: User, repository_id: int, write=False):
+    selected = getattr(user, "mcp_repository_ids", None)
+    if selected is not None and repository_id not in selected:
+        raise HTTPException(403, "This repository was not selected for this MCP client.")
     repo = db.get(Repository, repository_id)
     if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
         raise HTTPException(404, "Repository not found or its installation is inactive.")

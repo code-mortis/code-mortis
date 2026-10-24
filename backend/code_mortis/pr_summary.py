@@ -114,7 +114,9 @@ def enqueue_sync(db, pr):
         return
     if not db.scalar(select(Job.id).where(Job.kind == "sync_summary", Job.status == "queued",
                                           Job.payload["pr_id"].as_string() == pr.id).limit(1)):
-        db.add(Job(id=uid(), kind="sync_summary", payload={"pr_id": pr.id}))
+        from . import mcp_provenance as _mcp
+
+        db.add(Job(id=uid(), kind="sync_summary", payload=_mcp.bind_payload({"pr_id": pr.id})))
 
 
 def interrupt(run):
@@ -299,6 +301,11 @@ def perform_retry(payload):
         run = db.get(ReviewRun, payload["run_id"])
         if not run or run.summary.get("status") not in {"pending", "running"}:
             return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
+                        repository_id=db.get(PullRequest, run.pr_id).repository_id):
+            raise SummaryUnavailable(_mcp.REVOKED_MESSAGE)
         if retry_stopped(db, run, job_id, claim):
             raise SummaryUnavailable("Summary generation stopped because the review or repository access changed.")
         if run.summary.get("status") == "running":
@@ -618,6 +625,11 @@ def sync(pr_id):
             return
         run = latest_run(db, pr.id)
         if not ready_to_sync(run):
+            return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.revoked(db, _mcp.provenance_from_run(run), repository_id=pr.repository_id):
+            pr.summary_error = _mcp.REVOKED_MESSAGE
             return
         repo = db.get(Repository, pr.repository_id)
         if pr.ignored:

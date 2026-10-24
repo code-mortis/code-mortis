@@ -111,6 +111,9 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
                        branch=freshness["default_branch"], head_sha=freshness["head_sha"], config=config,
                        stages={name: {"status": "pending"} for name in STAGES},
                        progress={"freshness": freshness, "tasks": {}, "tokens": 0})
+    from . import mcp_provenance as _mcp
+
+    run.progress = _mcp.attach_progress(run.progress)
     db.add(run)
     db.flush()
     enqueue(db, "security_scan", {"scan_id": run.id})
@@ -249,6 +252,11 @@ def checkpoint(scan_id, key, state, **values):
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status != "running" or scan.cancel_requested:
             raise ocr.ReviewStopped("Security scan is no longer running.")
+        from . import mcp_provenance as _mcp
+
+        if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
+            scan.cancel_requested = True
+            raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
@@ -483,6 +491,11 @@ def perform(scan_id, claim):
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status not in ACTIVE or scan.cancel_requested:
             return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
+            return
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
             if execution == claim:
@@ -529,6 +542,11 @@ def perform(scan_id, claim):
             row = db.get(SecurityScan, scan_id)
             if not row or row.cancel_requested or row.status != "running" or row.progress.get("execution") != claim:
                 return True
+            from . import mcp_provenance as _mcp
+
+            if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
+                row.cancel_requested = True
+                return True
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
             job_id, _, attempt = claim.rpartition(":")
             job = db.get(Job, job_id) if attempt.isdigit() else None
@@ -564,6 +582,10 @@ def perform(scan_id, claim):
             return cached["result"]
         with transaction() as db:
             row = db.get(SecurityScan, scan_id)
+            from . import mcp_provenance as _mcp
+
+            if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
+                raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
         if used is None:
@@ -806,6 +828,11 @@ def finish(scan_id, verdicts, problems, freshness, supported):
     with transaction() as db:
         scan = db.get(SecurityScan, scan_id)
         if not scan or scan.status != "running" or scan.cancel_requested:
+            return
+        from . import mcp_provenance as _mcp
+
+        if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
             return
         authorize(db, db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id))
     with transaction() as db:

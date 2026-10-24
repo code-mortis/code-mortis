@@ -13,6 +13,8 @@ on:
       - 'backend/code_mortis/manage.py'
       - 'backend/code_mortis/api.py'
       - 'backend/code_mortis/security_api.py'
+      - 'backend/code_mortis/mcp_auth.py'
+      - 'backend/code_mortis/mcp_server.py'
       - 'backend/code_mortis/subscriptions.py'
       - 'backend/code_mortis/schemas.py'
       - 'backend/code_mortis/analytics_schemas.py'

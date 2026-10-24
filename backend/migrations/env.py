@@ -1,6 +1,7 @@
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+from code_mortis import mcp_models  # noqa: F401
 from code_mortis.config import settings
 from code_mortis.models import Base
 
