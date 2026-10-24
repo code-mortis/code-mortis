@@ -4,6 +4,7 @@ import { CalendarIcon, RefreshCw } from "lucide-react";
 import { useApi, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components/common";
 import { AnalyticsPanel, BreakdownChart, DataTable, TrendChart } from "./components/analytics-charts";
+import { normalizeOrdering } from "./lib/ordering";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { Button } from "./components/ui/button";
@@ -63,7 +64,13 @@ export default function Analytics() {
   }, [params, setParams, range.period, range.error, range.start, range.end]);
   const repositories = useApi<Schema["RepositoryOut"][]>("/repositories");
   const valid = !range.error;
-  const base = range.query?.toString() ?? "";
+  const orderings = { count: tab === "usage" ? "Tokens" : "Count", key: "Name" };
+  const ordering = normalizeOrdering(params.get("ordering"), orderings, "-count");
+  const orderingControl = { value: ordering, options: orderings, defaultValue: "-count", onChange: (value: string) => change("ordering", [value]),
+    hint: "Orders breakdowns and tables. Trends stay chronological." };
+  const baseParams = new URLSearchParams(range.query);
+  baseParams.set("ordering", ordering);
+  const base = baseParams.toString();
   const findingQuery = new URLSearchParams(base);
   for (const key of ["severity", "category", "status"]) for (const value of params.getAll(key)) findingQuery.append(key, value);
   const overview = useApi<Schema["AnalyticsOverview"]>(`/analytics/overview?${base}`, false, valid && tab === "overview");
@@ -103,13 +110,14 @@ export default function Analytics() {
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
     <h1 className="sr-only">Analytics</h1>
-    <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Analytics filters">
-      <div className="min-w-0 max-w-full"><FilterBar filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change} /></div>
+    <div role="group" aria-label="Analytics filters">
+      <FilterBar ordering={orderingControl} filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
         { value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }, { value: "90", label: "Last 90 days" }, { value: "all", label: "All time" }, { value: "custom", label: "Custom dates" },
       ]} /></div>
       {range.period === "custom" && <div className="flex max-w-full flex-wrap gap-3">{(["start", "end"] as const).map((key) => <DateFilter key={key} id={`analytics-${key}`} name={key === "start" ? "From" : "Through"} value={params.get(key) ?? range[key] ?? null} onChange={(value) => change(key, [value])} />)}</div>}
-      <Button variant="outline" className="sm:ml-auto" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
+      <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
+      </FilterBar>
     </div>
     <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
@@ -126,7 +134,7 @@ export default function Analytics() {
         { label: "Resolved", value: number(findings.data.statuses.find((row) => row.key === "resolved")?.count ?? 0) },
         { label: "Dismissed", value: number(findings.data.statuses.find((row) => row.key === "dismissed")?.count ?? 0) },
       ]} /></div>}
-      {tab === "findings" && !query.error && <div role="group" aria-label="Finding filters"><FilterBar filters={[
+      {tab === "findings" && !query.error && <div role="group" aria-label="Finding filters"><FilterBar ordering={orderingControl} filters={[
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: choices(["critical", "high", "medium", "low"]) },
         { key: "category", label: "Category", values: params.getAll("category"), choices: choices(findings.data?.category_options ?? params.getAll("category")), searchPlaceholder: "Find a category…" },
         { key: "status", label: "Status", values: params.getAll("status"), choices: choices(["open", "resolved", "dismissed"]) },
@@ -144,7 +152,7 @@ export default function Analytics() {
             ]} />
             <TrendChart title="Review activity" description="Runs are grouped by creation date; findings by first detection. One PR can have several runs." data={overview.data.trend} keys={["runs", "findings"]} />
             <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="Severity" description="Explore findings first detected in this period." data={overview.data.severities} severity onSelect={(value) => findingFilter("severity", value)} /><BreakdownChart title="Categories" description="Saved finding classifications, including custom categories." data={overview.data.categories} onSelect={(value) => findingFilter("category", value)} /></div>
-            <AnalyticsPanel title="Top repositories" description="Up to five repositories, ordered by distinct reviewed PRs. Select one to narrow this page.">
+            <AnalyticsPanel title="Top repositories" description="Up to five repositories with the most reviewed PRs. Select one to narrow this page.">
               <DataTable label="Top repositories" headings={["Repository", "PRs reviewed", "Findings", "Resolved"]} rows={overview.data.repositories.map((repo) => [<button className="rounded-sm text-left font-medium text-primary hover:underline underline-offset-4" onClick={() => selectRepository(repo.id)}>{repo.name}</button>, number(repo.reviewed_prs), number(repo.findings), <>{number(repo.resolved)}<span className="mt-1 block text-xs text-muted-foreground">{percent(repo.resolved, repo.findings)}</span></>])} />
             </AnalyticsPanel>
           </>}

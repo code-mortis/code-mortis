@@ -129,6 +129,8 @@ class SecurityActivityOut(ORMModel):
     id: str
     scan_id: str | None
     finding_id: str | None
+    finding_title: str | None = None
+    finding_path: str | None = None
     actor_id: int | None
     action: str
     detail: dict[str, Any]
@@ -140,6 +142,7 @@ class SecurityRepositoryOut(StrictModel):
     summary: SecuritySummary
     can_write: bool | None = None
     finding_count: int | None = Field(default=None, ge=0)
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
     scan_count: int | None = Field(default=None, ge=0)
 
 
@@ -182,7 +185,9 @@ class SecurityScanDetail(StrictModel):
     can_write: bool
     assessment: SecurityAssessmentSummary = Field(default_factory=SecurityAssessmentSummary)
     finding_count: int = Field(ge=0)
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
     report_count: int = Field(default=0, ge=0)
+    resolved_count: int = Field(default=0, ge=0)
     activity_count: int = Field(ge=0)
     activity: list[SecurityActivityOut]
 
@@ -191,6 +196,8 @@ class SecurityFindingDetail(StrictModel):
     repository: RepositoryOut
     finding: SecurityFindingOut
     can_write: bool
+    observation_count: int = 0
+    activity_count: int = 0
     observations: list[dict[str, Any]]
     activity: list[SecurityActivityOut]
 
@@ -202,18 +209,47 @@ class SecurityScanPage(StrictModel):
     page_size: int
 
 
+class SecurityRepositoryPage(StrictModel):
+    items: list[SecurityRepositoryOut]
+    total: int
+    registered_total: int
+    grade_counts: dict[str, int]
+    status_counts: dict[str, int]
+    page: int
+    page_size: int
+
+
+class SecurityActivityPage(StrictModel):
+    items: list[SecurityActivityOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityRecordPage(StrictModel):
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+
+
 class SecurityFindingPage(StrictModel):
     items: list[SecurityFindingOut]
     total: int
     page: int
     page_size: int
     result_counts: dict[str, int] = Field(default_factory=dict)
+    registered_total: int = 0
+    state_counts: dict[str, int] = Field(default_factory=dict)
+    severity_counts: dict[str, int] = Field(default_factory=dict)
+    kind_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class SecurityReportPage(StrictModel):
     items: list[dict[str, Any]]
     total: int
     registered_total: int
+    state_counts: dict[str, int]
     outcome_counts: dict[str, int]
     severity_counts: dict[str, int]
     kind_counts: dict[str, int]

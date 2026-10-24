@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .ordering import CandidateOrdering, FindingOrdering
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -278,6 +280,8 @@ class StartRunInput(StrictModel):
 class SecuritySummary(StrictModel):
     grade: str | None = None
     state: str = "not_scanned"
+    coverage: Literal["not_scanned", "complete", "incomplete"] = "not_scanned"
+    freshness: Literal["current", "outdated", "unavailable"] = "unavailable"
     grade_scan_id: str | None = None
     grade_sha: str | None = None
     graded_at: datetime | None = None
@@ -555,12 +559,15 @@ class AssessmentSummary(StrictModel):
 
 class RunDetail(BaseModel):
     run: RunOut
+    total_tokens: int | None = None
     pull_request: PullRequestOut
     repository: RepositoryOut
     occurrences: list[OccurrenceOut]
     resolved_count: int = 0
     assessment_revision: int = 0
     resolved_revision: str = ""
+    finding_state_counts: dict[str, int] = Field(default_factory=dict)
+    findings_revision: str = ""
     assessment: AssessmentSummary | None = None
     can_write: bool
 
@@ -580,6 +587,7 @@ CandidateOutcome = Literal["new", "repeated", "rejected", "withheld", "pending"]
 
 
 class CandidateFilters(StrictModel):
+    ordering: CandidateOrdering = "-severity"
     q: str = Field(default="", max_length=256)
     outcome: list[CandidateOutcome] = Field(default_factory=list, max_length=5)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
@@ -602,11 +610,17 @@ class CandidatePage(BaseModel):
 
 
 class ResolvedFilters(StrictModel):
+    ordering: FindingOrdering = "-severity"
     q: str = Field(default="", max_length=256)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     page: int = Field(default=1, ge=1, le=1000000)
     page_size: int = Field(default=LIST_PAGE_SIZE, ge=10, le=100)
+
+
+class RunFindingFilters(ResolvedFilters):
+    status: Literal["open", "resolved"] = "open"
+    outcome: list[Literal["new", "open_repeat", "resolved_repeat", "dismissed_repeat", "repeated", "recorded"]] = Field(default_factory=list, max_length=6)
 
 
 class ResolvedPage(BaseModel):
@@ -619,6 +633,11 @@ class ResolvedPage(BaseModel):
     page: int
     has_more: bool
     page_size: int = LIST_PAGE_SIZE
+
+
+class RunFindingPage(ResolvedPage):
+    items: list[OccurrenceOut]
+    outcome_counts: dict[str, int]
 
 
 InboxGroup = Literal["active", "merged", "closed", "all"]
@@ -703,6 +722,7 @@ FindingStatus = Literal["open", "resolved", "dismissed"]
 
 
 class FindingFilters(StrictModel):
+    ordering: FindingOrdering = "-severity"
     q: str = Field(default="", max_length=256)
     status: list[FindingStatus] = Field(default_factory=list, max_length=3)
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)

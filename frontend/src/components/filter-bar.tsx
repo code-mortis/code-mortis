@@ -7,6 +7,7 @@ import { Checkbox } from "./ui/checkbox";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { Ordering, type OrderingProps } from "./ordering";
 
 export type FilterDefinition<Key extends string> = {
   key: Key;
@@ -22,7 +23,7 @@ export type FilterDefinition<Key extends string> = {
   clearValues?: string[];
 };
 
-export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, searchLabel, searchPlaceholder, searchInputRef, filters, onChange, onSearch, children }: {
+export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, searchLabel, searchPlaceholder, searchInputRef, filters, onChange, onSearch, children, ordering }: {
   query?: string;
   searchResetKey?: number;
   searchLabel?: string;
@@ -32,6 +33,7 @@ export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, 
   onChange: (key: Key, values: string[]) => void;
   onSearch?: (value: string) => void;
   children?: ReactNode;
+  ordering?: OrderingProps;
 }) {
   const [draft, setDraft] = useState({ query, searchResetKey, value: query });
   const localSearchInput = useRef<HTMLInputElement>(null);
@@ -118,7 +120,8 @@ export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, 
           {active && <Button variant="ghost" size="icon" className="h-[34px] w-8 rounded-l-none" aria-label={`Remove ${filter.label} filter`} onClick={() => clear(filter)}><X className="size-3.5 text-muted-foreground" /></Button>}
         </div>;
       })}
+      {children}
     </div>
-    {children}
+    {ordering && <Ordering {...ordering} />}
   </div>;
 }

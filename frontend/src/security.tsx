@@ -1,23 +1,29 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { usePagedList } from "./hooks/use-paged-list";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, CircleCheck, CircleDot, CircleSlash, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Play, RefreshCw, Settings2, Shield } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
+import { CoverageGroup } from "./components/coverage-group";
+import { ActivityTimeline } from "./components/activity-timeline";
 import { AssessmentStatus } from "./components/assessment-status";
-import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, StatusGroup, words } from "./components/common";
+import { date, Empty, ErrorNotice, Field, FindingCount, ListDate, Loading, Markdown, PageTitle, Status, StatusGroup, TechnicalDetails, words } from "./components/common";
 import { ModelPicker } from "./components/model-picker";
 import { FilterBar } from "./components/filter-bar";
-import { LoadMoreFooter } from "./components/load-more-footer";
+import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/ordering";
+import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
-import { SecurityGrade, SecurityGradeShield, securityStates } from "./components/security-grade";
+import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
+import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Checkbox } from "./components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
+import { PopoverContent } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
@@ -25,9 +31,9 @@ import { SecurityBadge, SecurityScanBadge, SecurityScanStatus, SecurityStatus } 
 import { useUrlTab } from "./hooks/use-url-tab";
 import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
-import { label } from "./lib/inbox-filters";
+import { INBOX_MAX_PAGES, label } from "./lib/inbox-filters";
 import { errorFeedback } from "./lib/error-feedback";
-import { runDuration } from "./lib/run-duration";
+import { ExecutionDuration } from "./components/execution-duration";
 
 type User = Schema["UserOut"];
 type Scan = Schema["SecurityScanOut"];
@@ -60,29 +66,59 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
   };
 }
 
-function useSecurityPages<T extends { id: string }>(path: string, live = true) {
-  const [scope, setScope] = useState({ path, revision: 0 });
-  // Returning to an earlier filter must start at its first page, even when cached.
-  if (scope.path !== path) setScope({ path, revision: scope.revision + 1 });
-  const query = useInfiniteQuery({
-    queryKey: ["security-pages", path, scope.revision],
-    queryFn: ({ pageParam, signal }) => api<{ items: T[]; total: number; page: number; page_size: number; result_counts?: Record<string, number>;
-      registered_total?: number; outcome_counts?: Record<string, number>; severity_counts?: Record<string, number>; kind_counts?: Record<string, number> }>(`${path}${path.includes("?") ? "&" : "?"}page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
-    refetchInterval: (query) => live && (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
-    refetchOnWindowFocus: live,
-    retry: false,
+function ScanStages({ scan }: { scan: Scan }) {
+  const names = [...Object.keys(stageDescriptions),
+    ...Object.keys(scan.stages).filter((name) => !Object.hasOwn(stageDescriptions, name))];
+  const stages = names.map((name) => {
+    const stage = object(scan.stages[name]);
+    const [label, description] = stageDescriptions[name] ?? [words(name), "Saved stage status for this scan."];
+    const status = text(stage.status) || (active(scan.status) ? "pending" : "unknown");
+    const total = typeof stage.total === "number" && Number.isSafeInteger(stage.total) && stage.total >= 0 ? stage.total : null;
+    const completed = typeof stage.completed === "number" && Number.isSafeInteger(stage.completed) && stage.completed >= 0 ? stage.completed : null;
+    const validCounts = total !== null && completed !== null && completed <= total;
+    const unit = { analysis: " files", assessment: " candidates", verification: " findings" }[name] ?? "";
+    const progress = validCounts && status !== "pending" ? `${count(completed)} / ${count(total)}${unit}` : null;
+    return { name, label, description, status, progress, error: text(stage.error) };
   });
-  const seen = new Set<string>();
-  const items = (query.data?.pages.flatMap((page) => page.items) ?? []).filter((item) => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  return { query, items, denied, total: query.data?.pages.at(-1)?.total ?? 0, resultCounts: query.data?.pages[0]?.result_counts ?? {} };
+  const current = stages.find((stage) => stage.status === "running")
+    ?? stages.find((stage) => ["failed", "partial", "blocked", "cancelled"].includes(stage.status));
+  const running = scan.status === "running";
+  const finished = ["completed", "partial"].includes(scan.status);
+  const progressStage = finished ? stages.find((stage) => stage.name === "analysis") : current;
+  const progress = scan.status === "queued" ? null : progressStage?.progress;
+  const title = scan.status === "queued" ? "Waiting to start" : running ? current?.label ?? "Preparing scan"
+    : scan.status === "completed" ? "Scan complete" : scan.status === "partial" ? "Scan complete with warnings"
+      : `${current?.label ?? "Scan"} ${label(scan.status).toLowerCase()}`;
+  const Icon = scan.status === "completed" ? CircleCheck : running ? CircleDot : scan.status === "failed" ? CircleX
+    : scan.status === "partial" ? TriangleAlert : scan.status === "blocked" ? Pause : scan.status === "cancelled" ? CircleSlash : Circle;
+  const color = scan.status === "completed" ? "text-emerald-700 dark:text-emerald-300" : scan.status === "failed" ? "text-red-700 dark:text-red-300"
+    : ["partial", "blocked"].includes(scan.status) ? "text-amber-800 dark:text-amber-300" : running ? "text-primary" : "text-muted-foreground";
+  const explanation = scan.status === "queued" ? "Waiting for a worker to start the scan." : running
+    ? ({ snapshot: "Preparing repository files.", trivy: "Checking dependencies and configuration.",
+      analysis: "Reviewing source files for vulnerabilities.", assessment: "Validating findings against source evidence.",
+      verification: "Checking whether earlier findings are fixed.", report: "Saving the report and security grade." }[current?.name ?? ""] ?? "Preparing to scan the repository.")
+    : scan.status === "completed" ? "Review findings and coverage below."
+      : scan.status === "partial" ? "Some scan work could not be completed."
+        : scan.status === "blocked" ? "Waiting to continue. Completed results are saved."
+          : scan.status === "failed" ? "Scan stopped after an error. Review Activity for details."
+            : scan.status === "cancelled" ? "Scan cancelled. Completed results remain available." : "Stage details are not available yet.";
+  return <StageCard label="Scan stages" status={scan.status} progress={progress ?? null} detailsLabel="Scan stage details"
+    progressLabel={progress ? "Scan progress count" : "Stage progress unavailable"} explanation={explanation}
+    title={<span role="group" aria-label="Scan progress details" className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">
+        <Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{title}</span>
+        {progressStage && <span className="sr-only">: {label(progressStage.status)}{progress ? ` · ${progress}` : ""}</span>}
+      </span>}>
+    <PopoverContent align="start" aria-label="Scan stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
+      {stages.map((stage) => <div key={stage.name} className="space-y-2">
+        <div className="flex items-center justify-between gap-2"><span className="font-medium">{stage.label}</span><Status value={stage.status} /></div>
+        {stage.progress && <p className="tabular-nums text-muted-foreground">{stage.progress}</p>}
+        <p className="text-muted-foreground">{stage.description}</p>
+        {stage.error && <TechnicalDetails error={stage.error} name={stage.label} />}
+      </div>)}
+    </PopoverContent>
+  </StageCard>;
 }
+
 
 function useFilters() {
   const [params, setParams] = useSearchParams();
@@ -90,33 +126,37 @@ function useFilters() {
     const next = new URLSearchParams(params);
     next.delete(key);
     for (const item of Array.isArray(value) ? value : [value]) if (item) next.append(key, item);
-    if (["search", "state", "severity", "kind", "grade", "status", "outcome"].includes(key)) next.delete("page");
+    if (["search", "state", "severity", "kind", "grade", "status", "outcome", "ordering"].includes(key)) next.delete("page");
     setParams(next);
   }
   return { params, change, setParams };
 }
 
 export function SecurityOverview({ user }: { user: User }) {
-  const query = useApi<SecurityRepo[]>("/security/repositories", true);
   const { params, change } = useFilters();
   const [selected, setSelected] = useState<number>();
   const scanTrigger = useRef<HTMLButtonElement | null>(null);
   const search = params.get("search") ?? "";
-  const grade = params.get("grade") ?? "";
-  const status = params.get("status") ?? "";
-  const rows = (query.data ?? []).filter((row) => row.repository.full_name.toLowerCase().includes(search.toLowerCase())
-    && (!grade || (grade === "unrated" ? !row.summary.grade : row.summary.grade === grade))
-    && (!status || row.summary.state === status)).sort((a, b) => a.repository.full_name.localeCompare(b.repository.full_name));
+  const requestedOrdering = params.get("ordering") ?? "-updated_at";
+  const ordering = ["updated_at", "-updated_at", "repository", "-repository"].includes(requestedOrdering) ? requestedOrdering : "-updated_at";
+  const orderings: Record<string, string> = { updated_at: "Updated", repository: "Repository" };
+  const request = new URLSearchParams();
+  for (const key of ["search", "grade", "status"]) for (const value of params.getAll(key)) request.append(key, value);
+  request.set("ordering", ordering);
+  const { query, items: rows, denied, pagination } = usePagedList<SecurityRepo>(`/security/repositories?${request}`);
+  const data = query.data;
   return <>
-    <PageTitle title="Security">Scan default branches, inspect supported findings, and verify fixes.</PageTitle>
-    <ErrorNotice error={query.error} />
-    {!query.error && <>
-      <div className="mb-4"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
-        onSearch={(value) => change("search", value)} onChange={(key, values) => change(key, values[0] ?? "")} filters={[
-          { key: "grade", label: "Grade", single: true, values: grade ? [grade] : [], choices: [...["A", "B", "C", "D", "F"].map((value) => ({ value, name: value })), { value: "unrated", name: "Not rated" }] },
-          { key: "status", label: "Scan status", single: true, values: status ? [status] : [], choices: Object.entries(securityStates).map(([value, name]) => ({ value, name })) },
-        ]} /></div>
-      {query.isPending ? <Loading /> : !rows.length ? <Empty title={query.data?.length ? "No matching repositories" : "No repositories available"}>{query.data?.length ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
+    <header className="mb-6">
+      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Security</h1>
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Scan default branches, inspect supported findings, and verify fixes.</p>
+    </header>
+    {denied ? <ErrorNotice error={query.error} /> : <>
+      <div className="mb-6"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
+        onSearch={(value) => change("search", value)} onChange={change} filters={[
+          { key: "grade", label: "Grade", values: params.getAll("grade"), choices: ["A", "B", "C", "D", "F", "unrated"].map((value) => ({ value, name: value === "unrated" ? "Not rated" : value, count: data?.grade_counts?.[value] ?? 0 })) },
+          { key: "status", label: "Scan status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
+        ]} ordering={{ value: ordering, defaultValue: "-updated_at", options: orderings, onChange: (value) => change("ordering", value) }} /></div>
+      {query.isPending ? <Loading /> : !rows.length && !query.error ? <Empty title={data?.registered_total ? "No matching repositories" : "No repositories available"}>{data?.registered_total ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
         <div className="overflow-hidden rounded-lg border bg-card">
           <div aria-hidden="true" data-slot="security-repository-heading" className="inbox-row-grid hidden border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Repository</span><span>Scan status</span><span>Open findings</span><span>Latest scan</span><span /></div>
           {rows.map(({ repository: repo, summary }) => {
@@ -134,6 +174,7 @@ export function SecurityOverview({ user }: { user: User }) {
               <div className="absolute right-2 top-2 z-10 md:static md:justify-self-end"><SecurityRepositoryActions repository={repo} summary={summary} admin={user.role === "admin"} onRun={(trigger) => { scanTrigger.current = trigger; setSelected(repo.id); }} /></div>
             </article>;
           })}
+          <Pagination {...pagination} label="repositories" />
         </div>}
     </>}
     {selected !== undefined && <ScanDialog key={selected} repositoryId={selected} user={user} returnTo={scanTrigger.current} onClose={() => setSelected(undefined)} />}
@@ -226,10 +267,46 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
   </form>;
 }
 
+const findingViews = [
+  { value: "findings", state: "open", name: "Findings" },
+  { value: "resolved", state: "resolved", name: "Resolved" },
+  { value: "accepted_risk", state: "accepted_risk", name: "Accepted risk" },
+  { value: "false_positive", state: "false_positive", name: "False positives" },
+] as const;
+type FindingState = typeof findingViews[number]["state"];
+const findingTabValues = findingViews.map((view) => view.value);
+const findingTabsClass = "max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto";
+
+function useLegacyFindingTabs(scan = false) {
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const oldTab = params.get("tab");
+    const legacyScanTab = scan ? params.get("findings_tab") : null;
+    if (!params.has("state") && !params.has("resolved_state") && !legacyScanTab) return;
+    const next = new URLSearchParams(params);
+    const legacyState = params.get("state");
+    const view = findingViews.find((view) => view.state === legacyState);
+    if (legacyScanTab && findingTabValues.includes(legacyScanTab as typeof findingTabValues[number]) && (!oldTab || oldTab === "findings")) {
+      if (legacyScanTab === "findings") next.delete("tab"); else next.set("tab", legacyScanTab);
+    } else if (view && (!oldTab || oldTab === "findings")) {
+      if (view.value === "findings") next.delete("tab"); else next.set("tab", view.value);
+      if (view.state !== "open") for (const key of ["search", "severity", "kind", "outcome", "ordering"]) {
+        if (!next.has(`${view.state}_${key}`)) for (const value of params.getAll(key)) next.append(`${view.state}_${key}`, value);
+        next.delete(key);
+      }
+    }
+    next.delete("state");
+    next.delete("resolved_state");
+    if (scan) next.delete("findings_tab");
+    setParams(next, { replace: true });
+  }, [params, setParams, scan]);
+}
+
 export function SecurityRepository({ user }: { user: User }) {
   const { id } = useParams();
   const query = useApi<SecurityRepo>(`/security/repositories/${id}`, true);
-  const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
+  useLegacyFindingTabs();
+  const [tab, setTab] = useUrlTab("tab", [...findingTabValues, "history"], "findings");
   const [scanning, setScanning] = useState(false);
   const [creatingIssues, setCreatingIssues] = useState(false);
   const [queuedIssues, setQueuedIssues] = useState(0);
@@ -237,15 +314,16 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.isPending) return <Loading />;
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
+  const stateCounts = query.data.finding_state_counts;
   const slash = repo.full_name.lastIndexOf("/");
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
     <PageTitle title={<span className="break-words [overflow-wrap:anywhere]"><span className="font-normal text-muted-foreground">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</span>} actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues…</Button>
+      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </div>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><SecurityGrade showLabel repositoryId={repo.id} summary={summary} /><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
-      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `${summary.state === "current" || (summary.state === "incomplete" && summary.latest_status === "partial" && summary.grade_scan_id === summary.latest_scan_id) ? "Saved" : "Historical report saved"} ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} />{summary.latest_scan_id && <><span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span><span aria-label="Scan freshness">{securityFreshness[summary.freshness ?? "unavailable"]}</span></>}<span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
+      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `Last graded report saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
     </PageTitle>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
     {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
@@ -258,8 +336,10 @@ export function SecurityRepository({ user }: { user: User }) {
         {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
       </div>
     </section>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count ?? "…"}</span></TabsTrigger><TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
-      <TabsContent value="findings"><Findings repositoryId={repo.id} /></TabsContent>
+    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Repository security" className={findingTabsClass}>
+      {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
+      <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
+      {findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} state={view.state} /></TabsContent>)}
       <TabsContent value="history"><ScanHistory repositoryId={repo.id} /></TabsContent>
     </Tabs>
     {scanning && <ScanDialog repositoryId={repo.id} user={user} onClose={() => setScanning(false)} />}
@@ -275,56 +355,137 @@ const scanFindingResults = {
   fixed: "Verified fixes", not_observed: "Not observed", uncertain: "Verification uncertain",
 };
 
-function Findings({ repositoryId, scanId }: { repositoryId: number; scanId?: string }) {
+function useFindingGroups<T extends { id?: string; finding_id?: unknown }>(path: string, states: string[]) {
+  const [params, setParams] = useSearchParams();
+  const filterKey = JSON.stringify([path, states]);
+  const resource = path.split("?")[0];
+  const pages = Object.fromEntries(states.map((state) => {
+    const page = Number(params.get(`${state}_page`) ?? 1);
+    return [state, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
+  }));
+  function updatePages(nextPages: Record<string, number>, replace = false) {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const state of states) {
+        next.delete(`${state}_page`);
+        if (nextPages[state] > 1) next.set(`${state}_page`, String(nextPages[state]));
+      }
+      return next;
+    }, { replace });
+  }
+  const query = useQuery<(Omit<Schema["SecurityFindingPage"], "items"> & { items: T[]; state: string })[], ApiError>({
+    queryKey: ["security-findings", resource, filterKey, pages],
+    queryFn: async ({ signal }) => {
+      const groups = await Promise.all(states.map(async (state) => {
+        const request = new URLSearchParams(path.split("?")[1]);
+        request.set("state", state);
+        request.set("page", String(pages[state] ?? 1));
+        return { ...await api<Omit<Schema["SecurityFindingPage"], "items"> & { items: T[] }>(`${resource}?${request}`, "GET", undefined, undefined, signal), state };
+      }));
+      const seen = new Set<unknown>();
+      for (const group of groups) group.items = group.items.filter((item) => {
+        const identity = item.id ?? item.finding_id;
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      });
+      return groups;
+    },
+    staleTime: 0, refetchInterval: 5000, retry: false,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[2] === filterKey ? previous : undefined,
+  });
+  const saved = useRef<{ filters: string; data?: typeof query.data }>({ filters: filterKey });
+  if (saved.current.filters !== filterKey) saved.current = { filters: filterKey };
+  if (query.data && !query.isPlaceholderData) saved.current.data = query.data;
+  const denied = query.error && [401, 403, 404].includes(query.error.status);
+  if (denied) saved.current.data = undefined;
+  const groups = denied ? [] : query.data ?? saved.current.data ?? [];
+  const total = groups.reduce((sum, group) => sum + group.total, 0);
+  const counts = groups[0];
+  const registered = counts?.registered_total ?? total;
+  useEffect(() => {
+    if (!query.data || query.isPlaceholderData) return;
+    const corrected = Object.fromEntries(query.data.map((group) => [group.state, Math.min(pages[group.state] ?? 1, Math.max(1, Math.ceil(group.total / group.page_size)))]));
+    if (Object.entries(corrected).some(([state, page]) => page !== (pages[state] ?? 1))) updatePages(corrected, true);
+  }, [query.data, query.isPlaceholderData, filterKey, pages]);
+  return { query, denied, groups, total, counts, registered,
+    pagination: (group: typeof groups[number]) => ({ page: group.page, pageSize: group.page_size, total: group.total,
+      loading: query.isFetching && query.isPlaceholderData, error: query.error, onRetry: query.refetch,
+      onPageChange: (page: number) => { if (page === group.page) void query.refetch(); else updatePages({ ...pages, [group.state]: page }); },
+    }),
+  };
+}
+
+function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanId?: string; state: FindingState }) {
   const { params, change, setParams } = useFilters();
   const searchInput = useRef<HTMLInputElement>(null);
-  const queryParams = new URLSearchParams();
-  for (const key of ["search", "severity", "kind", ...(!scanId ? ["state"] : [])]) { const value = params.get(key); if (value) queryParams.set(key, value); }
-  if (scanId) for (const value of params.getAll("outcome")) queryParams.append("outcome", value);
+  const prefix = state === "open" ? "" : `${state}_`;
+  const filters = new URLSearchParams();
+  for (const key of ["search", "severity", "kind", "outcome", "ordering"]) for (const value of params.getAll(`${prefix}${key}`)) filters.append(key, value);
+  const orderings = scanId ? snapshotOrderings : findingOrderings;
+  const ordering = normalizeOrdering(filters.get("ordering"), orderings, "-severity");
+  const queryParams = new URLSearchParams(filters);
+  queryParams.set("ordering", ordering);
   const path = scanId ? `/security/scans/${scanId}/findings` : `/security/repositories/${repositoryId}/findings`;
-  const { query, items, total, denied, resultCounts } = useSecurityPages<Finding>(`${path}${queryParams.size ? `?${queryParams}` : ""}`);
-  const registered = Math.max(total, Object.values(resultCounts).reduce((sum, value) => sum + value, 0));
+  const { query, denied, groups, total, counts, registered, pagination } = useFindingGroups<Finding>(`${path}?${queryParams}`, [state]);
+  const registeredTotal = counts?.state_counts ? counts.state_counts[state] ?? 0 : registered;
+  const onlyResolved = !scanId && state === "open" && !registeredTotal && (counts?.state_counts?.resolved ?? 0) > 0;
+  function changeFilter(key: string, values: string[]) {
+    const next = new URLSearchParams(params);
+    next.delete(`${prefix}${key}`);
+    for (const value of values) if (value) next.append(`${prefix}${key}`, value);
+    next.delete(`${state}_page`);
+    setParams(next, { replace: key === "search" });
+  }
+  const description = {
+    open: scanId ? "Findings open when this scan was recorded. Later status changes do not change this list." : null,
+    accepted_risk: scanId ? "Findings recorded as accepted risks in this scan." : "Real issues accepted without a fix. These still count toward the current repository grade.",
+    false_positive: scanId ? "Findings recorded as false positives in this scan." : "Reports marked as invalid. These do not count toward the current repository grade.",
+    resolved: scanId ? "Findings recorded as resolved in this scan. Later status changes do not change this list." : "Findings with verified fixes. Reopened findings return to Findings.",
+  }[state];
   return <div className="pt-4">
-    {scanId && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this scan. Repeats were observed again; their labels show the current status. Fix verification outcomes remain separate. Saved observations stay unchanged.</p>}
-    <div className="mb-4"><FilterBar query={params.get("search") ?? ""} searchLabel={scanId ? "Search scan findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput}
-      onSearch={(value) => change("search", value)} onChange={(key, values) => change(key, key === "outcome" ? values : values[0] ?? "")} filters={[
-        ...(scanId ? [{ key: "outcome", label: "Result", values: params.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: resultCounts[value] ?? 0 })) }]
-          : [{ key: "state", label: "State", single: true, values: params.get("state") ? [params.get("state")!] : [], choices: ["open", "resolved", "false_positive", "accepted_risk"].map((value) => ({ value, name: label(value) })) }]),
-        { key: "severity", label: "Severity", single: true, values: params.get("severity") ? [params.get("severity")!] : [], choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value) })) },
-        { key: "kind", label: "Type", single: true, values: params.get("kind") ? [params.get("kind")!] : [], choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value) })) },
-      ]}>{scanId && <span role="status" className="sr-only">{total} of {registered} findings</span>}</FilterBar></div>
-    {query.isPending ? <Loading /> : denied ? <ErrorNotice error={query.error} /> : !items.length && !query.error ? <Empty title={scanId && registered ? "No findings match these filters" : "No findings in this view"}>
-      {scanId && registered ? <><p>Try another search, result, severity, or type.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["search", "outcome", "severity", "kind", "page"]) next.delete(key); setParams(next); searchInput.current?.focus(); }}>Clear filters</Button></> : "Findings will appear here as security scans complete. Change filters to inspect other states."}</Empty> :
-      <section aria-label={scanId ? "Current findings for this scan" : "Repository findings"} className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((finding) => <FindingCard key={finding.id}
-        evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
-        state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></section>
-    }
+    {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
+    <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={state === "open" ? scanId ? "Search scan findings" : "Search findings" : `Search ${label(state).toLowerCase()} findings`} searchPlaceholder="Search findings…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "-severity", options: orderings, onChange: (value) => changeFilter("ordering", [value]) }}
+      onSearch={(value) => changeFilter("search", [value])} onChange={changeFilter} filters={[
+        ...(scanId ? [{ key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: Object.entries(scanFindingResults).map(([value, name]) => ({ value, name, count: counts?.result_counts?.[value] ?? 0 })) }] : []),
+        { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: ["critical", "high", "medium", "low", "unknown"].map((value) => ({ value, name: label(value), count: counts?.severity_counts?.[value] ?? 0 })) },
+        { key: "kind", label: "Type", values: filters.getAll("kind"), choices: ["code", "dependency", "secret", "infrastructure"].map((value) => ({ value, name: label(value), count: counts?.kind_counts?.[value] ?? 0 })) },
+      ]}><span role="status" className="sr-only">{total} of {registeredTotal} findings</span></FilterBar></div>
+    {query.error && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} />{!denied && <Button variant="outline" size="sm" onClick={() => query.refetch()}>Retry findings</Button>}</div>}
+    {query.isPending ? <Loading /> : !denied && (total ? <section aria-label={scanId ? "Findings recorded in this scan" : "Repository findings"} aria-busy={query.isPlaceholderData}>
+      {groups.filter((group) => group.total > 0).map((group) => <section key={group.state} aria-label={`${label(group.state)} findings`}>
+        <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
+          {group.items.map((finding) => <FindingCard key={finding.id} evidence={{ path: finding.path, content: finding.title, severity: finding.severity, category: finding.kind }}
+            state={<SecurityStatus value={finding.state} />} onClick={() => change("finding", finding.id)} />)}
+          <Pagination {...pagination(group)} label={`${group.state} findings`} />
+        </div>
+      </section>)}
+    </section> : !query.error && <Empty title={registeredTotal ? "No findings match these filters" : `No ${state === "false_positive" ? "false positives" : state === "accepted_risk" ? "accepted risks" : `${state} findings`}`}>
+      {registeredTotal ? <><p>Try another search, severity, type{scanId ? ", or result" : ""}.</p><Button variant="outline" className="mt-4" onClick={() => {
+        const next = new URLSearchParams(params);
+        for (const key of ["search", "outcome", "severity", "kind"]) next.delete(`${prefix}${key}`);
+        next.delete(`${state}_page`);
+        setParams(next); searchInput.current?.focus();
+      }}>Clear filters</Button></> : onlyResolved ? <><p>Resolved findings are available in the Resolved tab.</p><Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); next.set("tab", "resolved"); setParams(next); }}>View resolved findings</Button></>
+        : state === "resolved" ? "Findings appear here after fixes are verified."
+          : state === "false_positive" ? "Findings you mark as false positives appear here."
+            : state === "accepted_risk" ? "Findings you choose to accept without a fix appear here."
+              : scanId ? "Check coverage before interpreting an empty result. Other states are available in the tabs above." : "Other finding states are available in the tabs above. Check scan coverage before interpreting an empty result."}</Empty>)}
   </div>;
 }
 
-function ScanDuration({ scan }: { scan: Scan }) {
-  const running = scan.status === "running" && !scan.finished_at;
-  const [time, setTime] = useState(Date.now);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setTime(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-  const duration = runDuration(scan, running ? time : undefined);
-  return <span className="whitespace-nowrap tabular-nums">{duration ?? (scan.started_at ? "Unavailable" : "Not started")}{running && duration && " elapsed"}</span>;
-}
-
 function ScanHistory({ repositoryId }: { repositoryId: number }) {
-  const { query, items, total, denied } = useSecurityPages<Scan>(`/security/repositories/${repositoryId}/scans`);
+  const { query, items, denied, pagination } = usePagedList<Scan>(`/security/repositories/${repositoryId}/scans`);
   if (denied) return <ErrorNotice error={query.error} />;
   if (query.isPending) return <Loading />;
   return !items.length && !query.error ? <Empty title="No security scans yet">Run a scan to save findings, coverage, and a repository grade.</Empty> : <div className="pt-4"><div className="divide-y overflow-hidden rounded-lg border bg-card">
     <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] gap-6 bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground md:grid"><span>Security scan</span><span>Duration</span><span>Grade</span><span>Status</span><span /></div>
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
-      <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ScanDuration scan={scan} /></span>
+      <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ExecutionDuration run={scan} /></span>
       <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
-    </Link>)}</div><LoadMoreFooter query={query} shown={items.length} total={total} label="scan history" /></div></div>;
+    </Link>)}</div><Pagination {...pagination} label="scan history" /></div></div>;
 }
 
 export function SecurityScan({ user }: { user: User }) {
@@ -332,48 +493,45 @@ export function SecurityScan({ user }: { user: User }) {
   const query = useApi<Schema["SecurityScanDetail"]>(`/security/scans/${id}`, true);
   const action = useAction();
   const [retrying, setRetrying] = useState<"retry" | "new">();
-  const [tab, setTab] = useUrlTab("tab", ["report", "findings", "assessment", "coverage", "activity"], "report");
+  useLegacyFindingTabs(true);
+  const [tab, setTab] = useUrlTab("tab", [...findingTabValues, "assessment", "coverage", "activity"], "findings");
   const [params, setParams] = useSearchParams();
   const assessmentTrigger = useRef<HTMLButtonElement | null>(null);
   const assessmentTab = useRef<HTMLButtonElement | null>(null);
   if (query.isPending) return <Loading />;
-  if (query.error || !query.data) return <ErrorNotice error={query.error || "Security scan unavailable."} />;
+  if (query.error || !query.data) return <div className="space-y-3"><ErrorNotice error={query.error || "Security scan unavailable."} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Reload scan</Button></div>;
   const { scan, repository: repo, can_write: canWrite } = query.data;
   const work = object(scan.progress.work);
   const report = object(scan.report);
-  const reportCount = query.data.report_count ?? entries(report.findings).length;
   const reportProblems = (Array.isArray(report.problems) ? report.problems : [])
     .map((problem) => typeof problem === "string" ? problem : text(object(problem).reason))
     .filter((problem) => problem && problem !== scan.error);
   return <>
-    <Link className={`mb-5 inline-flex min-h-6 max-w-full items-center gap-1.5 break-words text-xs text-muted-foreground ${metadataLink}`} to={`/security/repositories/${repo.id}`}><ArrowLeft aria-hidden="true" className="size-3.5 shrink-0" />{repo.full_name}</Link>
     <PageTitle title="Security scan" actions={<>
+      <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={!Object.keys(report).length}><Download aria-hidden="true" className="size-3.5" />Download report<ChevronDown aria-hidden="true" className="size-3.5" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">{(["markdown", "json"] as const).map((format) => <DropdownMenuItem asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download>Download {format === "json" ? "JSON" : "Markdown"}</a></DropdownMenuItem>)}</DropdownMenuContent>
+      </DropdownMenu>
       {canWrite && active(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/scans/${scan.id}/cancel` })}>Cancel scan</Button>}
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
     </>}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
-      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ScanDuration scan={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
+      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
-    <ErrorNotice error={scan.error || action.error} />
-    <div className="my-5 flex flex-wrap gap-x-4 gap-y-2 border-y py-3 text-xs" aria-label="Scan stages">{Object.entries(scan.stages).map(([name, raw]) => {
-      const stage = object(raw);
-      const [label, description] = stageDescriptions[name] ?? [words(name), "Saved stage status for this scan."];
-      return <div role="group" aria-label={`${label} stage`} key={name} className="flex min-h-8 items-center gap-2"><span className="font-medium">{label}</span><SecurityStatus value={text(stage.status) || "pending"} description={description} />{typeof stage.total === "number" && <span className="tabular-nums text-muted-foreground">{count(stage.completed)} / {count(stage.total)}{name === "analysis" && " files"}</span>}</div>;
-    })}</div>
-    <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto"><TabsTrigger value="report">Report <span className="text-xs font-normal tabular-nums text-muted-foreground">{reportCount}</span></TabsTrigger><TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_count}</span></TabsTrigger><TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
-      <TabsContent value="report"><div className="space-y-6 pt-4">
-        {Object.keys(report).length ? <><div className="flex flex-wrap gap-2">{(["markdown", "json"] as const).map((format) => <Button variant="outline" size="sm" asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download><Download aria-hidden="true" className="size-4" />Download {format === "json" ? "JSON" : "Markdown"}</a></Button>)}</div>
-          <p className="text-xs leading-relaxed text-muted-foreground">Observations saved at <span className="font-mono">{scan.head_sha.slice(0, 7)}</span>. Open a finding to inspect its saved evidence and current status separately.</p>
-          <ReportFindings scanId={scan.id} registeredTotal={reportCount} onOpen={(id) => { const next = new URLSearchParams(params); next.set("finding", id); next.delete("finding_tab"); setParams(next); }} />
+    <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
+    <ScanStages scan={scan} />
+    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}>
+      {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
+      <TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
+      <TabsContent value="findings"><div className="space-y-6">
+        <Findings repositoryId={repo.id} scanId={scan.id} state="open" />
           {entries(report.unsettled_candidates).length > 0 && <section className="space-y-3"><h2 className="text-sm font-semibold">Requires verification</h2>{entries(report.unsettled_candidates).map((row, index) => <details className={disclosure} key={index}><summary className={disclosureSummary}><span className="min-w-0 break-words [overflow-wrap:anywhere]">{text(object(row.proposal).title) || "Security candidate"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><div className="mt-5 space-y-6"><section className="space-y-3"><h3 className="text-sm font-semibold">Assessment</h3><Markdown>{text(object(row.assessment).explanation)}</Markdown></section><SecurityEvidence title={text(object(row.proposal).title)} evidence={object(row.proposal)} commit={scan.head_sha} /></div></details>)}</section>}
           {reportProblems.length > 0 && <section><h2 className="mb-3 text-base font-semibold">Incomplete analysis</h2><ul className="space-y-2">{reportProblems.map((problem, index) => <li key={index}><ErrorNotice error={problem} /></li>)}</ul></section>}
-        </> : <Empty title={active(scan.status) ? "Scan in progress" : "Report unavailable"}>Validated findings and the report are saved as the scan progresses. Coverage stays visible when analysis is incomplete.</Empty>}
       </div></TabsContent>
-      <TabsContent value="findings"><Findings repositoryId={repo.id} scanId={scan.id} /></TabsContent>
-      <TabsContent value="assessment"><SecurityAssessments scan={scan} summary={query.data.assessment} tick={query.dataUpdatedAt} onOpen={(id, trigger) => { assessmentTrigger.current = trigger; const next = new URLSearchParams(params); next.set("assessment", id); next.delete("assessment_tab"); setParams(next); }} /></TabsContent>
+      {findingViews.filter((view) => view.state !== "open").map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} scanId={scan.id} state={view.state} /></TabsContent>)}
+      <TabsContent value="assessment"><SecurityAssessments scan={scan} summary={query.data.assessment} onOpen={(id, trigger) => { assessmentTrigger.current = trigger; const next = new URLSearchParams(params); next.set("assessment", id); next.delete("assessment_tab"); setParams(next); }} /></TabsContent>
       <TabsContent value="coverage"><Coverage scan={scan} /></TabsContent>
-      <TabsContent value="activity">{query.data.activity_count > query.data.activity.length && <p className="pt-4 text-xs text-muted-foreground">Showing the latest {query.data.activity.length} of {query.data.activity_count} activities.</p>}<Activity rows={query.data.activity} /></TabsContent>
+      <TabsContent value="activity"><ScanActivity rows={query.data.activity} /></TabsContent>
     </Tabs>
     {retrying && <ScanDialog repositoryId={repo.id} user={user} onClose={() => setRetrying(undefined)} retry={retrying === "retry" ? scan : undefined} />}
     <FindingSheet id={params.get("finding")} scanId={scan.id} headSha={scan.head_sha} onClose={() => { const next = new URLSearchParams(params); next.delete("finding"); next.delete("finding_tab"); setParams(next); }} />
@@ -381,47 +539,6 @@ export function SecurityScan({ user }: { user: User }) {
       onClose={() => { const next = new URLSearchParams(params); next.delete("assessment"); next.delete("assessment_tab"); setParams(next); }}
       onOpenFinding={(id) => { const next = new URLSearchParams(params); next.delete("assessment"); next.delete("assessment_tab"); next.set("finding", id); setParams(next); }} />
   </>;
-}
-
-function ReportFindings({ scanId, registeredTotal, onOpen }: { scanId: string; registeredTotal: number; onOpen: (id: string) => void }) {
-  const [params, setParams] = useSearchParams();
-  const searchInput = useRef<HTMLInputElement>(null);
-  const query = params.get("report_q") ?? "";
-  const request = new URLSearchParams();
-  for (const key of ["q", "outcome", "severity", "kind"]) for (const value of params.getAll(`report_${key}`)) request.append(key, value);
-  const { query: pages, items, total, denied } = useSecurityPages<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/report/findings?${request}`);
-  const data = pages.data?.pages[0];
-  const filters = [{ key: "outcome", name: "Result", counts: data?.outcome_counts ?? {} },
-    { key: "severity", name: "Severity", counts: data?.severity_counts ?? {} },
-    { key: "kind", name: "Type", counts: data?.kind_counts ?? {} }].map(({ key, name, counts }) => {
-    const values = key === "severity" ? [...new Set([...findingSeverities, ...Object.keys(counts)])] : Object.keys(counts).sort();
-    return { key, label: name, values: params.getAll(`report_${key}`), searchPlaceholder: key === "kind" ? "Search types…" : undefined,
-      choices: values.map((value) => ({ value, name: label(value), count: counts[value] ?? 0 })) };
-  });
-  function change(key: string, values: string[]) {
-    const next = new URLSearchParams(params);
-    next.delete(`report_${key}`);
-    for (const value of values) if (value) next.append(`report_${key}`, value);
-    setParams(next, { replace: key === "q" });
-  }
-  if (denied) return <ErrorNotice error={pages.error} />;
-  return <div className="space-y-4">
-    <FilterBar query={query} searchLabel="Search report findings" searchPlaceholder="Search report findings…" searchInputRef={searchInput}
-      onSearch={(value) => change("q", [value])} onChange={change} filters={filters}>
-      <span role="status" className="sr-only">{total} of {data?.registered_total ?? registeredTotal} report findings</span>
-    </FilterBar>
-    {pages.isPending ? <Loading /> : items.length ? <section aria-label="Findings at this scan" className="divide-y overflow-hidden rounded-lg border bg-card"><div className="divide-y">{items.map((row) => <FindingCard key={text(row.finding_id)}
-      evidence={{ path: row.path, content: row.title, severity: row.severity, category: row.kind }}
-      state={<SecurityStatus value={text(row.outcome) || "unknown"} />} onClick={() => onOpen(text(row.finding_id))} />)}</div><LoadMoreFooter query={pages} shown={items.length} total={total} label="report findings" /></section>
-      : !pages.error && (registeredTotal ? <Empty title="No report findings match these filters"><p>Try another search, result, severity, or type.</p>
-        <Button variant="outline" className="mt-4" onClick={() => {
-          const next = new URLSearchParams(params);
-          for (const key of ["q", "outcome", "severity", "kind"]) next.delete(`report_${key}`);
-          setParams(next); searchInput.current?.focus();
-        }}>Clear filters</Button>
-      </Empty> : <Empty title="No confirmed findings recorded">Check coverage and any incomplete work before interpreting this result.</Empty>)}
-    {!items.length && pages.error && <><ErrorNotice error={pages.error} /><Button variant="outline" size="sm" onClick={() => pages.refetch()}>Retry report findings</Button></>}
-  </div>;
 }
 
 const assessmentOutcomes = [
@@ -437,20 +554,18 @@ function AssessmentBadge({ item, inCard = false }: { item: SecurityAssessment; i
     progress_phase: item.progress_phase }} />;
 }
 
-function SecurityAssessments({ scan, summary, tick, onOpen }: {
-  scan: Scan; summary?: Schema["SecurityAssessmentSummary"]; tick: number;
+function SecurityAssessments({ scan, summary, onOpen }: {
+  scan: Scan; summary?: Schema["SecurityAssessmentSummary"];
   onOpen: (id: string, trigger: HTMLButtonElement) => void;
 }) {
   const [params, setParams] = useSearchParams();
   const searchInput = useRef<HTMLInputElement>(null);
+  const ordering = normalizeOrdering(params.get("assessment_ordering"), snapshotOrderings, "-severity");
   const filters = new URLSearchParams();
+  if (ordering !== "-severity") filters.set("ordering", ordering);
   for (const key of ["q", "outcome", "severity", "category"]) for (const value of params.getAll(`assessment_${key}`)) filters.append(key, value);
-  const canonical = filters.toString();
-  const [list, setList] = useState({ filters: canonical, size: 20 });
-  if (list.filters !== canonical) setList({ filters: canonical, size: 20 });
-  const query = useRunResource<Schema["SecurityAssessmentPage"]>(
-    `/security/scans/${scan.id}/assessments?${filters}&page=1&page_size=${list.size}`, summary?.revision ?? "", tick,
-    { scope: `${scan.id}/assessments?${canonical}` },
+  const { query, items, denied, pagination } = usePagedList<SecurityAssessment>(
+    `/security/scans/${scan.id}/assessments?${filters}`, true, summary?.revision,
   );
   function change(key: string, values: string[]) {
     const next = new URLSearchParams(params);
@@ -458,21 +573,19 @@ function SecurityAssessments({ scan, summary, tick, onOpen }: {
     for (const value of values) if (value) next.append(`assessment_${key}`, value);
     setParams(next, { replace: key === "q" });
   }
-  if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
+  if (denied) return <ErrorNotice error={query.error} />;
   const data = query.data;
-  const items = data?.items ?? [];
-  const more = !!data && data.total > items.length && list.size < 100;
   return <div className="mt-6 space-y-4">
     {summary && <p role="status" aria-label="Assessment progress" className="text-xs tabular-nums text-muted-foreground">{summary.status_counts?.queued ?? 0} queued · {summary.status_counts?.running ?? 0} running · {summary.status_counts?.completed ?? 0} completed · {summary.status_counts?.failed ?? 0} failed{(summary.status_counts?.interrupted ?? 0) > 0 && ` · ${summary.status_counts?.interrupted} interrupted`}</p>}
     <FilterBar query={filters.get("q") ?? ""} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput}
+      ordering={{ value: ordering, defaultValue: "-severity", options: { ...snapshotOrderings, position: "Assessment order" }, onChange: (value) => change("ordering", [value]) }}
       onSearch={(value) => change("q", [value])} onChange={change} filters={[
-        { key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: assessmentOutcomes.map((choice) => ({ ...choice, count: data?.outcome_counts[choice.value] ?? 0 })) },
-        { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: data?.severity_counts[value] ?? 0 })) },
+        { key: "outcome", label: "Result", values: filters.getAll("outcome"), choices: assessmentOutcomes.map((choice) => ({ ...choice, count: data?.outcome_counts?.[choice.value] ?? 0 })) },
+        { key: "severity", label: "Severity", values: filters.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: data?.severity_counts?.[value] ?? 0 })) },
         { key: "category", label: "Type", values: filters.getAll("category"), choices: Object.entries(data?.category_counts ?? {}).map(([value, count]) => ({ value, name: label(value), count })), searchPlaceholder: "Search types…" },
       ]}>
       {data && <span role="status" className="sr-only">{data.total} of {data.registered_total} assessments</span>}
     </FilterBar>
-    <ErrorNotice error={query.error} />
     <section aria-label="Security assessments" className={items.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {!data && query.isPending ? <Loading /> : items.length ? items.map((item) => <FindingCard key={item.id}
         evidence={{ ...item.proposal, content: item.proposal.title }} state={<AssessmentBadge item={item} inCard />}
@@ -480,12 +593,7 @@ function SecurityAssessments({ scan, summary, tick, onOpen }: {
         <p>{data?.registered_total ? "Try another search, result, severity, or type." : active(scan.status) ? "Candidates appear after file analysis finishes." : "No candidates were produced for assessment."}</p>
         {!!data?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { const next = new URLSearchParams(params); for (const key of ["q", "outcome", "severity", "category"]) next.delete(`assessment_${key}`); setParams(next); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
-      {(more || list.size > 20 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={query.isFetching} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 20 })}>{query.isFetching ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> assessments</span></Button>
-          : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Reload assessments</Button>
-          : data && data.total > items.length ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
-        {data && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{items.length} of {data.total} shown</span>}
-      </div>}
+      <Pagination {...pagination} label="assessments" />
     </section>
   </div>;
 }
@@ -526,7 +634,7 @@ function SecurityAssessmentContents({ item, scan, error, reload, onOpenFinding }
           <p className="text-xs text-muted-foreground">{item.tokens == null ? "Token usage not recorded." : `${item.tokens.toLocaleString()} tokens used.`}{item.reused && " Reused from a previous scan."}</p>
         </TabsContent>
         <TabsContent value="evidence" className="space-y-6"><section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{scan.head_sha.slice(0, 7)}</span>.</p></section>
-          {evidence.length ? evidence.map((citation, index) => <section className="space-y-3" key={index}><p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{text(citation.revision) === "original" ? "Original" : "Current"} evidence: {text(citation.path)}:{count(citation.start_line)}–{count(citation.end_line)}</p><Code path={text(citation.path)}>{text(citation.quote)}</Code></section>) : <p className="text-sm text-muted-foreground">{item.outcome === "pending" ? "Evidence will appear when assessment completes." : "No supporting evidence was recorded."}</p>}
+          {evidence.length ? evidence.map((citation, index) => <section className="space-y-3" key={index}><p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{text(citation.revision) === "original" ? "Original" : "Current"} evidence: {text(citation.path)}:{count(citation.start_line)}–{count(citation.end_line)}</p><Code path={text(citation.path)} startLine={Number(citation.start_line)}>{text(citation.quote)}</Code></section>) : <p className="text-sm text-muted-foreground">{item.outcome === "pending" ? "Evidence will appear when assessment completes." : "No supporting evidence was recorded."}</p>}
         </TabsContent>
         <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Original proposal</summary><div className="mt-5 space-y-6"><SecurityEvidence title={text(proposal.title) || "Security candidate"} evidence={proposal} commit={scan.head_sha} /></div></details>
       </div>
@@ -536,25 +644,80 @@ function SecurityAssessmentContents({ item, scan, error, reload, onOpenFinding }
 }
 
 function Coverage({ scan }: { scan: Scan }) {
-  const inventory = object(scan.coverage.inventory);
   const scanner = object(scan.coverage.trivy);
-  return <div className="space-y-6 pt-5"><p className="text-sm leading-relaxed text-muted-foreground">Coverage records prepared source files and scanner targets. A completed process does not establish that every possible vulnerability was detected.</p>
-    <dl className="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2"><div><dt className="text-muted-foreground">Prepared files</dt><dd className="mt-1 tabular-nums">{Object.keys(inventory).length}</dd></div><div><dt className="text-muted-foreground">Trivy version</dt><dd className="mt-1">{text(scanner.version) || "Not recorded"}</dd></div><div><dt className="text-muted-foreground">Vulnerability database</dt><dd className="mt-1">{scanner.database_fresh === true ? "Within 24-hour freshness limit" : "Not verified"}</dd></div><div><dt className="text-muted-foreground">Scanner targets</dt><dd className="mt-1 tabular-nums">{Object.keys(object(scan.coverage.targets)).length}</dd></div></dl>
-    <details className={disclosure}><summary className={disclosureSummary}>Prepared source inventory<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><ul className="mt-4 max-h-80 space-y-2 overflow-auto text-xs">{Object.keys(inventory).map((path) => <li className="break-words font-mono [overflow-wrap:anywhere]" key={path}>{path}</li>)}</ul></details>
-    <details className={disclosure}><summary className={disclosureSummary}>Excluded and unsupported files<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><ul className="mt-4 max-h-80 space-y-3 overflow-auto text-xs">{entries(scan.coverage.excluded).map((row, index) => <li key={index}><span className="break-words font-mono [overflow-wrap:anywhere]">{text(row.path)}</span><span className="mt-1 block text-muted-foreground">{text(row.reason)}</span></li>)}</ul></details>
-    <details className={disclosure}><summary className={disclosureSummary}>Analysis work units<ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><ul className="mt-4 max-h-80 space-y-3 overflow-auto text-xs">{entries(scan.coverage.units).map((row, index) => <li key={index} className="flex flex-wrap justify-between gap-2"><span className="break-words font-mono [overflow-wrap:anywhere]">{text(row.task)}</span><SecurityStatus value={text(row.status)} />{text(row.error) && <div className="w-full"><ErrorNotice error={text(row.error)} /></div>}</li>)}</ul></details>
-    {entries(scan.coverage.problems).map((row, index) => <ErrorNotice key={index} error={`${text(row.path)}: ${text(row.reason)}`} />)}
-  </div>;
+  const work = object(scan.progress.work);
+  return <section aria-label="Coverage" className="min-w-0 pt-4">
+    <p className="text-xs leading-relaxed text-muted-foreground">See which source files were analyzed, the saved work results, and why files were left outside the scan.</p>
+    <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{([
+      ["Prepared files", scan.coverage.inventory_count], ["Selected for analysis", work.analysis_total],
+      ["Analyzed files", work.analysis_completed], ["Failed work units", work.failed],
+    ] as const).map(([label, value]) => <div key={label} className="flex items-baseline gap-2"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={`text-sm tabular-nums ${label === "Failed work units" && typeof value === "number" && value > 0 ? "text-destructive" : ""}`}>{count(value)}</dd></div>)}</dl>
+    <div className="mt-6 space-y-3">
+      <CoverageRows scanId={scan.id} section="problems" title="Coverage problems" />
+      <CoverageRows scanId={scan.id} section="units" title="Work units" />
+      <CoverageRows scanId={scan.id} section="excluded" title="Excluded and unsupported files" />
+      <CoverageRows scanId={scan.id} section="inventory" title="Prepared source inventory" />
+    </div>
+    <details className="mt-4 text-sm"><summary className="w-fit cursor-pointer font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">Scanner details</summary>
+      <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-3 text-xs"><div><dt className="text-muted-foreground">Trivy version</dt><dd className="mt-1">{text(scanner.version) || "Not recorded"}</dd></div><div><dt className="text-muted-foreground">Vulnerability database</dt><dd className="mt-1">{scanner.database_fresh === true ? "Within 24-hour freshness limit" : "Not verified"}</dd></div><div><dt className="text-muted-foreground">Scanner targets</dt><dd className="mt-1 tabular-nums">{Object.keys(object(scan.coverage.targets)).length}</dd></div></dl>
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">A completed process does not establish that every possible vulnerability was detected.</p>
+    </details>
+  </section>;
 }
 
-function Activity({ rows }: { rows: Schema["SecurityActivityOut"][] }) {
-  return <div className="pt-4"><p className="text-xs leading-relaxed text-muted-foreground">Recorded events, newest first. Current stage status is shown above.</p><ol className="divide-y">{rows.map((row) => {
+function CoverageRows({ scanId, section, title }: { scanId: string; section: string; title: string }) {
+  const { query, items, denied, total, pagination } = usePagedList<Record<string, unknown> & { id: string }>(`/security/scans/${scanId}/coverage/${section}`);
+  if (denied) return <ErrorNotice error={query.error} />;
+  if (["problems", "excluded"].includes(section) && query.data && !query.error && !total) return null;
+  return <CoverageGroup title={title} count={query.error ? "Unavailable" : query.data ? total.toLocaleString() : "…"}>
+    {section === "inventory" && <p className="px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">Prepared files are available to the scan. Their presence here does not establish that they were analyzed.</p>}
+    {query.isPending ? <div className="px-4 sm:px-5"><Loading /></div> : items.length ? <ul className="divide-y">{items.map((row) => {
+      const path = text(row.path) || text(row.task);
+      const reason = text(row.reason);
+      const error = text(row.error) || (section === "problems" ? reason : "");
+      const feedback = error ? errorFeedback(error) : undefined;
+      return <li key={row.id} data-slot="coverage-file" className="flex min-w-0 items-start gap-2 px-4 py-3 sm:px-5">
+        <FileCode2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          {path && <code className="block break-words text-xs leading-5 [overflow-wrap:anywhere]">{path}</code>}
+          {reason && section !== "problems" && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{reason}</p>}
+          {feedback && <p className="mt-1 max-w-[75ch] break-words text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{feedback.message}</p>}
+          {feedback?.details && <TechnicalDetails error={feedback.details} name={path || "Coverage problem"} />}
+        </div>
+        {section === "excluded" ? <Status value="not_reviewed" label="Not analyzed" /> : section === "problems" ? <Status value="partial" label="Incomplete" /> : text(row.status) && <Status value={text(row.status)} icon={row.status === "completed" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />}
+      </li>;
+    })}</ul> : !query.error && <p className="p-4 text-xs leading-relaxed text-muted-foreground sm:px-5">{section === "units" ? "No work results recorded yet. Prepared files alone do not establish analysis coverage." : "No prepared source files recorded."}</p>}
+    <Pagination {...pagination} label={section === "inventory" ? "prepared files" : section === "units" ? "work units" : section === "excluded" ? "excluded files" : "coverage problems"} />
+  </CoverageGroup>;
+}
+
+function ScanActivity({ rows }: { rows: Schema["SecurityActivityOut"][] }) {
+  const events = rows.map((row) => {
     const stage = text(row.detail.stage);
     const status = text(row.detail.status);
     const transition = status === "running" ? "started" : status === "partial" ? "finished with incomplete work" : words(status) || "updated";
-    return <li key={row.id} className="py-4"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{row.action === "scan_stage"
-      ? `${stageDescriptions[stage]?.[0] ?? words(stage)} ${transition}` : label(row.action)}</p>{row.action !== "scan_stage" && status && <SecurityStatus value={status} />}</div><time dateTime={row.created_at} className="mt-1 block text-xs tabular-nums text-muted-foreground">{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(row.created_at))}</time>{text(row.detail.reason) && (row.action === "scan_failed" ? <div className="mt-2"><ErrorNotice error={text(row.detail.reason)} /></div> : <p className="mt-2 break-words text-sm">{text(row.detail.reason)}</p>)}</li>;
-  })}</ol></div>;
+    return { id: row.id, at: row.created_at,
+      title: row.action === "scan_stage" ? `${stageDescriptions[stage]?.[0] ?? words(stage)} ${transition}`
+        : row.action === "scan_completed" && status === "partial" ? "Scan finished with incomplete work" : label(row.action),
+      status: status || (row.action.startsWith("scan_") ? row.action.slice(5) : undefined),
+      description: row.action !== "scan_failed" ? text(row.detail.reason) : undefined,
+      error: row.action === "scan_failed" ? text(row.detail.reason) : undefined };
+  });
+  return <section aria-label="Scan activity" className="space-y-4">
+    <p className="text-xs leading-relaxed text-muted-foreground">Scan and stage milestones, newest first. Current stage status is shown above.</p>
+    <ActivityTimeline events={events} />
+  </section>;
+}
+
+function FindingHistory({ findingId }: { findingId: string }) {
+  const observations = usePagedList<Record<string, unknown> & { id: string }>(`/security/findings/${findingId}/observations`);
+  const activity = usePagedList<Schema["SecurityActivityOut"]>(`/security/findings/${findingId}/activity`);
+  if (observations.denied || activity.denied) return <ErrorNotice error={observations.denied ? observations.query.error : activity.query.error} />;
+  if (observations.query.isPending || activity.query.isPending) return <Loading />;
+  return <>
+          <section className="space-y-3"><h3 className="text-sm font-semibold">Observations</h3>{observations.items.length ? <ol className="space-y-5">{observations.items.map((row, index) => <li key={index} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><Link className={`inline-flex min-h-6 items-center text-sm font-medium ${metadataLink}`} to={`/security/scans/${text(row.scan_id)}`}>{label(text(row.outcome))}<ChevronRight aria-hidden="true" className="size-3.5" /></Link><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{text(row.created_at) && date(text(row.created_at))}</p></li>)}</ol> : <p className="text-sm text-muted-foreground">No observations recorded.</p>}<Pagination {...observations.pagination} label="observations" /></section>
+          <section className="space-y-3"><h3 className="text-sm font-semibold">Activity</h3>{activity.items.length ? <ol className="space-y-5">{activity.items.map((row) => <li key={row.id} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><p className="text-sm font-medium">{label(row.action)}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{row.actor_id === null ? "Code Mortis" : `Member #${row.actor_id}`} · {date(row.created_at)}</p>{text(row.detail.reason) && <details className="mt-2 text-sm"><summary className="cursor-pointer text-xs text-primary">View reason</summary><p className="mt-2 break-words leading-relaxed">{text(row.detail.reason)}</p></details>}</li>)}</ol> : <p className="text-sm text-muted-foreground">No activity recorded.</p>}<Pagination {...activity.pagination} label="finding activity" /></section>
+  </>;
 }
 
 function SecurityEvidence({ title, evidence, commit }: { title: string; evidence: Record<string, unknown>; commit: string }) {
@@ -562,7 +725,7 @@ function SecurityEvidence({ title, evidence, commit }: { title: string; evidence
     <section className="space-y-3"><h3 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{title}</h3><Markdown>{text(evidence.explanation)}</Markdown></section>
     {text(evidence.trigger) && <section className="space-y-3"><h3 className="text-sm font-semibold">Trigger</h3><Markdown>{text(evidence.trigger)}</Markdown></section>}
     {text(evidence.impact) && <section className="space-y-3"><h3 className="text-sm font-semibold">Impact</h3><Markdown>{text(evidence.impact)}</Markdown></section>}
-    {entries(evidence.evidence).map((citation, index) => <section key={index} className="space-y-3"><p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{text(citation.path)}:{count(citation.start_line)}–{count(citation.end_line)}</p><Code path={text(citation.path)}>{text(citation.quote)}</Code></section>)}
+    {entries(evidence.evidence).map((citation, index) => <section key={index} className="space-y-3"><p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{text(citation.path)}:{count(citation.start_line)}–{count(citation.end_line)}</p><Code path={text(citation.path)} startLine={Number(citation.start_line)}>{text(citation.quote)}</Code></section>)}
     <section className="space-y-3"><h3 className="text-sm font-semibold">Remediation</h3><Markdown>{text(evidence.remediation)}</Markdown></section>
     <section className="space-y-3"><h3 className="text-sm font-semibold">Verification</h3><Markdown>{text(evidence.verification)}</Markdown></section>
     <p className="text-xs leading-relaxed text-muted-foreground">Evidence saved at <span className="font-mono">{commit.slice(0, 7)}</span>. Each scan keeps its original observations; absence from a later scan does not prove a fix.</p>
@@ -610,17 +773,16 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
       <Button variant="link" size="sm" className="col-start-2 min-h-11 justify-self-start px-0 text-xs sm:col-start-auto sm:min-h-8" onClick={() => { setTab("activity"); activityTab.current?.focus(); }}>View activity</Button>
     </div>
     <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
-      <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>{snapshot && <TabsTrigger value="snapshot">At this scan</TabsTrigger>}<TabsTrigger value="evidence">{snapshot ? "Current status" : "Evidence"}</TabsTrigger><TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{detail.activity.length + detail.observations.length}</span></TabsTrigger></TabsList></div>
+      <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>{snapshot && <TabsTrigger value="snapshot">At this scan</TabsTrigger>}<TabsTrigger value="evidence">{snapshot ? "Current status" : "Evidence"}</TabsTrigger><TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{(detail.activity_count ?? detail.activity.length) + (detail.observation_count ?? detail.observations.length)}</span></TabsTrigger></TabsList></div>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="finding-scroll">
-        {snapshot && <TabsContent value="snapshot" className="space-y-6"><div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></span><SecurityStatus value={text(snapshot.outcome) || "unknown"} /></div>
+        {snapshot && <TabsContent value="snapshot" className="space-y-6"><div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></span><SecurityStatus value={text(snapshot.state) || "unknown"} /><span>Scan result: {label(text(snapshot.outcome) || "unknown")}</span></div>
           {text(object(snapshot.verification).explanation) && <section aria-label="Fix verification" className="space-y-3"><h3 className="text-sm font-semibold">Fix verification</h3><Markdown>{text(object(snapshot.verification).explanation)}</Markdown></section>}
           <SecurityEvidence title={text(snapshot.title)} evidence={object(snapshot.evidence)} commit={headSha ?? text(object(snapshot.evidence).source_sha)} /></TabsContent>}
         <TabsContent value="evidence" className="space-y-6">
           <SecurityEvidence title={finding.title} evidence={evidence} commit={text(evidence.source_sha)} />
         </TabsContent>
         <TabsContent value="activity" className="space-y-6">
-          <section className="space-y-3"><h3 className="text-sm font-semibold">Observations</h3>{detail.observations.length ? <ol className="space-y-5">{detail.observations.map((row, index) => <li key={index} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><Link className={`inline-flex min-h-6 items-center text-sm font-medium ${metadataLink}`} to={`/security/scans/${text(row.scan_id)}`}>{label(text(row.outcome))}<ChevronRight aria-hidden="true" className="size-3.5" /></Link><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{text(row.created_at) && date(text(row.created_at))}</p></li>)}</ol> : <p className="text-sm text-muted-foreground">No observations recorded.</p>}</section>
-          <section className="space-y-3"><h3 className="text-sm font-semibold">Activity</h3>{detail.activity.length ? <ol className="space-y-5">{detail.activity.map((row) => <li key={row.id} className="relative ml-1 border-l pl-5 before:absolute before:-left-1 before:top-1.5 before:size-[7px] before:rounded-full before:bg-muted-foreground"><p className="text-sm font-medium">{label(row.action)}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{row.actor_id === null ? "Code Mortis" : `Member #${row.actor_id}`} · {date(row.created_at)}</p>{text(row.detail.reason) && <details className="mt-2 text-sm"><summary className="cursor-pointer text-xs text-primary">View reason</summary><p className="mt-2 break-words leading-relaxed">{text(row.detail.reason)}</p></details>}</li>)}</ol> : <p className="text-sm text-muted-foreground">No activity recorded.</p>}</section>
+          <FindingHistory findingId={finding.id} />
         </TabsContent>
       </div>
     </Tabs>
@@ -641,7 +803,7 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
       {canWrite && triaging && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); action.mutate({ path: `/security/findings/${finding.id}`, method: "PATCH", body: { state, reason, version: finding.version } }, { onSuccess: () => { setReason(""); setTriaging(false); } }); }}>
         <Field label="Decision">{(id) => <select id={id} className="h-9 w-full rounded-md border border-input bg-card px-3 text-base md:text-sm" value={state} onChange={(event) => setState(event.target.value as typeof state)}><option value="false_positive">False positive</option><option value="accepted_risk">Accept risk</option><option value="open">Reopen finding</option></select>}</Field>
         <Field label="Reason">{(id) => <Textarea id={id} autoFocus required value={reason} maxLength={4000} onChange={(event) => setReason(event.target.value)} />}</Field>
-        <p className="text-xs leading-relaxed text-muted-foreground">Accepted risks still affect the grade. Triage changes are reflected in the next complete scan.</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">False positives do not affect the current grade; accepted risks still count. Triage updates the repository grade immediately. Saved scan grades stay unchanged.</p>
         <Button type="submit" variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending || !reason.trim()}>Save decision</Button>
         {finding.kind === "secret" && ["open", "accepted_risk"].includes(finding.state) && <div className="space-y-3 border-t pt-4"><p className="text-sm">Removing a secret does not revoke it. Confirm rotation or revocation before a clean rescan can close this finding.</p>{finding.rotation ? <p className="text-xs text-muted-foreground">Rotation acknowledged. A successful rescan must still verify removal.</p> : <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal sm:min-h-9" disabled={action.isPending || !reason.trim()} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/rotation`, body: { reason, version: finding.version } })}>I rotated or revoked this credential</Button>}</div>}
       </form>}
@@ -690,11 +852,11 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
   const focus = useReturnFocus();
   const action = useAction<Finding[]>();
   const path = `/security/repositories/${repositoryId}/github-issues`;
-  const { query, items, total, denied } = useSecurityPages<IssueCandidate>(path, false);
+  const { query, items, total, denied, pagination } = usePagedList<IssueCandidate>(path, false);
   const [selected, setSelected] = useState<Record<string, IssueCandidate>>({});
   const [reviewing, setReviewing] = useState(false);
   const drafts = Object.values(selected);
-  const preview = query.data?.pages[0] as Schema["SecurityIssueCandidatePage"] | undefined;
+  const preview = query.data as Schema["SecurityIssueCandidatePage"] | undefined;
   const isPublic = drafts[0]?.public ?? preview?.public;
   const draftError = drafts.map((draft) => issueDraftError(draft.title, draft.body)).find(Boolean);
   const invalid = !!draftError || drafts.some((draft) => draft.public !== isPublic);
@@ -740,7 +902,7 @@ function BulkIssueDialog({ repositoryId, onClose, onQueued }: { repositoryId: nu
         <div className="divide-y rounded-md border">{items.map((item) => <label key={item.id} className="flex min-h-11 cursor-pointer items-start gap-3 p-3">
           <Checkbox className="mt-0.5" aria-label={`Select ${item.title}`} checked={!!selected[item.id]} disabled={!selected[item.id] && drafts.length >= 100} onCheckedChange={(checked) => choose(item, checked === true)} />
           <span className="min-w-0 space-y-1"><span className="block break-words text-sm font-medium">{item.title}</span><span className="block break-words font-mono text-xs text-muted-foreground">{item.path}</span><SecurityStatus value={item.severity} /></span>
-        </label>)}<LoadMoreFooter query={query} shown={items.length} total={total} label="findings" /></div>
+        </label>)}<Pagination {...pagination} label="findings" /></div>
       </>}
     </div>
     <DialogFooter className="shrink-0 border-t pt-4"><Button type="button" variant="outline" disabled={action.isPending} onClick={reviewing ? () => setReviewing(false) : onClose}>{reviewing ? "Back to selection" : "Cancel"}</Button>

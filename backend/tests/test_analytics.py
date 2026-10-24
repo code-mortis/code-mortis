@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from code_mortis import github
-from code_mortis.analytics import amount, recorded_usage
+from code_mortis.analytics import amount, ordered, recorded_usage
 from code_mortis.db import transaction
 from code_mortis.models import (
     Finding,
@@ -57,6 +57,12 @@ def get(client, view="overview", query=QUERY):
     response = client.get("/api/v1/analytics/" + view + query)
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def run_total(client, identity="run"):
+    response = client.get(f"/api/v1/runs/{identity}")
+    assert response.status_code == 200, response.text
+    return response.json()["total_tokens"]
 
 
 def test_distinct_prs_findings_and_current_resolution(client):
@@ -166,7 +172,7 @@ def test_all_time_and_adaptive_buckets(client):
     assert result["scope"]["bucket"] == "week"
 
 
-def test_usage_retries_models_and_no_stage_double_count(client):
+def test_usage_retries_models_and_no_stage_double_count(client, github_stub):
     with transaction() as db:
         review = run(db, stages={"ocr": {"status": "completed", "tokens": 999999}})
         db.add(ReviewCandidate(
@@ -185,9 +191,10 @@ def test_usage_retries_models_and_no_stage_double_count(client):
     assert models == {"model-a": 128, "model-b": 17}
     assert sum(point["tokens"] or 0 for point in result["trend"]) == 145
     assert get(client)["usage"]["tokens"] == 145
+    assert run_total(client) == 145
 
 
-def test_partial_usage_excludes_incomplete_samples_and_reservations(client):
+def test_partial_usage_excludes_incomplete_samples_and_reservations(client, github_stub):
     with transaction() as db:
         run(db)
         run(db, "incomplete", report={"summary": {"total_tokens": None}}, summary={})
@@ -197,6 +204,7 @@ def test_partial_usage_excludes_incomplete_samples_and_reservations(client):
     assert total["mean_per_run"] == 117
     assert total["reviewed_pr_samples"] == 0
     assert total["mean_per_reviewed_pr"] is None
+    assert run_total(client, "incomplete") is None
 
 
 @pytest.mark.parametrize("timestamps", [True, False])
@@ -221,7 +229,7 @@ def test_summary_retry_models_ignore_mutable_dispatch_times(client, timestamps):
                       else {"model-a": 100, "Not recorded": 12, "model-c": 17})
 
 
-def test_verification_consumption_and_zero_are_counted_once(client):
+def test_verification_consumption_and_zero_are_counted_once(client, github_stub):
     with transaction() as db:
         run(db, report={"summary": {"total_tokens": 0}}, summary={"status": "skipped", "tokens": 0},
             stages={"verification": {"tokens": 9999}})
@@ -239,6 +247,24 @@ def test_verification_consumption_and_zero_are_counted_once(client):
     assert {row["key"]: row["usage"]["tokens"] for row in result["stages"]} == {
         "review": 0, "assessment": 0, "verification": 12, "summary": 0,
     }
+    assert run_total(client) == 12
+
+
+@pytest.mark.parametrize("pipeline", [None, 2])
+@pytest.mark.parametrize("tokens", [0, None, -1, True, "10"])
+def test_run_total_preserves_zero_and_unknown_usage(client, github_stub, pipeline, tokens):
+    with transaction() as db:
+        run(db, config={"pipeline_version": pipeline}, report={"summary": {"total_tokens": tokens}},
+            summary={"status": "not_applicable"})
+    assert run_total(client) == (0 if type(tokens) is int and tokens == 0 else None)
+
+
+@pytest.mark.parametrize("pipeline,expected", [(None, None), (2, 137)])
+def test_run_total_keeps_legacy_interrupted_usage_unknown(client, github_stub, pipeline, expected):
+    with transaction() as db:
+        run(db, config={"pipeline_version": pipeline})
+        db.add(ReviewCandidate(run_id="run", position=0, snapshot={}, status="failed", usage={"tokens": 20}))
+    assert run_total(client) == expected
 
 
 @pytest.mark.parametrize("value", [None, True, -1, "10", 1.5])
@@ -289,3 +315,25 @@ def test_mean_review_duration_uses_only_valid_finished_samples(client, durations
     result = get(client, "reviews")
     assert result["mean_duration_seconds"] == expected
     assert result["duration_samples"] == len(durations)
+
+
+def test_ordering_changes_breakdowns_on_server_and_keeps_trends_chronological(client):
+    with transaction() as db:
+        run(db)
+        for index in range(4):
+            finding(db, f"ordered-{index}", category="security" if index else "bug", severity="high" if index else "low")
+    for view in ("overview", "findings", "reviews", "usage"):
+        named = get(client, view, QUERY + "&ordering=-key")
+        counted = get(client, view, QUERY + "&ordering=-count")
+        rows = named["categories"] if view in {"overview", "findings"} else named["outcomes"] if view == "reviews" else named["models"]
+        assert [row["key"] for row in rows] == sorted([row["key"] for row in rows], reverse=True)
+        assert [point["date"] for point in named.get("trend", [])] == [point["date"] for point in counted.get("trend", [])]
+        assert client.get("/api/v1/analytics/" + view + QUERY + "&ordering=invalid").status_code == 422
+    assert [row["count"] for row in get(client, "findings", QUERY + "&ordering=-count")["categories"]] == [3, 1]
+
+
+@pytest.mark.parametrize("ordering, expected", [("count", [0, 10, None]), ("-count", [10, 0, None])])
+def test_ordering_keeps_unknown_usage_after_reported_values(ordering, expected):
+    rows = [{"key": "missing", "count": None}, {"key": "known", "count": 10}, {"key": "zero", "count": 0}]
+    result = ordered(rows, ordering, key=lambda row: row["key"], count=lambda row: row["count"])
+    assert [row["count"] for row in result] == expected

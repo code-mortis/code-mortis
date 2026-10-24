@@ -215,6 +215,8 @@ def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_pa
 
     def model_command(args, directory, env, **kwargs):
         assert "GIT_CONFIG_VALUE_0" not in env and "installation-secret" not in str(env)
+        if "--preview" in args:
+            return 0, json.dumps({"files": [{"path": "main.py", "will_review": True}], "reviewable_count": 1}), ""
         data = report()
         data["comments"] = []
         return 0, json.dumps(data), ""

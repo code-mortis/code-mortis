@@ -206,6 +206,28 @@
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+@keyframes stage-sweep {
+  0% { transform: translateX(-100%); opacity: 0; }
+  15%, 75% { opacity: 0.8; }
+  100% { transform: translateX(400%); opacity: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .stage-card[data-status="running"] .stage-divider::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 25%;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--primary);
+    animation: stage-sweep 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    animation-play-state: paused;
+  }
+  .stage-card[data-motion="active"] .stage-divider::before {
+    animation-play-state: running;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

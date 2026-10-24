@@ -195,7 +195,7 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
         assert not coverage["completed"] and len(coverage["selected"]) == len(coverage["waived"]) == count
     else:
         assert status == "completed" and len(inference) == (1 if kind == "api" else count)
-    assert len(previews) == (0 if kind == "api" and maximum is None else 1)
+    assert len(previews) == 1
 
 
 @pytest.mark.parametrize("files,count", [(None, 0), ([{}], 1), ([{"path": "../secret"}], 1),

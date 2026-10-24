@@ -17,7 +17,7 @@ const repository: Schema["RepositoryOut"] = { id: 22, installation_id: 10, full_
     summary_diagram_enabled: false, ai_fix_prompts_enabled: false, automatic: false, include_bot_prs: false,
     model: "", review_sensitivity: "balanced", background: "", exclusions: "",
     delegated_context_bytes: 800000, concurrency: 2, effort: "high", max_files: 40, auto_resolve: false } };
-const summary: Schema["SecuritySummary"] = { grade: "D", state: "current", grade_scan_id: "scan", grade_sha: sha,
+const summary: Schema["SecuritySummary"] = { grade: "D", state: "current", coverage: "complete", freshness: "current", grade_scan_id: "scan", grade_sha: sha,
   graded_at: at, latest_scan_id: "scan", latest_status: "completed", latest_at: at, default_branch: "main", head_sha: sha,
   checked_at: at, counts: { high: 1 } };
 const scan: Schema["SecurityScanOut"] = { id: "scan", repository_id: 22, actor_id: 7, connection_id: "connection", parent_id: null,
@@ -43,16 +43,19 @@ async function mockReportFindings(page: Page, rows: Record<string, unknown>[]) {
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
     if (state.failure) return route.fulfill({ status: state.failure, json: { detail: state.failure === 403 ? "Access denied" : "Report temporarily unavailable" } });
-    const counts = Object.fromEntries(["outcome", "severity", "kind"].map((key) => [key, Object.fromEntries(
-      [...new Set(rows.map((row) => String(row[key] || "unknown")))].map((value) => [value, rows.filter((row) => String(row[key] || "unknown") === value).length]))]));
+    const projected: Record<string, unknown>[] = rows.map((row) => ({ ...row, state: ["open", "resolved", "false_positive", "accepted_risk"].includes(String(row.state)) ? row.state : "unknown" }));
+    const counts = Object.fromEntries(["state", "outcome", "severity", "kind"].map((key) => [key, Object.fromEntries(
+      [...new Set(projected.map((row) => String(row[key] || "unknown")))].map((value) => [value, projected.filter((row) => String(row[key] || "unknown") === value).length]))]));
     const term = (params.get("q") ?? "").trim().toLowerCase();
-    const filtered = rows.filter((row) => (!params.has("finding_id") || row.finding_id === params.get("finding_id"))
-      && ["outcome", "severity", "kind"].every((key) => !params.has(key) || params.getAll(key).includes(String(row[key] || "unknown")))
+    const filtered = projected.filter((row) => (!params.has("finding_id") || row.finding_id === params.get("finding_id"))
+      && ["state", "outcome", "severity", "kind"].every((key) => !params.has(key) || params.getAll(key).includes(String(row[key] || "unknown")))
       && (!term || [row.title, row.path, row.kind, (row.evidence as Record<string, unknown>)?.explanation].some((value) => String(value ?? "").toLowerCase().includes(term))));
+    const ranks: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    if ((params.get("ordering") ?? "-severity") === "-severity") filtered.sort((a, b) => (ranks[String(b.severity)] ?? 0) - (ranks[String(a.severity)] ?? 0));
     const pageNumber = Number(params.get("page") ?? 1);
-    return route.fulfill({ json: { items: filtered.slice((pageNumber - 1) * 20, pageNumber * 20).map((row) => ({ ...row, id: row.finding_id })),
-      total: filtered.length, registered_total: rows.length, outcome_counts: counts.outcome, severity_counts: counts.severity, kind_counts: counts.kind,
-      page: pageNumber, page_size: 20 } });
+    return route.fulfill({ json: { items: filtered.slice((pageNumber - 1) * 10, pageNumber * 10).map((row) => ({ ...row, id: row.finding_id })),
+      total: filtered.length, registered_total: rows.length, state_counts: counts.state, outcome_counts: counts.outcome, severity_counts: counts.severity, kind_counts: counts.kind,
+      page: pageNumber, page_size: 10 } });
   });
   return { requests, state };
 }
@@ -80,7 +83,7 @@ async function mockSecurityAssessments(page: Page) {
   }
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: { ...scan, status: "running", grade: null,
     stages: { ...scan.stages, assessment: { status: "running", total: state.rows.length, completed: summary().status_counts.completed ?? 0 } } },
-    can_write: false, finding_count: 1, activity_count: 0, activity: [], assessment: summary() } }));
+    can_write: false, finding_count: 1, finding_state_counts: { open: 1 }, activity_count: 0, activity: [], assessment: summary() } }));
   await page.route("**/api/v1/security/scans/scan/assessments**", (route) => {
     const url = new URL(route.request().url());
     state.requests.push(url.pathname + url.search);
@@ -93,10 +96,11 @@ async function mockSecurityAssessments(page: Page) {
     const rows = state.rows.filter((row) => (!q || `${row.proposal.title} ${row.proposal.path}`.toLowerCase().includes(q))
       && (!url.searchParams.has("outcome") || url.searchParams.getAll("outcome").includes(row.outcome))
       && (!url.searchParams.has("severity") || url.searchParams.getAll("severity").includes(String(row.proposal.severity))) );
-    const size = Number(url.searchParams.get("page_size") ?? 20);
-    return route.fulfill({ json: { items: rows.slice(0, size).map((row) => ({ ...row, revision: String(state.revision) })), total: rows.length,
+    const size = Number(url.searchParams.get("page_size") ?? 10);
+    const pageNumber = Number(url.searchParams.get("page") ?? 1);
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * size, pageNumber * size).map((row) => ({ ...row, revision: String(state.revision) })), total: rows.length,
       registered_total: state.rows.length, outcome_counts: summary().outcome_counts, severity_counts: { high: state.rows.length },
-      category_counts: { "Access Control": state.rows.length }, revision: String(state.revision), page: 1, page_size: size } });
+      category_counts: { "Access Control": state.rows.length }, revision: String(state.revision), page: pageNumber, page_size: size } });
   });
   return { state, writes };
 }
@@ -106,8 +110,11 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   if (options.longPath) current.path = `services/${"long-directory-name/".repeat(10)}account-order-ownership-with-a-very-long-filename.ts`;
   if (options.secret) current = { ...current, kind: "secret", title: "Exposed credential material", evidence: { ...current.evidence, identity: "keyed-digest" } };
   if (options.issue) current.issue = options.issue;
+  const historical = structuredClone(current);
   const state = { ...(options.partial ? { ...summary, state: "incomplete", grade_scan_id: "previous", latest_status: "partial", counts: { critical: 1 } } : summary),
     ...(options.latestStatus ? { latest_status: options.latestStatus } : {}), ...options.summary };
+  state.coverage = options.summary?.coverage ?? (state.state === "not_scanned" ? "not_scanned" : state.state === "incomplete" || state.latest_status !== "completed" ? "incomplete" : "complete");
+  state.freshness = options.summary?.freshness ?? (state.state === "outdated" ? "outdated" : state.state === "unavailable" ? "unavailable" : "current");
   const saved = { ...scan, report: { commit: sha, grade: "D", status: "completed", findings: [{ ...current, finding_id: current.id, outcome: "present" }], problems: [] } };
   if (options.running) Object.assign(saved, { status: "running", grade: null, report: {},
     stages: Object.fromEntries(["snapshot", "trivy", "analysis", "assessment", "verification", "report"].map((name) => [name,
@@ -131,19 +138,36 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
       if (path.endsWith("/scans") || path.endsWith("/retry")) json = { ...scan, id: "queued", status: "queued", grade: null };
       else if (path.endsWith("/github-issue")) { current.issue = { publication_status: "pending", sync_status: "pending" }; json = current; }
       else if (path.endsWith("/rotation")) { current.rotation = { acknowledged_at: at, reason: body.reason }; current.version++; json = current; }
-      else if (method === "PATCH") { current.state = body.state; current.version++; json = current; }
+      else if (method === "PATCH") {
+        current.state = body.state; current.version++; json = current;
+        state.grade = ["open", "accepted_risk"].includes(current.state) ? "D" : "A";
+        state.counts = ["open", "accepted_risk"].includes(current.state) ? { high: 1 } : {};
+      }
     } else if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
     else if (path === "/repositories") json = [{ ...repository, security: state }];
-    else if (path === "/security/repositories") json = [{ repository, summary: state }];
-    else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, scan_count: 1 };
-    else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 20 };
-    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") json = { items: [current], total: 1, page: 1, page_size: 20 };
+    else if (path === "/security/repositories") json = { items: [{ repository, summary: state }], total: 1, registered_total: 1, grade_counts: { [state.grade ?? "unrated"]: 1 }, status_counts: { [state.state]: 1 }, page: 1, page_size: 10 };
+    else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, finding_state_counts: { [current.state]: 1 }, scan_count: 1 };
+    else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 10 };
+    else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") {
+      const row = path.includes("/scans/") ? historical : current;
+      json = { items: url.searchParams.get("state") === row.state ? [row] : [], total: url.searchParams.get("state") === row.state ? 1 : 0, registered_total: 1, state_counts: { [row.state]: 1 }, page: 1, page_size: 10 };
+    }
     else if (path === "/security/scans/scan" || path === "/security/scans/queued") json = { repository, scan: path.endsWith("queued") ? { ...scan, id: "queued", status: "queued", grade: null, report: {} }
-      : { ...saved, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
-      report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
+      : { ...saved, coverage: { ...saved.coverage, inventory_count: Object.keys(saved.coverage.inventory as object).length }, report: Object.fromEntries(Object.entries(saved.report).filter(([key]) => key !== "findings")) },
+      finding_state_counts: path.endsWith("queued") ? {} : { [historical.state]: 1 }, report_count: saved.report.findings?.length ?? 0, can_write: true, finding_count: path.endsWith("queued") ? 0 : 1, activity_count: 0, activity: [] };
     else if (path === "/security/findings/finding") json = { repository, finding: current, can_write: options.canWrite ?? true,
       observations: [{ scan_id: "scan", outcome: "present", created_at: at, snapshot: {} }], activity: options.activity ?? [] };
+    else if (path === "/security/scans/scan/activity") json = { items: [], total: 0, page: 1, page_size: 10 };
+    else if (path.startsWith("/security/scans/scan/coverage/")) {
+      const section = path.split("/").at(-1)!;
+      const coverage = saved.coverage as Record<string, unknown>;
+      const rows = section === "inventory" ? Object.keys(saved.coverage.inventory as object).sort().map((path) => ({ path })) : (coverage[section] ?? []) as Record<string, unknown>[];
+      const pageNumber = Number(url.searchParams.get("page") ?? 1);
+      json = { items: rows.map((row, index) => ({ ...row, id: String(index) })).slice((pageNumber - 1) * 10, pageNumber * 10), total: rows.length, page: pageNumber, page_size: 10 };
+    }
+    else if (path === "/security/findings/finding/observations") json = { items: [{ id: "observation", scan_id: "scan", outcome: "present", created_at: at }], total: 1, page: 1, page_size: 10 };
+    else if (path === "/security/findings/finding/activity") json = { items: options.activity ?? [], total: options.activity?.length ?? 0, page: 1, page_size: 10 };
     else if (path === "/security/findings/finding/github-issue") json = { title: "[Security] Order lookup does not verify ownership", body: "## Evidence\n\nThe lookup lacks an ownership check.\n\n## Remediation\n\nConstrain access to the authenticated account.", repository: repository.full_name, public: true, version: current.version };
     else if (path === "/connections") json = [{ id: "connection", name: "Team API", kind: "api", model: "test-model", provider: "openai" }];
     else if (path === "/connections/connection/models") json = { status: "ready", source: "provider", models: [{ id: "test-model", name: "Test model" }] };
@@ -152,6 +176,79 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   await mockReportFindings(page, saved.report.findings ?? []);
   return writes;
 }
+
+test("security repository breadcrumbs show the name, fit narrow screens, and clear denied data", async ({ page }, info) => {
+  await page.clock.install();
+  const writes = await mock(page);
+  const name = "organization-with-a-very-long-name/repository-with-a-very-long-name";
+  let denied = false;
+  await page.route("**/api/v1/security/repositories/22", (route) => denied
+    ? route.fulfill({ status: 403, json: { detail: "Repository access denied." } })
+    : route.fulfill({ json: { repository: { ...repository, full_name: name }, summary,
+      can_write: false, finding_count: 1, finding_state_counts: { open: 1 }, scan_count: 1 } }));
+  await page.goto("/security/repositories/22/?tab=resolved");
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  const current = breadcrumb.locator('[aria-current="page"]');
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(current).toHaveText(name);
+  await expect(current).toHaveAttribute("title", name);
+  for (const width of info.project.name === "mobile" ? [390, 320] : [1440, 1024, 768, 640]) {
+    await page.setViewportSize({ width, height: 938 });
+    await expect(current).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Switch to dark mode" })).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  denied = true;
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access denied.");
+  await expect(current).toHaveText("Repository security");
+  expect(writes).toHaveLength(0);
+});
+
+test("scan breadcrumbs contain the repository instead of a separate back-link", async ({ page }, info) => {
+  const writes = await mock(page);
+  const name = "organization-with-a-very-long-name/repository-with-a-very-long-name";
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository: { ...repository, full_name: name }, scan, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.goto("/security/scans/scan?tab=coverage");
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Security scan");
+  await expect(page.getByRole("main").getByRole("link", { name, exact: true })).toHaveCount(0);
+  await expect(breadcrumb.getByRole("link", { name, exact: true, includeHidden: true })).toHaveAttribute("href", "/security/repositories/22");
+  for (const width of info.project.name === "mobile" ? [390, 320] : [1440, 768, 640]) {
+    await page.setViewportSize({ width, height: 938 });
+    await expect(breadcrumb.locator('[aria-current="page"]')).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Switch to dark mode" })).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  if (info.project.name === "mobile") await breadcrumb.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
+  const parent = info.project.name === "mobile" ? page.getByRole("menuitem", { name, exact: true }) : breadcrumb.getByRole("link", { name, exact: true });
+  await expect(parent).toHaveAttribute("href", "/security/repositories/22");
+  await parent.press("Enter");
+  await expect(page).toHaveURL(/\/security\/repositories\/22$/);
+  await expect(page.getByRole("heading", { name: "acme/payments", exact: true })).toBeVisible();
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("acme/payments");
+  expect(writes).toHaveLength(0);
+});
+
+test("scan breadcrumbs omit repository data after access is denied", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  let denied = false;
+  await page.route("**/api/v1/security/scans/scan", (route) => denied
+    ? route.fulfill({ status: 403, json: { detail: "Scan access denied." } })
+    : route.fulfill({ json: { repository, scan, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
+  await page.goto("/security/scans/scan");
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  await expect(breadcrumb.getByRole("link", { name: repository.full_name, exact: true, includeHidden: true })).toHaveAttribute("href", "/security/repositories/22");
+  await expect(page.getByRole("region", { name: "Scan stages" })).toBeVisible();
+  denied = true;
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("Scan access denied.");
+  await expect(breadcrumb.getByRole("link", { name: repository.full_name, exact: true, includeHidden: true })).toHaveCount(0);
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Security scan");
+});
 
 test("security navigation shows scan activity and clears it when scanning stops", async ({ page }, info) => {
   await mock(page);
@@ -188,6 +285,43 @@ test("security navigation shows scan activity and clears it when scanning stops"
   await expect(nav.getByRole("link", { name: "Security", exact: true }).locator(".motion-safe\\:animate-spin")).toHaveCount(0);
 });
 
+test("scan alerts omit ordinary cancellation but preserve specific reasons and action errors", async ({ page }) => {
+  await page.clock.install();
+  const activity = [{ id: "cancelled", scan_id: "scan", finding_id: null, actor_id: 7,
+    action: "scan_cancelled", detail: { reason: "Security scan cancelled." }, created_at: at }];
+  await mock(page, { activity });
+  await page.route("**/api/v1/security/scans/scan/activity?**", (route) => route.fulfill({
+    json: { items: activity, total: 1, page: 1, page_size: 10 },
+  }));
+  const saved = { ...scan, status: "cancelled", error: "Security scan cancelled.",
+    stages: { ...scan.stages, analysis: { status: "cancelled", total: 55, completed: 7 } } };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: true, finding_count: 0, activity_count: 1, activity,
+  } }));
+  await page.goto("/security/scans/scan?tab=activity");
+  await expect(page.getByRole("region", { name: "Scan stages" })).toContainText("Analysis cancelled");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("tabpanel").last()).toContainText("Security scan cancelled.");
+  for (const [status, error] of [["cancelled", "Security scan access was revoked."],
+    ["cancelled", "Replaced by an explicit retry."], ["blocked", "Runner unavailable."],
+    ["failed", "Repository snapshot failed."], ["partial", "Some source files could not be analyzed."]]) {
+    Object.assign(saved, { status, error });
+    await page.clock.fastForward(5000);
+    await expect(page.getByRole("alert")).toHaveText(error);
+  }
+  Object.assign(saved, { status: "running", error: null });
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.route("**/api/v1/security/scans/scan/cancel", (route) => route.fulfill({
+    status: 409, json: { detail: "Cancellation request failed." },
+  }));
+  await page.getByRole("button", { name: "Cancel scan", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Cancellation request failed.");
+  Object.assign(saved, { status: "cancelled", error: "Security scan cancelled." });
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert")).toContainText("Cancellation request failed.");
+});
+
 test("security errors explain failed evidence and keep diagnostics collapsed and copyable", async ({ page }, info) => {
   const error = 'OCR returned an invalid verification verdict: Security evidence does not match its cited source lines.; response={"findings":[{"title":"Synthetic finding","evidence":[{"quote":"unmatched code"}]}]}';
   await mock(page, { scanError: error });
@@ -213,10 +347,12 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   await expect(page.locator("body")).toHaveAttribute("data-copied-error", error);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
-  await page.getByText("Analysis work units", { exact: true }).click();
-  const work = page.getByRole("tabpanel").getByRole("alert");
-  await expect(work.getByText("AI citation mismatch", { exact: true })).toBeVisible();
+  await page.getByRole("heading", { name: /^Work units/ }).click();
+  const work = page.getByRole("region", { name: "Work units", exact: true }).getByRole("listitem");
+  await expect(work).toContainText("The source was read; this is not a missing-file error.");
   await expect(work.getByRole("region", { includeHidden: true })).toBeHidden();
+  await work.getByText("Technical details", { exact: true }).click();
+  await expect(work.getByRole("region")).toHaveText(error);
 });
 
 for (const error of [
@@ -252,11 +388,11 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await badge.click();
   await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toHaveCount(0);
   await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toHaveCount(0);
-  await expect(page.getByText(/^Saved .* for aaaaaaa\. Freshness checked/)).toBeVisible();
+  await expect(page.getByText(/^Last graded report saved .* for aaaaaaa\. Freshness checked/)).toBeVisible();
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: [{ ...scan, status: "partial", grade }], total: 1, page: 1, page_size: 20,
+    items: [{ ...scan, status: "partial", grade }], total: 1, page: 1, page_size: 10,
   } }));
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
@@ -283,18 +419,19 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(alert).toContainText("docker-compose.yml");
   await expect(alert).toContainText("not a missing-file error");
-  await expect(page.getByRole("group", { name: "Analysis stage" })).toContainText("57 / 58 files");
-  await expect(page.getByRole("group", { name: "Analysis stage" }).getByText("partial", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Scan stages" })).toContainText("57 / 58 files");
+  await expect(page.getByRole("group", { name: "Scan progress details" })).toContainText("Partial · 57 / 58 files");
+  await page.keyboard.press("Escape");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-partial-grade-${grade}-${info.project.name}.png`, fullPage: true });
 });
 
-test("security overview keeps historical grades qualified and filters in the URL", async ({ page }, info) => {
+test("security overview separates current grades from scan status and keeps filters in the URL", async ({ page }, info) => {
   await mock(page, { partial: true });
   await page.goto("/security");
   await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
   await expect(page.getByText("Incomplete", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Historical security grade D, incomplete", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Security grade D", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "View latest scan: completed with warnings", exact: true })).toBeVisible();
   await expect(page.getByText("1 unresolved", { exact: false })).toBeVisible();
   await expect(page.getByText("1 critical", { exact: true })).toHaveClass("sr-only");
@@ -302,8 +439,8 @@ test("security overview keeps historical grades qualified and filters in the URL
   await expect(page).toHaveURL(/search=payments/);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Grade", exact: true }).click();
-  await page.getByRole("checkbox", { name: "D", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "D", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^D(?: |$)/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^D(?: |$)/ })).toBeChecked();
   await expect(page).toHaveURL(/search=payments&grade=D/);
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Search repositories" })).toHaveValue("payments");
@@ -311,7 +448,7 @@ test("security overview keeps historical grades qualified and filters in the URL
   await page.screenshot({ path: `/private/tmp/code-mortis-security-overview-${info.project.name}.png`, fullPage: true });
 });
 
-for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"], ["outdated", "Outdated"], ["not_scanned", "Unscanned"], ["unavailable", "Unverified"]] as const) {
+for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "D"], ["outdated", "D"], ["not_scanned", "Unscanned"], ["unavailable", "D"]] as const) {
   test(`repository detail grade badge uses one label for ${state}`, async ({ page }) => {
     await mock(page, { summary: { state, ...(["outdated", "unavailable"].includes(state) ? { latest_status: "partial" } : {}), ...(state === "not_scanned" ? { grade: null, grade_sha: null } : {}) } });
     await page.goto("/security/repositories/22");
@@ -319,13 +456,52 @@ for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "Incomplete"
     const badge = page.getByRole("link", { name: label, exact: true });
     await expect(badge).toHaveText(label);
     await badge.focus();
-    await expect(badge).not.toHaveAttribute("data-state");
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const explanation = { current: "current default-branch commit", incomplete: "latest assessment is incomplete", outdated: "Current changes have not been scanned", not_scanned: "No security scan has been recorded", unavailable: "freshness could not be verified" }[state];
+    await expect(page.getByRole("tooltip")).toContainText(explanation);
+    if (["outdated", "unavailable"].includes(state)) {
+      await expect(badge.locator(state === "outdated" ? ".lucide-history" : ".lucide-shield-question")).toBeVisible();
+      await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
+      await expect(page.getByText(state === "outdated" ? "Security Outdated" : "Security Unverified", { exact: true })).toHaveCount(0);
+    }
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toBeHidden();
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
-      await expect(page.getByText(/Historical report saved/)).toBeVisible();
+      await expect(page.getByText(/Last graded report saved/)).toBeVisible();
     }
   });
 }
+
+for (const incomplete of [false, true]) test(`triage immediately updates the repository grade and preserves scan context (${incomplete ? "incomplete" : "complete"})`, async ({ page }, info) => {
+  const writes = await mock(page, { summary: incomplete ? { state: "outdated", latest_status: "partial", coverage: "incomplete", freshness: "outdated" } : {} });
+  await page.goto("/security/repositories/22");
+  await expect(page.getByRole("link", { name: "Security D", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details" });
+  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await expect(sheet.getByText(/Triage updates the repository grade immediately/)).toBeVisible();
+  await sheet.getByLabel("Decision", { exact: true }).selectOption("false_positive");
+  await sheet.getByLabel("Reason", { exact: true }).fill("The existing ownership guard covers this request.");
+  await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
+  await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("false positive");
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Security A", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Scan coverage", { exact: true })).toHaveText(incomplete ? "Coverage incomplete" : "Coverage complete");
+  await expect(page.getByLabel("Scan freshness", { exact: true })).toHaveText(incomplete ? "Outdated scan" : "Current commit");
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Security A", exact: true }).focus();
+  await expect(page.getByRole("tooltip")).toContainText("Based on current findings and triage decisions");
+  if (incomplete) {
+    await expect(page.getByRole("tooltip")).toContainText("The latest assessment is incomplete");
+    await expect(page.getByRole("tooltip")).toContainText("Current changes have not been scanned");
+  }
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
+  await expect(page.locator('[data-slot="security-scan-row"] [data-slot="security-grade-shield"]')).toHaveText("D");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath(`triaged-grade-${incomplete ? "incomplete" : "complete"}.png`), fullPage: true });
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.state).toBe("false_positive");
+});
 
 test("repository security badges put the state shield before Security and the grade", async ({ page }, info) => {
   const writes = await mock(page);
@@ -340,13 +516,15 @@ test("repository security badges put the state shield before Security and the gr
     { change: {}, label: "D", icon: "shield-check" },
     { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
     { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned", icon: "shield-question" },
-    { change: { state: "outdated" }, label: "Outdated", icon: "shield-ellipsis" },
-    { change: { state: "unavailable" }, label: "Unverified", icon: "shield-question" },
-    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "Incomplete",
+    { change: { state: "outdated" }, label: "D", icon: "history" },
+    { change: { state: "unavailable" }, label: "D", icon: "shield-question" },
+    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "D",
       icon: ["shield-x", "shield-off", "shield-ellipsis", "shield-ellipsis", "shield-alert", "shield-alert"][index] })),
   ];
   for (const [index, item] of cases.entries()) {
-    current = { ...summary, ...item.change };
+    current = { ...summary, ...item.change,
+      coverage: item.change.state === "incomplete" ? "incomplete" : "complete",
+      freshness: item.change.state === "outdated" ? "outdated" : item.change.state === "unavailable" ? "unavailable" : "current" };
     await page.goto("/repositories/22?state=open");
     const name = item.label === "Unscanned" ? item.label : `Security ${item.label}`;
     const badge = page.getByRole("link", { name, exact: true });
@@ -363,6 +541,27 @@ test("repository security badges put the state shield before Security and the gr
       return icon.right <= range.getBoundingClientRect().left;
     });
     expect(beforeText).toBe(true);
+    if (item.icon === "history") {
+      await badge.hover();
+      await expect(page.getByRole("tooltip")).toContainText("The report covers an earlier commit or default branch.");
+      await expect(page.getByRole("tooltip")).toContainText("Grade D:");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `/private/tmp/code-mortis-outdated-grade-${info.project.name}.png` });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toBeHidden();
+    }
+    if (item.change.state === "unavailable") {
+      await badge.hover();
+      await expect(page.getByRole("tooltip")).toContainText("Grade D:");
+      await expect(page.getByRole("tooltip")).toContainText("freshness could not be verified");
+      await expect(page.getByRole("tooltip")).toHaveCSS("opacity", "1");
+      await page.screenshot({ path: `/private/tmp/code-mortis-unverified-grade-${info.project.name}.png` });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toBeHidden();
+      await badge.click();
+      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
+      await expect(page.getByRole("link", { name: "Security D", exact: true }).locator(".lucide-shield-question")).toBeVisible();
+    }
     if (index < 3) await badge.screenshot({ path: `/private/tmp/code-mortis-security-label-${index}-${info.project.name}.png` });
     if (index < 3) {
       await badge.click();
@@ -385,7 +584,7 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
     { repository: { ...repository, id: 28, full_name: "acme/historical" }, summary: { ...summary, state: "outdated", latest_status: "partial" } },
     { repository: { ...repository, id: 29, full_name: "acme/partial-report" }, summary: { ...summary, state: "incomplete", latest_status: "partial" } },
     { repository: { ...repository, id: 30, full_name: "acme/running-scan" }, summary: { ...summary, state: "incomplete", latest_status: "running", grade_scan_id: "previous" } });
-  await page.route("**/api/v1/security/repositories", (route) => route.fulfill({ json: rows }));
+  await page.route("**/api/v1/security/repositories?**", (route) => route.fulfill({ json: { items: rows, total: rows.length, registered_total: rows.length, grade_counts: {}, status_counts: {}, page: 1, page_size: 10 } }));
   await page.goto("/security");
   for (const grade of grades) {
     const row = page.locator('[data-slot="security-repository-row"]').filter({ has: page.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }) });
@@ -400,6 +599,10 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
     await expect(svg.locator("text")).toHaveCSS("fill", color);
     await expect(svg.locator("text")).toHaveCSS("fill-opacity", "1");
     await expect(row.locator('[data-slot="status-group"]')).toHaveText("completed");
+    await link.focus();
+    await expect(page.getByRole("tooltip")).toContainText(`Grade ${grade}:`);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toBeHidden();
     const shieldBox = await svg.boundingBox();
     const repositoryBox = await row.getByRole("link", { name: `acme/service-${grade.toLowerCase()}`, exact: true }).boundingBox();
     expect(shieldBox!.x + shieldBox!.width).toBeLessThan(repositoryBox!.x);
@@ -411,7 +614,7 @@ for (const theme of ["light", "dark"] as const) test(`repository grade shields r
   const unscanned = page.getByRole("link", { name: "Unscanned", exact: true });
   await expect(unscanned.locator("svg")).toHaveCount(1);
   await expect(unscanned.locator(".lucide-shield-question")).toBeVisible();
-  const historical = page.getByRole("link", { name: "Historical security grade D, outdated", exact: true });
+  const historical = page.locator('[data-slot="security-repository-row"]').filter({ hasText: "acme/historical" }).getByRole("link", { name: "Security grade D", exact: true });
   await expect(historical.locator("svg")).toHaveClass(/text-red-700.*dark:text-red-300/);
   const running = page.locator('[data-slot="security-repository-row"]').filter({ hasText: "acme/running-scan" });
   await expect(running.locator('[data-slot="security-grade-shield"]')).toHaveText("D");
@@ -500,13 +703,18 @@ test("rescan can change concurrency after an incomplete scan", async ({ page }) 
   expect(writes[0]).toMatchObject({ path: "/security/repositories/22/scans", body: { concurrency: 4 } });
 });
 
-test("saved scan exposes actionable report, coverage, findings and downloads", async ({ page }, info) => {
+test("saved scan exposes findings, resolved, coverage and report downloads", async ({ page }, info) => {
   await mock(page);
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("heading", { name: "Security scan", exact: true })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Report 1", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Download Markdown" })).toHaveAttribute("href", /format=markdown/);
-  const report = page.getByRole("region", { name: "Findings at this scan", exact: true });
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /^Report/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Download report", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Download Markdown" })).toHaveAttribute("href", /format=markdown/);
+  await expect(page.getByRole("menuitem", { name: "Download JSON" })).toHaveAttribute("href", /format=json/);
+  await page.keyboard.press("Escape");
+  const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await expect(report.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Remediation", exact: true })).toHaveCount(0);
   await report.getByRole("button").click();
@@ -517,121 +725,94 @@ test("saved scan exposes actionable report, coverage, findings and downloads", a
   await page.keyboard.press("Escape");
   await expect(report.getByRole("button")).toBeFocused();
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  await page.getByText("Scanner details", { exact: true }).click();
   await expect(page.getByText("Within 24-hour freshness limit", { exact: true })).toBeVisible();
-  await page.getByText("Prepared source inventory", { exact: true }).click();
+  await page.getByRole("heading", { name: /^Prepared source inventory/ }).click();
   await expect(page.getByText("src/orders.ts", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
   await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
   await expect(page.getByRole("dialog", { name: "Finding details", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Code snippet" })).toContainText("return orders.find(id)");
+  await expect(page.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-finding-${info.project.name}.png`, fullPage: true });
 });
 
-test("report filters and pagination request server pages and preserve independent tab filters and downloads", async ({ page }, info) => {
-  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+test("scan state tabs paginate saved findings and retain historical evidence", async ({ page }, info) => {
   const writes = await mock(page);
   const rows = [
-    { ...finding, finding_id: finding.id, outcome: "present" },
-    { ...finding, finding_id: "fixed", outcome: "fixed", title: "Restricted container port", path: "Dockerfile", kind: "infrastructure", severity: "medium" },
-    { ...finding, finding_id: "dependency", outcome: "present", title: "Vulnerable dependency", path: "bun.lock", kind: "dependency", severity: "critical" },
-    { ...finding, finding_id: "earlier", outcome: "not_observed", title: "Earlier policy observation", path: "infra/job.yml", kind: "custom_policy", severity: "low" },
-    { ...finding, finding_id: "legacy", outcome: null, title: "Legacy observation", kind: null, severity: null },
-    ...Array.from({ length: 21 }, (_, index) => ({ ...finding, finding_id: `uncertain-${index}`, outcome: "uncertain", title: `Saved observation ${index}`, severity: "low" })),
+    { ...finding, result: "present", state: "resolved", title: "Resolved at this scan" },
+    { ...finding, id: "unverified", result: "not_observed", title: "Absent but unverified" },
+    ...Array.from({ length: 13 }, (_, index) => ({ ...finding, id: `fixed-${index}`, result: "fixed", state: "resolved", title: `Verified fix ${index}` })),
+    { ...finding, id: "reopened", result: "fixed", state: "open", title: "Open at this scan" },
   ];
-  const server = await mockReportFindings(page, rows);
-  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository,
-    scan: { ...scan, report: { problems: ["Unvalidated result remains visible."] } },
-    report_count: 26, can_write: true, finding_count: 5, activity_count: 0, activity: [],
+  const requests: URLSearchParams[] = [];
+  let failure = 0;
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: { ...scan, report: { problems: ["Some files could not be analyzed."] } },
+    can_write: true, finding_count: rows.length, finding_state_counts: { open: 2, resolved: 14 }, resolved_count: 14, activity_count: 0, activity: [],
   } }));
-  await page.goto("/security/scans/scan?outcome=open_repeat&severity=low&assessment_outcome=withheld");
-  const report = page.getByRole("region", { name: "Findings at this scan", exact: true });
-  const cards = report.locator('[data-slot="finding-card"]');
-  const search = page.getByRole("textbox", { name: "Search report findings", exact: true });
-  await expect(cards).toHaveCount(20);
-  await report.getByRole("button", { name: "Load more report findings", exact: true }).click();
-  await expect(cards).toHaveCount(26);
-  expect(server.requests.some((params) => params.get("page") === "2")).toBe(true);
-  await search.fill("DOCKERFILE");
-  await expect(cards).toHaveCount(1);
-  await expect(report).toContainText("Restricted container port");
-  await expect(page).toHaveURL(/report_q=DOCKERFILE/);
-  expect(server.requests.at(-1)?.get("q")).toBe("DOCKERFILE");
-  expect(server.requests.at(-1)?.get("page")).toBe("1");
-  await page.getByRole("button", { name: "Clear search", exact: true }).click();
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Result", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Present 2", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await page.route("**/api/v1/security/scans/scan/findings?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    if (failure) return route.fulfill({ status: failure, json: { detail: failure === 403 ? "Access denied" : "Findings temporarily unavailable" } });
+    const filtered = rows.filter((row) => row.state === params.get("state") && (!params.get("search") || row.title.includes(params.get("search")!)));
+    const number = Number(params.get("page") ?? 1);
+    return route.fulfill({ json: { items: filtered.slice((number - 1) * 10, number * 10), total: filtered.length,
+      registered_total: rows.length, page: number, page_size: 10, state_counts: { open: 2, resolved: 14 } } });
+  });
+  await page.goto("/security/scans/scan?tab=report&assessment_outcome=withheld");
+  await expect(page.getByRole("tab", { name: "Findings 2", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page).not.toHaveURL(/tab=report/);
+  const cards = page.locator('[data-slot="finding-card"]');
   await expect(cards).toHaveCount(2);
-  await page.getByRole("button", { name: "Edit Result: Present", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Fixed 1", exact: true }).click();
-  await page.keyboard.press("Escape");
-  await expect(cards).toHaveCount(3);
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "High 1", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await expect(page.getByText("Open at this scan", { exact: true })).toBeVisible();
+  await expect(page.getByText("Absent but unverified", { exact: true })).toBeVisible();
+  await expect(page.getByText("Resolved at this scan", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Some files could not be analyzed.", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "Search scan findings", exact: true }).fill("Open at");
   await expect(cards).toHaveCount(1);
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Infrastructure 1", exact: true })).toBeVisible();
-  await page.getByRole("checkbox", { name: "Code 22", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "Resolved 14", exact: true }).click();
+  await expect(cards).toHaveCount(10);
+  await expect(page.getByText("Resolved at this scan", { exact: true })).toBeVisible();
+  await expect(page.getByText("Open at this scan", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Next resolved findings", exact: true }).click();
+  await expect(cards).toHaveCount(4);
+  await expect(page.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 2 · 14 total");
+  const search = page.getByRole("textbox", { name: "Search resolved findings", exact: true });
+  await search.fill("Resolved at");
   await expect(cards).toHaveCount(1);
-  await expect(page.getByRole("tab", { name: "Report 26", exact: true })).toBeVisible();
-  await expect(page.getByRole("status").filter({ hasText: "1 of 26 report findings" })).toBeAttached();
-  await expect.poll(() => server.requests.at(-1)?.get("kind")).toBe("code");
-  expect(server.requests.at(-1)?.getAll("outcome")).toEqual(["present", "fixed"]);
-  expect(server.requests.at(-1)?.get("severity")).toBe("high");
-  await expect(page.getByRole("link", { name: "Download JSON", exact: true })).toHaveAttribute("href", "/api/v1/security/scans/scan/report?format=json");
+  await expect(page).toHaveURL((url) => url.searchParams.get("resolved_search") === "Resolved at" && url.searchParams.get("search") === "Open at");
+  await page.reload();
+  await expect(cards).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: `/private/tmp/code-mortis-report-filters-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath("scan-resolved-state.png"), fullPage: true });
   await cards.click();
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
   await expect(sheet.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(sheet.getByText("A signed-in user can retrieve another account's order.", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(cards).toBeFocused();
-  await page.reload();
-  await expect(cards).toHaveCount(1);
-  await page.getByRole("tab", { name: "Findings 5", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Edit Severity: Low", exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: "Report 26", exact: true }).click();
-  await expect(cards).toHaveCount(1);
-  await search.fill("no matching observation");
-  await expect(page.getByRole("heading", { name: "No report findings match these filters", exact: true })).toBeVisible();
-  await expect(page.getByText("Unvalidated result remains visible.", { exact: true })).toBeVisible();
-  await page.getByRole("tabpanel").getByRole("button", { name: "Clear filters", exact: true }).click();
-  await expect(cards).toHaveCount(20);
+  await search.fill("no matches");
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(search).toBeFocused();
-  await expect(page).toHaveURL((url) => ![...url.searchParams.keys()].some((key) => key.startsWith("report_"))
-    && url.searchParams.get("outcome") === "open_repeat" && url.searchParams.get("assessment_outcome") === "withheld");
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Type", exact: true }).click();
-  await page.getByRole("textbox", { name: "Search type options", exact: true }).fill("custom");
-  await page.getByRole("checkbox", { name: "Custom policy 1", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await expect(cards).toHaveCount(10);
+  await page.getByRole("tab", { name: "Findings 2", exact: true }).click();
   await expect(cards).toHaveCount(1);
-  await expect(report).toContainText("Earlier policy observation");
-  await page.goto("/security/scans/scan?report_outcome=unknown");
+  failure = 503;
+  await page.reload();
+  await expect(page.getByText("Findings temporarily unavailable", { exact: true })).toBeVisible();
+  failure = 0;
+  await page.getByRole("button", { name: "Retry findings", exact: true }).click();
   await expect(cards).toHaveCount(1);
-  await expect(report).toContainText("Legacy observation");
-  server.state.failure = 503;
-  await page.goto("/security/scans/scan?report_kind=dependency");
-  await expect(page.getByText("Report temporarily unavailable", { exact: true })).toBeVisible();
-  server.state.failure = 0;
-  await page.getByRole("button", { name: "Retry report findings", exact: true }).click();
-  await expect(cards).toHaveCount(1);
-  server.state.failure = 403;
-  await page.goto("/security/scans/scan?report_kind=code");
+  failure = 403;
+  await page.reload();
   await expect(page.getByText("Access denied", { exact: true })).toBeVisible();
   await expect(cards).toHaveCount(0);
+  expect(requests.some((params) => params.get("state") === "resolved" && params.get("page") === "2")).toBe(true);
   expect(writes).toHaveLength(0);
 });
 
 for (const theme of ["light", "dark"] as const) {
-  test(`security report uses compact shared finding cards and no inline remediation blocks (${theme})`, async ({ page }, info) => {
+  test(`security scan uses compact shared finding cards and no inline remediation blocks (${theme})`, async ({ page }, info) => {
     await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
     const writes = await mock(page, { scanError: "Security analysis did not finish." });
     const rows = ["Dockerfile", "Dockerfile.relay", "Dockerfile.runner"].map((path, index) => ({ ...finding, finding_id: `finding-${index}`,
@@ -639,12 +820,16 @@ for (const theme of ["light", "dark"] as const) {
       evidence: { ...finding.evidence, explanation: "You should add a HEALTHCHECK instruction to your container image.",
         remediation: "Add a HEALTHCHECK instruction.", verification: "Rescan the changed configuration." } }));
     await mockReportFindings(page, rows);
+    await page.route("**/api/v1/security/scans/scan/findings?**", (route) => {
+      const items = new URL(route.request().url()).searchParams.get("state") === "open" ? rows.map((row) => ({ ...row, id: row.finding_id })) : [];
+      return route.fulfill({ json: { items, total: items.length, page: 1, page_size: 10 } });
+    });
     await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository,
       scan: { ...scan, status: "partial", grade: null, report: { commit: sha, status: "partial", grade: null, findings: rows } },
       can_write: true, finding_count: 3, activity_count: 0, activity: [] } }));
     await page.goto("/security/scans/scan");
-    await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
-    const report = page.getByRole("region", { name: "Findings at this scan", exact: true });
+    await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+    const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
     const cards = report.locator('[data-slot="finding-card"]');
     await expect(cards).toHaveCount(3);
     await expect(cards.first()).toContainText("Dockerfile");
@@ -657,7 +842,7 @@ for (const theme of ["light", "dark"] as const) {
       const before = await cards.first().evaluate((node) => getComputedStyle(node).backgroundColor);
       await cards.first().hover();
       await expect.poll(() => cards.first().evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe(before);
-      await cards.first().getByText("present", { exact: true }).hover();
+      await cards.first().getByText("open", { exact: true }).hover();
       await expect(page.getByRole("tooltip")).toHaveCount(0);
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -674,7 +859,7 @@ test("saved report details preserve original evidence separately from current st
     finding: { ...finding, state: "resolved", version: 7, path: "src/account-orders.ts", evidence: { ...finding.evidence,
       source_sha: currentSha, remediation: "Current remediation after the verified fix." } }, can_write: true, observations: [], activity: [] } }));
   await page.goto("/security/scans/scan");
-  const card = page.getByRole("region", { name: "Findings at this scan", exact: true }).getByRole("button");
+  const card = page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).getByRole("button");
   await card.focus();
   await page.keyboard.press("Enter");
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
@@ -704,7 +889,7 @@ test("saved uncertain verification explains the blocker separately from remediat
   await mockReportFindings(page, [{ ...finding, finding_id: finding.id, outcome: "uncertain",
     verification: { verdict: "uncertain", explanation } }]);
   await page.goto("/security/scans/scan");
-  await page.getByRole("region", { name: "Findings at this scan", exact: true }).getByRole("button").click();
+  await page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).getByRole("button").click();
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
   const verification = sheet.getByRole("region", { name: "Fix verification", exact: true });
   await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
@@ -727,13 +912,14 @@ test("uncertain security candidates keep their assessment and evidence in a disc
       assessment: { explanation: "Required deployment configuration was unavailable." },
     }] } }, can_write: true, finding_count: 0, activity_count: 0, activity: [] } }));
   await page.goto("/security/scans/scan");
-  await expect(page.getByRole("tab", { name: "Report 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   const disclosure = page.locator("details").filter({ hasText: "Potential configuration exposure" });
   await expect(disclosure).not.toHaveAttribute("open");
   await disclosure.locator("summary").click();
   await expect(disclosure.getByText("Required deployment configuration was unavailable.", { exact: true })).toBeVisible();
   await expect(disclosure.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
   await expect(disclosure.getByRole("region", { name: "Code snippet", exact: true })).toContainText("return orders.find(id);");
+  await expect(disclosure.locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await expect(page.getByRole("button", { name: "Create GitHub issue", exact: true })).toHaveCount(0);
   expect(writes).toHaveLength(0);
 });
@@ -795,17 +981,42 @@ async function mockBulkIssues(page: Page, isPublic = true) {
     const pageNumber = Number(new URL(request.url()).searchParams.get("page") ?? 1);
     return route.fulfill(state.previewError
       ? { status: state.previewError, json: { detail: "Issue previews are unavailable." } }
-      : { json: { items: state.items.slice((pageNumber - 1) * 20, pageNumber * 20), total: state.items.length,
-        page: pageNumber, page_size: 20, repository: repository.full_name, public: isPublic } });
+      : { json: { items: state.items.slice((pageNumber - 1) * 10, pageNumber * 10), total: state.items.length,
+        page: pageNumber, page_size: 10, repository: repository.full_name, public: isPublic } });
   });
   return { state, writes };
 }
+
+test("bulk issues are disabled for an empty repository, not an empty filtered view", async ({ page }) => {
+  await page.clock.install();
+  const { state, writes } = await mockBulkIssues(page);
+  let total = 0;
+  await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: {
+    repository, summary, can_write: true, finding_count: total, finding_state_counts: { open: total }, scan_count: 0,
+  } }));
+  await page.route("**/api/v1/security/repositories/22/findings?**", (route) => route.fulfill({ json: {
+    items: [], total: 0, registered_total: total, page: 1, page_size: 10,
+  } }));
+  await page.goto("/security/repositories/22?search=missing");
+  const trigger = page.getByRole("button", { name: "Create GitHub issues", exact: true });
+  await expect(trigger).toBeDisabled();
+  await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
+  expect(state.requests).toBe(0);
+  total = 1;
+  await page.clock.fastForward(5000);
+  await expect(trigger).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "No findings match these filters", exact: true })).toBeVisible();
+  total = 0;
+  await page.clock.fastForward(5000);
+  await expect(trigger).toBeDisabled();
+  expect(writes).toHaveLength(0);
+});
 
 test("oversized bulk issue drafts cannot queue other selected issues", async ({ page }) => {
   const { state, writes } = await mockBulkIssues(page);
   state.items[0].body = "x".repeat(50001);
   await page.goto("/security/repositories/22");
-  await page.getByRole("button", { name: "Create GitHub issues…", exact: true }).click();
+  await page.getByRole("button", { name: "Create GitHub issues", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
   await dialog.getByRole("checkbox", { name: `Select ${state.items[0].title}`, exact: true }).check();
   await dialog.getByRole("button", { name: "Review 1 issue", exact: true }).click();
@@ -817,7 +1028,7 @@ test("oversized bulk issue drafts cannot queue other selected issues", async ({ 
 test("bulk GitHub issues require selection, review, count and public confirmation", async ({ page }, info) => {
   const { state, writes } = await mockBulkIssues(page);
   await page.goto("/security/repositories/22");
-  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  const trigger = page.getByRole("button", { name: "Create GitHub issues", exact: true });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
   await expect(dialog.getByRole("button", { name: "Review 0 issues", exact: true })).toBeDisabled();
@@ -826,7 +1037,9 @@ test("bulk GitHub issues require selection, review, count and public confirmatio
   await expect(dialog.getByText("0 issues selected · 21 eligible findings", { exact: true })).toBeVisible();
   await dialog.getByRole("checkbox", { name: `Select ${state.items[0].title}`, exact: true }).check();
   await page.screenshot({ path: `/private/tmp/code-mortis-bulk-select-${info.project.name}.png`, fullPage: true });
-  await dialog.getByRole("button", { name: "Load more findings" }).click();
+  await dialog.getByRole("button", { name: "Next findings" }).click();
+  await expect(dialog.getByRole("checkbox", { name: `Select ${state.items[10].title}`, exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Next findings" }).click();
   await dialog.getByRole("checkbox", { name: `Select ${state.items[20].title}`, exact: true }).check();
   await dialog.getByRole("button", { name: "Review 2 issues", exact: true }).click();
   await expect(dialog.getByText("2 issues selected for creation", { exact: true })).toBeVisible();
@@ -858,12 +1071,12 @@ test("bulk GitHub issues require selection, review, count and public confirmatio
 test("bulk issue review preserves drafts on stale approval and cancellation never publishes", async ({ page }) => {
   const { state, writes } = await mockBulkIssues(page, false);
   await page.goto("/security/repositories/22");
-  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  const trigger = page.getByRole("button", { name: "Create GitHub issues", exact: true });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
   await expect(dialog.getByRole("note")).toContainText("These issues will be private");
   await dialog.getByRole("button", { name: "Select shown", exact: true }).click();
-  await expect(dialog.getByRole("button", { name: "Review 20 issues", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "Review 10 issues", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Clear selection", exact: true }).click();
   await dialog.getByRole("checkbox").first().check();
   await dialog.getByRole("button", { name: "Review 1 issue", exact: true }).click();
@@ -890,7 +1103,7 @@ test("bulk issue preview failures cannot publish and permission denial hides can
   const { state, writes } = await mockBulkIssues(page);
   state.previewError = 503;
   await page.goto("/security/repositories/22");
-  const trigger = page.getByRole("button", { name: "Create GitHub issues…", exact: true });
+  const trigger = page.getByRole("button", { name: "Create GitHub issues", exact: true });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Create GitHub issues", exact: true });
   await expect(dialog.getByRole("button", { name: "Review 0 issues", exact: true })).toBeDisabled();
@@ -898,7 +1111,7 @@ test("bulk issue preview failures cannot publish and permission denial hides can
   await dialog.getByRole("button", { name: "Refresh findings", exact: true }).click();
   await dialog.getByRole("checkbox").first().check();
   state.previewError = 403;
-  await dialog.getByRole("button", { name: "Load more findings" }).click();
+  await dialog.getByRole("button", { name: "Next findings" }).click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await expect(dialog.getByRole("checkbox")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Review 1 issue", exact: true })).toBeDisabled();
@@ -926,7 +1139,7 @@ test("read-only users cannot publish or change finding state", async ({ page }) 
   await expect(sheet).toBeVisible();
   await expect(sheet.getByRole("button", { name: "Create GitHub issue" })).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: "Save decision" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Create GitHub issues…", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create GitHub issues", exact: true })).toHaveCount(0);
 });
 
 test("security controls support keyboard focus and dark narrow layouts", async ({ page }, info) => {
@@ -978,11 +1191,10 @@ test(`security repository rows share hover feedback and keyboard-accessible grad
     await expect(owner).toHaveCSS("color", await repository.evaluate((element) => getComputedStyle(element).color));
     await page.screenshot({ path: info.outputPath("security-repository-name-hover.png"), fullPage: true });
   }
-  const grade = page.getByRole("link", { name: "Historical security grade D, incomplete", exact: true });
+  const grade = page.getByRole("link", { name: "Security grade D", exact: true });
   await expect(grade).not.toHaveAttribute("title");
   await grade.focus();
-  await expect(grade).not.toHaveAttribute("data-state");
-  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(page.getByRole("tooltip")).toContainText("The latest assessment is incomplete.");
   expect(await grade.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe("solid");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toBeHidden();
@@ -1120,16 +1332,213 @@ test("read-only repository users can inspect a running scan", async ({ page }) =
 });
 
 test("running scan stages explain validated file progress without changing the scan", async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   const writes = await mock(page, { running: true });
   await page.goto("/security/scans/scan");
-  await expect(page.getByRole("tab", { name: "Report 0", exact: true })).toBeVisible();
-  const stage = page.getByRole("group", { name: "Analysis stage", exact: true });
-  await expect(stage).toContainText("11 / 163 files");
-  await stage.locator("[data-security-badge]").focus();
-  await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation.");
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  const animation = () => stages.locator(".stage-divider").evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
+  });
+  await expect(stages).toHaveAttribute("data-motion", "active");
+  expect(await animation()).toMatchObject({ name: "stage-sweep", state: "running" });
+  const start = await animation();
+  await expect.poll(async () => (await animation()).transform).not.toBe(start.transform);
+  const height = (await stages.boundingBox())!.height;
+  await page.screenshot({ path: info.outputPath("security-stage-animation.png") });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect((await animation()).name).toBe("none");
+  expect((await stages.boundingBox())!.height).toBe(height);
+  await expect(stages.getByLabel("Scan progress count")).toHaveText("11 / 163 files");
+  await expect(stages.getByRole("group", { name: "Scan progress details" })).toContainText("Analysis");
+  await expect(stages.getByRole("group", { name: "Previous stage" })).toHaveCount(0);
+  await expect(stages.getByRole("group", { name: "Next stage" })).toHaveCount(0);
+  const trigger = stages.getByRole("button", { name: "Scan stage details", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(trigger.locator(".lucide-chevron-down")).toBeVisible();
+  await expect(stages.getByRole("progressbar")).toHaveCount(0);
+  await expect(stages.locator('[data-slot="badge"], .animate-spin')).toHaveCount(0);
+  await expect(stages).not.toContainText("of 6");
+  await expect(stages.getByText("Reviewing source files for vulnerabilities.", { exact: true })).toBeVisible();
+  await trigger.focus();
+  await trigger.press("Enter");
+  const details = page.getByRole("dialog", { name: "Scan stage details", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(details.locator('[data-slot="badge"]')).toHaveCount(6);
+  await expect(details).toContainText("A file counts only after its result passes validation.");
+  await expect(details.getByText("11 / 163 files", { exact: true })).toBeVisible();
+  expect((await stages.boundingBox())!.height).toBe(height);
+  await page.screenshot({ path: info.outputPath("security-stage-details.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(details).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await trigger.locator(".lucide-chevron-down").click();
+  await expect(details).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Cancel scan", exact: true })).toBeEnabled();
-  await page.screenshot({ path: info.outputPath("security-running-aligned.png"), fullPage: true });
+  await page.screenshot({ path: info.outputPath("security-focus-running.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
+test("focus strip updates validated progress and the current stage across polling", async ({ page }, info) => {
+  await page.clock.install({ time: new Date("2026-10-18T15:08:42Z") });
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page, { running: true });
+  const saved = { ...scan, status: "running", grade: null, finished_at: null,
+    progress: { tokens: 4500, work: { analysis_completed: 117, analysis_total: 163, completed: 117, failed: 0 } },
+    stages: { snapshot: { status: "completed" }, trivy: { status: "completed" },
+      analysis: { status: "running", total: 163, completed: 117 }, assessment: { status: "pending", total: 32, completed: 0 },
+      verification: { status: "pending" }, report: { status: "pending" } } };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.goto("/security/scans/scan");
+  const track = page.getByRole("region", { name: "Scan stages" });
+  await expect(track.getByLabel("Scan progress count")).toHaveText("117 / 163 files");
+  await expect(track).not.toContainText("0 / 32");
+  await page.screenshot({ path: info.outputPath("scan-focus-running.png"), fullPage: true });
+  await track.getByRole("button", { name: "Scan stage details" }).click();
+  const details = page.getByRole("dialog", { name: "Scan stage details", exact: true });
+  await expect(details.getByText("117 / 163 files", { exact: true })).toBeVisible();
+  saved.stages.analysis.completed = 163;
+  saved.stages.analysis.status = "completed";
+  saved.stages.assessment.status = "running";
+  saved.stages.assessment.completed = 8;
+  saved.progress.work.analysis_completed = 163;
+  saved.progress.work.completed = 171;
+  await page.clock.fastForward(5000);
+  await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
+  await expect(track.getByText("Validating findings against source evidence.", { exact: true })).toBeVisible();
+  await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Assessment");
+  await expect(details.getByText("Analysis", { exact: true }).locator("..")).toContainText("completed");
+  await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
+  await expect(details.getByText("8 / 32 candidates", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: info.outputPath("scan-focus-assessment.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(0);
+});
+
+test("focus strip keeps its rows and report tabs fixed across every stage and outcome", async ({ page }, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.clock.install({ time: new Date("2026-10-18T15:00:48Z") });
+  await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const writes = await mock(page, { running: true });
+  const saved: Schema["SecurityScanOut"] = { ...scan, status: "queued", grade: null, finished_at: null,
+    progress: { tokens: 0, work: { analysis_completed: 0, analysis_total: 0, completed: 0, failed: 0 } }, stages: {} };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  const current = stages.getByRole("group", { name: "Scan progress details" });
+  const count = stages.locator('[aria-label="Scan progress count"], [aria-label="Stage progress unavailable"]');
+  const geometry = async () => {
+    const region = (await stages.boundingBox())!;
+    const rows = await Promise.all([stages.getByRole("status"), count, stages.locator("p"),
+      page.getByRole("tablist").first()].map(async (row) => {
+        const box = (await row.boundingBox())!;
+        return { top: box.y - region.y, height: box.height };
+      }));
+    return { height: region.height, rows };
+  };
+  const names = Object.keys(scan.stages);
+  const explanations = ["Preparing repository files.", "Checking dependencies and configuration.",
+    "Reviewing source files for vulnerabilities.", "Validating findings against source evidence.",
+    "Checking whether earlier findings are fixed.", "Saving the report and security grade."];
+  for (const width of info.project.name === "mobile" ? [320, 390] : [768, 1440]) {
+    saved.status = "queued"; saved.stages = {}; saved.report = {};
+    await page.setViewportSize({ width, height: 960 });
+    await page.goto("/security/scans/scan");
+    await expect(current).toContainText("Waiting to start");
+    await expect(stages.locator("p")).toHaveText("Waiting for a worker to start the scan.");
+    await expect(count).toHaveText("—");
+    expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
+    const initial = await geometry();
+    saved.status = "running";
+    await page.clock.fastForward(5000);
+    await expect(current).toContainText("Preparing scan");
+    expect(await geometry()).toEqual(initial);
+    saved.stages = Object.fromEntries(names.map((name) => [name, { status: "pending" }]));
+    for (let index = 0; index < names.length; index++) {
+      if (index) saved.stages[names[index - 1]] = { ...saved.stages[names[index - 1]] as object, status: "completed" };
+      saved.stages[names[index]] = { status: "running" };
+      await page.clock.fastForward(5000);
+      await expect(current).toContainText(names[index] === "verification" ? "Fix verification" : names[index][0].toUpperCase() + names[index].slice(1));
+      await expect(stages.locator("p")).toHaveText(explanations[index]);
+      expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("stage-sweep");
+      expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+      await expect(count).toHaveText("—");
+      expect(await geometry()).toEqual(initial);
+      if (["analysis", "assessment", "verification"].includes(names[index])) {
+        saved.stages[names[index]] = { status: "running", total: 10000, completed: 9999 };
+        await page.clock.fastForward(5000);
+        await expect(count).toContainText("9,999 / 10,000");
+        expect(await geometry()).toEqual(initial);
+      }
+      await page.screenshot({ path: info.outputPath(`scan-focus-${width}-${names[index]}.png`), fullPage: true });
+    }
+    saved.stages.report = { status: "completed" };
+    saved.report = { findings: [] };
+    for (const [status, title] of [["completed", "Scan complete"], ["partial", "Scan complete with warnings"],
+      ["blocked", "Analysis blocked"], ["failed", "Analysis failed"], ["cancelled", "Analysis cancelled"]]) {
+      saved.status = status;
+      saved.stages.analysis = { status: status === "completed" ? "completed" : status, total: 163, completed: 117 };
+      await page.clock.fastForward(5000);
+      await expect(current).toContainText(title);
+      expect(await stages.locator(".stage-divider").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
+      await expect(stages).not.toContainText("Report ready");
+      expect(await stages.locator("p").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+      await expect(count).toHaveText("117 / 163 files");
+      expect(await geometry()).toEqual(initial);
+      expect(await stages.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath(`scan-focus-${width}-${status}.png`), fullPage: true });
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  expect(writes).toHaveLength(0);
+});
+
+test("focus strip preserves terminal states and rejects invalid counts", async ({ page }, info) => {
+  await page.clock.install();
+  const writes = await mock(page);
+  const saved: Schema["SecurityScanOut"] = { ...scan };
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+  } }));
+  await page.setViewportSize({ width: info.project.name === "mobile" ? 320 : 1440, height: 960 });
+  await page.goto("/security/scans/scan");
+  const track = page.getByRole("region", { name: "Scan stages" });
+  await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Scan complete");
+  await expect(track.getByLabel("Stage progress unavailable")).toHaveText("—");
+  for (const status of ["partial", "blocked", "failed", "cancelled"]) {
+    saved.status = status;
+    saved.stages = { ...scan.stages, analysis: { status: status === "blocked" ? "failed" : status, total: 163, completed: 117 },
+      assessment: { status: "skipped" }, verification: { status: "skipped" } };
+    await page.clock.fastForward(5000);
+    await expect(track.getByRole("status")).toContainText(status === "partial" ? "Scan complete with warnings" : `Analysis ${status}`);
+    await expect(track.getByLabel("Scan progress count")).toHaveText("117 / 163 files");
+    await expect(track.getByRole("group", { name: "Scan progress details", exact: true })).toContainText(status === "blocked" ? "Failed" : status[0].toUpperCase() + status.slice(1));
+    expect(await track.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  saved.status = "running";
+  saved.stages = { analysis: { status: "running", total: 10000, completed: 9999 } };
+  await page.clock.fastForward(5000);
+  await expect(track.getByLabel("Scan progress count")).toHaveText("9,999 / 10,000 files");
+  saved.stages = { analysis: { status: "running", total: 0, completed: 0 } };
+  await page.clock.fastForward(5000);
+  await expect(track.getByLabel("Scan progress count")).toHaveText("0 / 0 files");
+  for (const values of [{}, { total: 10, completed: 12 }, { total: "163", completed: 11 }, { total: 163, completed: -1 }, { total: 12, completed: 1.5 }]) {
+    saved.stages = { analysis: { status: "running", ...values } };
+    await page.clock.fastForward(5000);
+    await expect(track.getByLabel("Stage progress unavailable")).toHaveText("—");
+    await expect(track).not.toContainText("%");
+  }
+  saved.status = "completed";
+  saved.stages = {};
+  await page.clock.fastForward(5000);
+  await expect(track.getByRole("group", { name: "Scan progress details" })).toContainText("Unknown");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
@@ -1233,13 +1642,18 @@ test("unscanned repositories keep the unrated state beside a separate zero count
   await expect(row.getByText("Not scanned", { exact: true })).toBeVisible();
 });
 
-test("security list and repository badges stay informational while scan stages retain their help", async ({ page }, info) => {
+test("security grades and scan stages keep their help while finding and scan status badges stay informational", async ({ page }, info) => {
   const writes = await mock(page, { partial: true, latestStatus: "running" });
   await page.goto("/security");
   const row = page.locator('[data-slot="security-repository-row"]');
   await expect(row).toBeVisible();
-  await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
-  for (const badge of await row.locator("[data-security-badge]").all()) {
+  const grade = row.getByRole("link", { name: "Security grade D", exact: true });
+  await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(1);
+  if (info.project.name === "desktop") await grade.hover();
+  else await grade.focus();
+  await expect(page.getByRole("tooltip")).toContainText("The latest assessment is incomplete.");
+  await page.keyboard.press("Escape");
+  for (const badge of await row.locator('[data-security-badge]:not([data-slot="tooltip-trigger"])').all()) {
     if (info.project.name === "desktop") await badge.hover();
     else await badge.focus();
     await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -1251,7 +1665,7 @@ test("security list and repository badges stay informational while scan stages r
   const card = page.locator('[data-slot="finding-card"]');
   await expect(card).toBeVisible();
   await expect(card.locator('[data-slot="badge"]')).toHaveCount(3);
-  await expect(page.locator('main [data-slot="tooltip-trigger"]')).toHaveCount(0);
+  await expect(page.locator('main [data-slot="tooltip-trigger"]')).toHaveCount(1);
   await expect(page.locator('main [data-slot="badge"][tabindex="0"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
     await latest.getByText("running", { exact: true }).hover();
@@ -1287,10 +1701,8 @@ test("security list and repository badges stay informational while scan stages r
     }
   }
   await page.goto("/security/scans/scan");
-  const stage = page.getByRole("group", { name: "Analysis stage", exact: true });
-  if (info.project.name === "desktop") await stage.locator("[data-security-badge]").hover();
-  else await stage.locator("[data-security-badge]").focus();
-  await expect(page.getByRole("tooltip")).toContainText("A file counts only after its result passes validation");
+  await page.getByRole("button", { name: "Scan stage details", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Scan stage details", exact: true })).toContainText("A file counts only after its result passes validation");
   expect(writes).toHaveLength(0);
 });
 
@@ -1484,10 +1896,12 @@ test("scan history fills missing grades without substituting a previous grade", 
   const statuses = [["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"],
     ["blocked", "shield-alert"], ["running", "loader-circle"], ["queued", "loader-circle"]];
   const otherGrades = ["A", "B", "C", "F"];
-  await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: [...statuses.map(([status]) => ({ ...scan, id: status, status, grade: null })), { ...scan, id: "warnings", status: "partial" }, scan,
-      ...otherGrades.map((grade) => ({ ...scan, id: `grade-${grade}`, grade }))], total: 12, page: 1, page_size: 20,
-  } }));
+  const rows = [...statuses.map(([status]) => ({ ...scan, id: status, status, grade: null })), { ...scan, id: "warnings", status: "partial" }, scan,
+    ...otherGrades.map((grade) => ({ ...scan, id: `grade-${grade}`, grade }))];
+  await page.route("**/api/v1/security/repositories/22/scans?**", (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: rows.length, page: pageNumber, page_size: 10 } });
+  });
   await page.goto("/security/repositories/22?tab=history");
   for (const [status, icon] of statuses) {
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${status}"]`);
@@ -1501,7 +1915,13 @@ test("scan history fills missing grades without substituting a previous grade", 
     await expect(row.locator("a")).toHaveCount(0);
   }
   const completed = page.locator('[data-slot="security-scan-row"][href="/security/scans/scan"]');
+  let currentPage = 1;
   for (const grade of ["A", "B", "C", "D", "F"]) {
+    const targetPage = ["C", "F"].includes(grade) ? 2 : 1;
+    if (targetPage !== currentPage) {
+      await page.getByRole("button", { name: `${targetPage === 2 ? "Next" : "Previous"} scan history`, exact: true }).click();
+      currentPage = targetPage;
+    }
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${grade === "D" ? "scan" : `grade-${grade}`}"]`);
     const shield = row.getByRole("img", { name: `Saved security grade ${grade}`, exact: true }).locator('[data-slot="security-grade-shield"]');
     await expect(shield).toHaveText(grade);
@@ -1510,6 +1930,7 @@ test("scan history fills missing grades without substituting a previous grade", 
     await expect(shield).toHaveClass(grade === "A" ? /text-emerald-800/ : ["D", "F"].includes(grade) ? /text-red-700/ : /text-amber-800/);
     await expect(row.locator("a")).toHaveCount(0);
   }
+  await page.getByRole("button", { name: "Previous scan history", exact: true }).click();
   await expect(completed.locator('[data-slot="badge"]').last()).toHaveClass(/text-emerald-800/);
   await expect(completed.locator(".lucide-shield-check")).toBeVisible();
   const warning = page.locator('[data-slot="security-scan-row"][href="/security/scans/warnings"]');
@@ -1529,20 +1950,22 @@ test("scan history fills missing grades without substituting a previous grade", 
 test("repository security tabs show stable totals before opening lists and refresh with metadata", async ({ page }, info) => {
   await mock(page);
   await page.clock.install();
-  let totals = { finding_count: 3, scan_count: 4 };
+  let totals = { finding_count: 5, finding_state_counts: { open: 3, resolved: 2 }, scan_count: 4 };
   let findingRequests = 0;
   await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: { repository, summary, can_write: true, ...totals } }));
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: Array.from({ length: 4 }, (_, index) => ({ ...scan, id: `scan-${index}` })), total: 4, page: 1, page_size: 20,
+    items: Array.from({ length: 4 }, (_, index) => ({ ...scan, id: `scan-${index}` })), total: 4, page: 1, page_size: 10,
   } }));
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     findingRequests++;
     const filtered = new URL(route.request().url()).searchParams.has("search");
     return route.fulfill({ json: { items: filtered ? [] : Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })),
-      total: filtered ? 0 : 3, page: 1, page_size: 20 } });
+      total: filtered ? 0 : 3, page: 1, page_size: 10 } });
   });
   await page.goto("/security/repositories/22?tab=history");
   await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 2", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Scan history 4", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator('[data-slot="security-scan-row"]')).toHaveCount(4);
   expect(findingRequests).toBe(0);
@@ -1551,11 +1974,13 @@ test("repository security tabs show stable totals before opening lists and refre
   await page.getByRole("tab", { name: "Findings 3", exact: true }).click();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
   await page.getByRole("textbox", { name: "Search findings", exact: true }).fill("missing");
-  await expect(page.getByText("No findings in this view", { exact: true })).toBeVisible();
+  await expect(page.getByText("No open findings", { exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Findings 3", exact: true })).toBeVisible();
-  totals = { finding_count: 4, scan_count: 5 };
+  await expect(page.getByRole("tab", { name: "Resolved 2", exact: true })).toBeVisible();
+  totals = { finding_count: 7, finding_state_counts: { open: 4, resolved: 3 }, scan_count: 5 };
   await page.clock.fastForward(5000);
   await expect(page.getByRole("tab", { name: "Findings 4", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 3", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Scan history 5", exact: true })).toBeVisible();
 });
 
@@ -1571,8 +1996,9 @@ test("scan activity shows past stage transitions separately from the current sta
     scan: { ...scan, status: "running", grade: null, stages: { ...scan.stages, analysis: { status: "running" } } },
     can_write: true, finding_count: 1, activity_count: activity.length, activity } }));
   await page.goto("/security/scans/scan?tab=activity");
-  await expect(page.getByRole("group", { name: "Trivy stage", exact: true })).toContainText("completed");
-  const panel = page.getByRole("tabpanel");
+  await expect(page.getByRole("group", { name: "Scan progress details", exact: true })).toContainText("Analysis");
+  await page.keyboard.press("Escape");
+  const panel = page.getByRole("tabpanel").last();
   await expect(panel.getByText("Trivy started", { exact: true })).toBeVisible();
   await expect(panel.getByText("Trivy completed", { exact: true })).toBeVisible();
   await expect(panel.getByText("Analysis started", { exact: true })).toBeVisible();
@@ -1588,39 +2014,48 @@ test("scan activity shows past stage transitions separately from the current sta
   expect(writes).toHaveLength(0);
 });
 
-test("security scan tabs count saved report observations separately from current findings and activity", async ({ page }, info) => {
+test("security scan tabs count findings and activity independently of report snapshots", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   await mock(page);
   const findings = Array.from({ length: 23 }, (_, index) => ({ ...finding, id: `finding-${index}` }));
   await mockReportFindings(page, findings.slice(0, 3).map((finding) => ({ ...finding, finding_id: finding.id, outcome: "present" })));
-  const activity = Array.from({ length: 200 }, (_, index) => ({ id: `event-${index}`, scan_id: scan.id, finding_id: null,
-    actor_id: null, action: "finding_observed", detail: {}, created_at: at }));
+  const activity = Array.from({ length: 201 }, (_, index) => ({ id: `event-${index}`, scan_id: scan.id, finding_id: null,
+    actor_id: null, action: "scan_stage", detail: { stage: "analysis", status: "completed" }, created_at: at }));
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
     repository, scan: { ...scan, report: { findings: findings.slice(0, 3).map((finding) => ({ ...finding, finding_id: finding.id, outcome: "present" })) } },
-    can_write: true, finding_count: 23, activity_count: 201, activity,
+    can_write: true, finding_count: 23, finding_state_counts: { open: 23 }, activity_count: 201, activity,
   } }));
   await page.route("**/api/v1/security/scans/scan/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
-    return route.fulfill({ json: { items: findings.slice((pageNumber - 1) * 20, pageNumber * 20), total: 23, page: pageNumber, page_size: 20 } });
+    return route.fulfill({ json: { items: findings.slice((pageNumber - 1) * 10, pageNumber * 10), total: 23, page: pageNumber, page_size: 10 } });
   });
   await page.goto("/security/scans/scan");
-  await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Findings at this scan", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(3);
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(10);
   await expect(page.getByRole("tab", { name: "Findings 23", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Activity 201", exact: true })).toBeVisible();
-  const tabList = await page.getByRole("tablist").boundingBox();
+  const tabList = await page.getByRole("tablist", { name: "Security scan", exact: true }).boundingBox();
   const lastTab = await page.getByRole("tab", { name: "Activity 201", exact: true }).boundingBox();
   expect(lastTab!.y + lastTab!.height).toBeLessThanOrEqual(tabList!.y + tabList!.height);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-scan-tab-counts-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Findings 23", exact: true }).click();
-  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(20);
-  await page.getByRole("button", { name: "Load more findings", exact: true }).click();
-  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(23);
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "open findings pagination" }).getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
   await expect(page.getByRole("tab", { name: "Findings 23", exact: true })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Report 3", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Activity 201", exact: true }).click();
-  await expect(page.getByText("Showing the latest 200 of 201 activities.", { exact: true })).toBeVisible();
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(timeline.getByRole("listitem")).toHaveCount(201);
+  await timeline.getByRole("listitem").last().scrollIntoViewIfNeeded();
+  await expect(timeline.getByRole("listitem").last()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "activities pagination" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Next activities", exact: true })).toHaveCount(0);
 });
 
 test("scan findings filter new and repeated observations like review runs without changing saved reports", async ({ page }, info) => {
@@ -1631,38 +2066,41 @@ test("scan findings filter new and repeated observations like review runs withou
     { result: "new", finding: { ...finding, title: "New defect" } },
     ...Array.from({ length: 21 }, (_, index) => ({ result: "open_repeat", finding: { ...finding, id: `repeat-${index}`, title: `Earlier defect ${index + 1}`, first_scan_id: "earlier", severity: "medium" } })),
     ...["resolved", "false_positive", "accepted_risk"].map((state) => ({ result: `${state}_repeat`, finding: { ...finding, id: state, title: `${state} repeated defect`, first_scan_id: "earlier", state } })),
-    ...["fixed", "not_observed", "uncertain"].map((outcome) => ({ result: outcome, finding: { ...finding, id: outcome, title: `Verification ${outcome}`, first_scan_id: "earlier" } })),
+    ...["fixed", "not_observed", "uncertain"].map((outcome) => ({ result: outcome, finding: { ...finding, id: outcome, title: `Verification ${outcome}`, first_scan_id: "earlier", state: outcome === "fixed" ? "resolved" : "open" } })),
   ];
   const resultCounts = Object.fromEntries([...new Set(rows.map((row) => row.result))].map((key) => [key, rows.filter((row) => row.result === key).length]));
   const writes: string[] = [];
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: { ...scan,
     report: { findings: [{ ...finding, finding_id: finding.id, outcome: "present", title: "Original report evidence" }] } },
-    can_write: true, finding_count: rows.length, activity_count: 0, activity: [] } }));
+    can_write: true, finding_count: rows.length, finding_state_counts: { open: 24, resolved: 2, false_positive: 1, accepted_risk: 1 }, resolved_count: 1, activity_count: 0, activity: [] } }));
   await page.route("**/api/v1/security/scans/scan/findings**", (route) => {
     const request = route.request();
     if (request.method() !== "GET") writes.push(request.method());
     const params = new URL(request.url()).searchParams;
-    const selected = rows.filter((row) => (!params.has("outcome") || params.getAll("outcome").includes(row.result))
+    const selected = rows.filter((row) => row.finding.state === params.get("state") && (!params.has("outcome") || params.getAll("outcome").includes(row.result))
       && (!params.has("severity") || row.finding.severity === params.get("severity"))
       && (!params.has("search") || row.finding.title.toLowerCase().includes(params.get("search")!.toLowerCase())));
     const pageNumber = Number(params.get("page") ?? 1);
-    return route.fulfill({ json: { items: selected.slice((pageNumber - 1) * 20, pageNumber * 20).map((row) => row.finding),
-      total: selected.length, page: pageNumber, page_size: 20, result_counts: resultCounts } });
+    return route.fulfill({ json: { items: selected.slice((pageNumber - 1) * 10, pageNumber * 10).map((row) => row.finding),
+      total: selected.length, registered_total: rows.length, state_counts: { open: 24, resolved: 2, false_positive: 1, accepted_risk: 1 }, page: pageNumber, page_size: 10, result_counts: resultCounts } });
   });
   await page.goto("/security/scans/scan?tab=findings&assessment_outcome=withheld");
-  const list = page.getByRole("region", { name: "Current findings for this scan", exact: true });
+  const list = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await expect(page.getByRole("tab", { name: "Findings 28", exact: true })).toBeVisible();
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Result", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: /^Open repeats/ })).toHaveAccessibleName("Open repeats 21");
   await page.getByRole("checkbox", { name: /^Open repeats/ }).click();
   await page.keyboard.press("Escape");
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
-  await list.getByRole("button", { name: "Load more findings", exact: true }).click();
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(21);
-  await expect(list.getByText("open", { exact: true })).toHaveCount(21);
-  await expect(page.getByRole("status").filter({ hasText: "21 of 28 findings" })).toBeAttached();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await list.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 21 total");
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await list.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await expect(list.getByText("open", { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("status").filter({ hasText: "21 of 24 findings" })).toBeAttached();
   await page.getByRole("button", { name: "Edit Result: Open repeats", exact: true }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-scan-finding-results-${info.project.name}.png` });
@@ -1673,22 +2111,22 @@ test("scan findings filter new and repeated observations like review runs withou
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Medium", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Medium", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: /^Medium(?: |$)/ }).click();
+  await expect(page.getByRole("checkbox", { name: /^Medium(?: |$)/ })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Filter by Severity", exact: true })).toBeHidden();
   await expect(page.getByRole("heading", { name: "No findings match these filters", exact: true })).toBeVisible();
-  await page.getByRole("tabpanel").getByRole("button", { name: "Clear filters", exact: true }).click();
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
   await expect(page.getByRole("textbox", { name: "Search scan findings", exact: true })).toBeFocused();
   await page.goto("/security/scans/scan?tab=findings&outcome=not_observed");
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(list).toContainText("Verification not_observed");
   await page.reload();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
-  await page.getByRole("tab", { name: "Report 1", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Findings at this scan", exact: true })).toContainText("Original report evidence");
-  await page.getByRole("tab", { name: "Findings 28", exact: true }).click();
+  await page.getByRole("tab", { name: "Resolved 2", exact: true }).click();
+  await expect(list).toContainText("Verification fixed");
+  await page.getByRole("tab", { name: "Findings 24", exact: true }).click();
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   expect(writes).toHaveLength(0);
 });
@@ -1699,14 +2137,14 @@ test("security tabs display zero for empty repositories and scans", async ({ pag
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/repositories/22")) return route.fulfill({ json: { repository, summary, can_write: true, finding_count: 0, scan_count: 0 } });
     if (path.endsWith("/scans/scan")) return route.fulfill({ json: { repository, scan, can_write: true, finding_count: 0, activity_count: 0, activity: [] } });
-    if (path.endsWith("/findings") || path.endsWith("/scans")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } });
+    if (path.endsWith("/findings") || path.endsWith("/scans")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     return route.fallback();
   });
   await page.goto("/security/repositories/22");
   await expect(page.getByRole("tab", { name: "Findings 0", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Scan history 0", exact: true })).toBeVisible();
   await page.goto("/security/scans/scan");
-  await expect(page.getByRole("tab", { name: "Report 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Findings 0", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Activity 0", exact: true })).toBeVisible();
 });
@@ -1714,93 +2152,95 @@ test("security tabs display zero for empty repositories and scans", async ({ pag
 test("security lists omit pagination when all results fit on one page", async ({ page }, info) => {
   await mock(page);
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => route.fulfill({ json: {
-    items: Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })), total: 3, page: 1, page_size: 20,
+    items: new URL(route.request().url()).searchParams.get("state") === "resolved" ? [] : Array.from({ length: 3 }, (_, index) => ({ ...finding, id: `finding-${index}` })), total: new URL(route.request().url()).searchParams.get("state") === "resolved" ? 0 : 3, page: 1, page_size: 10,
   } }));
   await page.goto("/security/repositories/22");
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(3);
-  await expect(page.locator('[data-slot="load-more-footer"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="pagination"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^(Previous|Next|Load more)/ })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-no-pagination-${info.project.name}.png`, fullPage: true });
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   await expect(page.locator('[data-slot="security-scan-row"]')).toHaveCount(1);
-  await expect(page.locator('[data-slot="load-more-footer"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="pagination"]')).toHaveCount(0);
   await page.goto("/security/scans/scan?tab=findings");
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
-  await expect(page.locator('[data-slot="load-more-footer"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="pagination"]')).toHaveCount(0);
 });
 
 for (const history of [false, true]) {
   test(`security ${history ? "scan history" : "findings"} keeps loaded rows on page failure and hides them after access loss`, async ({ page }) => {
     await mock(page);
     await page.clock.install();
-    const label = history ? "scan history" : "findings";
+    const label = history ? "scan history" : "open findings";
     const rows = Array.from({ length: 5 }, (_, index) => ({ ...(history ? scan : finding), id: `item-${index}` }));
     let failure = 503;
     const requests: number[] = [];
     await page.route(`**/api/v1/security/repositories/22/${history ? "scans" : "findings"}?**`, (route) => {
+      if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
       const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
       requests.push(pageNumber);
       return route.fulfill(failure ? { status: failure, json: { detail: failure === 403 ? "Repository access revoked" : "Results temporarily unavailable" } }
         : { json: { items: rows.slice((pageNumber - 1) * 2, pageNumber * 2), total: rows.length, page: pageNumber, page_size: 2 } });
     });
     await page.goto(`/security/repositories/22${history ? "?tab=history" : ""}`);
-    const panel = page.getByRole("tabpanel");
+    const panel = page.getByRole("tabpanel").last();
     const cards = panel.locator(`[data-slot="${history ? "security-scan-row" : "finding-card"}"]`);
     await expect(panel.getByText("Results temporarily unavailable", { exact: true })).toBeVisible();
-    await expect(panel.getByText(history ? "No security scans yet" : "No findings in this view", { exact: true })).toHaveCount(0);
+    await expect(panel.getByText(history ? "No security scans yet" : "No open findings", { exact: true })).toHaveCount(0);
     failure = 0;
-    await panel.getByRole("button", { name: `Retry ${label}`, exact: true }).click();
+    await panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first().click();
     await expect(cards).toHaveCount(2);
-    const footer = panel.locator('[data-slot="load-more-footer"]');
-    await expect(footer.getByRole("status")).toHaveText("2 of 5");
+    const footer = panel.locator('[data-slot="pagination"]');
+    await expect(footer.getByRole("status")).toHaveText("Page 1 of 3 · 5 total");
     failure = 503;
-    await panel.getByRole("button", { name: `Load more ${label}`, exact: true }).click();
-    await expect(panel.getByRole("button", { name: `Retry ${label}`, exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
+    await expect(panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first()).toBeVisible();
     await expect(cards).toHaveCount(2);
-    await expect(footer.getByRole("status")).toHaveText("2 of 5");
+    await expect(footer.getByRole("status")).toHaveText("Page 1 of 3 · 5 total");
     failure = 0;
-    await panel.getByRole("button", { name: `Retry ${label}`, exact: true }).click();
-    await expect(cards).toHaveCount(4);
-    await expect(footer.getByRole("status")).toHaveText("4 of 5");
+    await panel.getByRole("button", { name: history ? "Retry scan history" : "Retry findings", exact: true }).first().click();
+    await expect(cards).toHaveCount(2);
+    await expect(footer.getByRole("status")).toHaveText("Page 2 of 3 · 5 total");
     failure = 403;
-    await panel.getByRole("button", { name: `Load more ${label}`, exact: true }).click();
+    await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
     await expect(panel.getByText("Repository access revoked", { exact: true })).toBeVisible();
     await expect(cards).toHaveCount(0);
     expect(requests).toEqual([1, 1, 2, 2, 3]);
   });
 }
 
-test("security findings append without duplicates, pause expanded polling, and reset when filters change", async ({ page }, info) => {
+test("security findings replace pages, keep live polling, and reset when filters change", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   await mock(page);
   await page.clock.install();
   const rows = Array.from({ length: 4 }, (_, index) => ({ ...finding, id: `finding-${index}`, title: `Security finding ${index}` }));
   const requests: { page: number; search: string | null }[] = [];
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
     const params = new URL(route.request().url()).searchParams;
     const pageNumber = Number(params.get("page"));
     const search = params.get("search");
     requests.push({ page: pageNumber, search });
-    return route.fulfill({ json: { items: search ? [rows[3]] : pageNumber === 1 ? rows.slice(0, 2) : rows.slice(1, 3),
+    return route.fulfill({ json: { items: search ? [rows[3]] : pageNumber === 1 ? rows.slice(0, 2) : rows.slice(2, 4),
       total: search ? 1 : 4, page: pageNumber, page_size: 2 } });
   });
   await page.goto("/security/repositories/22");
-  const panel = page.getByRole("tabpanel");
+  const panel = page.getByRole("tabpanel").last();
   const cards = panel.locator('[data-slot="finding-card"]');
-  const footer = panel.locator('[data-slot="load-more-footer"]');
+  const footer = panel.locator('[data-slot="pagination"]');
   await expect(cards).toHaveCount(2);
-  await expect(footer.getByRole("status")).toHaveText("2 of 4");
+  await expect(footer.getByRole("status")).toHaveText("Page 1 of 2 · 4 total");
   await page.clock.fastForward(5000);
   await expect.poll(() => requests.length).toBe(2);
-  await panel.getByRole("button", { name: "Load more findings", exact: true }).focus();
-  await page.screenshot({ path: `/private/tmp/code-mortis-security-load-more-${info.project.name}.png`, fullPage: true });
+  await panel.getByRole("button", { name: "Next open findings", exact: true }).focus();
+  await page.screenshot({ path: `/private/tmp/code-mortis-security-pagination-${info.project.name}.png`, fullPage: true });
   await page.keyboard.press("Enter");
-  await expect(cards).toHaveCount(3);
-  await expect(footer.getByRole("status")).toHaveText("3 of 4");
-  await expect(panel.getByRole("button", { name: "Load more findings", exact: true })).toHaveCount(0);
+  await expect(cards).toHaveCount(2);
+  await expect(footer.getByRole("status")).toHaveText("Page 2 of 2 · 4 total");
+  await expect(panel.getByRole("button", { name: "Next open findings", exact: true })).toBeDisabled();
   await page.clock.fastForward(15000);
-  expect(requests.map((request) => request.page)).toEqual([1, 1, 2]);
+  await expect.poll(() => requests.filter((request) => request.page === 2).length).toBeGreaterThan(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const search = page.getByRole("textbox", { name: "Search findings", exact: true });
   await search.fill("ownership");
@@ -1809,7 +2249,7 @@ test("security findings append without duplicates, pause expanded polling, and r
   await expect(footer).toHaveCount(0);
   await search.fill("");
   await expect(cards).toHaveCount(2);
-  await expect(footer.getByRole("status")).toHaveText("2 of 4");
+  await expect(footer.getByRole("status")).toHaveText("Page 1 of 2 · 4 total");
   expect(requests.slice(-2)).toEqual([{ page: 1, search: "ownership" }, { page: 1, search: null }]);
 });
 
@@ -1822,11 +2262,11 @@ test("security history and details show recorded durations and live elapsed time
   const running: Schema["SecurityScanOut"] = { ...scan, id: "running", status: "running", started_at: "2026-10-18T23:07:50Z", finished_at: null };
   const rows = [timed, running, { ...scan, id: "queued", status: "queued", started_at: null, finished_at: null },
     { ...scan, id: "unknown", status: "cancelled", finished_at: null }];
-  await page.route("**/api/v1/security/repositories/22/scans**", (route) => route.fulfill({ json: { items: rows, total: rows.length, page: 1, page_size: 20 } }));
+  await page.route("**/api/v1/security/repositories/22/scans**", (route) => route.fulfill({ json: { items: rows, total: rows.length, page: 1, page_size: 10 } }));
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: timed, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
   await page.route("**/api/v1/security/scans/running", (route) => route.fulfill({ json: { repository, scan: running, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
   await page.goto("/security/repositories/22?tab=history");
-  const history = page.getByRole("tabpanel");
+  const history = page.getByRole("tabpanel").last();
   await expect(history.locator('a[href="/security/scans/scan"]')).toContainText("29m 42s");
   await expect(history.locator('a[href="/security/scans/running"]')).toContainText("10s elapsed");
   await expect(history.locator('a[href="/security/scans/queued"]')).toContainText("Not started");
@@ -1888,6 +2328,14 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   const list = page.getByRole("region", { name: "Security assessments", exact: true });
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(7);
   await expect(page.getByRole("status", { name: "Assessment progress" })).toContainText("1 queued · 2 running · 3 completed · 1 failed");
+  for (const id of [4, 6]) {
+    const assessing = list.getByRole("button", { name: new RegExp(`Security candidate ${id}`) }).getByText("Assessing", { exact: true });
+    await expect(assessing).toBeVisible();
+    await expect(assessing).toHaveClass(/bg-primary/);
+  }
+  const queued = list.getByRole("button", { name: /Security candidate 5/ }).getByText("Awaiting assessment", { exact: true });
+  await expect(queued).toBeVisible();
+  await expect(queued).not.toHaveClass(/bg-primary/);
   const rejected = list.getByRole("button", { name: /Security candidate 1/ });
   await rejected.getByText("Not supported", { exact: true }).hover();
   await expect(page.getByRole("tooltip")).toHaveText("The evidence did not support this proposed issue.");
@@ -1902,6 +2350,7 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   await expect(page.getByRole("tooltip")).toHaveText("The evidence did not support this proposed issue.");
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   await expect(drawer.getByRole("tabpanel", { name: "Evidence 1" }).getByText("return orders.find(id);", { exact: false })).toBeVisible();
+  await expect(drawer.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await drawer.getByText("Original proposal", { exact: true }).click();
   await expect(drawer.getByText("Remediation", { exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-security-assessment-${info.project.name}.png`, fullPage: true });
@@ -1926,11 +2375,12 @@ test("security assessments and open drawer update live through validation withou
   await page.goto("/security/scans/scan?tab=assessment&assessment=4");
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
   await expect(drawer.getByText("Assessment is being checked against source evidence and finding history.")).toBeVisible();
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
   state.rows[4] = securityAssessment("4", { status: "running", progress_phase: "validating", outcome: "pending", result: { verdict: "confirmed", explanation: "Validated response", evidence: finding.evidence.evidence } });
   state.revision++;
   await page.clock.fastForward(5100);
   await expect(drawer.getByText("Response received; validating against the current source and finding history.")).toBeVisible();
-  await expect(drawer.getByText("Validating", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
   await expect(drawer.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   state.rows[4] = securityAssessment("4", { outcome: "confirmed", finding_id: "finding", result: { verdict: "confirmed", finding_id: null, explanation: "Accepted", evidence: [{ revision: "current", path: "src/orders.ts", start_line: 14, end_line: 14, quote: "return acceptedOrder;" }] } });
@@ -1953,9 +2403,11 @@ test("security assessment pagination retains live updates and failures hide sens
   state.rows = Array.from({ length: 25 }, (_, index) => securityAssessment(String(index)));
   await page.goto("/security/scans/scan?tab=assessment");
   const list = page.getByRole("region", { name: "Security assessments" });
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(20);
-  await list.getByRole("button", { name: "Load more assessments" }).click();
-  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(25);
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await list.getByRole("button", { name: "Next assessments" }).click();
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 3 · 25 total");
+  await list.getByRole("button", { name: "Next assessments" }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(5);
   state.rows[24] = securityAssessment("24", { outcome: "uncertain", result: { verdict: "uncertain", explanation: "Caller contract is missing.", evidence: [] } });
   state.revision++;
   await page.clock.fastForward(5100);
@@ -2000,4 +2452,657 @@ test("security assessment result filters and failed diagnostics preserve separat
   await drawer.getByText("Original proposal", { exact: true }).click();
   await expect(drawer.getByText("return orders.find(id);", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("security overview uses backend multiselect counts and pages and resets previously loaded filters", async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  await page.route("**/api/v1/security/repositories?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const filtered = params.has("grade") || params.has("status") || params.has("search");
+    const pageNumber = Number(params.get("page"));
+    const rows = Array.from({ length: filtered ? 3 : 5 }, (_, index) => ({ repository: { ...repository, id: 22 + index, full_name: `team/server-result-${index}` }, summary }));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 2, pageNumber * 2), total: rows.length, registered_total: 505,
+      grade_counts: { A: 400, D: 100, unrated: 5 }, status_counts: { current: 500, not_scanned: 5 }, page: pageNumber, page_size: 2 } });
+  });
+  await page.goto("/security");
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Previous repositories", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Next repositories", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "repositories pagination" }).getByRole("status")).toHaveText("Page 2 of 3 · 5 total");
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Grade", exact: true }).click();
+  await expect(page.getByRole("dialog").getByText("400", { exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: /^A(?: |$)/ }).click();
+  await page.getByRole("checkbox", { name: /^D(?: |$)/ }).click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => requests.at(-1)?.getAll("grade")).toEqual(["A", "D"]);
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Scan status", exact: true }).click();
+  await page.getByRole("checkbox", { name: /^Current(?: |$)/ }).click();
+  await page.getByRole("checkbox", { name: /^Not scanned(?: |$)/ }).click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => requests.at(-1)?.getAll("status")).toEqual(["current", "not_scanned"]);
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await expect.poll(() => requests.at(-1)?.get("page")).toBe("1");
+  await page.screenshot({ path: info.outputPath("security-multiselect-overview.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Remove Grade filter", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Scan status filter", exact: true }).click();
+  await expect(page.locator('[data-slot="security-repository-row"]')).toHaveCount(2);
+  await expect.poll(() => requests.at(-1)?.get("page")).toBe("1");
+});
+
+for (const scope of ["repository", "scan"] as const) test(`${scope} security findings send every selected severity and type to backend pages`, async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  const path = scope === "scan" ? "/security/scans/scan/findings" : "/security/repositories/22/findings";
+  await page.route(`**/api/v1${path}?**`, (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const pageNumber = Number(params.get("page"));
+    const rows = Array.from({ length: 3 }, (_, index) => ({ ...finding, id: String(index), title: `Backend finding ${index}` }));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 2, pageNumber * 2), total: 3, registered_total: 900,
+      result_counts: { new: 3 }, state_counts: { open: 700, resolved: 200 }, severity_counts: { high: 700, medium: 200 }, kind_counts: { code: 700, secret: 200 },
+      page: pageNumber, page_size: 2 } });
+  });
+  await page.goto(scope === "scan" ? "/security/scans/scan?tab=findings" : "/security/repositories/22");
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  for (const [filter, values] of [["Severity", ["High", "Medium"]], ["Type", ["Code", "Secret"]]] as [string, string[]][]) {
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
+    await page.getByRole("menuitem", { name: filter, exact: true }).click();
+    await page.getByRole("checkbox", { name: new RegExp(`^${values[0]}(?: |$)`) }).click();
+    await page.getByRole("checkbox", { name: new RegExp(`^${values[1]}(?: |$)`) }).click();
+    await page.keyboard.press("Escape");
+  }
+  await expect.poll(() => requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
+  await expect.poll(() => requests.at(-1)?.getAll("kind")).toEqual(["code", "secret"]);
+  await expect.poll(() => requests.at(-1)?.getAll("state")).toEqual(["open"]);
+  await expect.poll(() => requests.at(-1)?.get("page")).toBe("1");
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(2);
+  await page.screenshot({ path: info.outputPath(`security-${scope}-multiselect.png`), fullPage: true });
+  await page.getByRole("button", { name: "Next open findings", exact: true }).click();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  expect(requests.at(-1)?.get("page")).toBe("2");
+  expect(requests.at(-1)?.getAll("severity")).toEqual(["high", "medium"]);
+});
+
+test("security assessments load backend pages beyond one hundred and keep rows on next-page failure", async ({ page }) => {
+  const { state } = await mockSecurityAssessments(page);
+  state.rows = Array.from({ length: 105 }, (_, index) => securityAssessment(String(index)));
+  await page.goto("/security/scans/scan?tab=assessment");
+  const list = page.getByRole("region", { name: "Security assessments" });
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  state.fail = 503;
+  await list.getByRole("button", { name: "Next assessments", exact: true }).click();
+  await expect(list.getByRole("button", { name: "Retry assessments", exact: true })).toBeVisible();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  state.fail = 0;
+  await list.getByRole("button", { name: "Retry assessments", exact: true }).click();
+  await expect(list.getByRole("status")).toHaveText("Page 2 of 11 · 105 total");
+  for (let pageNumber = 3; pageNumber <= 11; pageNumber++) {
+    await list.getByRole("button", { name: "Next assessments", exact: true }).click();
+    await expect(list.getByRole("status")).toHaveText(`Page ${pageNumber} of 11 · 105 total`);
+    await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(pageNumber === 11 ? 5 : 10);
+  }
+  expect(state.requests.some((path) => path.includes("page=11"))).toBe(true);
+  expect(state.requests.some((path) => path.includes("page_size="))).toBe(false);
+  await expect(list.getByRole("button", { name: "Next assessments", exact: true })).toBeDisabled();
+  await list.getByRole("button", { name: "Previous assessments", exact: true }).click();
+  await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(10);
+  await expect(list.getByRole("status")).toHaveText("Page 10 of 11 · 105 total");
+});
+
+test("security coverage uses compact rows with authoritative counts and independent pages", async ({ page }, info) => {
+  await mock(page);
+  const longPath = `src/${"long-directory/".repeat(10)}pending.ts`;
+  const units = [
+    { id: "0", task: "analysis:src/orders.ts", status: "completed" },
+    { id: "1", task: `analysis:${longPath}`, status: "running" },
+    ...Array.from({ length: 9 }, (_, index) => ({ id: String(index + 2), task: `assessment:finding-${index}`, status: "completed" })),
+  ];
+  await page.route("**/api/v1/security/scans/scan/coverage/units?**", (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    return route.fulfill({ json: { items: units.slice((pageNumber - 1) * 10, pageNumber * 10), total: units.length, page: pageNumber, page_size: 10 } });
+  });
+  await page.route("**/api/v1/security/scans/scan/coverage/problems?**", (route) => route.fulfill({ json: {
+    items: [{ id: "0", path: "large.bin", reason: "File exceeds the source size limit." }], total: 1, page: 1, page_size: 10,
+  } }));
+  await page.goto("/security/scans/scan?tab=coverage");
+  const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  const work = coverage.getByRole("region", { name: "Work units", exact: true });
+  const excluded = coverage.getByRole("region", { name: "Excluded and unsupported files", exact: true });
+  await expect(work.getByRole("heading")).toHaveText("Work units11");
+  await expect(work.getByRole("list")).toBeHidden();
+  await expect(excluded.getByRole("list")).toBeHidden();
+  await page.screenshot({ path: `/private/tmp/security-coverage-collapsed-${info.project.name}.png`, fullPage: true });
+  await work.locator("summary").first().focus();
+  await page.keyboard.press("Enter");
+  await excluded.getByRole("heading").click();
+  await coverage.getByRole("heading", { name: /^Coverage problems/ }).click();
+  await expect(work.getByRole("listitem")).toHaveCount(10);
+  await expect(work.getByRole("listitem").filter({ hasText: longPath })).toContainText(/running/i);
+  await expect(coverage.locator("dl > div").filter({ hasText: "Analyzed files" })).toHaveText("Analyzed files1");
+  await expect(excluded.getByRole("listitem")).toContainText("Generated directory");
+  await expect(excluded.getByRole("listitem")).toContainText("Not analyzed");
+  await expect(coverage.getByRole("region", { name: "Coverage problems", exact: true })).toContainText("File exceeds the source size limit.");
+  await expect(coverage).not.toContainText("This action could not be completed.");
+  for (const theme of ["light", "dark"]) {
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
+    if (await toggle.isVisible()) await toggle.click();
+    await work.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/security-coverage-${info.project.name}-${theme}.png` });
+  }
+  await work.getByRole("button", { name: "Next work units", exact: true }).click();
+  await expect(work.getByRole("listitem")).toHaveCount(1);
+  await expect(work.getByRole("heading")).toHaveText("Work units11");
+  await expect(excluded.getByRole("listitem")).toHaveCount(1);
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("list")).toBeHidden();
+  await expect(excluded.getByRole("list")).toBeVisible();
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("listitem")).toHaveCount(1);
+  await coverage.getByRole("heading", { name: /^Prepared source inventory/ }).click();
+  const inventory = coverage.getByRole("region", { name: "Prepared source inventory", exact: true });
+  await expect(inventory.getByRole("listitem")).toHaveText("src/orders.ts");
+  await expect(inventory.locator('[data-slot="badge"]')).toHaveCount(0);
+  await coverage.getByText("Scanner details", { exact: true }).click();
+  await expect(coverage.getByText("0.76.0", { exact: true })).toBeVisible();
+});
+
+test("security coverage retains empty, retry, polling and access-loss states", async ({ page }) => {
+  await page.clock.install();
+  await mock(page, { running: true });
+  let failure = 503;
+  let units: Record<string, unknown>[] = [];
+  await page.route("**/api/v1/security/scans/scan/coverage/units?**", (route) => failure
+    ? route.fulfill({ status: failure, json: { detail: "Coverage unavailable" } })
+    : route.fulfill({ json: { items: units, total: units.length, page: 1, page_size: 10 } }));
+  await page.goto("/security/scans/scan?tab=coverage");
+  const work = page.getByRole("region", { name: "Work units", exact: true });
+  await expect(work.getByRole("heading")).toContainText("Unavailable");
+  await work.getByRole("heading").click();
+  await expect(work.getByRole("button", { name: "Retry work units", exact: true })).toBeVisible();
+  await expect(work.getByText(/No work results/)).toHaveCount(0);
+  failure = 0;
+  await work.getByRole("button", { name: "Retry work units", exact: true }).click();
+  await expect(work.getByText(/No work results recorded yet/)).toBeVisible();
+  units = [{ id: "0", task: "analysis:private/source.ts", status: "running" }];
+  await page.clock.fastForward(5000);
+  await expect(work.getByRole("listitem")).toContainText(/running/i);
+  units[0].status = "completed";
+  await page.clock.fastForward(5000);
+  await expect(work.getByRole("listitem")).toContainText(/completed/i);
+  failure = 403;
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tabpanel").last().getByRole("alert")).toBeVisible();
+  await expect(page.getByText("analysis:private/source.ts", { exact: true })).toHaveCount(0);
+});
+
+test("scan activity shows milestones while individual events stay in finding history", async ({ page }, info) => {
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const created = { id: "created", scan_id: "scan", finding_id: "finding", actor_id: null, action: "finding_created", detail: {}, created_at: at };
+  await mock(page, { activity: [created] });
+  const rows = [
+    { id: "completed", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_completed", detail: {}, created_at: at },
+    { id: "started", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_stage", detail: { stage: "analysis", status: "running" }, created_at: at },
+  ];
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan, can_write: true, finding_count: 1, finding_state_counts: { open: 1 }, activity_count: 2, activity: rows,
+  } }));
+  await page.goto("/security/scans/scan?tab=activity");
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(page.getByRole("tab", { name: "Activity 2", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(timeline.locator("li p.font-medium")).toHaveText(["Scan completed", "Analysis started"]);
+  await expect(timeline.getByRole("button")).toHaveCount(0);
+  await expect(timeline).not.toContainText("Finding created");
+  await expect(page.getByRole("navigation", { name: "activities pagination" })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("activity-milestones.png"), fullPage: true });
+  await page.getByRole("tab", { name: "Findings 1", exact: true }).click();
+  await page.locator('[data-slot="finding-card"]').click();
+  const drawer = page.getByRole("dialog", { name: "Finding details" });
+  await drawer.getByRole("tab", { name: "Activity 2", exact: true }).click();
+  await expect(drawer.getByText("Finding created", { exact: true })).toBeVisible();
+});
+
+test("scan activity uses compact rows and preserves partial outcomes and diagnostics", async ({ page }, info) => {
+  await page.clock.install();
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  await mock(page);
+  const failure = "AI result delivery failed. Technical details: saved scan response " + "detail".repeat(120);
+  let items = [
+    { id: "partial", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_completed", detail: { status: "partial" }, created_at: at },
+    { id: "failed", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_failed", detail: { reason: failure }, created_at: at },
+    { id: "started", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_stage", detail: { stage: "analysis", status: "running" }, created_at: at },
+  ];
+  let unavailable = false;
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill(unavailable
+    ? { status: 503, json: { detail: "Activity is temporarily unavailable." } }
+    : { json: { repository, scan, can_write: true, finding_count: 1, activity_count: items.length, activity: items } }));
+  await page.goto("/security/scans/scan?tab=activity");
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(timeline.locator("li p.font-medium")).toHaveText(["Scan finished with incomplete work", "Scan failed", "Analysis started"]);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 3");
+  await expect(timeline.locator("time").first()).toHaveAttribute("datetime", at);
+  await timeline.getByText("Technical details", { exact: true }).click();
+  await expect(timeline.getByRole("region", { name: "Scan failed technical details" })).toHaveText(failure);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("scan-activity.png"), fullPage: true });
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  items.unshift({ id: "cancelled", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_cancelled", detail: { status: "cancelled" }, created_at: at });
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 4");
+  await page.getByRole("tab", { name: "Activity 4", exact: true }).click();
+  await expect(timeline.getByRole("listitem")).toHaveCount(4);
+  items = [];
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tablist").getByRole("tab").last()).toHaveText("Activity 0");
+  await expect(page.getByText("No activity recorded yet.")).toBeVisible();
+  unavailable = true;
+  await page.clock.fastForward(5000);
+  await expect(page.getByText("No activity recorded yet.")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveText("Activity is temporarily unavailable.");
+  unavailable = false;
+  await page.getByRole("button", { name: "Reload scan", exact: true }).click();
+  await expect(page.getByText("No activity recorded yet.")).toBeVisible();
+});
+
+test("security coverage stays paginated while scan activity shows all milestones and hides them on access loss", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  const requests: string[] = [];
+  let denied = false;
+  const activity = [
+    { id: "completed", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_completed", detail: {}, created_at: at },
+    { id: "created", scan_id: "scan", finding_id: null, actor_id: null, action: "scan_created", detail: {}, created_at: at },
+  ];
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill(denied
+    ? { status: 403, json: { detail: "Access denied" } }
+    : { json: { repository, scan, can_write: true, finding_count: 1, activity_count: activity.length, activity } }));
+  await page.route("**/api/v1/security/scans/scan/coverage/inventory?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params.toString());
+    if (denied) return route.fulfill({ status: 403, json: { detail: "Access denied" } });
+    const pageNumber = Number(params.get("page"));
+    return route.fulfill({ json: { items: [{ id: String(pageNumber), path: `private/source-${pageNumber}.ts` }], total: 2, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security/scans/scan?tab=coverage");
+  await page.getByRole("heading", { name: /^Prepared source inventory/ }).click();
+  await expect(page.getByText("private/source-1.ts", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next prepared files", exact: true }).click();
+  await expect(page.getByText("private/source-2.ts", { exact: true })).toBeVisible();
+  expect(requests).toContain("page=2");
+  await page.getByRole("tab", { name: /Activity/ }).click();
+  const timeline = page.getByRole("list", { name: "Activity events" });
+  await expect(timeline.locator("li p.font-medium")).toHaveText(["Scan completed", "Scan created"]);
+  activity.unshift({ ...activity[0], id: "cancelled", action: "scan_cancelled" });
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("tab", { name: "Activity 3", exact: true })).toBeVisible();
+  await expect(timeline.locator("li p.font-medium")).toHaveText(["Scan cancelled", "Scan completed", "Scan created"]);
+  await expect(page.getByRole("navigation", { name: "activities pagination" })).toHaveCount(0);
+  denied = true;
+  await page.clock.fastForward(5000);
+  await expect(page.getByRole("alert")).toHaveText("Access denied");
+  await expect(timeline).toHaveCount(0);
+});
+
+test("security finding histories use independent backend pages and hide both histories after access loss", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/security/findings/finding", (route) => route.fulfill({ json: { repository, finding, can_write: true,
+    observations: [], activity: [], observation_count: 125, activity_count: 205 } }));
+  let denied = false;
+  const requests: string[] = [];
+  for (const section of ["observations", "activity"]) await page.route(`**/api/v1/security/findings/finding/${section}?**`, (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url.pathname + url.search);
+    if (denied) return route.fulfill({ status: 403, json: { detail: "Access denied" } });
+    const pageNumber = Number(url.searchParams.get("page"));
+    const item = section === "observations" ? { id: String(pageNumber), scan_id: `scan-${pageNumber}`, outcome: pageNumber === 1 ? "present" : "not_observed", created_at: at }
+      : { id: String(pageNumber), scan_id: "scan", finding_id: "finding", actor_id: null, action: `private_activity_${pageNumber}`, detail: {}, created_at: at };
+    return route.fulfill({ json: { items: [item], total: 2, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security/repositories/22?finding=finding&finding_tab=activity");
+  const drawer = page.getByRole("dialog", { name: "Finding details" });
+  await expect(drawer.getByRole("tab", { name: "Activity 330", exact: true })).toBeVisible();
+  await expect(drawer.getByText("Private activity 1", { exact: true })).toBeVisible();
+  await drawer.getByRole("button", { name: "Next observations", exact: true }).click();
+  await expect(drawer.getByRole("link", { name: "Not observed", exact: true })).toBeVisible();
+  expect(requests.some((path) => path.endsWith("/observations?page=2"))).toBe(true);
+  expect(requests.some((path) => path.endsWith("/activity?page=2"))).toBe(false);
+  denied = true;
+  await drawer.getByRole("button", { name: "Next finding activity", exact: true }).click();
+  await expect(drawer.getByRole("alert")).toBeVisible();
+  await expect(drawer.getByText("Private activity 1", { exact: true })).toHaveCount(0);
+  await expect(drawer.getByRole("link", { name: "Not observed", exact: true })).toHaveCount(0);
+});
+
+test("security repository ordering is backend driven, defaults to updated descending, and resets pages", async ({ page }, info) => {
+  await mock(page);
+  const requests: URLSearchParams[] = [];
+  const rows = ["alpha", "bravo", "charlie"].map((name, index) => ({ repository: { ...repository, id: 22 + index, full_name: `team/${name}` }, summary }));
+  await page.route("**/api/v1/security/repositories?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const ordering = params.get("ordering");
+    const ordered = ordering === "updated_at" ? [rows[2], rows[0], rows[1]] : ordering === "repository" ? rows
+      : ordering === "-repository" ? [...rows].reverse() : [rows[1], rows[2], rows[0]];
+    const pageNumber = Number(params.get("page"));
+    return route.fulfill({ json: { items: ordered.slice(pageNumber - 1, pageNumber), total: 3, registered_total: 3,
+      grade_counts: { D: 3 }, status_counts: { current: 3 }, page: pageNumber, page_size: 1 } });
+  });
+  await page.goto("/security?search=team&grade=D&grade=unrated");
+  const list = page.locator('[data-slot="security-repository-row"]');
+  await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toBeVisible();
+  await expect(list).toHaveCount(1);
+  await expect(list.first()).toContainText("team/bravo");
+  expect(requests.at(-1)?.get("ordering")).toBe("-updated_at");
+  await page.getByRole("button", { name: "Next repositories", exact: true }).click();
+  await expect(list).toHaveCount(1);
+  await expect(list.first()).toContainText("team/charlie");
+  await page.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await expect(page).toHaveURL(/ordering=updated_at/);
+  await expect(list).toHaveCount(1);
+  await expect(list.first()).toContainText("team/charlie");
+  await expect.poll(() => requests.at(-1)?.get("page")).toBe("1");
+  expect(requests.at(-1)?.getAll("grade")).toEqual(["D", "unrated"]);
+  expect(requests.at(-1)?.get("search")).toBe("team");
+  await page.getByRole("button", { name: "Sort by Updated", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Repository", exact: true }).click();
+  await expect(list.first()).toContainText("team/alpha");
+  await expect(page).toHaveURL(/ordering=repository/);
+  await page.getByRole("button", { name: "Sort descending", exact: true }).click();
+  await expect(list.first()).toContainText("team/charlie");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Sort by Repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sort ascending", exact: true })).toBeVisible();
+  await expect(list.first()).toContainText("team/charlie");
+  expect(requests.at(-1)?.get("ordering")).toBe("-repository");
+  await page.screenshot({ path: info.outputPath("security-ordering.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.goto("/security?ordering=invalid");
+  await expect(page.getByRole("button", { name: "Sort by Updated", exact: true })).toBeVisible();
+  await expect(list.first()).toContainText("team/bravo");
+  expect(requests.at(-1)?.get("ordering")).toBe("-updated_at");
+});
+
+test("shared security pagination replaces ten-item pages, keeps focus, and recovers when the last page shrinks", async ({ page }, info) => {
+  await mock(page);
+  await page.clock.install();
+  let total = 23;
+  let release: (() => void) | undefined;
+  let hold = true;
+  const requests: number[] = [];
+  await page.route("**/api/v1/security/repositories/22/findings?**", async (route) => {
+    if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    requests.push(pageNumber);
+    if (pageNumber === 2 && hold) await new Promise<void>((resolve) => { release = resolve; });
+    const rows = Array.from({ length: total }, (_, index) => ({ ...finding, id: String(index), title: `Paged finding ${index}` }));
+    return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total, page: pageNumber, page_size: 10 } });
+  });
+  await page.goto("/security/repositories/22");
+  const panel = page.getByRole("tabpanel").last();
+  const cards = panel.locator('[data-slot="finding-card"]');
+  const pagination = panel.getByRole("navigation", { name: "open findings pagination", exact: true });
+  const previous = pagination.getByRole("button", { name: "Previous open findings", exact: true });
+  const next = pagination.getByRole("button", { name: "Next open findings", exact: true });
+  await expect(cards).toHaveCount(10);
+  await expect(pagination.getByRole("status")).toHaveText("Page 1 of 3 · 23 total");
+  await expect(previous).toBeDisabled();
+  await next.focus();
+  await page.keyboard.press("Enter");
+  await expect(next).toBeDisabled();
+  await expect(cards.first()).toContainText("Paged finding 0");
+  await page.keyboard.press("Enter");
+  expect(requests).toEqual([1, 2]);
+  hold = false;
+  await expect.poll(() => !!release).toBe(true);
+  release!();
+  await expect(cards.first()).toContainText("Paged finding 10");
+  await expect(next).toBeFocused();
+  await expect(cards).toHaveCount(10);
+  await expect(pagination.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+  await page.screenshot({ path: info.outputPath("security-pagination.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await next.click();
+  await expect(cards).toHaveCount(3);
+  await expect(next).toBeDisabled();
+  await previous.click();
+  await expect(cards.first()).toContainText("Paged finding 10");
+  await expect(pagination.getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+  const lastPageResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/repositories/22/findings") && new URL(response.url()).searchParams.get("page") === "3");
+  await next.click();
+  await (await lastPageResponse).finished();
+  await page.clock.runFor(1);
+  await expect(pagination.getByRole("status")).toHaveText("Page 3 of 3 · 23 total");
+  await expect(pagination).toHaveAttribute("aria-busy", "false");
+  total = 2;
+  await page.clock.fastForward(5100);
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first()).toContainText("Paged finding 0");
+  await expect(pagination).toHaveCount(0);
+  expect(requests.at(-1)).toBe(1);
+  await expect(page.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+});
+
+for (const area of ["repository", "scan", "assessment"] as const) {
+  test(`${area} filters share right-aligned backend ordering and reset the page`, async ({ page }, info) => {
+    await mock(page);
+    const endpoint = area === "repository" ? "/security/repositories/22/findings" : `/security/scans/scan/${area === "scan" ? "findings" : "assessments"}`;
+    const requests: URLSearchParams[] = [];
+    await page.route(`**/api/v1${endpoint}?**`, (route) => {
+      if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
+      const params = new URL(route.request().url()).searchParams;
+      requests.push(params);
+      const pageNumber = Number(params.get("page"));
+      let rows = Array.from({ length: 23 }, (_, index) => {
+        const severity = index === 22 ? "critical" : index === 0 ? "low" : "medium";
+        const title = `Backend ordered finding ${index}`;
+        return area === "assessment" ? securityAssessment(String(index), { proposal: { title, path: `src/${index}.py`, severity } })
+          : { ...finding, id: String(index), finding_id: String(index), title, severity, outcome: "present" };
+      });
+      if ((params.get("ordering") ?? "-severity") === "-severity") rows = [...rows].reverse();
+      return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: 23, registered_total: 23,
+        page: pageNumber, page_size: 10, revision: "1", outcome_counts: {}, severity_counts: {}, category_counts: {}, kind_counts: {} } });
+    });
+    await page.goto(area === "repository" ? "/security/repositories/22?ordering=-updated_at" : `/security/scans/scan?tab=${area === "scan" ? "findings&ordering=-updated_at" : "assessment&assessment_ordering=position"}`);
+    const panel = page.getByRole("tabpanel").last();
+    const label = area === "assessment" ? "assessments" : "open findings";
+    await panel.getByRole("button", { name: `Next ${label}`, exact: true }).click();
+    await expect(panel.getByRole("navigation").getByRole("status")).toHaveText("Page 2 of 3 · 23 total");
+    const field = area === "assessment" ? "Assessment order" : area === "scan" ? "Severity" : "Updated";
+    await panel.getByRole("button", { name: `Sort by ${field}`, exact: true }).click();
+    if (area === "scan") {
+      await expect(page.getByRole("menuitemradio", { name: "Created", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("menuitemradio", { name: "Updated", exact: true })).toHaveCount(0);
+      await page.getByRole("menuitemradio", { name: "Report order", exact: true }).click();
+      await panel.getByRole("button", { name: "Sort by Report order", exact: true }).click();
+    }
+    await page.getByRole("menuitemradio", { name: "Severity", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.get("ordering") ?? "-severity").toBe("-severity");
+    expect(requests.at(-1)?.get("page")).toBe("1");
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered finding 22");
+    const sort = panel.getByRole("button", { name: "Sort by Severity", exact: true });
+    await expect(sort).toBeFocused();
+    const sortBounds = await sort.boundingBox();
+    const filterBounds = await panel.getByRole("button", { name: "Filters", exact: true }).boundingBox();
+    expect(sortBounds!.x).toBeGreaterThan(filterBounds!.x);
+    await panel.getByRole("button", { name: "Sort ascending", exact: true }).click();
+    await expect.poll(() => requests.at(-1)?.get("ordering")).toBe("severity");
+    await expect(panel.locator('[data-slot="finding-card"]').first()).toContainText("Backend ordered finding 0");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (area === "repository") await page.screenshot({ path: `/private/tmp/code-mortis-ordering-${info.project.name}.png` });
+  });
+}
+
+for (const scope of ["repository", "scan"] as const) test(`${scope} finding state tabs keep counts, filters and pagination independent`, async ({ page }, info) => {
+  await mock(page);
+  if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+  const stateCounts = { open: 13, accepted_risk: 13, false_positive: 13, resolved: 13 };
+  const rows = Object.entries(stateCounts).flatMap(([state, total]) => Array.from({ length: total }, (_, index) => ({
+    ...finding, id: `${state}-${index}`, state, title: `${state} defect ${index}`, path: `${state}/${index}.py`, severity: index === 12 ? "critical" : "high",
+  })));
+  const url = scope === "repository" ? "/security/repositories/22" : "/security/scans/scan";
+  await page.route(`**/api/v1${url}`, (route) => route.fulfill({ json: scope === "repository" ? {
+    repository, summary, can_write: true, finding_count: rows.length, finding_state_counts: stateCounts, scan_count: 1,
+  } : { repository, scan, can_write: true, finding_count: rows.length, finding_state_counts: stateCounts, activity_count: 0, activity: [] } }));
+  const requests: URLSearchParams[] = [];
+  let failure = 0;
+  await page.route(`**/api/v1${url}/findings?**`, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    if (failure) return route.fulfill({ status: failure, json: { detail: "Findings unavailable" } });
+    const selected = rows.filter((row) => row.state === params.get("state") && (!params.has("severity") || params.getAll("severity").includes(row.severity))
+      && (!params.has("kind") || params.getAll("kind").includes(row.kind)) && row.title.includes(params.get("search") ?? ""));
+    if ((params.get("ordering") ?? "-severity") === "-severity") selected.sort((a, b) => Number(b.severity === "critical") - Number(a.severity === "critical"));
+    else if (params.get("ordering") === "path") selected.sort((a, b) => a.path.localeCompare(b.path));
+    const number = Number(params.get("page"));
+    return route.fulfill({ json: { items: selected.slice((number - 1) * 10, number * 10), total: selected.length,
+      registered_total: rows.length, state_counts: stateCounts, severity_counts: { critical: 4, high: 48 }, kind_counts: { code: 52 }, page: number, page_size: 10 } });
+  });
+  await page.goto(url);
+  const names = ["Findings", "Accepted risk", "False positives", "Resolved"];
+  const states = Object.keys(stateCounts);
+  const cards = page.locator('[data-slot="finding-card"]');
+  const pagination = page.getByRole("navigation", { name: /findings pagination/ }).getByRole("status");
+  for (const name of names) await expect(page.getByRole("tab", { name: `${name} 13`, exact: true })).toBeVisible();
+  for (const [index, state] of states.entries()) {
+    await page.getByRole("tab", { name: `${names[index]} 13`, exact: true }).click();
+    await expect(cards).toHaveCount(10);
+    await expect(cards.first()).toContainText(`${state} defect 12`);
+    await expect(pagination).toHaveText("Page 1 of 2 · 13 total");
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: "State", exact: true })).toHaveCount(0);
+    await page.getByRole("menuitem", { name: "Severity", exact: true }).click();
+    await page.getByRole("checkbox", { name: /^High(?: |$)/ }).click();
+    await page.getByRole("checkbox", { name: /^Critical(?: |$)/ }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("textbox", { name: /^Search .*findings$/ }).fill(state);
+    await expect.poll(() => requests.at(-1)?.get("search")).toBe(state);
+    await page.getByRole("button", { name: `Next ${state} findings`, exact: true }).click();
+    await expect(pagination).toHaveText("Page 2 of 2 · 13 total");
+    await expect(cards).toHaveCount(3);
+  }
+  for (const [index, state] of states.entries()) {
+    await page.getByRole("tab", { name: `${names[index]} 13`, exact: true }).click();
+    await expect(pagination).toHaveText("Page 2 of 2 · 13 total");
+    await expect(page.getByRole("textbox", { name: /^Search .*findings$/ })).toHaveValue(state);
+    await expect.poll(() => requests.at(-1)?.get("state")).toBe(state);
+    expect(requests.at(-1)?.has("resolved")).toBe(false);
+  }
+  await page.getByRole("tab", { name: "False positives 13", exact: true }).click();
+  await page.getByRole("button", { name: "Sort by Severity", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "File", exact: true }).click();
+  await expect(pagination).toHaveText("Page 1 of 2 · 13 total");
+  await page.getByRole("button", { name: "Next false_positive findings", exact: true }).click();
+  await expect(pagination).toHaveText("Page 2 of 2 · 13 total");
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "False positives 13", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(pagination).toHaveText("Page 2 of 2 · 13 total");
+  await expect(page.getByRole("button", { name: "Sort by File", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Accepted risk 13", exact: true }).click();
+  await expect(pagination).toHaveText("Page 2 of 2 · 13 total");
+  await expect(page.getByRole("button", { name: "Sort by Severity", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("tab", { name: "False positives 13", exact: true })).toHaveAttribute("aria-selected", "true");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath(`${scope}-finding-state-tabs.png`), fullPage: true });
+  failure = 403;
+  await expect(cards).toHaveCount(0, { timeout: 10000 });
+});
+
+for (const scope of ["repository"] as const) test(`${scope} triage moves findings between counted state tabs immediately`, async ({ page }) => {
+  const writes = await mock(page);
+  await page.goto(scope === "repository" ? "/security/repositories/22" : "/security/scans/scan");
+  const openName = "Findings";
+  let previous = openName;
+  for (const [state, name] of [["accepted_risk", "Accepted risk"], ["false_positive", "False positives"], ["open", openName]]) {
+    await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
+    const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+    await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+    await sheet.getByLabel("Decision", { exact: true }).selectOption(state);
+    await sheet.getByLabel("Reason", { exact: true }).fill("Reviewed the source evidence and updated this decision.");
+    await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
+    await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText(state.replaceAll("_", " "));
+    await sheet.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("tab", { name: `${previous} 0`, exact: true })).toBeVisible();
+    await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: `${name} 1`, exact: true }).click();
+    await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
+    previous = name;
+  }
+  expect(writes.map((write) => write.body.state)).toEqual(["accepted_risk", "false_positive", "open"]);
+});
+
+for (const scope of ["repository", "scan"] as const) test(`${scope} legacy state links select the corresponding tab`, async ({ page }) => {
+  await mock(page);
+  const url = scope === "repository" ? "/security/repositories/22" : "/security/scans/scan";
+  await page.goto(`${url}?state=false_positive&search=guard&false_positive_page=2`);
+  const key = "tab";
+  await expect(page).toHaveURL((url) => url.searchParams.get(key) === "false_positive" && !url.searchParams.has("state") && url.searchParams.get("false_positive_search") === "guard");
+  await expect(page.getByRole("tab", { name: "False positives 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: "Search false positive findings", exact: true })).toHaveValue("guard");
+  await page.goto(`${url}?tab=resolved&resolved_state=open&resolved_search=fix`);
+  await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("resolved_state"));
+  await expect(page.getByRole("textbox", { name: "Search resolved findings", exact: true })).toHaveValue("fix");
+});
+
+test("repositories with only resolved findings open on Findings and link to Resolved", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: {
+    repository, summary, can_write: true, finding_count: 1, finding_state_counts: { resolved: 1 }, scan_count: 1,
+  } }));
+  await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
+    const resolved = new URL(route.request().url()).searchParams.get("state") === "resolved";
+    return route.fulfill({ json: { items: resolved ? [{ ...finding, state: "resolved" }] : [], total: resolved ? 1 : 0,
+      registered_total: 1, state_counts: { resolved: 1 }, page: 1, page_size: 10 } });
+  });
+  await page.goto("/security/repositories/22");
+  await expect(page.getByRole("tab", { name: "Findings 0", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("No open findings", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "View resolved findings", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Resolved 1", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true }).locator('[data-slot="finding-card"]')).toHaveCount(1);
+});
+
+for (const state of ["current", "unavailable"] as const) test(`unrated security badge explains that no grade is available for ${state}`, async ({ page }) => {
+  await mock(page, { summary: { state, grade: null } });
+  await page.goto("/security/repositories/22");
+  await page.getByRole("link", { name: "Security Unrated", exact: true }).focus();
+  await expect(page.getByRole("tooltip")).toContainText("No security grade is available.");
+  await expect(page.getByLabel("Scan coverage", { exact: true })).toHaveText("Coverage complete");
+  await expect(page.getByLabel("Scan freshness", { exact: true })).toHaveText(state === "current" ? "Current commit" : "Freshness unverified");
+});
+
+
+test("scan findings remain historical after triage while the repository updates", async ({ page }) => {
+  await mock(page);
+  await page.goto("/security/scans/scan");
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist")).toHaveCount(1);
+  await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
+  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await sheet.getByLabel("Decision", { exact: true }).selectOption("false_positive");
+  await sheet.getByLabel("Reason", { exact: true }).fill("Reviewed the saved evidence and current implementation.");
+  await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
+  await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("false positive");
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "False positives 0", exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
+  await page.goto("/security/repositories/22?tab=false_positive");
+  await expect(page.getByRole("tab", { name: "Findings 0", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "False positives 1", exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
 });

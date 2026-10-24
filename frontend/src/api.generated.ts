@@ -413,6 +413,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Saved Findings */
+        get: operations["run_saved_findings_api_v1_runs__run_id__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/findings/{finding_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Saved Finding */
+        get: operations["run_saved_finding_api_v1_runs__run_id__findings__finding_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/resolved": {
         parameters: {
             query?: never;
@@ -1033,6 +1067,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/security/scans/{scan_id}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Activity */
+        get: operations["scan_activity_api_v1_security_scans__scan_id__activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/scans/{scan_id}/coverage/{section}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Coverage */
+        get: operations["scan_coverage_api_v1_security_scans__scan_id__coverage__section__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/security/scans/{scan_id}/assessments": {
         parameters: {
             query?: never;
@@ -1185,6 +1253,40 @@ export interface paths {
         head?: never;
         /** Triage */
         patch: operations["triage_api_v1_security_findings__finding_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Finding Activity */
+        get: operations["finding_activity_api_v1_security_findings__finding_id__activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/findings/{finding_id}/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Finding Observations */
+        get: operations["finding_observations_api_v1_security_findings__finding_id__observations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/security/findings/{finding_id}/rotation": {
@@ -2427,6 +2529,8 @@ export interface components {
         /** RunDetail */
         RunDetail: {
             run: components["schemas"]["RunOut"];
+            /** Total Tokens */
+            total_tokens?: number | null;
             pull_request: components["schemas"]["PullRequestOut"];
             repository: components["schemas"]["RepositoryOut"];
             /** Occurrences */
@@ -2446,9 +2550,53 @@ export interface components {
              * @default
              */
             resolved_revision: string;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Findings Revision
+             * @default
+             */
+            findings_revision: string;
             assessment?: components["schemas"]["AssessmentSummary"] | null;
             /** Can Write */
             can_write: boolean;
+        };
+        /** RunFindingPage */
+        RunFindingPage: {
+            /**
+             * Revision
+             * @default
+             */
+            revision: string;
+            /** Items */
+            items: components["schemas"]["OccurrenceOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Severity Counts */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** Category Counts */
+            category_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /**
+             * Page Size
+             * @default 10
+             */
+            page_size: number;
+            /** Outcome Counts */
+            outcome_counts: {
+                [key: string]: number;
+            };
         };
         /** RunLimits */
         RunLimits: {
@@ -2554,6 +2702,10 @@ export interface components {
             scan_id: string | null;
             /** Finding Id */
             finding_id: string | null;
+            /** Finding Title */
+            finding_title?: string | null;
+            /** Finding Path */
+            finding_path?: string | null;
             /** Actor Id */
             actor_id: number | null;
             /** Action */
@@ -2567,6 +2719,17 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** SecurityActivityPage */
+        SecurityActivityPage: {
+            /** Items */
+            items: components["schemas"]["SecurityActivityOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
         };
         /** SecurityAssessmentOut */
         SecurityAssessmentOut: {
@@ -2671,6 +2834,16 @@ export interface components {
             finding: components["schemas"]["SecurityFindingOut"];
             /** Can Write */
             can_write: boolean;
+            /**
+             * Observation Count
+             * @default 0
+             */
+            observation_count: number;
+            /**
+             * Activity Count
+             * @default 0
+             */
+            activity_count: number;
             /** Observations */
             observations: {
                 [key: string]: unknown;
@@ -2735,6 +2908,23 @@ export interface components {
             page_size: number;
             /** Result Counts */
             result_counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Registered Total
+             * @default 0
+             */
+            registered_total: number;
+            /** State Counts */
+            state_counts?: {
+                [key: string]: number;
+            };
+            /** Severity Counts */
+            severity_counts?: {
+                [key: string]: number;
+            };
+            /** Kind Counts */
+            kind_counts?: {
                 [key: string]: number;
             };
         };
@@ -2828,6 +3018,19 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** SecurityRecordPage */
+        SecurityRecordPage: {
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
         /** SecurityReportPage */
         SecurityReportPage: {
             /** Items */
@@ -2838,6 +3041,10 @@ export interface components {
             total: number;
             /** Registered Total */
             registered_total: number;
+            /** State Counts */
+            state_counts: {
+                [key: string]: number;
+            };
             /** Outcome Counts */
             outcome_counts: {
                 [key: string]: number;
@@ -2863,8 +3070,33 @@ export interface components {
             can_write?: boolean | null;
             /** Finding Count */
             finding_count?: number | null;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
             /** Scan Count */
             scan_count?: number | null;
+        };
+        /** SecurityRepositoryPage */
+        SecurityRepositoryPage: {
+            /** Items */
+            items: components["schemas"]["SecurityRepositoryOut"][];
+            /** Total */
+            total: number;
+            /** Registered Total */
+            registered_total: number;
+            /** Grade Counts */
+            grade_counts: {
+                [key: string]: number;
+            };
+            /** Status Counts */
+            status_counts: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
         };
         /** SecurityRotation */
         SecurityRotation: {
@@ -2882,11 +3114,20 @@ export interface components {
             assessment?: components["schemas"]["SecurityAssessmentSummary"];
             /** Finding Count */
             finding_count: number;
+            /** Finding State Counts */
+            finding_state_counts?: {
+                [key: string]: number;
+            };
             /**
              * Report Count
              * @default 0
              */
             report_count: number;
+            /**
+             * Resolved Count
+             * @default 0
+             */
+            resolved_count: number;
             /** Activity Count */
             activity_count: number;
             /** Activity */
@@ -2985,6 +3226,18 @@ export interface components {
              * @default not_scanned
              */
             state: string;
+            /**
+             * Coverage
+             * @default not_scanned
+             * @enum {string}
+             */
+            coverage: "not_scanned" | "complete" | "incomplete";
+            /**
+             * Freshness
+             * @default unavailable
+             * @enum {string}
+             */
+            freshness: "current" | "outdated" | "unavailable";
             /** Grade Scan Id */
             grade_scan_id?: string | null;
             /** Grade Sha */
@@ -3413,6 +3666,7 @@ export interface operations {
     analytics_overview_api_v1_analytics_overview_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3448,6 +3702,7 @@ export interface operations {
     analytics_findings_api_v1_analytics_findings_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3486,6 +3741,7 @@ export interface operations {
     analytics_reviews_api_v1_analytics_reviews_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3521,6 +3777,7 @@ export interface operations {
     analytics_usage_api_v1_analytics_usage_get: {
         parameters: {
             query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
                 repo?: number[];
                 from_at?: string | null;
                 to_at?: string | null;
@@ -3938,6 +4195,7 @@ export interface operations {
     pull_findings_api_v1_pulls__pr_id__findings_get: {
         parameters: {
             query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 status?: ("open" | "resolved" | "dismissed")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
@@ -3975,7 +4233,9 @@ export interface operations {
     };
     run_detail_api_v1_runs__run_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                ordering?: "severity" | "-severity" | "path" | "-path";
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -4004,9 +4264,84 @@ export interface operations {
             };
         };
     };
+    run_saved_findings_api_v1_runs__run_id__findings_get: {
+        parameters: {
+            query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
+                q?: string;
+                severity?: ("critical" | "high" | "medium" | "low")[];
+                category?: string[];
+                page?: number;
+                page_size?: number;
+                status?: "open" | "resolved";
+                outcome?: ("new" | "open_repeat" | "resolved_repeat" | "dismissed_repeat" | "repeated" | "recorded")[];
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunFindingPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_saved_finding_api_v1_runs__run_id__findings__finding_id__get: {
+        parameters: {
+            query?: {
+                status?: "open" | "resolved";
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OccurrenceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_resolved_api_v1_runs__run_id__resolved_get: {
         parameters: {
             query?: {
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 severity?: ("critical" | "high" | "medium" | "low")[];
                 category?: string[];
@@ -4044,6 +4379,7 @@ export interface operations {
     run_candidates_api_v1_runs__run_id__candidates_get: {
         parameters: {
             query?: {
+                ordering?: "position" | "-position" | "created_at" | "-created_at" | "finished_at" | "-finished_at" | "severity" | "-severity" | "path" | "-path";
                 q?: string;
                 outcome?: ("new" | "repeated" | "rejected" | "withheld" | "pending")[];
                 severity?: ("critical" | "high" | "medium" | "low")[];
@@ -5215,7 +5551,13 @@ export interface operations {
     };
     repositories_api_v1_security_repositories_get: {
         parameters: {
-            query?: never;
+            query?: {
+                page?: number;
+                search?: string;
+                grade?: ("A" | "B" | "C" | "D" | "F" | "unrated")[] | null;
+                status?: ("not_scanned" | "current" | "incomplete" | "unavailable" | "outdated")[] | null;
+                ordering?: "updated_at" | "-updated_at" | "repository" | "-repository";
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5228,7 +5570,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SecurityRepositoryOut"][];
+                    "application/json": components["schemas"]["SecurityRepositoryPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5363,6 +5714,73 @@ export interface operations {
             };
         };
     };
+    scan_activity_api_v1_security_scans__scan_id__activity_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityActivityPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_coverage_api_v1_security_scans__scan_id__coverage__section__get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                scan_id: string;
+                section: "inventory" | "excluded" | "units" | "problems";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecordPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     assessments_api_v1_security_scans__scan_id__assessments_get: {
         parameters: {
             query?: {
@@ -5372,6 +5790,7 @@ export interface operations {
                 category?: string[] | null;
                 page?: number;
                 page_size?: number;
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5537,10 +5956,12 @@ export interface operations {
             query?: {
                 page?: number;
                 q?: string;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk" | "unknown")[] | null;
                 outcome?: ("present" | "fixed" | "not_observed" | "uncertain" | "unknown")[] | null;
                 severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
                 kind?: string[] | null;
                 finding_id?: string | null;
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5574,10 +5995,11 @@ export interface operations {
         parameters: {
             query?: {
                 page?: number;
-                state?: ("open" | "resolved" | "false_positive" | "accepted_risk") | null;
-                severity?: ("critical" | "high" | "medium" | "low" | "unknown") | null;
-                kind?: ("code" | "dependency" | "secret" | "infrastructure") | null;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk")[] | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
+                kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
+                ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "severity" | "-severity" | "path" | "-path";
             };
             header?: never;
             path: {
@@ -5611,10 +6033,13 @@ export interface operations {
         parameters: {
             query?: {
                 page?: number;
+                state?: ("open" | "resolved" | "false_positive" | "accepted_risk")[] | null;
                 outcome?: ("new" | "open_repeat" | "resolved_repeat" | "false_positive_repeat" | "accepted_risk_repeat" | "repeated" | "recorded" | "fixed" | "not_observed" | "uncertain")[] | null;
-                severity?: ("critical" | "high" | "medium" | "low" | "unknown") | null;
-                kind?: ("code" | "dependency" | "secret" | "infrastructure") | null;
+                severity?: ("critical" | "high" | "medium" | "low" | "unknown")[] | null;
+                kind?: ("code" | "dependency" | "secret" | "infrastructure")[] | null;
                 search?: string;
+                ordering?: "position" | "-position" | "severity" | "-severity" | "path" | "-path";
+                resolved?: boolean | null;
             };
             header?: never;
             path: {
@@ -5697,6 +6122,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SecurityFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_activity_api_v1_security_findings__finding_id__activity_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityActivityPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_observations_api_v1_security_findings__finding_id__observations_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecordPage"];
                 };
             };
             /** @description Validation Error */

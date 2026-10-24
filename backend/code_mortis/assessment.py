@@ -52,6 +52,8 @@ INSTRUCTIONS = (
     "If a caller, dependency, contract or other file is needed, return verdict uncertain and list its exact "
     "repository-relative path in required_paths. Request only necessary files; unchanged files may be requested. "
     "Their complete current source and PR diff will be supplied for reassessment. "
+    "If validation_feedback reports a missing required_paths entry, correct the path using available_paths "
+    "or remain uncertain if the necessary evidence is unavailable. Missing paths are not source evidence. "
     "Use an empty required_paths list only when the supplied evidence suffices or the missing evidence "
     "cannot be identified. Never confirm or reject based on assumptions about unavailable code. "
     "Compare the cause, trigger and consequence with every related historical finding and prior candidate. "
@@ -348,7 +350,8 @@ def expand_context(repo, env, run, context, paths, stopped):
     if len(requested | context["sources"].get("current", {}).keys()) > 100:
         raise ValueError("Assessment exceeds its 100-source-file evidence limit.")
     for path in sorted(requested):
-        source = verification.read_source(repo, env, run.head_sha, path, stopped)
+        source = verification.read_requested_source(repo, env, run.head_sha, path, run.config["settings"], stopped,
+                                                    revision="current", field="required_paths")
         context["sources"].setdefault("current", {})[path] = source
         context["diff"] += ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
                                    f"{run.base_sha}...{run.head_sha}", "--", f":(literal){path}", stopped=stopped)

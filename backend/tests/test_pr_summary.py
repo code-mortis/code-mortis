@@ -31,7 +31,7 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.schemas import RepoSettings
+from code_mortis.schemas import PullRequestOut, RepoSettings
 
 RESULT = {"narrative": "Retries now stop after cancellation.", "groups": [
     {"title": "Cancellation", "description": "Stop pending retries.", "paths": ["src/retry.py"]},
@@ -324,6 +324,49 @@ def test_sync_errors_and_retry_only_send_saved_content(seed, overview_api, monke
     pr_summary.sync("pr")
     with transaction() as db:
         assert not db.get(PullRequest, "pr").summary_error
+
+
+def test_published_summary_survives_reconciliation_and_sync_failure(seed, overview_api, monkeypatch):
+    _, writes, _ = overview_api
+    identity = completed_run()
+    with transaction() as db:
+        first = db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+    jobs.execute_job(first)
+    with transaction() as db:
+        published = PullRequestOut.model_validate(db.get(PullRequest, "pr"))
+        assert published.summary_url and published.summary_synced_at
+        assert not published.summary_pending and not published.summary_error
+        pr_summary.enqueue_sync(db, db.get(PullRequest, "pr"))
+
+    original = github.request
+
+    def reconcile(*args, **kwargs):
+        with transaction() as db:
+            value = PullRequestOut.model_validate(db.get(PullRequest, "pr"))
+            assert value.summary_url == published.summary_url
+            assert value.summary_pending and not value.summary_error
+            assert db.get(ReviewRun, identity).status == "completed"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(github, "request", reconcile)
+    with transaction() as db:
+        pending = db.scalar(select(Job.id).where(Job.kind == "sync_summary", Job.status == "queued"))
+    jobs.execute_job(pending)
+    assert [method for method, _ in writes] == ["POST"]
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        assert not pr.summary_pending and not pr.summary_error
+        pr_summary.enqueue_sync(db, pr)
+    monkeypatch.setattr(github, "request", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(403, "Access unavailable")))
+    with transaction() as db:
+        pending = db.scalar(select(Job.id).where(Job.kind == "sync_summary", Job.status == "queued"))
+    jobs.execute_job(pending)
+    with transaction() as db:
+        value = PullRequestOut.model_validate(db.get(PullRequest, "pr"))
+        assert value.summary_url == published.summary_url
+        assert value.summary_synced_at >= published.summary_synced_at
+        assert value.summary_pending and "Access unavailable" in value.summary_error
+        assert db.get(ReviewRun, identity).status == "completed"
 
 
 def failed_summary():

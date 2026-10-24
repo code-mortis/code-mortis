@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from sqlalchemy import JSON, case, column, func, select, true, union_all
 
-from . import github
+from . import github, ocr
 from .analytics_schemas import (
     AnalyticsCount,
     AnalyticsFindings,
@@ -29,13 +29,28 @@ STATUSES = ("open", "resolved", "dismissed")
 STAGES = ("review", "assessment", "verification", "summary")
 
 
-def counts(values, order=()):
+def ordered(rows, ordering, key=lambda row: row.key, count=lambda row: row.count):
+    if not ordering:
+        return rows
+    rows = sorted(rows, key=lambda row: key(row).casefold())
+    numeric = ordering.removeprefix("-") == "count"
+    rows = sorted(rows, key=(lambda row: count(row) or 0) if numeric else lambda row: key(row).casefold(),
+                  reverse=ordering.startswith("-"))
+    if numeric:
+        rows.sort(key=lambda row: count(row) is None)
+    return rows
+
+
+def counts(values, order=(), ordering=None):
     values = dict(values)
     keys = list(order) + sorted(set(values) - set(order), key=lambda key: (-values[key], key))
-    return [AnalyticsCount(key=key, count=values.get(key, 0)) for key in keys]
+    return ordered([AnalyticsCount(key=key, count=values.get(key, 0)) for key in keys], ordering)
 
 
 class Scope:
+    def counts(self, values, order=()):
+        return counts(values, order, self.filters.ordering)
+
     def __init__(self, db, user, filters):
         self.db, self.filters = db, filters
         repositories = github.visible_repositories(db, user)
@@ -141,7 +156,7 @@ def recorded_usage(usage, status, has_result, legacy):
     return amount(usage.get("tokens"))
 
 
-def usage_records(scope, runs):
+def usage_records(db, runs):
     by_id = {row["id"]: row for row in runs}
     records = []
 
@@ -163,17 +178,17 @@ def usage_records(scope, runs):
         ReviewCandidate.run_id, attempt.c.value["usage"], attempt.c.value["status"].as_string(),
         attempt.c.value["result"]["verdict"].as_string().is_not(None),
     ).select_from(ReviewCandidate).join(attempt, true()).where(ReviewCandidate.run_id.in_(by_id))
-    for run_id, usage, status, has_result in scope.db.execute(union_all(candidates, attempts)):
+    for run_id, usage, status, has_result in db.execute(union_all(candidates, attempts)):
         run = by_id[run_id]
         add(run, "assessment", recorded_usage(usage, status, has_result, run["pipeline"] != 2))
-    for run_id, usage, status, verdict in scope.db.execute(select(
+    for run_id, usage, status, verdict in db.execute(select(
         FindingVerification.run_id, FindingVerification.usage, FindingVerification.status, FindingVerification.verdict,
     ).where(FindingVerification.run_id.in_(by_id))):
         run = by_id[run_id]
         add(run, "verification", recorded_usage(usage, status, verdict is not None, run["pipeline"] != 2))
 
     retries = defaultdict(list)
-    for job in scope.db.execute(select(
+    for job in db.execute(select(
         Job.id,
         Job.payload["run_id"].as_string().label("run_id"),
         Job.payload["previous_summary"]["tokens"].label("tokens"),
@@ -209,6 +224,19 @@ def usage_records(scope, runs):
         if run["summary_status"] not in {None, "not_applicable"}:
             add(run, "summary", amount(run["summary_tokens"]), *previous)
     return records
+
+
+def run_tokens(db, run):
+    records = usage_records(db, [{
+        "id": run.id, "pr_id": run.pr_id, "status": run.status, "started_at": run.started_at,
+        "pipeline": run.config.get("pipeline_version"),
+        "model": run.config.get("connection", {}).get("model"),
+        "effort": run.config.get("settings", {}).get("effort"),
+        "tokens": ocr.report_tokens(run.report),
+        "summary_tokens": run.summary.get("tokens"), "summary_status": run.summary.get("status"),
+        "summary_retry": run.progress.get("summary_retry"),
+    }])
+    return None if any(row["tokens"] is None for row in records) else sum(row["tokens"] for row in records)
 
 
 def usage_totals(records):
@@ -251,9 +279,10 @@ def overview(scope):
         repo.reviewed_prs = len(reviewed[repo.id])
     return AnalyticsOverview(
         scope=scope.meta, reviewed_prs=sum(len(values) for values in reviewed.values()),
-        findings=sum(status.values()), resolved=status["resolved"], usage=usage_totals(usage_records(scope, runs)),
-        trend=list(points.values()), severities=counts(severity, SEVERITIES), categories=counts(category),
-        repositories=sorted(repositories.values(), key=lambda repo: (-repo.reviewed_prs, repo.name))[:5],
+        findings=sum(status.values()), resolved=status["resolved"], usage=usage_totals(usage_records(scope.db, runs)),
+        trend=list(points.values()), severities=scope.counts(severity, SEVERITIES), categories=scope.counts(category),
+        repositories=ordered(sorted(repositories.values(), key=lambda repo: (-repo.reviewed_prs, repo.name))[:5],
+            scope.filters.ordering, key=lambda repo: repo.name, count=lambda repo: repo.reviewed_prs),
     )
 
 
@@ -266,8 +295,8 @@ def findings(scope):
         points[row["date"].date().isoformat()].findings += row["count"]
     return AnalyticsFindings(
         scope=scope.meta, total=sum(status.values()), unfiltered_total=sum(row["count"] for row in unfiltered),
-        category_options=sorted({row["category"] for row in unfiltered}), severities=counts(severity, SEVERITIES),
-        categories=counts(category), statuses=counts(status, STATUSES), trend=list(points.values()),
+        category_options=sorted({row["category"] for row in unfiltered}), severities=scope.counts(severity, SEVERITIES),
+        categories=scope.counts(category), statuses=scope.counts(status, STATUSES), trend=list(points.values()),
     )
 
 
@@ -312,15 +341,15 @@ def reviews(scope):
         scope=scope.meta, runs=len(runs), reviewed_prs=len(reviewed),
         mean_duration_seconds=mean(durations) if durations else None,
         median_duration_seconds=median(durations) if durations else None, duration_samples=len(durations),
-        outcomes=counts(outcomes), coverage=counts(coverage, ("selected", "completed", "reused", "failed", "waived")),
-        coverage_missing_runs=missing, assessments=counts(assessments, ("new", "repeated", "rejected", "withheld", "pending")),
+        outcomes=scope.counts(outcomes), coverage=scope.counts(coverage, ("selected", "completed", "reused", "failed", "waived")),
+        coverage_missing_runs=missing, assessments=scope.counts(assessments, ("new", "repeated", "rejected", "withheld", "pending")),
         assessment_missing_runs=sum(not run["assessment_policy"] for run in runs),
-        contributors=counts({author: len(prs) for author, prs in contributors.items()}),
+        contributors=scope.counts({author: len(prs) for author, prs in contributors.items()}),
     )
 
 
 def usage(scope):
-    records = usage_records(scope, scope.runs())
+    records = usage_records(scope.db, scope.runs())
     points = scope.trend()
     groups = {key: defaultdict(list) for key in ("stage", "repository", "model", "effort")}
     names = {repo.id: repo.full_name for repo in scope.repositories}
@@ -342,10 +371,12 @@ def usage(scope):
             key=names[key] if dimension == "repository" else key,
             repository_id=key if dimension == "repository" else None, usage=usage_totals(values),
         ) for key, values in groups[dimension].items()]
-        return sorted(rows, key=lambda row: (-(row.usage.tokens or 0), row.key))
+        return ordered(sorted(rows, key=lambda row: (-(row.usage.tokens or 0), row.key)),
+                       scope.filters.ordering, count=lambda row: row.usage.tokens)
 
     return AnalyticsUsage(
         scope=scope.meta, total=usage_totals(records), trend=list(points.values()),
-        stages=[AnalyticsUsageGroup(key=stage, usage=usage_totals(groups["stage"][stage])) for stage in STAGES],
+        stages=ordered([AnalyticsUsageGroup(key=stage, usage=usage_totals(groups["stage"][stage])) for stage in STAGES],
+            scope.filters.ordering, count=lambda row: row.usage.tokens),
         repositories=grouped("repository"), models=grouped("model"), efforts=grouped("effort"),
     )

@@ -7,16 +7,18 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import Field
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import JSONB
 
 from . import github, repository_security, security_assessments, security_issues
 from .api import DB, USER, repo_access, repo_out
 from .db import now
 from .models import SecurityActivity, SecurityFinding, SecurityOccurrence, SecurityScan
+from .ordering import FindingOrdering, SnapshotOrdering, list_order, sort_snapshots
 from .schemas import RepositoryOut
 from .security_schemas import (
     SecurityActivityOut,
+    SecurityActivityPage,
     SecurityAssessmentOut,
     SecurityAssessmentPage,
     SecurityBulkIssueInput,
@@ -28,8 +30,10 @@ from .security_schemas import (
     SecurityIssueInput,
     SecurityIssuePreview,
     SecurityIssueReapproval,
+    SecurityRecordPage,
     SecurityReportPage,
     SecurityRepositoryOut,
+    SecurityRepositoryPage,
     SecurityRotation,
     SecurityScanDetail,
     SecurityScanInput,
@@ -39,7 +43,7 @@ from .security_schemas import (
 )
 
 router = APIRouter(prefix="/api/v1/security", tags=["Security"])
-PAGE_SIZE = 20
+PAGE_SIZE = 10
 
 
 def scan_access(db, user, identity, write=False):
@@ -61,11 +65,41 @@ def finding_access(db, user, identity, write=False, lock=False):
     return finding, repo, remote
 
 
-@router.get("/repositories", response_model=list[SecurityRepositoryOut])
-def repositories(db: DB, user: USER):
+@router.get("/repositories", response_model=SecurityRepositoryPage)
+def repositories(db: DB, user: USER,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+    search: Annotated[str, Query(max_length=200)] = "",
+    grade: Annotated[list[Literal["A", "B", "C", "D", "F", "unrated"]] | None, Query(max_length=100)] = None,
+    status: Annotated[list[Literal["not_scanned", "current", "incomplete", "unavailable", "outdated"]] | None, Query(max_length=100)] = None,
+    ordering: Literal["updated_at", "-updated_at", "repository", "-repository"] = "-updated_at",
+):
     repos = github.visible_repositories(db, user)
     summaries = repository_security.summaries(db, [repo.id for repo in repos])
-    return [SecurityRepositoryOut(repository=RepositoryOut.model_validate(repo), summary=summaries[repo.id]) for repo in repos]
+    grade_counts = Counter(summaries[repo.id].grade or "unrated" for repo in repos)
+    status_counts = Counter(summaries[repo.id].state for repo in repos)
+    term = search.strip().casefold()
+    rows = sorted((repo for repo in repos if (not term or term in repo.full_name.casefold())
+        and (not grade or (summaries[repo.id].grade or "unrated") in grade)
+        and (not status or summaries[repo.id].state in status)), key=lambda repo: (repo.full_name.casefold(), repo.id))
+    if ordering.removeprefix("-") == "updated_at":
+        activity_repository = func.coalesce(SecurityScan.repository_id, SecurityFinding.repository_id)
+        changes = select(SecurityScan.repository_id.label("repository_id"),
+            func.greatest(SecurityScan.created_at, SecurityScan.started_at, SecurityScan.finished_at).label("updated_at")).union_all(
+            select(SecurityFinding.repository_id, SecurityFinding.updated_at),
+            select(activity_repository, SecurityActivity.created_at).select_from(SecurityActivity)
+                .outerjoin(SecurityScan, SecurityActivity.scan_id == SecurityScan.id)
+                .outerjoin(SecurityFinding, SecurityActivity.finding_id == SecurityFinding.id),
+        ).subquery()
+        updated = dict(db.execute(select(changes.c.repository_id, func.max(changes.c.updated_at))
+            .where(changes.c.repository_id.in_([repo.id for repo in rows])).group_by(changes.c.repository_id)).all())
+        direction = -1 if ordering.startswith("-") else 1
+        rows.sort(key=lambda repo: (repo.id not in updated, direction * updated[repo.id].timestamp() if repo.id in updated else 0))
+    elif ordering.startswith("-"):
+        rows.reverse()
+    return SecurityRepositoryPage(items=[SecurityRepositoryOut(repository=RepositoryOut.model_validate(repo),
+        summary=summaries[repo.id]) for repo in rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]],
+        total=len(rows), registered_total=len(repos), grade_counts=dict(grade_counts), status_counts=dict(status_counts),
+        page=page, page_size=PAGE_SIZE)
 
 
 @router.get("/repositories/{repository_id}", response_model=SecurityRepositoryOut)
@@ -73,9 +107,11 @@ def repository(repository_id: int, db: DB, user: USER):
     repo, remote = repo_access(db, user, repository_id)
     summary = repository_security.summaries(db, [repo.id])[repo.id]
     summary.default_branch = remote.get("default_branch") or summary.default_branch
+    finding_counts = dict(db.execute(select(SecurityFinding.state, func.count())
+        .where(SecurityFinding.repository_id == repo.id).group_by(SecurityFinding.state)).all())
     return SecurityRepositoryOut(repository=repo_out(db, repo), summary=summary,
         can_write=bool(remote.get("permissions", {}).get("push")),
-        finding_count=db.scalar(select(func.count()).select_from(SecurityFinding).where(SecurityFinding.repository_id == repo.id)),
+        finding_count=sum(finding_counts.values()), finding_state_counts=finding_counts,
         scan_count=db.scalar(select(func.count()).select_from(SecurityScan).where(SecurityScan.repository_id == repo.id)))
 
 
@@ -100,14 +136,60 @@ def scan_detail(scan_id: str, db: DB, user: USER):
     _, assessment = security_assessments.read(db, scan)
     public = repository_security.public_scan(scan)
     public.report = {key: value for key, value in public.report.items() if key != "findings"}
+    public.coverage = {key: value for key, value in public.coverage.items() if key not in {"inventory", "excluded", "units", "problems"}}
+    public.coverage["inventory_count"] = len(scan.coverage.get("inventory", {}))
+    outcomes = dict(db.execute(select(SecurityOccurrence.outcome, func.count()).join(SecurityFinding).where(
+        SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == repo.id)
+        .group_by(SecurityOccurrence.outcome)).all())
+    finding_counts = dict(Counter(row["state"] for row in scan_finding_snapshots(db, scan)))
+    events = db.scalars(scan_events(scan.id).order_by(
+        SecurityActivity.created_at.desc(), SecurityActivity.id.desc())).all()
     return SecurityScanDetail(repository=repo_out(db, repo), scan=public,
         can_write=bool(remote.get("permissions", {}).get("push")),
         assessment=assessment,
-        finding_count=db.scalar(select(func.count()).select_from(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id)),
+        finding_count=sum(outcomes.values()), finding_state_counts=finding_counts,
         report_count=len(scan.report.get("findings", [])),
-        activity_count=db.scalar(select(func.count()).select_from(SecurityActivity).where(SecurityActivity.scan_id == scan.id)),
-        activity=[SecurityActivityOut.model_validate(row) for row in db.scalars(select(SecurityActivity).where(
-            SecurityActivity.scan_id == scan.id).order_by(SecurityActivity.created_at.desc()).limit(200))])
+        resolved_count=outcomes.get("fixed", 0),
+        activity_count=len(events),
+        activity=[SecurityActivityOut.model_validate(row) for row in events])
+
+
+def scan_events(scan_id):
+    return select(SecurityActivity).where(SecurityActivity.scan_id == scan_id,
+        SecurityActivity.finding_id.is_(None), SecurityActivity.action.startswith("scan_", autoescape=True))
+
+
+def activity_page(db, query, page, repository_id):
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    rows = db.execute(query.add_columns(
+        func.coalesce(SecurityOccurrence.snapshot["title"].as_string(), SecurityFinding.title),
+        func.coalesce(SecurityOccurrence.snapshot["path"].as_string(), SecurityFinding.path),
+    ).outerjoin(SecurityFinding, (SecurityFinding.id == SecurityActivity.finding_id)
+                & (SecurityFinding.repository_id == repository_id))
+        .outerjoin(SecurityOccurrence, (SecurityOccurrence.finding_id == SecurityFinding.id)
+                   & (SecurityOccurrence.scan_id == SecurityActivity.scan_id))
+        .order_by(SecurityActivity.created_at.desc(), SecurityActivity.id.desc())
+        .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
+    return SecurityActivityPage(items=[SecurityActivityOut.model_validate(row).model_copy(
+        update={"finding_title": title, "finding_path": path}) for row, title, path in rows],
+                                total=total, page=page, page_size=PAGE_SIZE)
+
+
+@router.get("/scans/{scan_id}/activity", response_model=SecurityActivityPage)
+def scan_activity(scan_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    scan, _, _ = scan_access(db, user, scan_id)
+    return activity_page(db, scan_events(scan_id), page, scan.repository_id)
+
+
+@router.get("/scans/{scan_id}/coverage/{section}", response_model=SecurityRecordPage)
+def scan_coverage(scan_id: str, section: Literal["inventory", "excluded", "units", "problems"], db: DB, user: USER,
+                  page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    scan, _, _ = scan_access(db, user, scan_id)
+    data = scan.coverage.get(section, {} if section == "inventory" else [])
+    rows = [{"path": path} for path in sorted(data)] if section == "inventory" else data
+    return SecurityRecordPage(items=[{**row, "id": str(index)} for index, row in
+        enumerate(rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], start=(page - 1) * PAGE_SIZE)],
+        total=len(rows), page=page, page_size=PAGE_SIZE)
 
 
 @router.get("/scans/{scan_id}/assessments", response_model=SecurityAssessmentPage)
@@ -115,7 +197,8 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
     outcome: Annotated[list[Literal["pending", "confirmed", "rejected", "uncertain", "failed", "interrupted", "withheld"]] | None, Query()] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low"]] | None, Query()] = None,
     category: Annotated[list[str] | None, Query(max_length=100)] = None,
-    page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    page: Annotated[int, Query(ge=1, le=1000000)] = 1, page_size: Annotated[int, Query(ge=1, le=100)] = PAGE_SIZE,
+    ordering: SnapshotOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows, summary = security_assessments.read(db, scan)
@@ -126,6 +209,7 @@ def assessments(scan_id: str, db: DB, user: USER, q: Annotated[str, Query(max_le
         and (not severity or row.proposal.get("severity") in severity)
         and (not category or row.proposal.get("category") in category)
         and (not query or any(query in str(row.proposal.get(key, "")).casefold() for key in ("title", "path", "category")))]
+    rows = sort_snapshots(rows, ordering, snapshot=lambda row: row.proposal)
     return SecurityAssessmentPage(items=rows[(page - 1) * page_size:page * page_size], total=len(rows),
         registered_total=summary.total, outcome_counts=summary.outcome_counts, severity_counts=dict(severity_counts),
         category_counts=dict(category_counts), revision=summary.revision, page=page, page_size=page_size)
@@ -171,82 +255,117 @@ def report(scan_id: str, db: DB, user: USER, format: Literal["json", "markdown"]
                     headers={"Content-Disposition": f'attachment; filename="security-{scan.id}.{extension}"'})
 
 
+def scan_finding_snapshots(db, scan):
+    snapshots = scan.report.get("findings", []) if scan.report else [
+        {**row.snapshot, "finding_id": row.finding_id, "outcome": row.outcome}
+        for row in db.scalars(select(SecurityOccurrence).join(SecurityFinding).where(
+            SecurityOccurrence.scan_id == scan.id, SecurityFinding.repository_id == scan.repository_id))]
+    return [{**row, "state": row.get("state") if row.get("state") in {"open", "resolved", "false_positive", "accepted_risk"} else "unknown"}
+            for row in snapshots]
+
+
 @router.get("/scans/{scan_id}/report/findings", response_model=SecurityReportPage)
 def report_findings(scan_id: str, db: DB, user: USER,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1,
     q: Annotated[str, Query(max_length=256)] = "",
+    state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk", "unknown"]] | None, Query(max_length=100)] = None,
     outcome: Annotated[list[Literal["present", "fixed", "not_observed", "uncertain", "unknown"]] | None, Query(max_length=100)] = None,
     severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
     kind: Annotated[list[Annotated[str, Field(min_length=1, max_length=50)]] | None, Query(max_length=100)] = None,
     finding_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+    ordering: SnapshotOrdering = "-severity",
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    rows = scan.report.get("findings", [])
-    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("outcome", "severity", "kind")}
+    rows = scan_finding_snapshots(db, scan)
+    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("state", "outcome", "severity", "kind")}
     query = q.strip().casefold()
     items = [row for row in rows if (not finding_id or row.get("finding_id") == finding_id)
+        and (not state or row["state"] in state)
         and (not outcome or (row.get("outcome") or "unknown") in outcome)
         and (not severity or (row.get("severity") or "unknown") in severity)
         and (not kind or (row.get("kind") or "unknown") in kind)
         and (not query or any(query in str(value or "").casefold() for value in
              (row.get("title"), row.get("path"), row.get("kind"), row.get("evidence", {}).get("explanation"))))]
+    items = sort_snapshots(items, ordering)
     return SecurityReportPage(items=items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], total=len(items),
-        registered_total=len(rows), outcome_counts=counts["outcome"], severity_counts=counts["severity"],
+        registered_total=len(rows), state_counts=counts["state"], outcome_counts=counts["outcome"], severity_counts=counts["severity"],
         kind_counts=counts["kind"], page=page, page_size=PAGE_SIZE)
 
 
-def finding_page(db, repository_id, page, state, severity, kind, search, scan_id=None, results=None):
+def finding_page(db, repository_id, page, state, severity, kind, search, ordering="-severity"):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
-    result_counts = {}
-    if scan_id:
-        query = query.join(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan_id)
-        result = case(
-            (SecurityOccurrence.outcome.in_(["fixed", "not_observed", "uncertain"]), SecurityOccurrence.outcome),
-            (SecurityOccurrence.outcome != "present", "recorded"),
-            (SecurityFinding.first_scan_id == scan_id, "new"),
-            *[(SecurityFinding.state == state, f"{state}_repeat") for state in ("open", "resolved", "false_positive", "accepted_risk")],
-            else_="repeated",
-        )
-        result_counts = dict(db.execute(query.with_only_columns(result, func.count()).group_by(result)).all())
-        if results:
-            query = query.where(result.in_(results))
+    registered_total = db.scalar(select(func.count()).select_from(query.subquery()))
+    counts = {key: dict(db.execute(query.with_only_columns(column, func.count()).group_by(column)).all())
+              for key, column in (("state", SecurityFinding.state), ("severity", SecurityFinding.severity), ("kind", SecurityFinding.kind))}
     if state:
-        query = query.where(SecurityFinding.state == state)
+        query = query.where(SecurityFinding.state.in_(state))
     if severity:
-        query = query.where(SecurityFinding.severity == severity)
+        query = query.where(SecurityFinding.severity.in_(severity))
     if kind:
-        query = query.where(SecurityFinding.kind == kind)
+        query = query.where(SecurityFinding.kind.in_(kind))
     if search:
         query = query.where(SecurityFinding.title.icontains(search, autoescape=True) | SecurityFinding.path.icontains(search, autoescape=True))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    rows = db.scalars(query.order_by(SecurityFinding.updated_at.desc(), SecurityFinding.id)
+    rows = db.scalars(query.order_by(*list_order(ordering, {"created_at": SecurityFinding.created_at, "updated_at": SecurityFinding.updated_at,
+        "severity": SecurityFinding.severity, "path": SecurityFinding.path}, SecurityFinding.id))
                       .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
     return SecurityFindingPage(items=[SecurityFindingOut.model_validate(row) for row in rows], total=total,
-                               page=page, page_size=PAGE_SIZE, result_counts=result_counts)
+                               page=page, page_size=PAGE_SIZE, registered_total=registered_total,
+                               state_counts=counts["state"], severity_counts=counts["severity"], kind_counts=counts["kind"])
 
 
 @router.get("/repositories/{repository_id}/findings", response_model=SecurityFindingPage)
 def findings(repository_id: int, db: DB, user: USER,
              page: Annotated[int, Query(ge=1, le=1000000)] = 1,
-             state: Literal["open", "resolved", "false_positive", "accepted_risk"] | None = None,
-             severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None,
-             kind: Literal["code", "dependency", "secret", "infrastructure"] | None = None,
-             search: Annotated[str, Query(max_length=200)] = ""):
+             state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk"]] | None, Query(max_length=100)] = None,
+             severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
+             kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
+             search: Annotated[str, Query(max_length=200)] = "", ordering: FindingOrdering = "-severity"):
     repo_access(db, user, repository_id)
-    return finding_page(db, repository_id, page, state, severity, kind, search)
+    return finding_page(db, repository_id, page, state, severity, kind, search, ordering=ordering)
 
 
 @router.get("/scans/{scan_id}/findings", response_model=SecurityFindingPage)
 def scan_findings(scan_id: str, db: DB, user: USER,
     page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+    state: Annotated[list[Literal["open", "resolved", "false_positive", "accepted_risk"]] | None, Query(max_length=100)] = None,
     outcome: Annotated[list[Literal["new", "open_repeat", "resolved_repeat", "false_positive_repeat", "accepted_risk_repeat",
                                    "repeated", "recorded", "fixed", "not_observed", "uncertain"]] | None, Query(max_length=100)] = None,
-    severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None,
-    kind: Literal["code", "dependency", "secret", "infrastructure"] | None = None,
-    search: Annotated[str, Query(max_length=200)] = "",
+    severity: Annotated[list[Literal["critical", "high", "medium", "low", "unknown"]] | None, Query(max_length=100)] = None,
+    kind: Annotated[list[Literal["code", "dependency", "secret", "infrastructure"]] | None, Query(max_length=100)] = None,
+    search: Annotated[str, Query(max_length=200)] = "", ordering: SnapshotOrdering = "-severity",
+    resolved: bool | None = None,
 ):
     scan, _, _ = scan_access(db, user, scan_id)
-    return finding_page(db, scan.repository_id, page, None, severity, kind, search, scan_id, outcome)
+    rows = scan_finding_snapshots(db, scan)
+    first_scans = dict(db.execute(select(SecurityFinding.id, SecurityFinding.first_scan_id)
+        .where(SecurityFinding.repository_id == scan.repository_id)).all())
+    for row in rows:
+        saved_outcome = row.get("outcome")
+        row["result"] = saved_outcome if saved_outcome in {"fixed", "not_observed", "uncertain"} else (
+            "recorded" if saved_outcome != "present" else "new" if first_scans.get(row.get("finding_id")) == scan.id
+            else f'{row["state"]}_repeat' if row["state"] != "unknown" else "repeated")
+    if resolved is not None:
+        rows = [row for row in rows if (row.get("outcome") == "fixed") == resolved]
+    counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("state", "severity", "kind", "result")}
+    term = search.strip().casefold()
+    items = [row for row in rows if (not state or row["state"] in state)
+        and (not outcome or row["result"] in outcome)
+        and (not severity or row.get("severity", "unknown") in severity)
+        and (not kind or row.get("kind") in kind)
+        and (not term or any(term in str(row.get(key) or "").casefold() for key in ("title", "path")))]
+    items = sort_snapshots(items, ordering)
+    total = len(items)
+    page = min(page, max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE))
+    return SecurityFindingPage(items=[SecurityFindingOut(
+        id=row["finding_id"], repository_id=scan.repository_id, state=row["state"],
+        title=row.get("title", ""), path=row.get("path", ""), severity=row.get("severity", "unknown"),
+        kind=row.get("kind", "unknown"), evidence=row.get("evidence", {}), version=row.get("version", 0),
+        first_scan_id=first_scans.get(row["finding_id"], scan.id), last_scan_id=scan.id,
+        rotation=row.get("rotation"), issue={}, created_at=scan.created_at, updated_at=scan.finished_at or scan.created_at,
+    ) for row in items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]], total=total,
+        page=page, page_size=PAGE_SIZE, registered_total=len(rows), state_counts=counts["state"],
+        severity_counts=counts["severity"], kind_counts=counts["kind"], result_counts=counts["result"])
 
 
 @router.get("/findings/{finding_id}", response_model=SecurityFindingDetail)
@@ -254,11 +373,30 @@ def finding_detail(finding_id: str, db: DB, user: USER):
     finding, repo, remote = finding_access(db, user, finding_id)
     return SecurityFindingDetail(repository=repo_out(db, repo), finding=SecurityFindingOut.model_validate(finding),
         can_write=bool(remote.get("permissions", {}).get("push")),
+        observation_count=db.scalar(select(func.count()).select_from(SecurityOccurrence).where(SecurityOccurrence.finding_id == finding.id)),
+        activity_count=db.scalar(select(func.count()).select_from(SecurityActivity).where(SecurityActivity.finding_id == finding.id)),
         observations=[{"scan_id": row.scan_id, "outcome": row.outcome, "snapshot": row.snapshot, "created_at": row.created_at.isoformat()}
                       for row in db.scalars(select(SecurityOccurrence).where(SecurityOccurrence.finding_id == finding.id)
                                             .order_by(SecurityOccurrence.created_at.desc()).limit(100))],
         activity=[SecurityActivityOut.model_validate(row) for row in db.scalars(select(SecurityActivity)
             .where(SecurityActivity.finding_id == finding.id).order_by(SecurityActivity.created_at.desc()).limit(200))])
+
+
+@router.get("/findings/{finding_id}/activity", response_model=SecurityActivityPage)
+def finding_activity(finding_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    finding, _, _ = finding_access(db, user, finding_id)
+    return activity_page(db, select(SecurityActivity).where(SecurityActivity.finding_id == finding_id), page, finding.repository_id)
+
+
+@router.get("/findings/{finding_id}/observations", response_model=SecurityRecordPage)
+def finding_observations(finding_id: str, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+    finding_access(db, user, finding_id)
+    query = select(SecurityOccurrence).where(SecurityOccurrence.finding_id == finding_id)
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    rows = db.scalars(query.order_by(SecurityOccurrence.created_at.desc(), SecurityOccurrence.id.desc())
+                      .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
+    return SecurityRecordPage(items=[{"id": row.id, "scan_id": row.scan_id, "outcome": row.outcome,
+        "created_at": row.created_at.isoformat()} for row in rows], total=total, page=page, page_size=PAGE_SIZE)
 
 
 @router.patch("/findings/{finding_id}", response_model=SecurityFindingOut)

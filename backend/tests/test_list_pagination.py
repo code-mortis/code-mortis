@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import update
 from test_inbox import pull, run
 
 from code_mortis import github
@@ -79,7 +80,7 @@ def test_finding_pages_counts_filters_and_stable_order(seed, github_stub, client
             assert len(result) == 1 and result[0]["page"] == page
             assert len(result[0]["items"]) == (10 if page == 2 else 3)
             ids += [row["id"] for row in result[0]["items"]]
-        assert ids == [f'{group["group"]}-{index:02}' for index in reversed(range(23))]
+        assert ids == [f'{group["group"]}-{index:02}' for index in [*range(22, -1, -2), *range(21, -1, -2)]]
     result = client.get(path, params=[("status", "open"), ("status", "resolved"), ("severity", "high"), ("q", "PERFORMANCE")]).json()
     assert result["total"] == 2 and result["registered_total"] == 69
     assert {item["id"] for group in result["groups"] for item in group["items"]} == {"open-22", "resolved-22"}
@@ -179,7 +180,7 @@ def test_resolved_pages_filter_confirmed_run_history_on_server(seed, github_stub
         assert result["page"] == page and result["has_more"] is (page < 3)
         assert len(result["items"]) == (5 if page == 3 else 10)
         ids += [item["id"] for item in result["items"]]
-    assert ids == [f"finding-{index:02}" for index in reversed(range(25))]
+    assert ids == [f"finding-{index:02}" for index in [*range(24, -1, -2), *range(23, -1, -2)]]
     assert first["items"][0]["status"] == "open"
     assert client.get(path, params={"page": 1000000}).json()["page"] == 3
     filtered = client.get(path, params=[("category", "custom_rule"), ("category", "performance"),
@@ -197,7 +198,87 @@ def test_resolved_pages_filter_confirmed_run_history_on_server(seed, github_stub
     assert client.get("/api/v1/runs/missing/resolved").status_code == 404
 
 
-def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch):
+def test_run_findings_preserve_historical_membership_evidence_counts_and_pages(seed, github_stub, client):
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        current = run(db, pr, "completed", "current")
+        original = run(db, pr, "completed", "original")
+        for status, size in [("open", 12), ("resolved", 12), ("dismissed", 1)]:
+            for index in range(size):
+                finding = Finding(id=f"{status}-{index}", pr_id=pr.id, fingerprint=f"{status}-{index}",
+                    status=status, path=f"src/{status}-{index}.py", content=f"Saved issue {index}",
+                    severity="high", category="bug", start_line=1, end_line=1, last_seen_run_id=current.id)
+                db.add(finding)
+                db.flush()
+                db.add(Occurrence(id=f"occ-{finding.id}", run_id=current.id, finding_id=finding.id,
+                    snapshot={"content": "Immutable original evidence", "path": finding.path, "severity": "high", "category": "bug"}))
+        for status in ["open", "resolved"]:
+            finding = Finding(id=f"fixed-{status}", pr_id=pr.id, fingerprint=f"fixed-{status}", status=status,
+                path=f"src/fixed-{status}.py", content="Verified fix", category="bug", severity="low",
+                start_line=1, end_line=1, last_seen_run_id=original.id)
+            db.add(finding)
+            db.flush()
+            db.add(Occurrence(id=f"occ-{finding.id}", run_id=original.id, finding_id=finding.id, snapshot={"content": "Original issue", "path": finding.path, "severity": "low", "category": "bug"}))
+            db.flush()
+            db.add(FindingVerification(finding_id=finding.id, run_id=current.id, occurrence_id=f"occ-{finding.id}",
+                head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+        db.flush()
+        db.add(FindingVerification(finding_id="resolved-0", run_id=current.id, occurrence_id="occ-resolved-0",
+            head_sha=current.head_sha, finding_version=0, resolution="resolved"))
+        db.add(Finding(id="unrelated", pr_id=pr.id, fingerprint="unrelated", status="open", path="unrelated.py",
+            content="Not part of this run", start_line=1, end_line=1, last_seen_run_id=original.id))
+        db.add(ReviewCandidate(run_id=current.id, position=0, snapshot={}, finding_id="open-0", is_new=True))
+        db.add(ReviewCandidate(run_id=current.id, position=1, snapshot={}, finding_id="resolved-0", is_new=False))
+    path = "/api/v1/runs/current/findings"
+    before = client.get("/api/v1/runs/current").json()
+    assert before["finding_state_counts"] == {"open": 25, "resolved": 3}
+    responses = {}
+    for status, total in [("open", 25), ("resolved", 3)]:
+        responses[status] = [client.get(path, params={"status": status, "page": page}).json()
+                             for page in range(1, (total + 9) // 10 + 1)]
+        assert responses[status][0]["registered_total"] == responses[status][0]["total"] == total
+        ids = [item["finding_id"] for page in responses[status] for item in page["items"]]
+        assert len(set(ids)) == total and "unrelated" not in ids
+        assert all(page["revision"] == before["findings_revision"] for page in responses[status])
+        assert client.get(path, params={"status": status, "page": 1000000}).json()["page"] == len(responses[status])
+    assert {item["finding_id"] for item in responses["resolved"][0]["items"]} == {"fixed-open", "fixed-resolved", "resolved-0"}
+    filtered = client.get(path, params={"outcome": "new", "severity": "high", "category": "bug", "q": "open-0.py"}).json()
+    assert filtered["total"] == 1 and filtered["items"][0]["finding_id"] == "open-0"
+    assert filtered["registered_total"] == 25
+    for outcome in ["repeated", "open_repeat", "resolved_repeat", "dismissed_repeat"]:
+        repeated = client.get(path, params={"outcome": outcome}).json()
+        assert repeated["total"] == 1 and repeated["items"][0]["finding_id"] == "resolved-0"
+    with transaction() as db:
+        db.get(Finding, "open-0").status = "resolved"
+        fixed = db.get(Finding, "fixed-resolved")
+        fixed.status, fixed.content, fixed.path, fixed.severity = "open", "Changed later", "later.py", "critical"
+        db.get(Finding, "dismissed-0").status = "open"
+    after = client.get("/api/v1/runs/current").json()
+    assert after["finding_state_counts"] == before["finding_state_counts"]
+    assert after["findings_revision"] == before["findings_revision"]
+    for status, pages in responses.items():
+        for page, expected in enumerate(pages, 1):
+            assert client.get(path, params={"status": status, "page": page}).json() == expected
+    assert all(item["snapshot"]["content"] == "Immutable original evidence" for item in after["occurrences"])
+    history = client.get("/api/v1/runs/current/resolved").json()
+    assert history["registered_total"] == 3
+    assert {item["id"] for item in history["items"]} == {"fixed-open", "fixed-resolved", "resolved-0"}
+    saved = client.get(path + "/fixed-resolved?status=resolved")
+    assert saved.status_code == 200
+    assert saved.json()["snapshot"]["content"] == "Original issue"
+    assert saved.json()["snapshot"]["path"] == "src/fixed-resolved.py"
+    assert client.get(path + "/fixed-resolved").status_code == 404
+    assert client.get(path + "/unrelated?status=resolved").status_code == 404
+    assert client.get(path + "/missing?status=resolved").status_code == 404
+    assert client.get(path + "/open-0").json()["snapshot"]["content"] == "Immutable original evidence"
+    assert client.get("/api/v1/runs/missing/findings/open-0").status_code == 404
+    assert client.get("/api/v1/runs/missing/findings").status_code == 404
+    for params in [{"status": "dismissed"}, {"page": 0}, {"q": "x" * 257}, {"outcome": "invalid"}, {"severity": "urgent"}, {"unknown": "ignored"}]:
+        assert client.get(path, params=params).status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["resolved", "findings", "findings/example"])
+def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch, endpoint):
     with transaction() as db:
         run(db, db.get(PullRequest, "pr"), "completed", "run")
 
@@ -205,7 +286,7 @@ def test_resolved_pages_revalidate_github_access(seed, client, monkeypatch):
         raise HTTPException(403, "Repository access revoked")
 
     monkeypatch.setattr(github, "authorize_repo", denied)
-    response = client.get("/api/v1/runs/run/resolved?page=2")
+    response = client.get(f"/api/v1/runs/run/{endpoint}?page=2")
     assert response.status_code == 403 and response.json() == {"detail": "Repository access revoked"}
 
 
@@ -247,7 +328,7 @@ def test_candidate_pages_filter_full_run_and_preserve_evidence(seed, github_stub
         assert result["page"] == page and result["has_more"] is (page < 3)
         assert len(result["items"]) == (5 if page == 3 else 10)
         ids += [item["id"] for item in result["items"]]
-    assert ids == [f"candidate-{index:02}" for index in range(25)]
+    assert ids == [f"candidate-{index:02}" for index in [*range(0, 25, 2), *range(1, 25, 2)]]
     assert client.get(path, params={"page": 1000000}).json()["page"] == 3
     filtered = client.get(path, params=[("outcome", "withheld"), ("outcome", "rejected"), ("severity", "high"), ("q", "PERFORMANCE")]).json()
     assert filtered["total"] == 1 and filtered["registered_total"] == 25
@@ -379,3 +460,56 @@ def test_run_lists_fetch_loaded_window_in_one_request(seed, github_stub, client,
         assert not {item["id"] for item in page["items"]} & {item["id"] for item in next_page["items"]}
         for invalid in [0, 9, 101, 100000]:
             assert client.get(path, params={"page_size": invalid}).status_code == 422
+
+
+@pytest.mark.parametrize("path", ["/pulls/pr/findings", "/runs/run/findings", "/runs/run/resolved", "/runs/run/candidates", "/runs/run"])
+def test_list_ordering_is_applied_before_paging_and_validated(seed, github_stub, client, path):
+    at = now()
+    with transaction() as db:
+        current = run(db, db.get(PullRequest, "pr"), "completed", "run")
+        for index in range(21):
+            severity = ["low", "medium", "high", "critical"][index % 4]
+            snapshot = {"path": f"src/{20 - index:02}.py", "severity": severity, "content": f"Finding {index}"}
+            db.add(Finding(id=f"finding-{index:02}", pr_id="pr", fingerprint=str(index), status="resolved",
+                **snapshot, start_line=1, end_line=1, last_seen_run_id=current.id,
+                created_at=at + timedelta(seconds=index), updated_at=at - timedelta(seconds=index)))
+            db.flush()
+            db.add(Occurrence(id=f"occurrence-{index:02}", finding_id=f"finding-{index:02}", run_id=current.id, snapshot=snapshot))
+            db.add(ReviewCandidate(id=f"candidate-{index:02}", run_id=current.id, position=index, snapshot=snapshot,
+                created_at=at + timedelta(seconds=index)))
+            db.flush()
+            db.add(FindingVerification(finding_id=f"finding-{index:02}", run_id=current.id,
+                occurrence_id=f"occurrence-{index:02}", head_sha=current.head_sha, finding_version=0,
+                status="completed", verdict="fixed", resolution="resolved"))
+
+        if path == "/runs/run":
+            db.execute(update(Finding).where(Finding.pr_id == "pr").values(severity="low", path="changed-live.py"))
+
+    def read(ordering=None, page=1):
+        params = {"ordering": ordering} if ordering else {}
+        if path != "/runs/run":
+            params["page"] = page
+        if path == "/pulls/pr/findings":
+            params["group"] = "resolved"
+        response = client.get("/api/v1" + path, params=params)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        return data["groups"][0]["items"] if "groups" in data else data.get("occurrences", data.get("items"))
+
+    assert read() == read("-severity")
+    ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    for ordering in ("severity", "-severity", "path", "-path"):
+        rows = read(ordering) if path == "/runs/run" else [item for page in (1, 2, 3) for item in read(ordering, page)]
+        assert len(rows) == 21
+        evidence = [row.get("snapshot", row) for row in rows]
+        values = [ranks[row["severity"]] if "severity" in ordering else row["path"] for row in evidence]
+        assert values == sorted(values, reverse=ordering.startswith("-"))
+        assert read(ordering) == read(ordering)
+    if path != "/runs/run":
+        key = "finding_id" if path == "/runs/run/findings" else "id"
+        assert read("-created_at")[0][key].endswith("20")
+        assert read("created_at")[0][key].endswith("00")
+        if path != "/runs/run/candidates":
+            assert read("-updated_at")[0][key].endswith("00")
+            assert read("updated_at")[0][key].endswith("20")
+    assert client.get("/api/v1" + path, params={"ordering": "invalid"}).status_code == 422

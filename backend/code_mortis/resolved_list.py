@@ -3,6 +3,7 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
 from .models import Finding, FindingVerification, ReviewRun
+from .ordering import list_order
 from .schemas import FindingOut, ResolvedFilters, ResolvedPage
 
 
@@ -43,7 +44,8 @@ def list_resolved(db: Session, run: ReviewRun, filters: ResolvedFilters) -> Reso
     size = filters.page_size
     page = min(filters.page, max(1, (total + size - 1) // size))
     items = db.scalars(select(Finding).where(*conditions).order_by(
-        Finding.created_at.desc(), Finding.id.desc(),
+        *list_order(filters.ordering, {"created_at": Finding.created_at, "updated_at": Finding.updated_at,
+                "severity": Finding.severity, "path": Finding.path}, Finding.id.desc()),
     ).offset((page - 1) * size).limit(size))
     return ResolvedPage(
         items=[FindingOut.model_validate(item) for item in items], total=total,

@@ -28,6 +28,11 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
   const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
   const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
+  const securityScanRoute = useMatch("/security/scans/:scanId");
+  const securityRepositoryRoute = useMatch("/security/repositories/:repositoryId");
+  const securityPath = securityScanRoute ? `/security/scans/${securityScanRoute.params.scanId}`
+    : securityRepositoryRoute ? `/security/repositories/${securityRepositoryRoute.params.repositoryId}` : null;
+  const securityDetail = useApi<Pick<Schema["SecurityRepositoryOut"], "repository">>(securityPath ?? "", false, !!securityPath);
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
   const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
@@ -53,9 +58,13 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     }
     if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
   } else if (path.startsWith("/security")) {
+    const repository = securityDetail.error ? undefined : securityDetail.data?.repository;
     crumbs.push({ label: "Security", to: "/security" });
-    if (path.startsWith("/security/repositories/")) crumbs.push({ label: "Repository security", to: path + route.search });
-    if (path.startsWith("/security/scans/")) crumbs.push({ label: "Security scan", to: path + route.search });
+    if (path.startsWith("/security/repositories/")) crumbs.push({ label: repository?.full_name || "Repository security", to: path + route.search });
+    if (path.startsWith("/security/scans/")) {
+      if (repository) crumbs.push({ label: repository.full_name, to: `/security/repositories/${repository.id}` });
+      crumbs.push({ label: "Security scan", to: path + route.search });
+    }
   } else if (path === "/analytics") {
     crumbs.push({ label: "Analytics", to: path + route.search });
   } else if (path === "/settings") {
@@ -98,7 +107,7 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
           </BreadcrumbItem>
           <BreadcrumbSeparator className="shrink-0 sm:hidden" />
         </>}
-        <BreadcrumbItem className={ancestors.length > 1 ? "min-w-0 sm:shrink-0" : "min-w-0"}>
+        <BreadcrumbItem className={ancestors.length > 1 && !securityRepositoryRoute ? "min-w-0 sm:shrink-0" : "min-w-0"}>
           <BreadcrumbPage className="truncate font-medium" title={current.label}>{current.label}</BreadcrumbPage>
         </BreadcrumbItem>
       </BreadcrumbList>

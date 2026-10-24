@@ -2,6 +2,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import Finding
+from .ordering import list_order
 from .schemas import LIST_PAGE_SIZE, FindingFilters, FindingOut, FindingPage, FindingsOut
 
 
@@ -36,7 +37,8 @@ def list_findings(db: Session, pr_id: str, filters: FindingFilters) -> FindingsO
         total = totals.get(status, 0)
         page = min(filters.page if filters.group else 1, max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE))
         items = db.scalars(select(Finding).where(*conditions, Finding.status == status).order_by(
-            Finding.created_at.desc(), Finding.id.desc(),
+            *list_order(filters.ordering, {"created_at": Finding.created_at, "updated_at": Finding.updated_at,
+                "severity": Finding.severity, "path": Finding.path}, Finding.id.desc()),
         ).offset((page - 1) * LIST_PAGE_SIZE).limit(LIST_PAGE_SIZE))
         pages.append(FindingPage(
             group=status, items=[FindingOut.model_validate(item) for item in items],

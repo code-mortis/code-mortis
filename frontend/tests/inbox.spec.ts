@@ -215,11 +215,11 @@ test("unified loading, sharing, detail return and legacy bounds", async ({ page 
   await page.goto("/?state=open&state=merged");
   const active = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(active.getByRole("link")).toHaveCount(10);
-  await active.getByRole("button", { name: /Load more/ }).click();
+  await active.getByRole("button", { name: /Next/ }).click();
   await expect(page).toHaveURL(/all_pages=2/);
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await page.reload();
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await active.getByRole("link").first().click();
   await expect(page.getByRole("heading", { name: `#42 ${titles[0]}`, exact: true })).toBeVisible();
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
@@ -229,13 +229,13 @@ test("unified loading, sharing, detail return and legacy bounds", async ({ page 
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
   await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
   await expect(page).toHaveURL(/all_pages=2/);
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await page.goto("/?active_pages=999&merged_pages=200");
   await expect(page).toHaveURL(/all_pages=5$/);
-  await expect(active.getByRole("link")).toHaveCount(46);
+  await expect(active.getByRole("link")).toHaveCount(6);
   await page.goto("/?state=open&reviewed_pages=2");
   await expect(page).toHaveURL(/\?state=open&all_pages=2$/);
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   await includeState(page, "Closed");
   await expect(page).not.toHaveURL(/pages=/);
   await expect(active.getByRole("link")).toHaveCount(10);
@@ -250,7 +250,7 @@ test("loading another page does not restart a pending search debounce", async ({
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await page.getByRole("textbox", { name: "Search pull requests", exact: true }).fill("headers");
   await page.clock.runFor(200);
-  await active.getByRole("button", { name: /Load more/ }).click();
+  await active.getByRole("button", { name: /Next/ }).click();
   await expect(page).toHaveURL(/all_pages=2/);
   await page.clock.runFor(100);
   await expect(page).toHaveURL(/\?q=headers&state=open$/);
@@ -291,12 +291,12 @@ test("errors retain loaded rows, retry pagination and clear denied data", async 
   const active = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(active.getByRole("link")).toHaveCount(10);
   controls.failMore = true;
-  await active.getByRole("button", { name: /Load more/ }).click();
+  await active.getByRole("button", { name: /Next/ }).click();
   await expect(active.getByRole("alert")).toContainText("Inbox temporarily unavailable");
   await expect(active.getByRole("link")).toHaveCount(10);
   controls.failMore = false;
   await active.getByRole("button", { name: /Retry/ }).click();
-  await expect(active.getByRole("link")).toHaveCount(20);
+  await expect(active.getByRole("link")).toHaveCount(10);
   controls.fail = 403;
   await page.clock.fastForward(16000);
   await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
@@ -317,7 +317,7 @@ test("mixed-case authors stay checked without duplicate options", async ({ page 
   await expect(page).not.toHaveURL(/author=/);
 });
 
-test("moving rows are deduplicated without changing server totals or page cursors", async ({ page }) => {
+test("moving rows replace the page without changing server totals or page cursors", async ({ page }) => {
   await mockInbox(page);
   const requested: number[] = [];
   await page.route("**/api/v1/pulls?**", async (route) => {
@@ -332,12 +332,12 @@ test("moving rows are deduplicated without changing server totals or page cursor
   });
   await page.goto("/?all_pages=2");
   const active = page.getByRole("region", { name: "Pull requests", exact: true });
-  await expect(active.getByRole("link")).toHaveCount(3);
+  await expect(active.getByRole("link")).toHaveCount(2);
   await expect(page.getByRole("status").first()).toContainText("6 pull requests");
-  await active.getByRole("button", { name: /Load more/ }).click();
-  await expect(active.getByRole("link")).toHaveCount(5);
-  expect(requested.at(-1)).toBe(3);
-  await expect(active.getByRole("button", { name: /Load more/ })).toHaveCount(0);
+  await active.getByRole("button", { name: /Next/ }).click();
+  await expect(active.getByRole("link")).toHaveCount(2);
+  await expect.poll(() => requested.at(-1)).toBe(3);
+  await expect(active.getByRole("button", { name: /Next/ })).toBeDisabled();
   await expect(page.getByRole("status").first()).toContainText("6 pull requests");
 });
 
@@ -358,27 +358,35 @@ test("rows changing state between pages stay visible once and preserve server to
   });
   await page.goto("/?state=all&merged_pages=2");
   const list = page.getByRole("region", { name: "Pull requests", exact: true });
-  await expect(list.getByRole("link")).toHaveCount(4);
+  await expect(list.getByRole("link")).toHaveCount(2);
   await expect(page).toHaveURL(/state=all&all_pages=2$/);
   await expect(page.getByRole("link", { name: new RegExp(rows[0].title) })).toHaveCount(1);
   await expect(page.getByRole("status").first()).toContainText("5 pull requests");
-  await expect(list.getByRole("button", { name: /Load more/ })).toHaveCount(0);
-  expect(requested.map((params) => [params.get("group"), params.get("page")])).toEqual([["all", null], ["all", "2"]]);
+  await expect(list.getByRole("button", { name: /Next/ })).toBeDisabled();
+  expect(requested.map((params) => [params.get("group"), params.get("page")])).toEqual([["all", "2"]]);
 });
 
-test("large shared pagination is bounded and expanded lists do not poll", async ({ page }) => {
+test("large shared pagination reaches every page and keeps the current page live", async ({ page }, info) => {
   await page.clock.install();
   const { requests } = await mockInbox(page, { many: true, extra: 150 });
   await page.goto("/?all_pages=999999");
-  await expect(page).toHaveURL(/all_pages=10$/);
+  await expect(page).toHaveURL(/all_pages=16$/);
   const active = page.getByRole("region", { name: "Pull requests", exact: true });
-  await expect(active.getByRole("link")).toHaveCount(100);
-  await expect(active.getByRole("button", { name: /Load more/ })).toHaveCount(0);
-  await expect(active).toContainText("Use filters to narrow the remaining pull requests.");
-  expect(Math.max(...requests.map((p) => Number(p.get("page") ?? 1)))).toBe(10);
+  await expect(active.getByRole("link")).toHaveCount(6);
+  await expect(active.getByRole("button", { name: "Next pull requests" })).toBeDisabled();
+  await active.getByRole("button", { name: "Previous pull requests" }).click();
+  await expect(active.getByRole("link")).toHaveCount(10);
+  await expect(active.getByRole("status")).toHaveText("Page 15 of 16 · 156 total");
+  await active.getByRole("button", { name: "Next pull requests" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(active.getByRole("status")).toHaveText("Page 16 of 16 · 156 total");
+  await expect(active.getByRole("link")).toHaveCount(6);
   const count = requests.length;
-  await page.clock.fastForward(16000);
-  expect(requests).toHaveLength(count);
+  await page.clock.fastForward(5100);
+  await expect.poll(() => requests.length).toBeGreaterThan(count);
+  expect(requests.at(-1)?.get("page")).toBe("16");
+  await page.screenshot({ path: `/private/tmp/code-mortis-app-pagination-${info.project.name}.png` });
+  await noOverflow(page);
 });
 
 test("search keeps loaded rows and cancels initial and paginated requests", async ({ page }) => {
@@ -405,11 +413,11 @@ test("search keeps loaded rows and cancels initial and paginated requests", asyn
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("pending-inbox"))).toContain("q=slow");
   await expect(active.getByRole("link")).toHaveCount(10);
   await expect(page.getByRole("status").first()).toContainText("Updating pull requests");
-  await expect(active.getByRole("button", { name: /Load more/ })).toBeDisabled();
+  await expect(active.getByRole("button", { name: /Next/ })).toBeDisabled();
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   await expect(search).toHaveValue("");
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("aborted-inbox"))).toContain("q=slow");
-  await active.getByRole("button", { name: /Load more/ }).click();
+  await active.getByRole("button", { name: /Next/ }).click();
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("pending-inbox"))).toContain("page=2");
   await search.fill("headers");
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("aborted-inbox"))).toContain("page=2");
@@ -499,8 +507,9 @@ test("ordering survives sharing, history and details and resets loaded pages", a
   await page.goto("/?ordering=title&all_pages=2");
   await expect(page.getByRole("button", { name: "Reset ordering", exact: true })).toHaveCount(0);
   const active = page.getByRole("region", { name: "Pull requests", exact: true });
-  await expect(active.getByRole("link")).toHaveCount(20);
-  await expect(active.getByRole("link").nth(2)).toContainText("Add repository context");
+  await expect(active.getByRole("link")).toHaveCount(10);
+  await expect(active.getByRole("link").first()).toContainText("Additional change");
+  await expect(active.getByRole("status")).toHaveText("Page 2 of 5 · 46 total");
   expect(requests.filter((p) => p.has("group")).at(-1)?.get("ordering")).toBe("title");
   await page.getByRole("button", { name: "Sort descending", exact: true }).click();
   await expect(page).toHaveURL(/\?state=open&ordering=-title$/);

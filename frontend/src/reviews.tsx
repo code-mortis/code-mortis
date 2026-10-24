@@ -1,8 +1,8 @@
 import { AssessmentStatus as CandidateStatus } from "./components/assessment-status";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useRunResource } from "./hooks/use-run-resource";
+import { useQuery } from "@tanstack/react-query";
+import { useRunPages, useRunResource } from "./hooks/use-run-resource";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
@@ -33,7 +33,6 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
-  LoaderCircle,
 } from "lucide-react";
 import {
   ApiError,
@@ -55,7 +54,7 @@ import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
-import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
+import { PopoverContent } from "./components/ui/popover";
 import {
   Sheet,
   SheetContent,
@@ -82,14 +81,19 @@ import {
 } from "./components/common";
 import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
-import { RunCoverage } from "./components/run-coverage";
+import { coverageFiles, RunCoverage } from "./components/run-coverage";
+import { RunActivity, runActivityEvents } from "./components/run-activity";
+import { RunStages } from "./components/run-stages";
+import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { SecurityGrade } from "./components/security-grade";
-import { LoadMoreFooter } from "./components/load-more-footer";
+import { Pagination } from "./components/pagination";
+import { usePagedList } from "./hooks/use-paged-list";
 import { FindingCard, FindingCategory } from "./components/finding-card";
-import { candidateOutcomes, findingSeverities, findingStatuses, runFindingOutcomes } from "./lib/review-filters";
+import { candidateOutcomes, findingSeverities, runFindingOutcomes } from "./lib/review-filters";
 import { runDuration } from "./lib/run-duration";
+import { ExecutionDuration } from "./components/execution-duration";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -161,8 +165,8 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
             {selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
           </h1>
           {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
             <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
+            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
             <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
           </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
         </div>
@@ -201,24 +205,10 @@ function RunList({ prId }: { prId: string }) {
   const routeState = useLocation().state;
   const inboxReturn = getInboxReturn(routeState);
   const repositoryReturn = getRepositoryReturn(routeState);
-  const query = useInfiniteQuery({
-    queryKey: ["pull-runs", prId],
-    queryFn: ({ pageParam, signal }) => api<Schema["RunPage"]>(`/pulls/${prId}/runs?page=${pageParam}`, "GET", undefined, undefined, signal),
-    initialPageParam: 1,
-    getNextPageParam: (last) => last.has_more ? last.page + 1 : undefined,
-    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? 5000 : false,
-    retry: false,
-  });
+  const { query, items: runs, pagination, denied } = usePagedList<Run>(`/pulls/${prId}/runs`);
   if (query.isPending) return <Loading />;
-  if (query.error instanceof ApiError && [401, 403].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  if (!query.data || (query.error && query.data.pages[0].total === 0)) return <div className="space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button></div>;
-  const seen = new Set<string>();
-  const runs = query.data.pages.flatMap((page) => page.items).filter((run) => {
-    if (seen.has(run.id)) return false;
-    seen.add(run.id);
-    return true;
-  });
-  const total = query.data.pages.at(-1)!.total;
+  if (denied) return <ErrorNotice error={query.error} />;
+  if (!query.data || (query.error && query.data.total === 0)) return <div className="space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry run history</Button></div>;
   if (!runs.length)
     return (
       <Empty title="No reviews yet">
@@ -263,7 +253,7 @@ function RunList({ prId }: { prId: string }) {
           </Link>
         );
       })}
-      <LoadMoreFooter query={query} shown={runs.length} total={total} label="run history" />
+      <Pagination {...pagination} label="run history" />
     </div>
   );
 }
@@ -287,9 +277,11 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [tab, setTab] = useUrlTab("tab", ["findings", "history"], "findings");
-  const filters = useReviewFilters("pull");
-  const statuses = filters.params.getAll("status").filter((value) => value !== "all");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history"], "findings");
+  const resolved = tab === "resolved";
+  const dismissed = tab === "dismissed";
+  const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull");
+  const status = resolved ? "resolved" : dismissed ? "dismissed" : "open";
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const search = filters.params.get("q") ?? "";
@@ -303,19 +295,39 @@ export function PullDetail({ admin }: { admin: boolean }) {
     if (value) next.set("finding", value); else next.delete("finding");
     setParams(next, { state: location.state });
   }
-  const filterKey = JSON.stringify([id, filters.canonical]);
-  const [pagination, setPagination] = useState({ filters: filterKey, pages: {} as Partial<Record<typeof findingStatuses[number], number>> });
-  if (pagination.filters !== filterKey) setPagination({ filters: filterKey, pages: {} });
+  const pages = Object.fromEntries([status].map((status) => {
+    const page = Number(params.get(`${status}_page`) ?? 1);
+    return [status, Number.isInteger(page) && page >= 1 && page <= INBOX_MAX_PAGES ? page : 1];
+  }));
+  function changePage(status: string, page: number) {
+    const next = new URLSearchParams(params);
+    if (page > 1) next.set(`${status}_page`, String(page)); else next.delete(`${status}_page`);
+    setParams(next, { state: location.state });
+  }
   const findingFilters = new URLSearchParams(filters.params);
-  if (findingFilters.get("status") === "all") findingFilters.delete("status");
+  findingFilters.delete("status");
+  findingFilters.set("status", status);
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
-    queryKey: ["pull-findings", id, filters.canonical, pagination.pages],
-    queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pagination.pages, signal),
+    queryKey: ["pull-findings", id, status, filters.canonical, pages],
+    queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pages, signal),
     enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
-    refetchInterval: Object.values(pagination.pages).some((page) => page! > 1) ? false : 5000,
+    staleTime: 0,
+    refetchInterval: 5000,
     retry: false,
-    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id ? previous : undefined,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === id && previousQuery?.queryKey[2] === status ? previous : undefined,
   });
+  const savedCounts = useRef<{ id: typeof id; counts: Record<string, number> } | null>(null);
+  if (findingsQuery.data) savedCounts.current = { id, counts: findingsQuery.data.status_counts };
+  const counts = savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
+  useEffect(() => {
+    if (!findingsQuery.data || findingsQuery.isPlaceholderData) return;
+    const next = new URLSearchParams(params);
+    for (const group of findingsQuery.data.groups) {
+      if (findingsQuery.data.errors[group.group] || pages[group.group] === group.page) continue;
+      if (group.page > 1) next.set(`${group.group}_page`, String(group.page)); else next.delete(`${group.group}_page`);
+    }
+    if (next.toString() !== params.toString()) setParams(next, { replace: true, state: location.state });
+  }, [findingsQuery.data, findingsQuery.isPlaceholderData, pages, params, setParams, location.state]);
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
@@ -324,9 +336,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const total = findings?.registered_total ?? 0;
   const latest = pr.latest_run;
   const term = search.trim().toLowerCase();
-  const count = (state: string) => findings?.status_counts[state] ?? 0;
+  const count = (state: string) => counts?.[state] ?? 0;
+  const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
-  const noOpenFindings = total > 0 && statuses.length === 1 && statuses[0] === "open" && !count("open") && !severities.length && !categories.length && !term;
+  const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
@@ -399,15 +412,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
     <ErrorNotice error={action.error || query.error} />
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList className="mb-4">
-        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{findings ? total : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
+      <TabsList className="mb-4 max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">
+        <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
+        <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
+        <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
-      <TabsContent value="findings" className="min-w-0">
+      {["findings", "resolved", "dismissed"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">
-          <FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+          <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : dismissed ? "Search dismissed findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
             filters={[
-              { key: "status", label: "Status", values: statuses, choices: findingStatuses.map((value) => ({ value, name: label(value), count: count(value) })) },
               { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value) })) },
               { key: "category", label: "Type", values: categories, choices: findingTypeChoices(findings?.category_counts ?? {}), searchPlaceholder: "Search types…" },
             ]}
@@ -415,9 +429,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
         </div>
         {findingsQuery.error && <div className="mb-4 space-y-2"><ErrorNotice error={findingsQuery.error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry findings</Button></div>}
         {findingsQuery.isPending && <Loading />}
-        {findings && (findings.total > 0 ? <section aria-label="Findings" className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
-          {sections.map(({ group: status, items, page, total: groupTotal, has_more }) => {
-            const busy = findingsQuery.isFetching && (pagination.pages[status] ?? 1) > page;
+        {findings && (findings.total > 0 ? <section aria-label={resolved ? "Resolved pull request findings" : "Findings"} className="space-y-6" aria-busy={findingsQuery.isPlaceholderData}>
+          {sections.map(({ group: status, items, page, total: groupTotal }) => {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
               <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
@@ -428,21 +441,18 @@ export function PullDetail({ admin }: { admin: boolean }) {
                     <Status value={item.status} icon={item.status === "resolved" ? <CircleCheck className="size-3.5" aria-hidden="true" /> : undefined} />
                     {item.desired_status && <span className="text-xs text-muted-foreground">{item.sync_error ? "Sync needs attention" : "Sync pending"}</span>}
                   </span>} />)}
-                {error && <div className="space-y-2 px-5 py-3"><ErrorNotice error={error} /><Button variant="outline" size="sm" onClick={() => findingsQuery.refetch()}>Retry {status} findings</Button></div>}
-                {has_more && page >= INBOX_MAX_PAGES && <p className="px-5 py-3 text-sm text-muted-foreground">Use filters to narrow the remaining findings.</p>}
-                {(has_more || busy) && page < INBOX_MAX_PAGES && !error && <div className="flex items-center justify-between gap-3 px-5 py-3">
-                  <Button variant="ghost" size="sm" disabled={busy || findingsQuery.isPlaceholderData} onClick={() => setPagination({ filters: filterKey, pages: { ...pagination.pages, [status]: page + 1 } })}>{busy && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{busy ? "Loading…" : "Load more"}<span className="sr-only"> {status} findings</span></Button>
-                  <span className="text-xs tabular-nums text-muted-foreground">{items.length} of {groupTotal}</span>
-                </div>}
+                <Pagination page={page} pageSize={findings.page_size} total={groupTotal} loading={findingsQuery.isFetching && (findingsQuery.isPlaceholderData || !!error)}
+                  error={error ? new Error(error) : null} onRetry={findingsQuery.refetch} label={`${status} findings`}
+                  onPageChange={(next) => changePage(status, next)} />
               </div>
             </section>;
           })}
-        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : total ? "No findings match these filters" : run_count ? "No findings recorded" : "No review findings yet"}>
-          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. You can still inspect their evidence and history." : total ? "Try another search, status, severity, or type." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
-          {total > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>View all findings</Button>}
+        </section> : !findingsQuery.isPlaceholderData && <Empty title={noOpenFindings ? "No open findings" : scopeTotal ? "No findings match these filters" : resolved ? "No resolved findings" : dismissed ? "No dismissed findings" : run_count ? "No findings recorded" : "No review findings yet"}>
+          <p>{noOpenFindings ? "Earlier findings are resolved or dismissed. Their saved evidence and history are preserved." : scopeTotal ? "Try another search, severity, or type." : resolved ? "Findings appear here after they are resolved. Findings missing from a later review remain open." : dismissed ? "Dismissed findings retain their evidence and dismissal reason." : run_count ? "Check run history for completion and coverage. An incomplete review is not a clean result." : "Findings will appear here after a review. Each finding keeps its evidence and resolution history."}</p>
+          {noOpenFindings && count("resolved") > 0 ? <Button variant="outline" className="mt-4" onClick={() => setTab("resolved")}>View resolved findings</Button> : scopeTotal > 0 && <Button variant="outline" className="mt-4" onClick={showAllFindings}>Clear filters</Button>}
         </Empty>)}
         <p className="mt-5 text-xs leading-relaxed text-muted-foreground">Resolving or reopening a GitHub review thread updates its finding here. A finding missing from a later run stays open until someone resolves it.</p>
-      </TabsContent>
+      </TabsContent>)}
       <TabsContent value="history" className="min-w-0"><RunList prId={pr.id} /></TabsContent>
     </Tabs>
     <Sheet open={!!finding} onOpenChange={(open) => { if (!open) setFinding(null); }}>
@@ -545,7 +555,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
                 <summary className="cursor-pointer break-all">
                   {evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}
                 </summary>
-                <div className="mt-2"><Code path={evidence.path}>{evidence.quote}</Code></div>
+                <div className="mt-2"><Code path={evidence.path} startLine={evidence.start_line}>{evidence.quote}</Code></div>
               </details>
             ))}
             <p className="text-sm text-muted-foreground">
@@ -593,7 +603,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
 function FindingEvidence({ evidence }: { evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"] }) {
   return <>
     <section className="space-y-3"><h3 className="text-sm font-semibold">Explanation</h3><Markdown>{String(evidence.content ?? "")}</Markdown></section>
-    <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} />
+    <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} startLine={Number(evidence.start_line)} />
     <p className="flex items-center gap-2 text-xs leading-relaxed text-muted-foreground"><History className="size-3.5 shrink-0" aria-hidden="true" />Each review keeps its original evidence.</p>
   </>;
 }
@@ -604,47 +614,37 @@ function findingActionLabel(finding: Schema["FindingOut"]) {
   return "Reopen finding";
 }
 
-function ResolvedList({ runId, running, revision, tick, onOpen }: {
-  runId: string; running: boolean; revision: string; tick: number; onOpen: (finding: Schema["FindingOut"], trigger: HTMLButtonElement) => void;
+function RunFindings({ runId, state, running, revision, tick, searchInput, onOpen }: {
+  runId: string; state: "open" | "resolved"; running: boolean; revision: string; tick: number;
+  searchInput: RefObject<HTMLInputElement | null>; onOpen: (finding: Schema["OccurrenceOut"], trigger: HTMLButtonElement) => void;
 }) {
-  const filters = useReviewFilters("resolved");
+  const resolved = state === "resolved";
+  const filters = useReviewFilters(resolved ? "resolved" : "run");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, size: 10 });
-  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
-  const searchInput = useRef<HTMLInputElement>(null);
-  const query = useRunResource<Schema["ResolvedPage"]>(
-    `/runs/${runId}/resolved?${params}&page=1&page_size=${list.size}`, revision, tick,
-    { scope: `${runId}/resolved?${canonical}` },
+  const query = useRunPages<Schema["RunFindingPage"]>(
+    `/runs/${runId}/findings?status=${state}&${canonical}`, revision, tick, `${state}_page`,
   );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
-  const first = query.data;
-  const last = query.data;
-  const more = !!last?.has_more && list.size < 100;
-  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
-  const findings = query.data?.items ?? [];
+  const data = query.data;
+  const findings = data?.items ?? [];
   return <div className="space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search resolved findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: params.get("ordering"), defaultValue: "-severity", options: resolved ? findingOrderings : runFindingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : "Search run findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
-        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
-        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(first?.category_counts ?? {}), searchPlaceholder: "Search types…" },
+        ...(!resolved ? [{ key: "outcome" as const, label: "Result", values: params.getAll("outcome"), choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
+          name: value === "repeated" ? "Repeated findings" : value === "recorded" ? "Unclassified findings" : `${name}s`, count: data?.outcome_counts[value] ?? 0 })) }] : []),
+        { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: data?.severity_counts[value] })) },
+        { key: "category", label: "Type", values: params.getAll("category"), choices: findingTypeChoices(data?.category_counts ?? {}), searchPlaceholder: "Search types…" },
       ]} onChange={filters.change}>
-      {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} resolved findings</span>}
+      {data && <span role="status" className="sr-only">{data.total} of {data.registered_total} {resolved ? "resolved findings" : "findings"}</span>}
     </FilterBar>
-    <ErrorNotice error={query.error} />
-    <section aria-label="Findings resolved by this run" className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
-      {!last && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.id} evidence={item}
-        state={<Status value={item.status} label={item.status === "resolved" ? "Resolved" : `Currently ${words(item.status)}`} />}
-        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={first?.registered_total ? "No resolved findings match these filters" : running ? "No confirmed resolutions yet" : "No findings resolved by this run"}>
-        <p>{first?.registered_total ? "Try another search, severity, or type." : "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved."}</p>
-        {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
+    <section aria-label={resolved ? "Findings resolved by this run" : "Findings at this run"} className={findings.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
+      {!data && query.isPending ? <Loading /> : findings.length ? findings.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
+        state={<Status value={resolved ? "resolved" : "recorded"} label={resolved ? "Resolved" : item.is_new === true ? "New finding" : item.is_new === false ? "Repeated finding" : "Recorded finding"} />}
+        onClick={(event) => onOpen(item, event.currentTarget)} />) : !query.error && <Empty title={data?.registered_total ? resolved ? "No resolved findings match these filters" : "No findings match these filters" : !resolved && running ? "Review in progress" : resolved ? "No findings resolved by this run" : "No findings recorded in this run"}>
+        <p>{data?.registered_total ? "Try another search, severity, or type." : resolved ? "Fixes appear here after verification and GitHub synchronization complete. Findings absent from a review are not automatically resolved." : running ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result. Saved evidence and finding history are preserved."}</p>
+        {!!data?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button>}
       </Empty>}
-      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
-          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> resolved findings</span>
-        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry resolved findings</Button>
-          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining resolved findings.</p> : null}
-        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{findings.length} of {last.total} shown</span>}
-      </div>}
+      <Pagination {...query.pagination} label={`${state} findings`} />
     </section>
   </div>;
 }
@@ -654,21 +654,16 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
 }) {
   const filters = useReviewFilters("assessment");
   const { params, canonical } = filters;
-  const [list, setList] = useState({ filters: canonical, size: 10 });
-  if (list.filters !== canonical) setList({ filters: canonical, size: 10 });
   const searchInput = useRef<HTMLInputElement>(null);
-  const query = useRunResource<Schema["CandidatePage"]>(
-    `/runs/${runId}/candidates?${params}&page=1&page_size=${list.size}`, revision, tick,
-    { scope: `${runId}/candidates?${canonical}` },
+  const query = useRunPages<Schema["CandidatePage"]>(
+    `/runs/${runId}/candidates?${canonical}`, revision, tick,
   );
   if (query.error && [401, 403, 404].includes(query.error.status)) return <ErrorNotice error={query.error} />;
   const first = query.data;
   const last = query.data;
-  const more = !!last?.has_more && list.size < 100;
-  const loadingMore = query.isFetching && list.size > (last?.page_size ?? 0);
   const candidates = query.data?.items ?? [];
   return <div className="mt-6 space-y-4">
-    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
+    <FilterBar query={params.get("q") ?? ""} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: assessmentOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel="Search assessments" searchPlaceholder="Search assessments…" searchInputRef={searchInput} onSearch={filters.search}
       filters={[
         { key: "outcome", label: "Result", values: params.getAll("outcome"), choices: candidateOutcomes.map((choice) => ({ ...choice, count: first?.outcome_counts[choice.value] })) },
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: findingSeverities.map((value) => ({ value, name: label(value), count: first?.severity_counts[value] })) },
@@ -676,7 +671,6 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
       ]} onChange={filters.change}>
       {last && <span role="status" className="sr-only">{last.total} of {last.registered_total} assessments</span>}
     </FilterBar>
-    <ErrorNotice error={query.error} />
     <div className={candidates.length ? "flex flex-col divide-y overflow-hidden rounded-lg border bg-card" : undefined}>
       {!last && query.isPending ? <Loading /> : candidates.length ? candidates.map((item) => <FindingCard key={item.id} evidence={item.snapshot}
         state={<CandidateStatus candidate={item} inCard />}
@@ -684,13 +678,7 @@ function AssessmentList({ runId, running, revision, tick, onOpen }: {
         <p>{first?.registered_total ? "Try another search, result, severity, or type." : running ? "Candidates appear after the initial review finishes." : "No candidates were produced for assessment."}</p>
         {!!first?.registered_total && <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>View all assessments</Button>}
       </Empty>}
-      {(more || list.size > 10 || query.error) && <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        {more ? <Button variant="ghost" size="sm" disabled={loadingMore || (!!query.error && query.isFetching)} onClick={() => query.error ? query.refetch() : setList({ ...list, size: list.size + 10 })}>
-          {loadingMore && <LoaderCircle className="size-3 motion-safe:animate-spin" />}{loadingMore ? "Loading…" : query.error ? "Retry" : "Load more"}<span className="sr-only"> assessments</span>
-        </Button> : query.error ? <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Retry assessments</Button>
-          : last?.has_more ? <p className="text-xs text-muted-foreground">Narrow the filters to see the remaining assessments.</p> : null}
-        {last && <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">{candidates.length} of {last.total} shown</span>}
-      </div>}
+      <Pagination {...query.pagination} label="assessments" />
     </div>
   </div>;
 }
@@ -765,7 +753,7 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
           <section className="space-y-3"><h3 className="text-sm font-semibold">Supporting evidence</h3><p className="text-xs text-muted-foreground">Saved from the reviewed commit <span className="font-mono">{headSha.slice(0, 7)}</span>.</p></section>
           {result?.evidence.length ? result.evidence.map((evidence, index) => <section key={`${evidence.revision}-${evidence.path}-${evidence.start_line}-${index}`} className="space-y-3">
             <p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{evidence.revision === "original" ? "Original" : "Current"} evidence: {evidence.path}:{evidence.start_line}–{evidence.end_line}</p>
-            <Code path={evidence.path}>{evidence.quote}</Code>
+            <Code path={evidence.path} startLine={evidence.start_line}>{evidence.quote}</Code>
           </section>) : <p className="text-sm text-muted-foreground">{active(candidate.status) ? "Evidence will appear when assessment completes." : "No supporting evidence was recorded."}</p>}
         </TabsContent>
         <details className="mt-6 border-t pt-4 text-sm"><summary className="cursor-pointer font-medium">Original proposal</summary><div className="mt-3 max-w-[75ch]"><Markdown>{String(snapshot.content ?? "No proposal text was recorded.")}</Markdown></div></details>
@@ -787,7 +775,14 @@ function AssessmentPanel({ candidate, headSha, runId, canRetry, onOpenFinding }:
 
 export function RunDetail({ user }: { user: Schema["UserOut"] }) {
   const { id } = useParams();
-  const query = useApi<Schema["RunDetail"]>(`/runs/${id}`, true);
+  const [params] = useSearchParams();
+  const ordering = normalizeOrdering(params.get("ordering"), runFindingOrderings, "-severity");
+  const path = `/runs/${id}${ordering === "-severity" ? "" : `?ordering=${ordering}`}`;
+  const query = useQuery<Schema["RunDetail"], ApiError>({
+    queryKey: ["run-detail", id, ordering], queryFn: ({ signal }) => api(path, "GET", undefined, undefined, signal),
+    refetchInterval: 5000, staleTime: 0, retry: false,
+    placeholderData: (previous) => previous?.run.id === id ? previous : undefined,
+  });
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} tick={query.dataUpdatedAt} />;
@@ -797,6 +792,24 @@ function tokenUsage(tokens: number | null | undefined, status: string) {
   if (tokens != null) return `${tokens.toLocaleString()} tokens`;
   return ["pending", "queued", "running", "waiting", "blocked"].includes(status)
     ? "Token usage pending" : "Token usage unavailable";
+}
+
+function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
+  const coverage = coverageFiles(run);
+  const knownCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const count = (value: unknown) => knownCount(value) ? value.toLocaleString() : "—";
+  const selected = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
+  const completed = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "completed").length : run.progress.completed;
+  const reused = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "reused").length : run.progress.reused;
+  const failed = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "failed").length : run.progress.failed;
+  const hasMetrics = [selected, completed, reused, failed, tokens].some(knownCount);
+  const awaitingResults = active(run.status) || run.status === "blocked";
+  return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+    <span>Duration: <ExecutionDuration run={run} /></span>
+    <span>{hasMetrics
+      ? <>{count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
+      : awaitingResults ? "Awaiting review results" : "Review statistics unavailable"}</span>
+  </p>;
 }
 
 const checkDescriptions: Record<string, string> = {
@@ -812,40 +825,23 @@ const checkDescriptions: Record<string, string> = {
   action_required: "The review or GitHub synchronization needs attention.",
 };
 
-function runFindingOutcome(item: Schema["OccurrenceOut"]): keyof typeof runFindingOutcomes {
-  if (item.is_new === true) return "new";
-  if (item.is_new !== false) return "recorded";
-  switch (item.current_status) {
-    case "open": return "open_repeat";
-    case "resolved": return "resolved_repeat";
-    case "dismissed": return "dismissed_repeat";
-    default: return "repeated";
-  }
-}
-
-function runFindingLabel(item: Schema["OccurrenceOut"]) {
-  return runFindingOutcomes[runFindingOutcome(item)];
-}
-
 function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
-  const { run, pull_request: pr, occurrences, resolved_count = 0, assessment_revision = 0, resolved_revision = "", assessment, can_write } = detail;
-  const findingCounts = new Map<string, number>();
-  for (const item of occurrences) {
-    const name = runFindingLabel(item).toLowerCase();
-    findingCounts.set(name, (findingCounts.get(name) ?? 0) + 1);
-  }
+  const { run, pull_request: pr, occurrences, finding_state_counts = {}, findings_revision = "", assessment_revision = 0, assessment, can_write } = detail;
   const action = useAction();
   const location = useLocation();
   const returnState = { inbox: getInboxReturn(location.state), repository: getRepositoryReturn(location.state) };
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details"], "findings");
-  const filters = useReviewFilters("run");
-  const search = filters.params.get("q") ?? "";
-  const outcomes = filters.params.getAll("outcome");
-  const severities = filters.params.getAll("severity");
-  const categories = filters.params.getAll("category");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details", "activity"], "findings");
+  const activityEvents = runActivityEvents(run);
   const findingId = params.get("finding");
-  const finding = findingId ? { finding_id: findingId, snapshot: occurrences.find((item) => item.finding_id === findingId)?.snapshot } : null;
+  const [findingSeed, setFindingSeed] = useState<{ item: Schema["OccurrenceOut"]; tab: string } | null>(null);
+  const savedFinding = findingSeed?.tab === tab && findingSeed.item.finding_id === findingId ? findingSeed.item
+    : tab !== "resolved" ? occurrences.find((item) => item.finding_id === findingId) : undefined;
+  const findingQuery = useApi<Schema["OccurrenceOut"]>(
+    `/runs/${run.id}/findings/${encodeURIComponent(findingId ?? "")}?status=${tab === "resolved" ? "resolved" : "open"}`,
+    false, !!findingId && !savedFinding,
+  );
+  const finding = findingId ? savedFinding ?? findingQuery.data : undefined;
   const candidateId = params.get("candidate");
   const [candidateSeed, setCandidateSeed] = useState<Schema["CandidateOut"] | null>(null);
   function showSheet(key: "finding" | "candidate", value: string | null) {
@@ -870,7 +866,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const findingTrigger = useRef<HTMLButtonElement>(null);
   const resolvedTab = useRef<HTMLButtonElement>(null);
   const assessmentTab = useRef<HTMLButtonElement>(null);
-  const duration = runDuration(run);
   const connection = run.config.connection as Record<string, unknown> | undefined;
   const checkValue = run.check_conclusion || run.check_status;
   const feedback = runFeedback(run);
@@ -881,29 +876,37 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const summaryStage = run.summary?.status === "not_applicable" ? undefined
     : run.config.pipeline_version === 2 ? run.stages?.summary ?? run.summary
     : run.summary ?? run.stages?.summary;
-  const stageStatuses: string[] = [
-    summaryStage?.status ?? "skipped",
-    run.stages?.ocr?.status ?? "skipped",
-    run.stages?.assessment ? assessmentStatus : "skipped",
-    run.stages?.verification?.status ?? "skipped",
-  ];
-  const reviewStagesStatus = ["running", "waiting", "pending"].find((status) => stageStatuses.includes(status))
-    ?? (stageStatuses.every((status) => status === "skipped") ? "skipped"
-      : stageStatuses.includes("failed") && !stageStatuses.some((status) => status === "completed" || status === "partial") ? "failed"
-      : stageStatuses.every((status) => status === "cancelled" || status === "skipped") ? "cancelled"
-      : stageStatuses.some((status) => ["partial", "failed", "cancelled"].includes(status)) ? "partial"
-      : "completed");
   const summaryDiagnostics = [summaryStage?.error, run.summary?.diagram_warning, pr.summary_error]
     .filter(Boolean).join("\n\n");
+  const currentSummary = pr.latest_run?.id === run.id && summaryStage?.status === "completed";
+  // A sync job can reconcile an already published comment without changing it.
+  const summaryPublicationPending = currentSummary && !pr.summary_url && pr.summary_pending;
+  const summarySyncFailed = currentSummary && Boolean(pr.summary_error);
+  const stageDetails = <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
+    {summaryStage && <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        {pr.summary_url ? <a className="inline-flex items-center gap-1 rounded-sm font-medium no-underline outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring" href={pr.summary_url} target="_blank" rel="noreferrer">PR summary<ArrowUpRight aria-hidden="true" className="size-3" /></a> : <span className="font-medium">PR summary</span>}
+        <Status value={summaryStage.status} />
+      </div>
+      <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
+      {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
+      {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
+      {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+      {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
+    </div>}
+    {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
+      const stage = run.stages?.[key];
+      if (!stage) return null;
+      const status = key === "assessment" ? assessmentStatus : stage.status;
+      return <div key={key} className="space-y-2">
+        <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
+        <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
+        {stage.error && <TechnicalDetails error={stage.error} name={name} />}
+      </div>;
+    })}
+  </PopoverContent>;
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
-  const term = search.trim().toLowerCase();
-  const filtered = occurrences.filter((item) => !outcomes.length || outcomes.includes(runFindingOutcome(item)))
-    .filter(({ snapshot }) => (!severities.length || severities.includes(String(snapshot.severity)))
-    && (!categories.length || categories.includes(String(snapshot.category)))
-    && (!term || [snapshot.path, snapshot.content, snapshot.category].some((value) => String(value ?? "").toLowerCase().includes(term))));
-  const categoryCounts = Object.fromEntries([...new Set(occurrences.map(({ snapshot }) => String(snapshot.category ?? "")).filter(Boolean))]
-    .map((value) => [value, occurrences.filter(({ snapshot }) => snapshot.category === value).length]));
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
   return <>
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
@@ -917,12 +920,12 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
           </div>}
         </div>
-        <Link className="mt-2 block w-fit max-w-full break-words rounded-sm text-sm underline-offset-4 hover:text-primary hover:underline [overflow-wrap:anywhere]" to={`/pulls/${pr.id}`} state={returnState}>#{pr.number} · {pr.title}</Link>
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
-          <span>{words(run.trigger)}{duration && ` · ${duration}`}</span>
+          <span>{words(run.trigger)}</span>
           <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
         </div>
+        <RunMetrics run={run} tokens={detail.total_tokens} />
       </div>
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
@@ -943,40 +946,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
-          {(run.stages?.ocr || summaryStage) && <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Review stages</span>
-            <Popover>
-              <Tooltip>
-                <TooltipTrigger asChild><PopoverTrigger asChild>
-                  <button type="button" aria-label="Review stage details" className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={reviewStagesStatus} icon={<ChevronDown aria-hidden="true" className="size-3" />} /></button>
-                </PopoverTrigger></TooltipTrigger>
-                <TooltipContent sideOffset={6}>View stage details.</TooltipContent>
-              </Tooltip>
-              <PopoverContent align="start" aria-label="Review stage details" className="max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-2rem)] space-y-4 overflow-y-auto text-xs">
-                {summaryStage && <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    {pr.summary_url ? <a className="inline-flex items-center gap-1 rounded-sm font-medium no-underline outline-offset-2 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring" href={pr.summary_url} target="_blank" rel="noreferrer">PR summary<ArrowUpRight aria-hidden="true" className="size-3" /></a> : <span className="font-medium">PR summary</span>}
-                    <Status value={summaryStage.status} />
-                  </div>
-                  <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
-                  {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
-                  {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
-                  {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
-                  {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
-                </div>}
-                {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
-                  const stage = run.stages?.[key];
-                  if (!stage) return null;
-                  const status = key === "assessment" ? assessmentStatus : stage.status;
-                  return <div key={key} className="space-y-2">
-                    <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
-                    <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
-                    {stage.error && <TechnicalDetails error={stage.error} name={name} />}
-                  </div>;
-                })}
-              </PopoverContent>
-            </Popover>
-          </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
             {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
@@ -993,47 +962,30 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     </header>
     <ErrorNotice error={action.error || error} />
     <ErrorNotice error={run.error} />
-    {(active(run.status) || run.status === "blocked") && typeof run.progress?.selected === "number" && <p role="status" className="mb-4 text-sm text-muted-foreground">
-      {String(run.progress.completed ?? 0)} of {String(run.progress.selected)} assigned files completed.
-      {run.status === "blocked" && " Completed files are saved and reused when you resume."}
-    </p>}
+    <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
-        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{occurrences.length}</span></TabsTrigger>
-        <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{resolved_count}</span></TabsTrigger>
+        <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>
+        <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.resolved ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>
         <TabsTrigger value="coverage">Coverage</TabsTrigger>
-        <TabsTrigger value="details" className="col-span-2 sm:col-span-1">Details</TabsTrigger>
+        <TabsTrigger value="details">Details</TabsTrigger>
+        <TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{activityEvents.length}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="findings" className="min-w-0">
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">New findings were first reported in this run. Repeats were reported earlier; their labels show the current status. Saved evidence stays unchanged.</p>
-        <div className="mb-4"><FilterBar query={search} searchResetKey={filters.searchResetKey} searchLabel="Search run findings" searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
-          filters={[
-            { key: "outcome", label: "Result", values: outcomes, choices: Object.entries(runFindingOutcomes).map(([value, name]) => ({ value,
-              name: value === "repeated" ? "Repeats with unknown status" : value === "recorded" ? "Unclassified findings" : `${name}s`,
-              count: findingCounts.get(name.toLowerCase()) ?? 0 })) },
-            { key: "severity", label: "Severity", values: severities, choices: findingSeverities.map((value) => ({ value, name: label(value), count: occurrences.filter((item) => item.snapshot.severity === value).length })) },
-            { key: "category", label: "Type", values: categories, choices: findingTypeChoices(categoryCounts), searchPlaceholder: "Search types…" },
-          ]}
-          onChange={filters.change}>
-          <span role="status" className="sr-only">{filtered.length} of {occurrences.length} findings</span>
-        </FilterBar></div>
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings recorded in this run, with their saved evidence. Later status changes do not change this list.</p>
         {!assessment && !active(run.status) && <p className="mb-4 text-xs text-muted-foreground">This run predates candidate assessment. Its findings have not been assessed by this policy.</p>}
-        {filtered.length ? <section aria-label="Findings at this run" className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
-          {filtered.map((item) => <FindingCard key={item.finding_id} evidence={item.snapshot}
-            state={<Status value={item.current_status ?? "unknown"} />}
-            onClick={(event) => { findingTrigger.current = event.currentTarget; showSheet("finding", item.finding_id); }} />)}
-        </section> : <Empty title={occurrences.length ? "No findings match these filters" : active(run.status) ? "Review in progress" : "No findings recorded in this run"}>
-          <p>{occurrences.length ? "Try another search, result, severity, or type." : active(run.status) ? "Saved findings appear here as the review progresses." : "Check coverage and assessment before treating this as a clean result."}</p>
-          {occurrences.length ? <Button variant="outline" className="mt-4" onClick={() => { filters.clear(); searchInput.current?.focus(); }}>Clear filters</Button> : <Button variant="outline" className="mt-4" onClick={() => setTab("coverage")}>Inspect coverage</Button>}
-        </Empty>}
+        <RunFindings runId={run.id} state="open" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFindingSeed({ item, tab }); showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="resolved" className="min-w-0">
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings automatically resolved by this run after fix verification and GitHub confirmation. Open a finding to inspect its current status and verification history.</p>
-        <ResolvedList runId={run.id} running={active(run.status)} revision={resolved_revision} tick={tick} onOpen={(item, trigger) => { findingTrigger.current = trigger; showSheet("finding", item.id); }} />
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">Findings resolved by this run after fix verification and GitHub confirmation. Later status changes do not change this list.</p>
+        <RunFindings runId={run.id} state="resolved" running={active(run.status)} revision={findings_revision} tick={tick} searchInput={searchInput} onOpen={(item, trigger) => { findingTrigger.current = trigger; setFindingSeed({ item, tab }); showSheet("finding", item.finding_id); }} />
       </TabsContent>
       <TabsContent value="coverage" className="min-w-0">
         <RunCoverage run={run} />
+      </TabsContent>
+      <TabsContent value="activity" className="min-w-0">
+        <RunActivity events={activityEvents} />
       </TabsContent>
       <TabsContent value="assessment" className="min-w-0">
         <section aria-label="Candidate assessment">
@@ -1077,16 +1029,16 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         </details>
       </TabsContent>
     </Tabs>
-    <Sheet open={!!finding || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
+    <Sheet open={!!findingId || !!candidateId} onOpenChange={(open) => { if (!open) closeSheet(); }}>
       <SheetContent className="w-full gap-0 overflow-hidden sm:max-w-2xl" onCloseAutoFocus={(event) => { event.preventDefault(); (findingTrigger.current?.isConnected ? findingTrigger.current : tab === "assessment" ? assessmentTab.current : tab === "resolved" ? resolvedTab.current : searchInput.current)?.focus(); }}>
         <SheetHeader className="shrink-0 px-6 pb-4 pt-5">
-          {finding && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
-          <SheetTitle>{finding ? "Finding details" : "Assessment details"}</SheetTitle>
-          <SheetDescription className="sr-only">{finding ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
+          {findingId && candidate && <Button autoFocus variant="link" size="sm" className="min-h-11 justify-start self-start px-0 text-xs sm:min-h-8" onClick={() => showSheet("finding", null)}><ArrowLeft aria-hidden="true" />Back to assessment</Button>}
+          <SheetTitle>{findingId ? "Finding details" : "Assessment details"}</SheetTitle>
+          <SheetDescription className="sr-only">{findingId ? "Inspect the evidence saved in this run and its current resolution separately." : "Inspect the candidate's assessment decision and saved supporting evidence."}</SheetDescription>
         </SheetHeader>
         {candidateId && <ErrorNotice error={candidateQuery.error} />}
         {candidateId && !finding && candidateQuery.isPending && <div className="px-6"><Loading /></div>}
-        {finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
+        {findingId ? finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : <div className="px-6">{findingQuery.isPending ? <Loading /> : <ErrorNotice error={findingQuery.error} />}</div> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
           canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>

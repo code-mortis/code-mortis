@@ -3,7 +3,7 @@ import json
 import secrets
 from datetime import timedelta
 from importlib.resources import files
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -26,6 +26,7 @@ from . import (
     pipeline,
     pr_summary,
     resolved_list,
+    run_findings,
     runner_client,
     verification,
 )
@@ -59,6 +60,7 @@ from .models import (
     User,
     WebhookDelivery,
 )
+from .ordering import RunFindingOrdering, list_order
 from .reviews import (
     ACTIVE,
     can_publish,
@@ -102,6 +104,8 @@ from .schemas import (
     ResolvedFilters,
     ResolvedPage,
     RunDetail,
+    RunFindingFilters,
+    RunFindingPage,
     RunOut,
     RunPage,
     StartRunInput,
@@ -628,7 +632,7 @@ def start_run(pr_id: str, db: DB, user: USER, body: StartRunInput | None = None)
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
-def run_detail(run_id: str, db: DB, user: USER):
+def run_detail(run_id: str, db: DB, user: USER, ordering: RunFindingOrdering = "-severity"):
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
@@ -640,12 +644,14 @@ def run_detail(run_id: str, db: DB, user: USER):
             FindingVerification.error.is_not(None), FindingVerification.error != "",
         ).order_by(FindingVerification.created_at, FindingVerification.id).limit(1))
     resolved_count, resolved_revision = resolved_list.metadata(db, run)
+    finding_state_counts, findings_revision = run_findings.metadata(db, run)
     new_findings = dict(db.execute(select(
         ReviewCandidate.finding_id, func.bool_or(ReviewCandidate.is_new),
     ).where(ReviewCandidate.run_id == run.id, ReviewCandidate.finding_id.is_not(None))
         .group_by(ReviewCandidate.finding_id)).all())
     return RunDetail(
         run=output,
+        total_tokens=analytics.run_tokens(db, run),
         pull_request=pr_out(db, pr),
         repository=repo_out(db, repo),
         assessment=assessment.summary(db, run),
@@ -654,12 +660,38 @@ def run_detail(run_id: str, db: DB, user: USER):
                 "is_new": new_findings.get(item.finding_id), "current_status": status,
             })
             for item, status in db.execute(select(Occurrence, Finding.status)
-                .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id))
+                .join(Finding, Finding.id == Occurrence.finding_id).where(Occurrence.run_id == run.id)
+                .order_by(*list_order(ordering, {"severity": Occurrence.snapshot["severity"].as_string(),
+                    "path": Occurrence.snapshot["path"].as_string()}, Occurrence.id)))
         ],
         resolved_count=resolved_count, resolved_revision=resolved_revision,
+        finding_state_counts=finding_state_counts, findings_revision=findings_revision,
         assessment_revision=run.progress.get("assessment_revision", 0),
         can_write=remote.get("permissions", {}).get("push", False),
     )
+
+
+@router.get("/runs/{run_id}/findings", response_model=RunFindingPage)
+def run_saved_findings(run_id: str, db: DB, user: USER, filters: Annotated[RunFindingFilters, Query()]):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    return run_findings.list_findings(db, run, filters)
+
+
+@router.get("/runs/{run_id}/findings/{finding_id}", response_model=OccurrenceOut)
+def run_saved_finding(run_id: str, finding_id: str, db: DB, user: USER,
+    status: Literal["open", "resolved"] = "open",
+):
+    run = db.get(ReviewRun, run_id)
+    if not run:
+        raise HTTPException(404, "Review run not found.")
+    pr_access(db, user, run.pr_id)
+    item = db.scalar(run_findings.scope(run, status).where(Occurrence.finding_id == finding_id))
+    if not item:
+        raise HTTPException(404, "Finding not recorded in this run.")
+    return OccurrenceOut.model_validate(item)
 
 
 @router.get("/runs/{run_id}/resolved", response_model=ResolvedPage)

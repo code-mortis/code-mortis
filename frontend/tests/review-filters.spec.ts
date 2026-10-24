@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { normalizeReviewFilters, withReviewFilters } from "../src/lib/review-filters";
 
-test("review filters preserve default and explicitly unrestricted finding statuses", () => {
-  for (const query of ["", "status=unknown"]) {
-    expect(normalizeReviewFilters(new URLSearchParams(query), "pull").getAll("status")).toEqual(["open", "resolved"]);
+test("PR findings always select current open findings, including legacy status URLs", () => {
+  for (const query of ["", "status=unknown", "status=all", "status=dismissed", "status=open&status=resolved&status=dismissed"]) {
+    expect(normalizeReviewFilters(new URLSearchParams(query), "pull").getAll("status")).toEqual(["open"]);
   }
-  expect(normalizeReviewFilters(new URLSearchParams("status=all"), "pull").getAll("status")).toEqual(["all"]);
-  expect(normalizeReviewFilters(new URLSearchParams("status=resolved&status=resolved&status=unknown"), "pull").getAll("status")).toEqual(["resolved"]);
 });
 
 test("review filters bound URL input to the existing API constraints", () => {
@@ -54,11 +52,27 @@ test("resolved filters normalize and clear without changing findings or assessme
 test("run finding results normalize without consuming assessment outcomes", () => {
   const raw = new URLSearchParams("outcome=new&outcome=resolved_repeat&outcome=resolved_repeat&outcome=withheld&outcome=unknown&outcome=__proto__&assessment_outcome=withheld&assessment_outcome=resolved_repeat&tab=assessment&finding=one");
   const run = normalizeReviewFilters(raw, "run");
-  expect(run.getAll("outcome")).toEqual(["new", "resolved_repeat"]);
+  expect(run.getAll("outcome")).toEqual(["new", "repeated"]);
   expect(normalizeReviewFilters(raw, "assessment").getAll("outcome")).toEqual(["withheld"]);
   const cleared = withReviewFilters(raw, new URLSearchParams(), "run");
   expect(cleared.has("outcome")).toBe(false);
   expect(cleared.get("assessment_outcome")).toBe("withheld");
   expect(cleared.get("tab")).toBe("assessment");
   expect(cleared.get("finding")).toBe("one");
+});
+
+
+test("review ordering is validated per list and independent across tabs", () => {
+  const raw = new URLSearchParams("ordering=-updated_at&assessment_ordering=-severity&resolved_ordering=path");
+  expect(normalizeReviewFilters(raw, "pull").get("ordering")).toBe("-updated_at");
+  expect(normalizeReviewFilters(raw, "assessment").has("ordering")).toBe(false);
+  expect(normalizeReviewFilters(raw, "resolved").get("ordering")).toBe("path");
+  expect(normalizeReviewFilters(raw, "run").has("ordering")).toBe(false);
+  const next = withReviewFilters(raw, new URLSearchParams("ordering=-path"), "assessment");
+  expect(next.get("ordering")).toBe("-updated_at");
+  expect(next.get("assessment_ordering")).toBe("-path");
+  expect(next.get("resolved_ordering")).toBe("path");
+  for (const scope of ["pull", "run", "assessment", "resolved"] as const) {
+    expect(normalizeReviewFilters(new URLSearchParams(`${scope === "assessment" ? "assessment_" : scope === "resolved" ? "resolved_" : ""}ordering=invalid`), scope).has("ordering")).toBe(false);
+  }
 });

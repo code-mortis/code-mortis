@@ -51,7 +51,7 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
       )}
     >
       {label || words(value)}
-      {["queued", "running", "in_progress"].includes(value) && (
+      {["queued", "running"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
       {icon}
