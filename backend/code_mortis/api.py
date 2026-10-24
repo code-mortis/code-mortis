@@ -476,13 +476,12 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
                     403,
                     "The connection owner must authorize this repository and its automatic reviews first.",
                 )
-    importing_bots = body.settings.include_bot_prs and not repo.settings.get("include_bot_prs", False)
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,
         body.settings.model_dump(),
     )
-    if repo.enabled or importing_bots:
+    if repo.enabled:
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)

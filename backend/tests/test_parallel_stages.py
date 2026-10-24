@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from pydantic import ValidationError
 from sqlalchemy import select
 from test_assessment import SOURCE, verdict
 from test_assessment import pipeline as assessment_scenario  # noqa: F401
@@ -39,7 +40,7 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.schemas import RepoSettings
+from code_mortis.schemas import RepoSettings, StageState
 
 DIAGRAM = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
 
@@ -57,6 +58,46 @@ def stub_summary_context(monkeypatch):
     monkeypatch.setattr(pr_summary, "build_context", lambda *a: copy.deepcopy(CONTEXT))
     monkeypatch.setattr(ocr, "git", lambda *a, **k: "src/retry.py\0" if "--name-only" in a else "b" * 40)
     monkeypatch.setattr(verification, "filter_context", lambda _repo, _env, paths, *a: paths)
+
+
+@pytest.mark.parametrize("status,metadata", [
+    ("completed", {}), ("completed", {"waiting_for": None}), ("waiting", {"waiting_for": "verification"}),
+])
+def test_saved_stage_waiting_metadata_loads_without_changing_history(seed, github_stub, client, status, metadata):
+    identity = new_run(parallel=True)
+    stages = {name: {"status": status, "tokens": 123, **metadata} for name in ("assessment", "summary")}
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status = "completed" if status == "completed" else "running"
+        run.stages = stages
+    for url, keys in [
+        (f"/api/v1/runs/{identity}", ("run",)),
+        ("/api/v1/pulls/pr/runs", ("items", 0)),
+        ("/api/v1/pulls/pr", ("pull_request", "latest_run")),
+        ("/api/v1/repositories/22/pulls", ("groups", 0, "items", 0, "latest_run")),
+    ]:
+        response = client.get(url)
+        assert response.status_code == 200, response.text
+        output = response.json()
+        for key in keys:
+            output = output[key]
+        assert output["id"] == identity
+        for stage in stages:
+            assert output["stages"][stage]["status"] == status
+            assert output["stages"][stage]["tokens"] == 123
+            assert output["stages"][stage]["waiting_for"] == metadata.get("waiting_for")
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).stages == stages
+
+
+@pytest.mark.parametrize("values,field,reason", [
+    ({"waiting_for": "unknown"}, "waiting_for", "literal_error"),
+    ({"waiting_for": None, "unexpected": None}, "unexpected", "extra_forbidden"),
+])
+def test_stage_waiting_compatibility_preserves_strict_validation(values, field, reason):
+    with pytest.raises(ValidationError) as error:
+        StageState.model_validate(values)
+    assert [(item["loc"], item["type"]) for item in error.value.errors()] == [((field,), reason)]
 
 
 @pytest.mark.parametrize("parallel", [False, True])
