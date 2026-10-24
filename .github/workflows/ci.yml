@@ -1,9 +1,29 @@
-name: Verify
+name: Verify frontend
+# shortcut: GitHub filters inspect at most 3,000 files; dispatch manually for larger diffs.
 on:
   push:
     branches: [main]
+    paths: &paths
+      - '.github/workflows/ci.yml'
+      - '.github/ci-filters.test.ts'
+      - 'frontend/**'
+      # Public routes, schemas and FastAPI dependencies determine the browser contract.
+      - 'backend/code_mortis/__init__.py'
+      - 'backend/code_mortis/main.py'
+      - 'backend/code_mortis/manage.py'
+      - 'backend/code_mortis/api.py'
+      - 'backend/code_mortis/security_api.py'
+      - 'backend/code_mortis/subscriptions.py'
+      - 'backend/code_mortis/schemas.py'
+      - 'backend/code_mortis/analytics_schemas.py'
+      - 'backend/code_mortis/security_schemas.py'
+      - 'backend/code_mortis/ordering.py'
+      - 'backend/code_mortis/db.py'
+      - 'backend/pyproject.toml'
+      - 'backend/uv.lock'
   pull_request:
     branches: [main]
+    paths: *paths
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,27 +47,6 @@ jobs:
           name: openapi
           path: openapi.json
           if-no-files-found: error
-  backend:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: mirror.gcr.io/library/postgres:17-alpine
-        env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
-        ports: [55439:5432]
-        options: --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10
-      redis:
-        image: mirror.gcr.io/library/redis:7-alpine
-        ports: [56389:6379]
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-        with: { version: '0.9.14' }
-      - run: uv sync --frozen --python 3.13
-      - run: uv run ruff check .
-      - run: uv run python -m pytest -q
   frontend:
     needs: export-openapi
     env:
@@ -61,6 +60,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with: { bun-version: '1.4.2' }
       - run: bun install --frozen-lockfile
+      - run: bun test ../.github/ci-filters.test.ts
       - uses: actions/download-artifact@v4
         with:
           name: openapi
@@ -72,28 +72,3 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - if: github.event_name == 'workflow_dispatch'
         run: bun run test
-  image:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -t code-mortis:test .
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=256m
-          --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m
-          code-mortis:test python tests/ocr_container_smoke.py
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=512m
-          code-mortis:test python tests/security_scanner_smoke.py
-  native-clients:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build --build-arg DOCKERHUB_REGISTRY=mirror.gcr.io -f Dockerfile.runner -t code-mortis-runner:test .
-      - run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:mode=1777,size=256m
-          --tmpfs /profiles:uid=10001,gid=10001,mode=0700,size=64m
-          --tmpfs /home/mortis:uid=10001,gid=10001,mode=0700,size=64m
-          code-mortis-runner:test python -m tests.native_runner_smoke
