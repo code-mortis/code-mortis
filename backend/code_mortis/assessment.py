@@ -84,6 +84,15 @@ class AssessmentResponse(AssessmentResult):
     required_paths: list[str] = Field(default_factory=list, max_length=10)
 
 
+class HistoryChanged(ocr.ReviewStopped):
+    def __init__(self):
+        super().__init__("Finding history changed during assessment. Retry this assessment to check the updated history.")
+
+
+def assessment_only(run):
+    return (run.progress.get("assessment_retry") or {}).get("assessment_only") is True
+
+
 def output_schema(context=None):
     schema = AssessmentResponse.model_json_schema()
     schema["required"] = list(schema["properties"])
@@ -155,6 +164,8 @@ def summary(db, run):
             result.withheld_candidates += count
         if status in {"failed", "skipped"} or decision == "uncertain":
             result.incomplete += count
+        if status in {"failed", "skipped"}:
+            setattr(result, status, getattr(result, status) + count)
     batches = set(db.scalars(select(Finding.publication_batch).where(
         Finding.publication_run_id == run.id, Finding.published_review_id.is_not(None),
     )))
@@ -187,6 +198,7 @@ def withhold_pending(db, run, reason):
         ReviewCandidate.run_id == run.id, ReviewCandidate.status.in_(["queued", "running"]),
     )):
         row.status, row.error, row.finished_at = "skipped", reason, now()
+        row.failure_reason = None
         changed = True
     db.flush()
     record_summary(db, run, advance_revision=changed)
@@ -418,6 +430,8 @@ def exact_repeat(context):
 
 
 def accept(db, run, row, result):
+    if assessment_only(run):
+        return  # Historical verdicts must not change current findings or publication plans.
     if result["verdict"] != "confirmed":
         return
     snapshot = dict(row.snapshot)
@@ -475,8 +489,14 @@ def independent_batch(rows, keys, concurrency):
     return sorted(first, key=lambda row: row.position)[:concurrency]
 
 
-def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
-    from .reviews import authorize_connection, execution_identity, review_stopped
+def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *, stage=None):
+    from . import pipeline
+    from .reviews import authorize_connection, execution_identity, review_stopped, target_matches
+
+    def owns(run):
+        if stage:
+            return pipeline.owns(run, stage, claim) and run.stages[stage]["status"] == "running"
+        return run.progress.get("execution") == claim
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
@@ -503,14 +523,14 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
     stop_workers = Event()
 
     def stopped():
-        return stop_workers.is_set() or review_stopped(run_id, claim) or (deadline is not None and now().timestamp() >= deadline)
+        return stop_workers.is_set() or review_stopped(run_id, claim, stage=stage) or (deadline is not None and now().timestamp() >= deadline)
 
     def prepare():
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
             db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update().execution_options(populate_existing=True))
-            if run.progress.get("execution") != claim:
+            if not owns(run):
                 return None
             rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.id.in_(ids))
                                    .order_by(ReviewCandidate.position)))
@@ -527,7 +547,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 return None
             pr = db.get(PullRequest, run.pr_id)
             if (run.cancel_requested or run.status in {"cancelled", "superseded"}
-                or pr.head_sha != run.head_sha or pr.base_sha != run.base_sha or pr.state != "open"
+                or not target_matches(run, pr.head_sha, pr.base_sha, pr.state)
                 or run.progress.get("analysis_status") not in {"completed", "partial"}):
                 withhold_pending(db, run, "Assessment could not continue because the review stopped, was replaced by a newer run, or did not finish. Check the review outcome.")
                 return None
@@ -539,6 +559,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         identity, snapshot = row.id, dict(row.snapshot)
         attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
         usage = {"tokens": 0}
+        failure_reason = None
         try:
             if stopped():
                 raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
@@ -546,7 +567,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 raise context
             if context is None:
                 context = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
-            context = {**context, "review_sensitivity": options.get("review_sensitivity")}
+            context = {**context, "review_sensitivity": options.get("review_sensitivity"),
+                       **({"assessment_only": True} if assessment_only(run) else {})}
             result = exact_repeat(review_context.sanitize(context, credentials, stopped))
             unit = "tokens"
             consumed = 0
@@ -563,12 +585,12 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
-                    if current.progress.get("execution") != claim:
+                    if not owns(current):
                         return
                     if current.cancel_requested:
                         raise ocr.ReviewStopped("The run was cancelled during assessment.")
                     if feedback and history(db, current, lock=True)[1] != history_key:
-                        raise ocr.ReviewStopped("Finding history changed before the assessment could be corrected.")
+                        raise HistoryChanged()
                     repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
                     selected = db.get(Connection, current.connection_id)
                     if (not repo.active or not repo.enabled or not db.get(Installation, repo.installation_id).active
@@ -655,11 +677,12 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             status, error = "completed", None
         except Exception as exc:
             result, status = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
+            failure_reason = "history_changed" if isinstance(exc, HistoryChanged) else None
             if isinstance(exc, verification.VerificationOutputError):
                 usage = exc.usage
                 status = exc.status
             error = str(exc) if isinstance(exc, (ValueError, TimeoutError, ocr.ReviewStopped)) else "The AI could not confirm or reject this proposed finding. No comment was published for it. Start a new review to try again."
-        return identity, result, status, error, usage
+        return identity, result, status, error, usage, failure_reason
 
     def save(outcomes, history_key):
         secrets = (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
@@ -667,24 +690,27 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             run = db.get(ReviewRun, run_id)
             db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update().execution_options(populate_existing=True))
-            if run.progress.get("execution") != claim:
+            if not owns(run):
                 return False
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             current_connection = db.get(Connection, run.connection_id)
             # Compare once before this batch's own atomic history updates.
             stale = (run.cancel_requested or run.status in {"cancelled", "superseded"}
-                     or (deadline is not None and now().timestamp() >= deadline) or pr.head_sha != run.head_sha
-                     or pr.base_sha != run.base_sha or pr.state != "open" or not repo.enabled or not repo.active
+                     or (deadline is not None and now().timestamp() >= deadline)
+                     or not target_matches(run, pr.head_sha, pr.base_sha, pr.state) or not repo.enabled or not repo.active
                      or not db.get(Installation, repo.installation_id).active or not current_connection
                      or (current_connection.kind != "api" and current_connection.auth_status != "connected")
                      or any(connection[key] != getattr(current_connection, key)
-                            for key in ("kind", "owner_id", "provider", "protocol", "base_url"))
-                     or history(db, run, lock=True)[1] != history_key)
-            for identity, result, status, error, usage in outcomes:
+                            for key in ("kind", "owner_id", "provider", "protocol", "base_url")))
+            history_changed = not stale and history(db, run, lock=True)[1] != history_key
+            for identity, result, status, error, usage, failure_reason in outcomes:
                 row = db.get(ReviewCandidate, identity)
                 if stale:
-                    result, status, error = None, "skipped", "The pull request or finding history changed during assessment; this proposed finding was withheld from GitHub. Check the latest review."
+                    result, status, error = None, "skipped", "The review stopped or its commit, access, connection, or time limit changed during assessment. Check the review outcome."
+                    failure_reason = None
+                elif history_changed:
+                    result, status, error, failure_reason = None, "skipped", str(HistoryChanged()), "history_changed"
                 elif result:
                     try:
                         actor_id, trigger = execution_identity(run)
@@ -697,6 +723,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     except (ValueError, github.GitHubError):
                         result, status, error = None, "skipped", "Access to the repository or AI connection changed while this finding was being checked. Restore access before starting another review."
                 row.result = json.loads(clean_text(json.dumps(result), secrets)) if result else None
+                row.failure_reason = failure_reason
                 row.status, row.error, row.usage, row.finished_at = status, clean_text(error, secrets)[:10000] if error else None, usage, now()
                 if result:
                     accept(db, run, row, row.result)
@@ -755,7 +782,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         elif len(results) < len(futures) and results[futures[future]][1] is not None:
                             with transaction() as db:
                                 current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-                                if current.progress.get("execution") == claim and not current.cancel_requested and current.status == "running":
+                                if owns(current) and not current.cancel_requested and current.status == "running":
                                     row = db.get(ReviewCandidate, futures[future])
                                     if row.status == "running":
                                         row.usage = {**row.usage, "response_received": True}

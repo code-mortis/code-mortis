@@ -1,6 +1,7 @@
 import copy
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
 from sqlalchemy import select
+from test_assessment import SOURCE, verdict
+from test_assessment import pipeline as assessment_scenario  # noqa: F401
 from test_pr_summary import CONTEXT, RESULT, completed_run, overview_api  # noqa: F401
 from test_review_flow import COMMENT, new_run, remote
 from test_verification import RESULT as FIXED
@@ -27,6 +30,7 @@ from code_mortis import (
 )
 from code_mortis.db import now, transaction
 from code_mortis.models import (
+    Activity,
     Connection,
     Finding,
     FindingVerification,
@@ -204,7 +208,7 @@ def test_three_workers_overlap_and_join_without_early_resolution(verification_sc
         assert started.wait(10)
         with transaction() as db:
             auxiliary = list(db.scalars(select(Job).where(Job.kind.in_(pipeline.KINDS))))
-            assert {job.kind for job in auxiliary} == set(pipeline.KINDS)
+            assert {job.kind for job in auxiliary} == {"verify_fixes", "summarize_review"}
         futures = [pool.submit(execute, job.id) for job in auxiliary]
         try:
             main.result(timeout=10)
@@ -233,6 +237,180 @@ def test_three_workers_overlap_and_join_without_early_resolution(verification_sc
         finding = db.get(Finding, verification_scenario["finding"])
         assert finding.desired_status == (None if observed_again else "resolved")
         assert len(list(db.scalars(select(Job).where(Job.kind == "publish", Job.payload["run_id"].as_string() == identity)))) == 1
+
+
+@pytest.mark.parametrize("parallel_assessment", [False, True])
+@pytest.mark.parametrize("verification_outcome", ["fixed", "still_present", "failed", "skipped"])
+def test_assessment_waits_for_concurrent_verification_history(verification_scenario, monkeypatch, verification_outcome, parallel_assessment):  # noqa: F811
+    identity = verification_scenario["run"]
+    enable_parallel(identity)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    assessment_barrier = threading.Barrier(2)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        pipeline.update(run, "summary", "skipped")
+        if parallel_assessment:
+            run.config = {**run.config, "settings": {**run.config["settings"], "concurrency": 4,
+                          "assessment_token_budget": None, "token_budget": None}}
+
+    def engine(*args, **kwargs):
+        result = kwargs.get("saved_review")
+        if result is None:
+            calls.append("ocr")
+            kwargs["before_analysis"](None)
+            result = ("completed", {"summary": {"total_tokens": 100}}, [
+                {**COMMENT, "source_sha": args[3]},
+                {**COMMENT, "path": "other.py", "content": "A different proposal", "existing_code": "", "source_sha": args[3]},
+            ])
+        kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
+        return result
+
+    def context(_repo, _env, _fetch, run, snapshot, previous, _stopped):
+        return {"finding": snapshot, "head_sha": run.head_sha, "original_sha": run.head_sha,
+                "sources": {"current": {snapshot["path"]: SOURCE}}, "diff": "",
+                "history": previous["findings"], "prior_candidates": previous["prior_candidates"]}
+
+    def infer(*args, **kwargs):
+        if kwargs.get("validator") == assessment.validate_response:
+            calls.append("assessment")
+            if parallel_assessment:
+                assessment_barrier.wait(timeout=10)
+            assert release.is_set()
+            supplied = args[4]
+            assert any(reason.startswith("Commit " + supplied["head_sha"])
+                       for item in supplied["history"] for reason in item["reasons"])
+            # Both candidates remain observations of the existing finding, never new comments.
+            return kwargs["validator"](verdict(supplied, required_paths=[]), supplied), {"tokens": 25}
+        calls.append("verification")
+        started.set()
+        assert release.wait(10)
+        if verification_outcome in {"failed", "skipped"}:
+            raise verification.VerificationOutputError("Verification interrupted", {"tokens": 50}, verification_outcome)
+        return {**copy.deepcopy(FIXED), "verdict": verification_outcome}, {"tokens": 50}
+
+    monkeypatch.setattr(ocr, "review", engine)
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(assessment, "build_context", context)
+    monkeypatch.setattr(verification, "api_verify", infer)
+    # OCR finishes first; candidates must remain queued until the other worker stops writing history.
+    reviews.perform_review(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.stages["assessment"]["status"] == "waiting"
+        assert run.stages["assessment"]["waiting_for"] == "verification"
+        verify_job = db.scalar(select(Job).where(Job.kind == "verify_fixes"))
+        verify_id = verify_job.id
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(jobs.execute_job.run, verify_id)
+        try:
+            assert started.wait(10)
+            pipeline.finalize(identity)
+            with transaction() as db:
+                assert not db.scalar(select(Job.id).where(Job.kind == "assess_candidates"))
+                assert list(db.scalars(select(ReviewCandidate.status))) == ["queued", "queued"]
+                assert db.get(Finding, verification_scenario["finding"]).desired_status is None
+            assert "assessment" not in calls
+        finally:
+            release.set()
+            future.result(timeout=10)
+    pipeline.finalize(identity)
+    pipeline.finalize(identity)
+    with transaction() as db:
+        deferred = list(db.scalars(select(Job).where(Job.kind == "assess_candidates")))
+        assert len(deferred) == 1
+        assessment_job = deferred[0].id
+        assert db.scalar(select(Activity.id).where(Activity.source == "verification"))
+    # A recovered OCR delivery cannot bypass the deferred stage or repeat its model calls.
+    reviews.perform_review(identity)
+    assert calls.count("ocr") == 1 and "assessment" not in calls
+    jobs.execute_job(assessment_job)
+    jobs.execute_job(assessment_job)
+    pipeline.finalize(identity)
+    pipeline.finalize(identity)
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate)))
+        assert len(rows) == 2 and all(row.status == "completed" and row.failure_reason is None for row in rows), [(row.status, row.error) for row in rows]
+        assert all(row.finding_id == verification_scenario["finding"] for row in rows)
+        run = db.get(ReviewRun, identity)
+        assert run.stages["assessment"]["status"] == "completed"
+        assert run.stages["assessment"]["tokens"] == 50
+        assert run.stages["verification"]["tokens"] == 50
+        assert run.status == "completed" and run.progress["pipeline_finalized"]
+        assert db.get(Finding, verification_scenario["finding"]).desired_status is None
+        assert len(list(db.scalars(select(Job.id).where(
+            Job.kind == "publish", Job.payload["run_id"].as_string() == identity)))) == 1
+    assert calls.count("ocr") == 1 and calls.count("verification") == 1 and calls.count("assessment") == 2
+
+
+@pytest.mark.parametrize("stop", ["cancel", "head", "connection", "deadline", "worker_lost", "lost_completion", "stage_stopped"])
+def test_deferred_assessment_keeps_guards_and_recovers_without_repeating_inference(assessment_scenario, monkeypatch, stop):  # noqa: F811
+    identity = new_run(assessed=True, parallel=True)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.status, run.started_at = "running", now()
+        run.progress = {"analysis_saved": True, "analysis_status": "completed"}
+        run.report = {"summary": {"total_tokens": 100}}
+        pipeline.update(run, "ocr", "completed", tokens=100)
+        pipeline.update(run, "verification", "running")
+        pipeline.update(run, "summary", "skipped")
+        db.add(ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT))
+        db.flush()
+        assert pipeline.defer_assessment(db, run)
+        pipeline.update(run, "verification", "completed", tokens=0)
+        if stop == "cancel":
+            reviews.cancel_review(db, run)
+        elif stop == "head":
+            db.get(PullRequest, "pr").head_sha = "c" * 40
+        elif stop == "connection":
+            db.get(Connection, run.connection_id).base_url = "https://other.example/v1"
+        elif stop == "deadline":
+            run.started_at = now() - timedelta(seconds=run.config["settings"]["timeout_seconds"] + 1)
+    pipeline.finalize(identity)
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.kind == "assess_candidates"))
+        if stop in {"cancel", "head"}:
+            assert job is None
+        else:
+            job_id = job.id
+            if stop in {"worker_lost", "lost_completion"}:
+                job.status, job.attempts, job.lease_until = "running", 1, now() - timedelta(seconds=1)
+                pipeline.update(db.get(ReviewRun, identity), "assessment", "running", execution=f"{job_id}:1")
+                row = db.scalar(select(ReviewCandidate))
+                row.status, row.usage = "running", {"tokens": None, "reserved_tokens": 4321}
+                if stop == "lost_completion":
+                    row.status, row.usage = "completed", {"tokens": 25}
+                    row.result = {"verdict": "uncertain", "relationship": "uncertain"}
+    if stop in {"worker_lost", "lost_completion"}:
+        monkeypatch.setattr(jobs.execute_job, "apply_async", lambda **kwargs: None)
+        jobs.dispatch()
+        jobs.execute_job(job_id)
+    elif stop not in {"cancel", "head"}:
+        if stop == "stage_stopped":
+            def stop_stage():
+                with transaction() as db:
+                    pipeline.fail_stage(db, db.get(ReviewRun, identity), "assessment", "The assessment worker lost ownership.")
+            assessment_scenario["during_assessment"] = stop_stage
+        jobs.execute_job(job_id)
+    pipeline.finalize(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        row = db.scalar(select(ReviewCandidate))
+        assert row.status == ("completed" if stop == "lost_completion" else "skipped")
+        assert row.failure_reason is None
+        assert run.progress["pipeline_finalized"]
+        stage = run.stages["assessment"]
+        assert stage["status"] == ("cancelled" if stop in {"cancel", "head"} else "completed" if stop == "lost_completion" else "partial")
+        assert stage["waiting_for"] is None
+        if stop in {"worker_lost", "stage_stopped"}:
+            assert stage["tokens"] is None
+            assert assessment.remaining_budget(db, run)[1] is False
+        elif stop == "lost_completion":
+            assert stage["tokens"] == 25 and stage["error"] is None
+        else:
+            assert stage["tokens"] == 0
+    assert assessment_scenario["calls"] == int(stop == "stage_stopped") and assessment_scenario["analysis_calls"] == 0
 
 
 def test_default_settings_and_assessment_budget_are_independent(seed):
@@ -358,6 +536,7 @@ def test_queue_routing_and_personal_connection_wait(verification_scenario):  # n
         assert db.get(Job, job_id).status == "queued"
         assert db.get(ReviewRun, identity).stages["summary"]["status"] == "waiting"
     assert jobs.job_queue("verify_fixes") == "verification"
+    assert jobs.job_queue("assess_candidates") == "reviews"
     assert jobs.job_queue("summarize_review") == jobs.job_queue("generate_summary") == "summaries"
     assert jobs.job_queue("finalize_review") == "events"
 

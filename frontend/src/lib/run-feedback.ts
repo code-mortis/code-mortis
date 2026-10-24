@@ -71,7 +71,13 @@ export function assessmentFeedback(error: string, stage: "assessment" | "verific
   if (/Assessment timed out|Time limit reached/.test(message)) {
     return { title: `${name} timed out`, message: `The time limit was reached before this ${stage} finished. Review the run's timeout before starting another review.` };
   }
-  if (/cancelled|replaced by a newer run|pull request or finding history changed|Access to the repository or AI connection changed/.test(message)) {
+  if (/Finding history changed (during assessment|before the assessment could be corrected)/.test(message)) {
+    return { title: "Finding history changed", message: "Finding history changed while this candidate was being checked. Retry assessment to evaluate the updated history." };
+  }
+  if (message.includes("The pull request or finding history changed during assessment")) {
+    return { title: "Assessment context changed", message: "The decision was withheld because its context changed. Check the current commit and access before retrying this assessment." };
+  }
+  if (/cancelled|replaced by a newer run|The review stopped or its commit|Access to the repository or AI connection changed/.test(message)) {
     return { title: `${name} stopped`, message: `The review stopped or its context changed before this ${stage} could finish. Check the run outcome and current access.` };
   }
   if (/authentication|HTTP 40[13]|quota|rate.limit|OCR verification process failed|AI did not finish checking|AI could not confirm or reject/i.test(message)) {

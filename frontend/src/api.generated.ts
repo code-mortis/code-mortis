@@ -1696,6 +1696,16 @@ export interface components {
              */
             incomplete: number;
             /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+            /**
              * Published Comments
              * @default 0
              */
@@ -1732,6 +1742,8 @@ export interface components {
             status: string;
             /** Error */
             error: string | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
             result: components["schemas"]["AssessmentResult"] | null;
             /** Usage */
             usage: {
@@ -1757,6 +1769,8 @@ export interface components {
             is_new: boolean;
             /** Error */
             error: string | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
             /** Attempts */
             attempts?: components["schemas"]["CandidateAttemptOut"][];
             /**
@@ -1766,6 +1780,11 @@ export interface components {
             retryable: boolean;
             /** Progress Phase */
             progress_phase?: "validating" | null;
+            /**
+             * Assessment Only
+             * @default false
+             */
+            assessment_only: boolean;
             /**
              * Revision
              * @default 0
@@ -1789,6 +1808,8 @@ export interface components {
             is_new: boolean;
             /** Error */
             error: string | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
             /** Attempts */
             attempts?: components["schemas"]["CandidateAttemptOut"][];
             /**
@@ -1798,6 +1819,11 @@ export interface components {
             retryable: boolean;
             /** Progress Phase */
             progress_phase?: "validating" | null;
+            /**
+             * Assessment Only
+             * @default false
+             */
+            assessment_only: boolean;
         };
         /** CandidatePage */
         CandidatePage: {
