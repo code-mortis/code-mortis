@@ -68,6 +68,34 @@ test("date presets and custom ranges preserve local calendar boundaries", () => 
   expect(analyticsRange(new URLSearchParams("period=invalid"), today)).toEqual(defaults);
 });
 
+test("date range arrow opens and closes choices without typing", async ({ page }, info) => {
+  await mock(page);
+  await page.goto("/analytics");
+  const period = page.getByRole("combobox", { name: "Date range", exact: true });
+  const trigger = page.locator('button[aria-label="Show options"]');
+  const toggle = () => info.project.name === "mobile" ? trigger.tap() : trigger.click();
+  await toggle();
+  await expect(page.getByRole("option", { name: "Last 7 days", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "All time", exact: true })).toBeVisible();
+  await expect(period).toHaveAttribute("aria-expanded", "true");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(period).toBeFocused();
+  await page.screenshot({ path: `../.impeccable/review/combobox-arrow-${info.project.name}.png`, animations: "disabled" });
+  await toggle();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(period).toHaveValue("Last 30 days");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await trigger.press("Enter");
+  await page.getByRole("option", { name: "Last 7 days", exact: true }).click();
+  await expect(period).toHaveValue("Last 7 days");
+  await expect(page).toHaveURL(/period=7/);
+  await trigger.press("Space");
+  await expect(page.getByRole("option", { name: "All time", exact: true })).toBeVisible();
+  await period.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(period).toBeFocused();
+});
+
 test("last 30 days rolls forward by default while explicit custom dates stay fixed", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   const requests = await mock(page);

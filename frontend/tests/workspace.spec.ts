@@ -3473,6 +3473,14 @@ test("searchable providers and protocols preserve presets and required model val
   await page.getByRole("button", { name: "Add connection", exact: true }).click();
   await page.getByLabel("Connection name").fill("Searchable connection");
   const provider = page.getByRole("combobox", { name: "Provider", exact: true });
+  const trigger = page.locator('[data-slot="input-group"]').filter({ has: provider }).getByRole("button", { name: "Show options" });
+  if (info.project.name === "mobile") await trigger.tap();
+  else await trigger.click();
+  await expect(page.getByRole("option", { name: "Anthropic", exact: true })).toBeVisible();
+  await expect(provider).toBeFocused();
+  await provider.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toBeVisible();
   await provider.fill("anth");
   await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
   const empty = page.locator('[data-slot="combobox-empty"]');
@@ -3522,6 +3530,16 @@ test("repository language searches suggestions and preserves custom language ent
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const language = page.getByRole("combobox", { name: "Language", exact: true });
+  const trigger = page.locator('[data-slot="input-group"]').filter({ has: language }).getByRole("button", { name: "Show options" });
+  await language.fill("span");
+  if (info.project.name === "mobile") await trigger.tap();
+  else await trigger.click();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(language).toHaveValue("English");
+  await trigger.click();
+  await expect(page.getByRole("option", { name: "Spanish", exact: true })).toBeVisible();
+  await page.getByRole("option", { name: "Spanish", exact: true }).click();
+  await expect(language).toHaveValue("Spanish");
   await language.fill("span");
   await expect(page.getByRole("option", { name: "Spanish", exact: true })).toBeVisible();
   await expect(page.getByText("Use the language you entered.", { exact: true })).toHaveCount(0);
@@ -3666,6 +3684,7 @@ test("review connection stays closed after a running review disables it", async 
   await page.clock.fastForward(6000);
   await expect(picker).toBeDisabled();
   await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(page.locator('[data-slot="input-group"]').filter({ has: picker }).getByRole("button", { name: "Show options" })).toBeDisabled();
   status = "completed";
   await page.clock.fastForward(6000);
   await expect(picker).toBeEnabled();
@@ -9039,7 +9058,8 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
       await expect(page.getByLabel("Review connection")).toHaveCount(0);
     } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
     else {
-      await expect(summary.getByRole("button")).toBeDisabled();
+      await expect(summary.getByRole("button", { name: state === "running" ? "Review in progress" : "Run review", exact: true })).toBeDisabled();
+      await expect(summary.getByRole("button", { name: "Show options" })).toBeDisabled();
       await expect(page.getByLabel("Review connection")).toBeDisabled();
     }
     if (state === "merged" || state === "closed") {
