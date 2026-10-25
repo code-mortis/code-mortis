@@ -47,11 +47,12 @@ def list_tokens(request: Request, db: DB, user: SESSION_USER,
                 page: int = Query(default=1, ge=1, le=1000000)) -> ApiTokenPage:
     from sqlalchemy import func, select
 
-    if request_status not in {"active", "expired", "revoked", "all"}:
-        raise HTTPException(422, "Choose active, expired, revoked or all.")
+    if request_status not in {"active", "inactive", "expired", "revoked", "all"}:
+        raise HTTPException(422, "Choose active, inactive, expired, revoked or all.")
     moment = now()
     active = (PersonalApiToken.revoked_at.is_(None)) & (PersonalApiToken.expires_at > moment)
     filters = {"active": active,
+               "inactive": ~active,
                "expired": (PersonalApiToken.revoked_at.is_(None)) & (PersonalApiToken.expires_at <= moment),
                "revoked": PersonalApiToken.revoked_at.is_not(None)}
     base = select(PersonalApiToken).where(PersonalApiToken.user_id == user.id)

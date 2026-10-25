@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Check, Copy, FolderGit2, Github, MoreHorizontal, Plug, Plus, UserRound } from "lucide-react";
+import { ArrowUpRight, Bot, Check, Copy, FolderGit2, Github, KeyRound, MoreHorizontal, Palette, Plug, Plus, UserRound, Users } from "lucide-react";
 import {
   api,
   useAction,
@@ -801,8 +801,17 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
 }) {
   const isAdmin = user.role === "admin";
   const [params] = useSearchParams();
-  const sections = [["connections", "AI connections"], ["api-tokens", "API tokens"], ["mcp", "MCP access"], ...(isAdmin ? [["github", "GitHub"], ["team", "Team"]] : []), ["appearance", "Appearance"]];
-  const tab = sections.some(([value]) => value === params.get("tab"))
+  const sections = [
+    { value: "connections", label: "AI connections", icon: Plug },
+    { value: "api-tokens", label: "API tokens", icon: KeyRound },
+    { value: "mcp", label: "MCP access", icon: Bot },
+    ...(isAdmin ? [
+      { value: "github", label: "GitHub", icon: Github },
+      { value: "team", label: "Team", icon: Users },
+    ] : []),
+    { value: "appearance", label: "Appearance", icon: Palette },
+  ];
+  const tab = sections.some(({ value }) => value === params.get("tab"))
     ? params.get("tab")! : "connections";
   const query = useApi<Instance>("/settings", true, isAdmin && tab !== "appearance");
   const connections = useApi<Connection[]>("/connections", true, tab === "connections");
@@ -856,10 +865,10 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     </header>
     <div className="grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
       <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-        {sections.map(([value, label]) => (
+        {sections.map(({ value, label, icon: Icon }) => (
           <Link key={value} to={`/settings?tab=${value}`} aria-current={tab === value ? "page" : undefined}
-            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
-            {label}
+            className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+            <Icon aria-hidden="true" className="size-4 shrink-0" />{label}
           </Link>
         ))}
       </nav>

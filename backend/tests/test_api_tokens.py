@@ -493,6 +493,21 @@ def test_list_paginates_in_sql(fresh_session, github_stub, monkeypatch):
         assert client.get("/api/v1/api-tokens?status=active").json()["total"] == 10
         assert client.get("/api/v1/api-tokens?status=expired").json()["total"] == 1
         assert client.get("/api/v1/api-tokens?status=revoked").json()["total"] == 1
+        inactive = client.get("/api/v1/api-tokens?status=inactive").json()
+        assert (inactive["total"], inactive["has_more"]) == (2, False)
+        assert {item["status"] for item in inactive["items"]} == {"revoked", "expired"}
+
+        with transaction() as db:
+            for token in db.scalars(select(PersonalApiToken).where(
+                    PersonalApiToken.user_id == user.id, PersonalApiToken.revoked_at.is_(None),
+                    PersonalApiToken.expires_at > now()).limit(9)):
+                token.expires_at = now() - timedelta(seconds=1)
+        first = client.get("/api/v1/api-tokens?status=inactive").json()
+        second = client.get("/api/v1/api-tokens?status=inactive&page=2").json()
+        assert (first["total"], len(first["items"]), first["has_more"], first["active_count"]) == (11, 10, True, 1)
+        assert (len(second["items"]), second["has_more"], second["page"]) == (1, False, 2)
+        assert len({item["id"] for item in first["items"] + second["items"]}) == 11
+        assert all(item["status"] != "active" for item in first["items"] + second["items"])
 
 
 def test_create_rejects_non_integer_repository_ids(fresh_session, client):

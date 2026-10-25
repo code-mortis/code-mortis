@@ -58,9 +58,11 @@ async function mockTokens(page: Page, options: {
     if (path === "/providers") return route.fulfill({ json: [] });
     if (path === "/api-tokens" && method === "GET") {
       const status = url.searchParams.get("status") ?? "active";
-      const items = status === "all" ? tokens : tokens.filter((item) => item.status === status);
+      const items = status === "all" ? tokens : tokens.filter((item) => status === "inactive" ? item.status !== "active" : item.status === status);
+      const currentPage = Number(url.searchParams.get("page") ?? "1");
       return route.fulfill({ json: {
-        items, total: items.length, page: 1, has_more: false,
+        items: items.slice((currentPage - 1) * 10, currentPage * 10), total: items.length,
+        page: currentPage, has_more: currentPage * 10 < items.length,
         active_count: tokens.filter((item) => item.status === "active").length,
         permissions, default_expiration_days: 30, max_expiration_days: 365,
         reauth_required: !!options.reauthRequired,
@@ -113,7 +115,13 @@ for (const role of ["admin", "member"] as const) {
     await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true })).toBeVisible();
     await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByText("Active", { exact: true })).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "1 active" })).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Show", exact: false })).toHaveValue("active");
+    await expect(page.getByRole("combobox", { name: "Show", exact: false })).toHaveCount(0);
+    if (info.project.name === "desktop") {
+      const heading = await page.getByRole("heading", { name: "API tokens", exact: true }).boundingBox();
+      const button = await page.getByRole("button", { name: "New token", exact: true }).boundingBox();
+      expect(Math.abs(button!.y - heading!.y)).toBeLessThan(2);
+      expect(button!.x).toBeGreaterThan(heading!.x + heading!.width);
+    }
     if (info.project.name === "mobile") {
       await page.evaluate(() => localStorage.setItem("theme", "dark"));
       await page.reload();
@@ -202,7 +210,8 @@ test("stale sessions see the sign-in link while emergency revoke stays available
   await revoke.getByRole("button", { name: "Revoke token", exact: true }).click();
   await expect(revoke).toHaveCount(0);
   await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true })).toHaveCount(0);
-  await page.getByLabel("Show", { exact: true }).selectOption("revoked");
+  await expect(page.getByRole("heading", { name: "API tokens", exact: true })).toBeFocused();
+  await page.locator("summary").filter({ hasText: "Inactive tokens" }).click();
   await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByText("Revoked", { exact: true })).toBeVisible();
 });
 
@@ -255,12 +264,56 @@ test("repository names load before selected repositories are labeled unavailable
   await expect(token).toContainText("#999 unavailable");
 });
 
-test("all tokens has a grammatical empty state", async ({ page }) => {
+test("empty tokens show creation guidance without an empty history disclosure", async ({ page }) => {
   await mockTokens(page, { seed: [] });
   await page.goto("/settings?tab=api-tokens");
   await expect(page.getByText("No active tokens", { exact: true })).toBeVisible();
-  await page.getByLabel("Show", { exact: true }).selectOption("all");
-  await expect(page.getByText("No tokens", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New token", exact: true })).toBeEnabled();
+  await expect(page.locator("summary").filter({ hasText: "Inactive tokens" })).toHaveCount(0);
+});
+
+test("revoked and expired tokens stay in collapsed history like MCP grants", async ({ page }, info) => {
+  await mockTokens(page, { seed: [
+    record("current-token"),
+    record("revoked-token", { id: "token-2", status: "revoked", revoked_at: at }),
+    record("expired-token", { id: "token-3", status: "expired", expires_at: at }),
+  ] });
+  await page.goto("/settings?tab=api-tokens");
+  const history = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Inactive tokens" }) });
+  await expect(history.locator("summary")).toHaveText("Inactive tokens 2");
+  await expect(history).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("article", { name: "API token current-token", exact: true })).toBeVisible();
+  await expect(page.getByRole("article", { name: "API token revoked-token", exact: true })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/api-tokens-history-collapsed-${info.project.name}.png`, fullPage: true });
+  await history.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(history.getByRole("article")).toHaveCount(2);
+  await expect(history.getByText("Revoked", { exact: true })).toBeVisible();
+  await expect(history.getByText("Expired", { exact: true })).toBeVisible();
+  await expect(history.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: `/private/tmp/api-tokens-history-expanded-${info.project.name}.png`, fullPage: true });
+});
+
+test("active tokens and inactive history paginate independently", async ({ page }) => {
+  await mockTokens(page, { seed: [
+    ...Array.from({ length: 11 }, (_, i) => record(`active-${i}`, { id: `active-${i}` })),
+    ...Array.from({ length: 11 }, (_, i) => record(`inactive-${i}`, { id: `inactive-${i}`, status: i % 2 ? "revoked" : "expired" })),
+  ] });
+  await page.goto("/settings?tab=api-tokens");
+  const activePagination = page.getByRole("navigation", { name: "Active tokens pagination", exact: true });
+  await activePagination.getByRole("button", { name: "Next tokens" }).click();
+  await expect(activePagination).toContainText("Page 2 · 11 total");
+  await expect(page.getByRole("article", { name: "API token active-10", exact: true })).toBeVisible();
+  await page.locator("summary").filter({ hasText: "Inactive tokens" }).click();
+  const inactivePagination = page.getByRole("navigation", { name: "Inactive tokens pagination", exact: true });
+  await inactivePagination.getByRole("button", { name: "Next tokens" }).click();
+  await expect(inactivePagination).toContainText("Page 2 · 11 total");
+  await expect(page.getByRole("article", { name: "API token inactive-10", exact: true })).toBeVisible();
+  await expect(activePagination).toContainText("Page 2 · 11 total");
+  await inactivePagination.getByRole("button", { name: "Previous tokens" }).click();
+  await expect(inactivePagination).toContainText("Page 1 · 11 total");
 });
 
 test("lost responses keep the name for recovery instead of retrying silently", async ({ page }) => {

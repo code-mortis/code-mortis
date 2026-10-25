@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, Copy, KeyRound, Plus } from "lucide-react";
+import { Check, ChevronDown, Copy, KeyRound, Plus } from "lucide-react";
 import { ApiError, api, useApi, useAction, type Repository, type Schema } from "../api";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -23,18 +23,11 @@ import {
 } from "./common";
 
 export type ApiTokenStatus = "active" | "expired" | "revoked";
-export type ApiTokenStatusFilter = ApiTokenStatus | "all";
 export type ApiTokenItem = Omit<Schema["ApiTokenOut"], "status"> & { status: ApiTokenStatus };
 export type ApiTokenPermission = Schema["ApiTokenScope"];
 export type ApiTokenList = Omit<Schema["ApiTokenPage"], "items"> & { items: ApiTokenItem[] };
 type ApiTokenCreated = Omit<Schema["ApiTokenCreated"], "item"> & { item: ApiTokenItem };
 
-const STATUS_OPTIONS: { value: ApiTokenStatusFilter; label: string }[] = [
-  { value: "active", label: "Active" },
-  { value: "expired", label: "Expired" },
-  { value: "revoked", label: "Revoked" },
-  { value: "all", label: "All" },
-];
 const EXPIRY_CANDIDATES = [7, 30, 90, 180, 365];
 const RETURN_TO = "/settings?tab=api-tokens";
 const loginHref = `/api/v1/auth/login?return_to=${encodeURIComponent(RETURN_TO)}`;
@@ -62,9 +55,10 @@ function runScope(id: string) {
 }
 
 export function ApiTokensSection() {
-  const [status, setStatus] = useState<ApiTokenStatusFilter>("active");
   const [page, setPage] = useState(1);
-  const list = useApi<ApiTokenList>(`/api-tokens?status=${status}&page=${page}`);
+  const [inactivePage, setInactivePage] = useState(1);
+  const list = useApi<ApiTokenList>(`/api-tokens?status=active&page=${page}`);
+  const inactive = useApi<ApiTokenList>(`/api-tokens?status=inactive&page=${inactivePage}`);
   const repos = useApi<Repository[]>("/repositories", false, true);
   const revokeAction = useAction<{ revoked: boolean }>();
   const [creating, setCreating] = useState(false);
@@ -90,6 +84,7 @@ export function ApiTokensSection() {
       path: `/api-tokens/${token.id}`,
       method: "DELETE",
     });
+    returnFocus.current = createHeading.current;
     setRevoking(null);
   }
 
@@ -97,76 +92,26 @@ export function ApiTokensSection() {
   const maxDays = list.data?.max_expiration_days ?? 365;
   const activeCount = list.data?.active_count;
 
-  return <section aria-labelledby="api-tokens-heading" className="space-y-5">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <h2 id="api-tokens-heading" ref={createHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">API tokens</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Create personal tokens for scripts and Noodle. Tokens act as you, limited to their permissions and repositories.
-          {activeCount !== undefined && <span role="status"> {activeCount} active.</span>}
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Label htmlFor="api-token-status" className="text-sm text-muted-foreground">Show</Label>
-        <select
-          id="api-token-status"
-          value={status}
-          onChange={(event) => { setStatus(event.target.value as ApiTokenStatusFilter); setPage(1); }}
-          className="h-9 rounded-md border border-input bg-card px-3 text-base shadow-xs md:text-sm"
-        >
-          {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <Button disabled={!list.data || revokeAction.isPending} onClick={(event) => {
-          returnFocus.current = event.currentTarget;
-          setCreating(true);
-        }}><Plus className="size-4" />New token</Button>
-      </div>
-    </div>
-
-    <ErrorNotice error={list.error} />
-    {list.isPending && <Loading />}
-    {list.data && !list.data.items.length && <Empty title={status === "all" ? "No tokens" : `No ${status} tokens`}>
-      <p>{status === "active"
-        ? "Create a token to call supported API operations from scripts or Noodle without copying a browser cookie."
-        : "Tokens in this state will appear here."}</p>
-    </Empty>}
-    {!!list.data?.items.length && <div className="overflow-hidden rounded-lg border bg-card">
-      <div aria-hidden="true" className="settings-record settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
-        <span>Token</span><span>Permissions</span><span>Access</span><span />
-      </div>
-      {list.data.items.map((token) => {
+  const renderTokens = (data: ApiTokenList | undefined, fetching: boolean, onPage: (page: number) => void, label: string) => (
+    data && (data.items.length > 0 || data.page > 1) ? <div className="divide-y rounded-lg border bg-card">
+      {data.items.map((token) => {
         const known = token.repository_ids.filter((id) => repoNames.has(id));
         const unknown = token.repository_ids.filter((id) => !repoNames.has(id));
         return <article key={token.id} aria-label={`API token ${token.name}`}
-          className="settings-record border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
-          <div className="settings-identity min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <KeyRound aria-hidden="true" className="size-4 shrink-0 text-primary" />
-              <h3 className="min-w-0 break-words font-medium">{token.name}</h3>
-              <Status value={token.status} label={token.status === "active" ? "Active" : token.status === "expired" ? "Expired" : "Revoked"} />
+          className="space-y-4 px-4 py-4 text-sm sm:px-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3">
+                <KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <h4 className="min-w-0 break-words font-medium">{token.name}</h4>
+                  <Status value={token.status} label={token.status === "active" ? "Active" : token.status === "expired" ? "Expired" : "Revoked"} />
+                </div>
+              </div>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground" title="Token prefix">
+                <span className="sr-only">Prefix: </span>{token.prefix}…
+              </p>
             </div>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground" title="Token prefix">
-              <span className="sr-only">Prefix: </span>{token.prefix}…
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Created {date(token.created_at)} · Expires {date(token.expires_at)} · {token.last_used_at ? <>Last used {date(token.last_used_at)} (approximate)</> : "Never used"}
-            </p>
-          </div>
-          <div className="min-w-0">
-            <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Permissions</span>
-            <p className="break-words text-xs leading-relaxed"><span className="sr-only">Permissions: </span>{token.scopes.join(", ") || "None"}</p>
-          </div>
-          <div className="min-w-0">
-            <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Repositories</span>
-            <p className="break-words text-xs leading-relaxed">
-              <span className="sr-only">Repositories: </span>
-              {repos.isPending ? "Loading repositories…" : !repos.data ? "Repository names unavailable" : <>
-                {known.map((id) => repoNames.get(id)).join(", ") || (unknown.length ? "" : "None")}
-                {unknown.length > 0 && <span className="text-muted-foreground">{known.length > 0 ? "; " : ""}{unknown.map((id) => `#${id}`).join(", ")} unavailable</span>}
-              </>}
-            </p>
-          </div>
-          <div className="settings-actions flex items-center justify-end gap-1">
             {token.status === "active" && <Button variant="outline" size="sm" disabled={revokeAction.isPending}
               onClick={(event) => {
                 returnFocus.current = event.currentTarget;
@@ -176,20 +121,81 @@ export function ApiTokensSection() {
               Revoke
             </Button>}
           </div>
+          <dl className="space-y-2 text-xs leading-relaxed">
+            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
+              <dt className="text-muted-foreground">Permissions</dt>
+              <dd className="min-w-0 break-words">{token.scopes.join(", ") || "None"}</dd>
+            </div>
+            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
+              <dt className="text-muted-foreground">Repositories</dt>
+              <dd className="min-w-0 break-words">
+                {repos.isPending ? "Loading repositories…" : !repos.data ? "Repository names unavailable" : <>
+                  {known.map((id) => repoNames.get(id)).join(", ") || (unknown.length ? "" : "None")}
+                  {unknown.length > 0 && <span className="text-muted-foreground">{known.length > 0 ? "; " : ""}{unknown.map((id) => `#${id}`).join(", ")} unavailable</span>}
+                </>}
+              </dd>
+            </div>
+          </dl>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <p>Created {date(token.created_at)}</p>
+            <p>Expires {date(token.expires_at)}</p>
+            <p>{token.last_used_at ? <>Last used {date(token.last_used_at)} (approximate)</> : "Never used"}</p>
+          </div>
         </article>;
       })}
-      {(list.data.page > 1 || list.data.has_more) && <nav aria-label="API tokens pagination" className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+      {(data.page > 1 || data.has_more) && <nav aria-label={`${label} tokens pagination`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" disabled={page <= 1 || list.isFetching} onClick={() => setPage(page - 1)}>Previous<span className="sr-only"> tokens</span></Button>
-          <Button variant="ghost" size="sm" disabled={!list.data.has_more || list.isFetching} onClick={() => setPage(page + 1)}>Next<span className="sr-only"> tokens</span></Button>
+          <Button variant="ghost" size="sm" disabled={data.page <= 1 || fetching} onClick={() => onPage(data.page - 1)}>Previous<span className="sr-only"> tokens</span></Button>
+          <Button variant="ghost" size="sm" disabled={!data.has_more || fetching} onClick={() => onPage(data.page + 1)}>Next<span className="sr-only"> tokens</span></Button>
         </div>
-        <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">Page {list.data.page} · {list.data.total} total</span>
+        <span role="status" className="ml-auto text-xs tabular-nums text-muted-foreground">Page {data.page} · {data.total} total</span>
       </nav>}
-    </div>}
-    <ErrorNotice error={repos.error} title="Repositories unavailable" />
-    <p className="text-xs leading-relaxed text-muted-foreground">
-      Store each token as a secret and send it as a bearer credential. Closing the one-time panel loses the secret permanently; revoke the unused token and create another. Revoked tokens stop new requests immediately while queued cleanup finishes in the background.
-    </p>
+    </div> : null
+  );
+
+  return <section aria-labelledby="api-tokens-heading" className="space-y-6">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0 flex-1 basis-64">
+        <h2 id="api-tokens-heading" ref={createHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">API tokens</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Create personal tokens for scripts and Noodle. Tokens act as you, limited to their permissions and repositories.
+        </p>
+      </div>
+      <Button disabled={!list.data || revokeAction.isPending} onClick={(event) => {
+        returnFocus.current = event.currentTarget;
+        setCreating(true);
+      }}><Plus aria-hidden="true" className="size-4" />New token</Button>
+    </div>
+
+    <section aria-labelledby="api-token-list-heading" className="space-y-4">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <h3 id="api-token-list-heading" className="text-base font-semibold">Your tokens</h3>
+        {activeCount !== undefined && <span role="status" className="text-xs tabular-nums text-muted-foreground">{activeCount} active</span>}
+      </div>
+      <ErrorNotice error={list.error} />
+      {list.isPending && <Loading />}
+      {list.data && !list.data.items.length && <Empty title="No active tokens">
+        Create a token to call supported API operations from scripts or Noodle without copying a browser cookie.
+      </Empty>}
+      {renderTokens(list.data, list.isFetching, setPage, "Active")}
+      <ErrorNotice error={inactive.error} title="Inactive tokens unavailable" />
+      {inactive.error && <Button variant="outline" size="sm" disabled={inactive.isFetching} onClick={() => void inactive.refetch()}>Retry inactive tokens</Button>}
+      {(!!inactive.data?.total || inactivePage > 1) && <details className="group">
+        <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground outline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+          Inactive tokens <span className="text-xs tabular-nums">{inactive.data?.total}</span>
+          <ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-3 space-y-3">
+          <p className="text-sm text-muted-foreground">Revoked and expired tokens can no longer access the API.</p>
+          {inactive.isPending && <Loading />}
+          {renderTokens(inactive.data, inactive.isFetching, setInactivePage, "Inactive")}
+        </div>
+      </details>}
+      <ErrorNotice error={repos.error} title="Repositories unavailable" />
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Store each token as a secret and send it as a bearer credential. Closing the one-time panel loses the secret permanently; revoke the unused token and create another. Revoked tokens stop new requests immediately while queued cleanup finishes in the background.
+      </p>
+    </section>
 
     <Dialog open={creating} onOpenChange={(open) => { if (!open) closeCreate(); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onCloseAutoFocus={restoreFocus}>

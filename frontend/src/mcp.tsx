@@ -344,16 +344,16 @@ function Grants() {
       {items.map((grant) => (
         <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`} className="space-y-4 px-4 py-4 text-sm sm:px-5">
           <div className="flex items-start justify-between gap-4">
-            <div className="flex min-w-0 items-start gap-3">
-              <Bot aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3">
+                <Bot aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <h4 className="min-w-0 break-words font-medium">{grant.client_name}</h4>
                   <Badge variant="outline" className="font-normal capitalize">{grant.domain}</Badge>
                   {grant.revoked_at && <Status value="revoked" label="Revoked" />}
                 </div>
-                <p className="mt-1 break-all font-mono text-xs text-muted-foreground"><span className="sr-only">Client ID: </span><span>{grant.client_id}</span></p>
               </div>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground"><span className="sr-only">Client ID: </span><span>{grant.client_id}</span></p>
             </div>
             {!grant.revoked_at && (
               <Button
