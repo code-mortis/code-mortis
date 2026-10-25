@@ -255,11 +255,15 @@ def checkpoint(scan_id, key, state, **values):
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status != "running" or scan.cancel_requested:
             raise ocr.ReviewStopped("Security scan is no longer running.")
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             scan.cancel_requested = True
             raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            scan.cancel_requested = True
+            raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
@@ -494,10 +498,14 @@ def perform(scan_id, claim):
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status not in ACTIVE or scan.cancel_requested:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
+            return
+        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
             return
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
@@ -545,9 +553,13 @@ def perform(scan_id, claim):
             row = db.get(SecurityScan, scan_id)
             if not row or row.cancel_requested or row.status != "running" or row.progress.get("execution") != claim:
                 return True
+            from code_mortis.api_tokens import provenance as _pat
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
+                row.cancel_requested = True
+                return True
+            if _pat.scan_revoked(db, row, repository_id=row.repository_id, network=False):
                 row.cancel_requested = True
                 return True
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
@@ -585,10 +597,13 @@ def perform(scan_id, claim):
             return cached["result"]
         with transaction() as db:
             row = db.get(SecurityScan, scan_id)
+            from code_mortis.api_tokens import provenance as _pat
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
                 raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+            if _pat.scan_revoked(db, row, repository_id=row.repository_id):
+                raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
         if used is None:
@@ -832,10 +847,14 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         scan = db.get(SecurityScan, scan_id)
         if not scan or scan.status != "running" or scan.cancel_requested:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
+            return
+        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
             return
         authorize(db, db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id))
     with transaction() as db:

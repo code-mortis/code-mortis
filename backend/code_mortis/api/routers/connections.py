@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from code_mortis.api.dependencies import ADMIN, DB, USER, manage_connection, repo_access
+from code_mortis.api.dependencies import DB, SESSION_ADMIN, SESSION_USER, USER, manage_connection, repo_access
 from code_mortis.api.presenters import connection_out
 from code_mortis.core.security import safe_endpoint, seal, unseal
 from code_mortis.integrations import model_discovery, runner_client
@@ -38,10 +38,32 @@ def connections(db: DB, user: USER, repository_id: int | None = None):
         repo_access(db, user, repository_id)
         granted = select(ConnectionGrant.connection_id).where(ConnectionGrant.repository_id == repository_id)
         condition = or_(condition, Connection.id.in_(granted))
-    return [
-        connection_out(row)
-        for row in db.scalars(select(Connection).where(condition).order_by(Connection.name))
-    ]
+    rows = list(db.scalars(select(Connection).where(condition).order_by(Connection.name)))
+    if getattr(user, "api_token_repository_ids", None) is not None:
+        effective = _token_effective_ids(db, user)
+        rows = [row for row in rows if _available_for_token(db, row, effective)]
+    return [connection_out(row) for row in rows]
+
+
+def _token_effective_ids(db: Session, user) -> set[int]:
+    from code_mortis.integrations import github
+
+    # Recompute what the owner can currently access: token selection alone is
+    # stale the moment GitHub permission, membership or installation changes.
+    return {repo.id for repo in github.visible_repositories(db, user)}
+
+
+def _available_for_token(db: Session, connection: Connection, effective: set[int]) -> bool:
+    if not effective:
+        return False
+    if connection.kind == "api":
+        return bool(db.scalar(select(Repository.id).where(
+            Repository.id.in_(effective), Repository.connection_id == connection.id).limit(1)))
+    # Personal connections need a grant intersecting the effective selection,
+    # even when the requester owns the connection.
+    return bool(db.scalar(select(ConnectionGrant.connection_id).where(
+        ConnectionGrant.connection_id == connection.id,
+        ConnectionGrant.repository_id.in_(effective)).limit(1)))
 
 
 @router.get("/connections/{connection_id}/models", response_model=ModelCatalog)
@@ -54,6 +76,9 @@ def connection_models(connection_id: str, db: DB, user: USER, repository_id: int
     if connection.kind != "api" and connection.owner_id != user.id:
         if repository_id is None or not db.get(ConnectionGrant, (connection.id, repository_id)):
             raise HTTPException(403, "This personal connection is not available to you.")
+    if getattr(user, "api_token_repository_ids", None) is not None:
+        if not _available_for_token(db, connection, _token_effective_ids(db, user)):
+            raise HTTPException(403, "This connection is not available for the selected repositories.")
     if connection.kind == "api":
         return model_discovery.api_models(connection, json.loads(unseal(connection.secret)))
     if connection.auth_status == "revoked":
@@ -67,7 +92,7 @@ def connection_models(connection_id: str, db: DB, user: USER, repository_id: int
 
 
 @router.post("/connections/models", response_model=ModelCatalog)
-def draft_models(body: ModelDiscoveryInput, db: DB, user: ADMIN):
+def draft_models(body: ModelDiscoveryInput, db: DB, user: SESSION_ADMIN):
     connection = manage_connection(db, user, body.connection_id) if body.connection_id else None
     if connection and connection.kind != "api":
         raise HTTPException(422, "Use the saved personal connection to load its models.")
@@ -104,20 +129,20 @@ def save_connection(db: Session, body: ConnectionInput, connection: Connection |
 
 
 @router.post("/connections", response_model=ConnectionOut, status_code=201)
-def add_connection(body: ConnectionInput, db: DB, user: USER):
+def add_connection(body: ConnectionInput, db: DB, user: SESSION_USER):
     if body.kind == "api" and user.role != "admin":
         raise HTTPException(403, "Administrator access is required to create shared API connections.")
     return save_connection(db, body, owner_id=user.id)
 
 
 @router.put("/connections/{connection_id}", response_model=ConnectionOut)
-def edit_connection(connection_id: str, body: ConnectionInput, db: DB, user: USER):
+def edit_connection(connection_id: str, body: ConnectionInput, db: DB, user: SESSION_USER):
     connection = manage_connection(db, user, connection_id)
     return save_connection(db, body, connection)
 
 
 @router.post("/connections/{connection_id}/test", status_code=202)
-def test_connection(connection_id: str, db: DB, user: USER) -> dict:
+def test_connection(connection_id: str, db: DB, user: SESSION_USER) -> dict:
     connection = manage_connection(db, user, connection_id)
     if connection.kind != "api":
         raise HTTPException(
@@ -129,7 +154,7 @@ def test_connection(connection_id: str, db: DB, user: USER) -> dict:
 
 
 @router.delete("/connections/{connection_id}")
-def delete_connection(connection_id: str, db: DB, user: USER) -> dict:
+def delete_connection(connection_id: str, db: DB, user: SESSION_USER) -> dict:
     from code_mortis.models import SecurityScan
 
     connection = manage_connection(db, user, connection_id)

@@ -262,6 +262,10 @@ def retry_generation(db, run, repo, actor):
     config = {"settings": RepoSettings.model_validate(repo.settings).model_dump(),
               "connection": connection_snapshot(connection)}
     config["connection"]["model"] = config["settings"]["model"] or connection.model
+    # Explicit retry adopts the initiating session (or its PAT) for the stored origin.
+    from code_mortis.api_tokens import provenance as _pat
+
+    run.progress = _pat.adopt_progress(run.progress)
     job = enqueue(db, "generate_summary", {"run_id": run.id, "actor_id": actor.id,
                   "connection_id": connection.id, "config": config, "previous_summary": run.summary})
     run.progress = {**run.progress, "summary_retry": job.id}
@@ -303,11 +307,15 @@ def perform_retry(payload):
         run = db.get(ReviewRun, payload["run_id"])
         if not run or run.summary.get("status") not in {"pending", "running"}:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
                         repository_id=db.get(PullRequest, run.pr_id).repository_id):
             raise SummaryUnavailable(_mcp.REVOKED_MESSAGE)
+        if _pat.revoked(db, _pat.origin_for(payload, run),
+                        repository_id=db.get(PullRequest, run.pr_id).repository_id):
+            raise SummaryUnavailable(_pat.REVOKED_MESSAGE)
         if retry_stopped(db, run, job_id, claim):
             raise SummaryUnavailable("Summary generation stopped because the review or repository access changed.")
         if run.summary.get("status") == "running":
@@ -628,10 +636,15 @@ def sync(pr_id):
         run = latest_run(db, pr.id)
         if not ready_to_sync(run):
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_run(run), repository_id=pr.repository_id):
             pr.summary_error = _mcp.REVOKED_MESSAGE
+            return
+        # Overview sync accepts the run or write scopes that trigger it.
+        if _pat.run_revoked(db, run, allowed=_pat.REVIEW_SYNC_SCOPES, repository_id=pr.repository_id):
+            pr.summary_error = _pat.REVOKED_MESSAGE
             return
         repo = db.get(Repository, pr.repository_id)
         if pr.ignored:

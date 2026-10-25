@@ -310,10 +310,14 @@ def perform(job_id, attempt):
             if not job or job.status != "running" or job.attempts != attempt:
                 return True
             payload = job.payload
+            from code_mortis.api_tokens import provenance as _pat
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.revoked(db, _mcp.provenance_from_payload(payload),
                             repository_id=payload.get("repository_id")):
+                return True
+            if _pat.revoked(db, _pat.origin_for(payload),
+                            repository_id=payload.get("repository_id"), network=False):
                 return True
             if deadline is None and time.monotonic() - heartbeat >= 30:
                 job.lease_until = now() + timedelta(seconds=360)
@@ -331,11 +335,15 @@ def perform(job_id, attempt):
         payload = job.payload
         if now().timestamp() >= payload["expires_at"]:
             raise TimeoutError("Background generation expired. Generate again to retry.")
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload),
                         repository_id=payload.get("repository_id")):
             raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+        if _pat.revoked(db, _pat.origin_for(payload),
+                        repository_id=payload.get("repository_id")):
+            raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
         repo, actor = db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"])
         connection = db.get(Connection, payload["connection_id"])
         remote = authorize(db, repo, actor, connection)

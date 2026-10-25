@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from code_mortis.api.dependencies import DB, USER, pr_access, review_pr_access
 from code_mortis.api.presenters import pr_out, repo_out
+from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.integrations import github
 from code_mortis.models import Finding, FindingVerification, PullRequest, ReviewRun
 from code_mortis.reviews import findings as finding_list
@@ -136,10 +137,15 @@ def start_run(pr_id: str, db: DB, user: USER, body: StartRunInput | None = None)
 @router.post("/pulls/{pr_id}/summary", status_code=202)
 def retry_summary_sync(pr_id: str, db: DB, user: USER) -> dict:
     pr, _, _ = review_pr_access(db, user, pr_id)
-    if not pr_summary.latest_run(db, pr.id):
+    run = pr_summary.latest_run(db, pr.id)
+    if not run:
         raise HTTPException(409, "This pull request has no overview to synchronize. Start a new review first.")
     if not pr.summary_error:
         raise HTTPException(409, "There is no failed GitHub overview update to retry.")
     pr.summary_error = None
+    # Explicit retry adopts the initiating session (or its PAT) for the stored origin.
+    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run.id).with_for_update()
+                    .execution_options(populate_existing=True))
+    run.progress = pat_provenance.adopt_progress(run.progress)
     pr_summary.enqueue_sync(db, pr)
     return {"status": "pending"}

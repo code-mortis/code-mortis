@@ -1,6 +1,6 @@
 # Personal API tokens implementation plan
 
-Status: proposed, implementation not started. Baseline: `7155dff`.
+Status: implemented locally with automated checks passing. Real-account Settings-to-Noodle acceptance and production deployment remain pending in [acceptance.md](acceptance.md). Collection baseline: `7155dff`.
 
 Let an enabled Code Mortis member create a named, expiring personal API token in Settings and use it from Noodle or a script. Tokens authenticate as their owner and further restrict that owner's access by permissions and selected repositories. Existing browser GitHub login, cookie sessions, CSRF protection, and MCP OAuth remain independent.
 

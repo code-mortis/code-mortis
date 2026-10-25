@@ -6,6 +6,11 @@ only originating work on revocation. Provenance lives in existing JSON
 columns (no model changes): ``Job.payload["mcp"]``, ``ReviewRun.progress["mcp"]``,
 ``SecurityScan.progress["mcp"]``, ``Finding.sync_intent["mcp"]`` and
 ``SecurityFinding.issue["mcp"]``.
+
+The bind helpers below also propagate personal API token (``pat``) origin
+from its own execution context. MCP semantics are unchanged: the ``mcp``
+record, validation, revocation and cleanup behave exactly as before, and a
+valid MCP grant never implies PAT authorization (or vice versa).
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ from contextvars import ContextVar
 from typing import Any
 
 from sqlalchemy import select
+
+from code_mortis.api_tokens import provenance as pat_provenance
 
 execution_context: ContextVar[dict | None] = ContextVar("mcp_execution_context", default=None)
 
@@ -55,6 +62,9 @@ def bind_payload(payload: dict | None) -> dict:
     current = _clean(current_provenance())
     if current is not None:
         payload[PROVENANCE_KEY] = current
+    pat = pat_provenance.current_provenance()
+    if pat is not None:
+        payload[pat_provenance.PROVENANCE_KEY] = pat
     return payload
 
 
@@ -63,13 +73,17 @@ def with_provenance(payload: dict | None, provenance: Any) -> dict:
     cleaned = _clean(provenance)
     if cleaned is not None and PROVENANCE_KEY not in payload:
         payload[PROVENANCE_KEY] = cleaned
+    pat = pat_provenance.current_provenance()
+    if pat is not None and pat_provenance.PROVENANCE_KEY not in payload:
+        payload[pat_provenance.PROVENANCE_KEY] = pat
     return payload
 
 
 def bind_intent(payload: dict) -> dict:
     """An explicit user retry replaces the previous command's authorization."""
     payload = {key: value for key, value in payload.items() if key != PROVENANCE_KEY}
-    return with_provenance(payload, current_provenance())
+    payload = with_provenance(payload, current_provenance())
+    return pat_provenance.bind_intent(payload)
 
 
 def provenance_from_payload(payload: Any) -> dict | None:
@@ -94,6 +108,9 @@ def attach_progress(progress: Any) -> dict:
     current = _clean(current_provenance())
     if current is not None:
         progress[PROVENANCE_KEY] = current
+    pat = pat_provenance.current_provenance()
+    if pat is not None:
+        progress[pat_provenance.PROVENANCE_KEY] = pat
     return progress
 
 

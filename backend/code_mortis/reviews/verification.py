@@ -1133,11 +1133,16 @@ def synchronize(payload):
         if not resolution_authorized(db, run, repo) and not row.sync_attempt:
             abandon(db, row, finding, "Automatic resolution is no longer authorized or current.")
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
                         repository_id=repo.id):
             abandon(db, row, finding, _mcp.REVOKED_MESSAGE)
+            return
+        if _pat.revoked(db, _pat.origin_for(payload, run),
+                        repository_id=repo.id):
+            abandon(db, row, finding, _pat.REVOKED_MESSAGE)
             return
         recovering = bool(row.sync_attempt)
         row.resolution, row.error, finding.sync_error = "applying", None, None

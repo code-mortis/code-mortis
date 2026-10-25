@@ -73,11 +73,13 @@ def clean_database(database):
 def clean_permission_cache():
     assert settings().redis_url == "redis://127.0.0.1:56389/0", "Use the isolated test Redis"
     with Redis.from_url(settings().redis_url) as cache:
-        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
-            cache.delete(key)
+        for pattern in ("code-mortis:github-permissions:v1:*", "code-mortis:pat:*"):
+            for key in cache.scan_iter(pattern):
+                cache.delete(key)
         yield
-        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
-            cache.delete(key)
+        for pattern in ("code-mortis:github-permissions:v1:*", "code-mortis:pat:*"):
+            for key in cache.scan_iter(pattern):
+                cache.delete(key)
 
 
 @pytest.fixture

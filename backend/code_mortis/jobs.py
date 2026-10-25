@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import timedelta
+from typing import Any
 
 import sentry_sdk
 from celery import Celery
@@ -113,6 +114,16 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
         ))
         if not repo.enabled and not tracked:
             return
+        # A PAT-requested sync carries the owner's authority into its
+        # automatic descendants: resolve the effective actor from the
+        # validated origin (live push check included) instead of promoting
+        # to unrestricted system execution. System/webhook syncs keep actor None.
+        from code_mortis.api_tokens import provenance as _pat
+
+        actor = None
+        if automatic and _pat.current_provenance() is not None:
+            actor, _ = _pat.validate(db, _pat.current_provenance(),
+                                     repository_id=repository_id, write=True)
         token = github.installation_token(db, repo.installation_id)
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
         if not tracked:
@@ -146,7 +157,7 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
                 grant = db.get(ConnectionGrant, (connection.id, repo.id))
                 if not grant or not grant.automatic or connection.auth_status == "revoked":
                     return
-            create_run(db, pr, repo, "automatic")
+            create_run(db, pr, repo, "automatic", actor=actor)
 
 
 def scan_repository(repository_id: int):
@@ -168,6 +179,27 @@ def scan_repository(repository_id: int):
             enqueue_reconciliation(db, "sync_pr", {"repository_id": repo.id, "number": number})
 
 
+def _stored_origin(payload: Any) -> tuple:
+    if isinstance(payload, dict):
+        for key in ("pat", "mcp"):
+            if key in payload:
+                return key, payload.get(key)
+    return None, None
+
+
+def _current_origin() -> tuple:
+    from code_mortis.api_tokens import provenance as _pat
+    from code_mortis.mcp import provenance as _mcp
+
+    pat = _pat.current_provenance()
+    if pat is not None:
+        return "pat", pat
+    mcp = _mcp.current_provenance()
+    if mcp is not None:
+        return "mcp", mcp
+    return None, None
+
+
 def enqueue_reconciliation(db, kind, payload):
     conditions = [Job.kind == kind, Job.status.in_(["queued", "running"])]
     conditions.extend(Job.payload[key].as_integer() == payload[key]
@@ -179,8 +211,14 @@ def enqueue_reconciliation(db, kind, payload):
             Job.payload["sender_type"].as_string().is_(None),
             func.coalesce(Job.payload["automatic"].as_boolean(), True) == payload.get("automatic", True),
         ])
-    if not db.scalar(select(Job.id).where(*conditions).limit(1)):
-        enqueue(db, kind, payload)
+    current = _current_origin()
+    for existing in db.scalars(select(Job.payload).where(*conditions).order_by(Job.id)):
+        # Dedup only against a candidate carrying the same complete origin, so
+        # distinct PAT tokens, distinct MCP grants and system work never
+        # swallow each other.
+        if _stored_origin(existing) == current:
+            return
+    enqueue(db, kind, payload)
 
 
 def process_webhook(payload: dict):
@@ -236,7 +274,14 @@ def process_webhook(payload: dict):
 
 
 def execute(kind: str, payload: dict):
-    if kind == "security_scan":
+    if kind == "revoke_api_token_work":
+        # Internal revocation cleanup: idempotent, token_id only, never
+        # token-authorized and never starts model work or publishes content.
+        from code_mortis.api_tokens import provenance as _pat
+
+        with transaction() as db:
+            _pat.revoke_work(db, payload.get("token_id"))
+    elif kind == "security_scan":
         from code_mortis.security_scans.service import perform
 
         perform(payload["scan_id"], payload["_claim"])
@@ -297,15 +342,36 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
-        if _mcp.job_revoked(db, job, repository_id=_mcp.repository_id_for_job(db, job)):
-            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
-            if job and job.status == "queued":
-                job.status, job.error, job.lease_until, job.dispatched_at = "failed", _mcp.REVOKED_MESSAGE, None, None
-                job.available_at = now()
-                _mcp.cancel_origin(db, job)
-            return
+        if job.kind != "revoke_api_token_work":
+            try:
+                mcp_denied = _mcp.job_revoked(db, job, repository_id=_mcp.repository_id_for_job(db, job))
+                pat_denied = _pat.job_revoked(db, job, repository_id=_pat.repository_id_for_job(db, job))
+            except _pat.TransientAuthorizationError:
+                # Temporary outage, not revocation: leave queued for redispatch.
+                return
+        else:
+            mcp_denied = pat_denied = False
+        if mcp_denied or pat_denied:
+            # Narrow terminal-only exemption: a revoked sync_check may still
+            # post its cancelled conclusion to an existing check run.
+            if pat_denied and not mcp_denied and _pat.closeout_allowed(db, job):
+                pass
+            else:
+                job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                if job and job.status == "queued":
+                    job.status, job.error, job.lease_until, job.dispatched_at = (
+                        "failed",
+                        _pat.REVOKED_MESSAGE if pat_denied else _mcp.REVOKED_MESSAGE,
+                        None,
+                        None,
+                    )
+                    job.available_at = now()
+                    _mcp.cancel_origin(db, job)
+                    _pat.cancel_origin(db, job)
+                return
         if job.kind in {"security_issue_publish", "security_issue_sync"}:
             db.scalar(select(SecurityFinding).where(SecurityFinding.id == job.payload["finding_id"]).with_for_update())
             if db.scalar(select(Job.id).where(Job.kind.in_(["security_issue_publish", "security_issue_sync"]),
@@ -328,12 +394,28 @@ def execute_job(job_id: str):
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
+    from code_mortis.api_tokens import provenance as _pat
     from code_mortis.mcp import provenance as _mcp
 
-    _token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
+    _mcp_token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
+    # Bind the effective stored origin (payload first, then run/scan/intent
+    # fallback) so children of retried or summary work keep the origin even
+    # when the job payload itself carries none.
+    with transaction() as fresh:
+        _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
     try:
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
         execute(kind, execution if kind in {"review", "security_scan", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
+    except _pat.TransientAuthorizationError:
+        # Temporary authorization outage, not revocation: requeue for retry
+        # instead of failing the work as revoked.
+        with transaction() as db:
+            job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+            if job is None or job.attempts != attempt or job.status != "running":
+                return
+            job.status, job.lease_until, job.dispatched_at = "queued", None, None
+            job.available_at = now() + timedelta(seconds=30)
+        return
     except runner_client.RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -446,7 +528,8 @@ def execute_job(job_id: str):
                 job.payload = {"event": payload["event"]}
         log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
     finally:
-        _mcp.execution_context.reset(_token)
+        _pat.execution_context.reset(_pat_token)
+        _mcp.execution_context.reset(_mcp_token)
 
 
 def job_queue(kind, payload=None):
@@ -574,6 +657,11 @@ def schedule_reconciliation():
         from code_mortis.mcp import auth as _mcp_auth
 
         _mcp_auth.cleanup(db)
+        from code_mortis.api_tokens import provenance as _pat
+
+        # Bounded no-network sweep: cancel blocked PAT-origin work whose
+        # token has since expired or been revoked. Gates enforce the rest.
+        _pat.settle_blocked(db)
         for identity in db.scalars(select(SecurityScan.repository_id).join(Repository)
                                    .where(Repository.active.is_(True)).distinct()):
             enqueue_reconciliation(db, "security_refresh", {"repository_id": identity})

@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from code_mortis.api.dependencies import ADMIN, DB
+from code_mortis.api.dependencies import DB, SESSION_ADMIN
+from code_mortis.api_tokens import service as pat_service
 from code_mortis.integrations import github
 from code_mortis.models import AppConfig, LoginSession, Membership, ReviewRun, User
 from code_mortis.schemas.common import MemberInput
@@ -28,7 +29,7 @@ def retain_administrator(memberships: dict[int, Membership], membership: Members
 
 
 @router.post("/members")
-def add_member(body: MemberInput, db: DB, user: ADMIN) -> dict:
+def add_member(body: MemberInput, db: DB, user: SESSION_ADMIN) -> dict:
     memberships = lock_memberships(db, user)
     identity = github.request("GET", f"/users/{body.login}", github.user_token(db, user))
     if identity.get("type") != "User":
@@ -49,7 +50,7 @@ def add_member(body: MemberInput, db: DB, user: ADMIN) -> dict:
 
 
 @router.delete("/members/{user_id}")
-def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
+def remove_member(user_id: int, db: DB, user: SESSION_ADMIN) -> dict:
     from code_mortis.reviews.service import stop_review
     from code_mortis.security_scans.service import cancel_access
 
@@ -63,6 +64,8 @@ def remove_member(user_id: int, db: DB, user: ADMIN) -> dict:
     existing = db.get(User, user_id)
     if existing:
         existing.enabled, existing.access_token, existing.refresh_token = False, "", ""
+    # Permanent: re-adding the account later cannot resurrect these credentials.
+    pat_service.revoke_for_user(db, user_id, reason="membership_removed", actor_id=user.id)
     cancel_access(db, actor_id=user_id, reason="Security scan requester access was removed.")
     for run in db.scalars(
         select(ReviewRun)
