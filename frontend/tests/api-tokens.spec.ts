@@ -180,7 +180,7 @@ test("copy success announces without persisting the secret", async ({ page }) =>
 });
 
 test("stale sessions see the sign-in link while emergency revoke stays available", async ({ page }) => {
-  await mockTokens(page, { reauthRequired: true });
+  const writes = await mockTokens(page, { reauthRequired: true });
   await page.goto("/settings?tab=api-tokens");
   await openCreate(page);
   const dialog = page.getByRole("dialog", { name: "New API token", exact: true });
@@ -188,6 +188,11 @@ test("stale sessions see the sign-in link while emergency revoke stays available
   await expect(dialog.getByRole("link", { name: "Sign in with GitHub", exact: true }))
     .toHaveAttribute("href", "/api/v1/auth/login?return_to=%2Fsettings%3Ftab%3Dapi-tokens");
   await expect(dialog.getByRole("button", { name: "Create token", exact: true })).toBeDisabled();
+  await dialog.getByLabel("Token name", { exact: true }).fill("stale-session");
+  await dialog.getByRole("checkbox", { name: /acme\/payments/ }).check();
+  await dialog.getByLabel("Token name", { exact: true }).press("Enter");
+  await expect(dialog.getByRole("alert")).toHaveCount(1);
+  expect(writes).toHaveLength(0);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "New token", exact: true })).toBeFocused();
   await page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByRole("button", { name: "Revoke", exact: true }).click();
@@ -199,6 +204,63 @@ test("stale sessions see the sign-in link while emergency revoke stays available
   await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true })).toHaveCount(0);
   await page.getByLabel("Show", { exact: true }).selectOption("revoked");
   await expect(page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByText("Revoked", { exact: true })).toBeVisible();
+});
+
+for (const dismiss of ["escape", "close", "outside"] as const) {
+  test(`creation survives dismissal attempts in flight and refreshes after ${dismiss}`, async ({ page }) => {
+    await mockTokens(page);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/v1/api-tokens", async (route) => {
+      if (route.request().method() === "POST") await gate;
+      return route.fallback();
+    });
+    await page.goto("/settings?tab=api-tokens");
+    await openCreate(page);
+    await page.getByLabel("Token name", { exact: true }).fill("delayed-token");
+    await page.getByRole("checkbox", { name: /acme\/payments/ }).check();
+    await page.getByRole("button", { name: "Create token", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("button", { name: "Creating…", exact: true })).toBeDisabled();
+    async function dismissDialog() {
+      if (dismiss === "escape") await page.keyboard.press("Escape");
+      if (dismiss === "close") await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      if (dismiss === "outside") await page.locator('[data-slot="dialog-overlay"]').click({ position: { x: 4, y: 4 }, force: true });
+    }
+    await dismissDialog();
+    await expect(dialog).toBeVisible();
+    release();
+    await expect(dialog.getByRole("heading", { name: "Token created", exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("One-time token", { exact: true })).toHaveValue(/^cm_pat_/);
+    await dismissDialog();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("article", { name: "API token delayed-token", exact: true })).toBeVisible();
+  });
+}
+
+test("repository names load before selected repositories are labeled unavailable", async ({ page }) => {
+  await mockTokens(page, { seed: [record("loading-repos", { repository_ids: [22, 999] })] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/repositories", async (route) => {
+    await gate;
+    return route.fallback();
+  });
+  await page.goto("/settings?tab=api-tokens");
+  const token = page.getByRole("article", { name: "API token loading-repos", exact: true });
+  await expect(token).toContainText("Loading repositories…");
+  await expect(token).not.toContainText("unavailable");
+  release();
+  await expect(token).toContainText("acme/payments");
+  await expect(token).toContainText("#999 unavailable");
+});
+
+test("all tokens has a grammatical empty state", async ({ page }) => {
+  await mockTokens(page, { seed: [] });
+  await page.goto("/settings?tab=api-tokens");
+  await expect(page.getByText("No active tokens", { exact: true })).toBeVisible();
+  await page.getByLabel("Show", { exact: true }).selectOption("all");
+  await expect(page.getByText("No tokens", { exact: true })).toBeVisible();
 });
 
 test("lost responses keep the name for recovery instead of retrying silently", async ({ page }) => {

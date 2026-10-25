@@ -13,6 +13,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
+from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
@@ -251,6 +252,7 @@ def cancel_access(db, *, repository_ids=None, connection_id=None, actor_id=None,
 
 
 def checkpoint(scan_id, key, state, **values):
+    authorization_error = None
     with transaction() as db:
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status != "running" or scan.cancel_requested:
@@ -261,7 +263,14 @@ def checkpoint(scan_id, key, state, **values):
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             scan.cancel_requested = True
             raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
-        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+        try:
+            pat_denied = _pat.scan_revoked(db, scan, repository_id=scan.repository_id)
+        except TransientAuthorizationError as exc:
+            if state not in {"completed", "failed"}:
+                raise
+            # Save already consumed usage and results before retrying authorization.
+            authorization_error, pat_denied = exc, False
+        if pat_denied:
             scan.cancel_requested = True
             raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
@@ -272,6 +281,8 @@ def checkpoint(scan_id, key, state, **values):
         elif type(values.get("tokens")) is int and state in {"completed", "failed"}:
             previous = previous + values["tokens"] if previous is not None else None
         scan.progress = {**scan.progress, "tasks": tasks, "tokens": previous}
+    if authorization_error is not None:
+        raise authorization_error
 
 
 def stage(scan_id, name, status, **values):
@@ -621,6 +632,8 @@ def perform(scan_id, claim):
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
+        except TransientAuthorizationError:
+            raise
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
             feedback = getattr(exc, "feedback", None)
@@ -822,6 +835,14 @@ def perform(scan_id, claim):
             stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values()) else "completed", findings=len(verdicts))
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]))
+    except TransientAuthorizationError:
+        with transaction() as db:
+            row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
+            if row and row.status == "running" and row.progress.get("execution") == claim:
+                interrupt_work(row)
+                row.status = "queued"
+                row.progress = {**row.progress, "execution": None}
+        raise
     except ocr.ReviewStopped:
         with transaction() as db:
             cancel(db, db.get(SecurityScan, scan_id))

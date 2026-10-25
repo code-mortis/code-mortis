@@ -179,7 +179,7 @@ the same test file through direct HTTP calls. GitHub permissions are stubbed
 in that check; it does not establish live provider or GitHub integration. That
 HTTP check is skipped when Noodle is not installed.
 
-Response history and the cookie jar are disabled for this collection. The
+Response history retains up to 50 entries; the cookie jar is disabled. The
 token is sent explicitly from the selected secret. `.timeline/` and optional
 `*.local.env` environments are ignored by Git. Response data and files saved
 with `--output` can still contain private application data.

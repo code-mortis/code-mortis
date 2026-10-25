@@ -68,6 +68,7 @@ export function ApiTokensSection() {
   const repos = useApi<Repository[]>("/repositories", false, true);
   const revokeAction = useAction<{ revoked: boolean }>();
   const [creating, setCreating] = useState(false);
+  const [createPending, setCreatePending] = useState(false);
   const [revoking, setRevoking] = useState<ApiTokenItem | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const createHeading = useRef<HTMLHeadingElement>(null);
@@ -76,6 +77,12 @@ export function ApiTokensSection() {
   function restoreFocus(event: Event) {
     event.preventDefault();
     returnFocus.current?.focus();
+  }
+
+  function closeCreate() {
+    if (createPending) return;
+    setCreating(false);
+    void list.refetch();
   }
 
   async function revoke(token: ApiTokenItem) {
@@ -118,7 +125,7 @@ export function ApiTokensSection() {
 
     <ErrorNotice error={list.error} />
     {list.isPending && <Loading />}
-    {list.data && !list.data.items.length && <Empty title={status === "active" ? "No active tokens" : `No ${status} tokens`}>
+    {list.data && !list.data.items.length && <Empty title={status === "all" ? "No tokens" : `No ${status} tokens`}>
       <p>{status === "active"
         ? "Create a token to call supported API operations from scripts or Noodle without copying a browser cookie."
         : "Tokens in this state will appear here."}</p>
@@ -153,8 +160,10 @@ export function ApiTokensSection() {
             <span aria-hidden="true" className="settings-cell-label mb-1 text-xs text-muted-foreground">Repositories</span>
             <p className="break-words text-xs leading-relaxed">
               <span className="sr-only">Repositories: </span>
-              {known.map((id) => repoNames.get(id)).join(", ") || (unknown.length ? "" : "None")}
-              {unknown.length > 0 && <span className="text-muted-foreground">{known.length > 0 ? "; " : ""}{unknown.map((id) => `#${id}`).join(", ")} unavailable</span>}
+              {repos.isPending ? "Loading repositories…" : !repos.data ? "Repository names unavailable" : <>
+                {known.map((id) => repoNames.get(id)).join(", ") || (unknown.length ? "" : "None")}
+                {unknown.length > 0 && <span className="text-muted-foreground">{known.length > 0 ? "; " : ""}{unknown.map((id) => `#${id}`).join(", ")} unavailable</span>}
+              </>}
             </p>
           </div>
           <div className="settings-actions flex items-center justify-end gap-1">
@@ -182,7 +191,7 @@ export function ApiTokensSection() {
       Store each token as a secret and send it as a bearer credential. Closing the one-time panel loses the secret permanently; revoke the unused token and create another. Revoked tokens stop new requests immediately while queued cleanup finishes in the background.
     </p>
 
-    <Dialog open={creating} onOpenChange={(open) => { if (!open) setCreating(false); }}>
+    <Dialog open={creating} onOpenChange={(open) => { if (!open) closeCreate(); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onCloseAutoFocus={restoreFocus}>
         <CreateTokenDialog
           permissions={permissions}
@@ -192,7 +201,9 @@ export function ApiTokensSection() {
           reauthRequired={!!list.data?.reauth_required}
           repositories={repos.data ?? []}
           reposPending={repos.isPending}
-          onDone={(refetch) => { setCreating(false); if (refetch) void list.refetch(); }}
+          pending={createPending}
+          setPending={setCreatePending}
+          onDone={closeCreate}
         />
       </DialogContent>
     </Dialog>
@@ -218,7 +229,7 @@ export function ApiTokensSection() {
   </section>;
 }
 
-function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDays, reauthRequired, repositories, reposPending, onDone }: {
+function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDays, reauthRequired, repositories, reposPending, pending, setPending, onDone }: {
   permissions: ApiTokenPermission[];
   permissionsPending: boolean;
   maxDays: number;
@@ -226,7 +237,9 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
   reauthRequired: boolean;
   repositories: Repository[];
   reposPending: boolean;
-  onDone: (refetch: boolean) => void;
+  pending: boolean;
+  setPending: (pending: boolean) => void;
+  onDone: () => void;
 }) {
   const id = useId();
   const [name, setName] = useState("");
@@ -234,7 +247,6 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
   const [scopes, setScopes] = useState<string[]>(() => permissions.filter((item) => item.id.endsWith(":read")).map((item) => item.id));
   const [scopedOnce, setScopedOnce] = useState(false);
   const [repositoryIds, setRepositoryIds] = useState<number[]>([]);
-  const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>();
   const [lost, setLost] = useState<string | null>(null);
   // The raw secret lives only in this component state. It is never written to
@@ -341,7 +353,7 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
       </p>
     </div>
     <DialogFooter>
-      <Button onClick={() => { setCreated(null); onDone(true); }}>Done</Button>
+      <Button onClick={() => { setCreated(null); onDone(); }}>Done</Button>
     </DialogFooter>
   </>;
 
@@ -422,7 +434,7 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
         </label>)}
       </fieldset>
       <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" disabled={pending} onClick={() => onDone(false)}>Cancel</Button>
+        <Button type="button" variant="outline" disabled={pending} onClick={onDone}>Cancel</Button>
         <Button type="submit" disabled={pending || reauthRequired || permissionsPending}>
           {pending ? "Creating…" : "Create token"}
         </Button>

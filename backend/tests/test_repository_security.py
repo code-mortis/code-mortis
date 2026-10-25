@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from code_mortis import jobs, native_runner
+from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import digest
 from code_mortis.integrations import github
@@ -573,6 +574,80 @@ def saved_finding(db, seed, scan, kind="code", severity="high", state="open", **
 
 def freshness(sha=SHA):
     return {"head_sha": sha, "default_branch": "main", "checked_at": now().isoformat()}
+
+
+@pytest.mark.parametrize("gate", ["ai", "checkpoint_start", "checkpoint_result", "finish", "provider"])
+def test_security_auth_outage_preserves_usage_before_retry(seed, security_github, monkeypatch, tmp_path, gate):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {"code": True, "hash": digest("safe"), "lines": 1}}
+    item.read = lambda *args: "safe"
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    paid_calls, checks = [], []
+
+    def ask(*args, **kwargs):
+        paid_calls.append(args[4])
+        if gate == "provider":
+            raise pat_provenance.TransientAuthorizationError("Authorization interrupted the provider call")
+        return {"findings": [], "required_paths": []}, {"tokens": 7}
+
+    def scan_revoked(db, scan, **kwargs):
+        if kwargs.get("network") is not False:
+            checks.append(scan.status)
+            if len(checks) == {"ai": 2, "checkpoint_start": 3, "checkpoint_result": 4, "finish": 5}.get(gate):
+                raise pat_provenance.TransientAuthorizationError("Temporary authorization outage")
+        return False
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(pat_provenance, "scan_revoked", scan_revoked)
+    with transaction() as db:
+        scan_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=1)).id
+        job_id = db.scalar(select(Job.id).where(Job.kind == "security_scan"))
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        scan, job = db.get(SecurityScan, scan_id), db.get(Job, job_id)
+        assert job.status == "queued" and scan.status == "queued"
+        assert scan.cancel_requested is False and scan.error is None and scan.report == {}
+        assert scan.progress["tokens"] == (None if gate == "provider" else 7 if gate in {"checkpoint_result", "finish"} else 0)
+        job.available_at = now()
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.status == ("failed" if gate == "provider" else "completed"), scan.error
+        assert db.get(Job, job_id).status == "done"
+        assert scan.progress["tokens"] == (None if gate == "provider" else 7)
+        if gate == "provider":
+            assert "Token usage is unknown" in scan.error
+    assert len(paid_calls) == 1
+
+
+@pytest.mark.parametrize("kind, gate", [("security_issue_publish", 1), ("security_issue_publish", 2), ("security_issue_sync", 1)])
+def test_issue_auth_outage_requeues_without_recording_failed_publication(seed, security_github, monkeypatch, kind, gate):
+    calls = []
+
+    def mapping_revoked(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == gate:
+            raise pat_provenance.TransientAuthorizationError("Temporary authorization outage")
+        return False
+
+    monkeypatch.setattr(pat_provenance, "mapping_revoked", mapping_revoked)
+    monkeypatch.setattr(github, "request", lambda *a, **k: pytest.fail("outage must prevent publication"))
+    monkeypatch.setattr(security_issues, "identity", lambda *a, **k: ("team/project", "token", "mortis-test[bot]"))
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, scan)
+        finding.issue = {"operation_id": uid(), "version": 0, "started": False,
+                         "publication_status": "pending", "sync_status": "pending"}
+        finding_id = finding.id
+        job_id = security.enqueue(db, kind, {"finding_id": finding_id}).id
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        assert db.get(Job, job_id).status == "queued"
+        issue = db.get(SecurityFinding, finding_id).issue
+        assert issue["sync_status"] == "pending" and issue["publication_status"] == "pending"
+        assert issue["started"] is False and not issue.get("error")
 
 
 def test_security_detail_counts_include_empty_lists(seed, security_github, client):

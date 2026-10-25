@@ -508,6 +508,16 @@ def test_reconciliation_dedup_matches_complete_origins(seed, pat_setup, mcp_gran
         assert len(queued()) == 5
         families = sorted(_family_key(p) for p in queued())
         assert families == ["mcp", "mcp", "pat", "pat", "system"]
+        # Combined origins compare both credentials and cannot swallow single-origin work.
+        with pat_provenance.scoped(pat_setup["record"]):
+            for grant in grants:
+                with mcp_provenance.scoped(grant):
+                    jobs.enqueue_reconciliation(db, "sync_pr", dict(payload))
+                    jobs.enqueue_reconciliation(db, "sync_pr", dict(payload))
+        assert len(queued()) == 7
+        # Present malformed markers must remain distinct from absent origins.
+        assert jobs._stored_origin({"pat": None}) != jobs._stored_origin({})
+        assert jobs._stored_origin({"pat": pat_setup["record"], "mcp": None}) != jobs._stored_origin({"pat": pat_setup["record"]})
 
 
 def _family_key(payload):
@@ -664,6 +674,60 @@ def test_execute_job_holds_queued_on_transient_outage(seed, pat_setup, monkeypat
         assert db.get(Job, job_id).status == "queued"
         assert db.get(ReviewRun, run_id).status == "queued"
         assert db.get(ReviewRun, run_id).cancel_requested is False
+
+
+@pytest.mark.parametrize("origin", [None, {"token_id": 123}, {"token_id": "x", "user_id": 7}])
+def test_review_pre_dispatch_rejects_malformed_origin_without_crashing(seed, github_stub, monkeypatch, origin):
+    from code_mortis.reviews import context
+
+    monkeypatch.setattr(github, "request", lambda *a, **k: {
+        "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
+    })
+    monkeypatch.setattr(reviews.ocr, "review", lambda *a, **k: pytest.fail("invalid origin must not execute"))
+    with transaction() as db:
+        run_id = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),
+                                    db.get(Repository, seed["repo"].id), "manual", seed["user"]).id
+
+    def credentials(db, repository_id, credentials, token):
+        run = db.get(ReviewRun, run_id)
+        run.progress = {**run.progress, "pat": origin}
+        return credentials
+
+    monkeypatch.setattr(context, "execution_credentials", credentials)
+    reviews.perform_review(run_id)
+    with transaction() as db:
+        run = db.get(ReviewRun, run_id)
+        assert run.status == "cancelled" and run.cancel_requested
+
+
+def test_review_pre_dispatch_cleans_both_revoked_origins(seed, github_stub, pat_setup, mcp_grant, monkeypatch):
+    from code_mortis.mcp.models import McpGrant
+    from code_mortis.models import AppConfig
+    from code_mortis.reviews import context
+
+    monkeypatch.setattr(github, "request", lambda *a, **k: {
+        "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
+    })
+    monkeypatch.setattr(reviews.ocr, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
+    with transaction() as db:
+        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
+        run = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),
+                                 db.get(Repository, seed["repo"].id), "manual", seed["user"])
+        run.progress = {**run.progress, "pat": pat_setup["record"], "mcp": mcp_grant}
+        pat_sibling = saved_run(db, seed, provenance=pat_setup["record"])
+        mcp_sibling = saved_run(db, seed)
+        mcp_sibling.progress = {**mcp_sibling.progress, "mcp": mcp_grant}
+        ids = run.id, pat_sibling.id, mcp_sibling.id
+
+    def credentials(db, repository_id, credentials, token):
+        db.get(PersonalApiToken, pat_setup["token"].id).revoked_at = now()
+        db.get(McpGrant, mcp_grant["grant_id"]).revoked_at = now()
+        return credentials
+
+    monkeypatch.setattr(context, "execution_credentials", credentials)
+    reviews.perform_review(ids[0])
+    with transaction() as db:
+        assert all(db.get(ReviewRun, run_id).status == "cancelled" for run_id in ids)
 
 
 def test_job_kind_scopes_match_pipeline_kinds(seed, pat_setup, monkeypatch):

@@ -24,7 +24,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from sqlalchemy import select
 
-from code_mortis.core.db import now, transaction
+from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import digest
 from code_mortis.integrations import github
 from code_mortis.main import app
@@ -245,10 +245,10 @@ def test_noodle_requests_match_pat_policy():
     for marker in ("Browser-only workflows", "/api/v1/auth/me", "/api/v1/api-tokens", "cm_api_token"):
         assert marker in readme, marker
 
-    # No cookie jar, no history, no cookie/CSRF sourcing anywhere in the collection.
+    # Bounded response history, no cookie jar or cookie/CSRF sourcing.
     settings = yaml.safe_load((COLLECTION / "settings.yml").read_text())
     assert settings["cookies"]["enabled"] is False
-    assert settings["timeline_max_entries"] == 0
+    assert settings["timeline_max_entries"] == 50
     folder = yaml.safe_load((COLLECTION / "api/folder.yml").read_text())
     assert folder["auth"] == {"type": "bearer", "token": "$cm_api_token"}
     guard = (COLLECTION / "scripts/auth.js").read_text().lower()
@@ -273,6 +273,10 @@ def test_noodle_pat_over_http(seed, github_stub, monkeypatch, tmp_path):
                           connection_id=db.get(Connection, "connection").id, enabled=True))
     collection = tmp_path / "collection"
     shutil.copytree(COLLECTION, collection)
+    settings_file = collection / "settings.yml"
+    collection_settings = yaml.safe_load(settings_file.read_text())
+    collection_settings["collection_id"] = uid()
+    settings_file.write_text(yaml.safe_dump(collection_settings))
     env_file = collection / ".environments/development.env"
     env_file.write_text(env_file.read_text().replace("http://localhost:5173", "PLACEHOLDER").replace(
         "pr_id=REPLACE_ME", "pr_id=pr"))

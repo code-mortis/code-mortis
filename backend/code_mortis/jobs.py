@@ -181,23 +181,14 @@ def scan_repository(repository_id: int):
 
 def _stored_origin(payload: Any) -> tuple:
     if isinstance(payload, dict):
-        for key in ("pat", "mcp"):
-            if key in payload:
-                return key, payload.get(key)
-    return None, None
+        return tuple((key, payload[key]) for key in ("pat", "mcp") if key in payload)
+    return ()
 
 
 def _current_origin() -> tuple:
-    from code_mortis.api_tokens import provenance as _pat
     from code_mortis.mcp import provenance as _mcp
 
-    pat = _pat.current_provenance()
-    if pat is not None:
-        return "pat", pat
-    mcp = _mcp.current_provenance()
-    if mcp is not None:
-        return "mcp", mcp
-    return None, None
+    return _stored_origin(_mcp.bind_payload({}))
 
 
 def enqueue_reconciliation(db, kind, payload):

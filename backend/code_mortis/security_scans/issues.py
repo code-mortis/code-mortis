@@ -6,6 +6,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text
 from code_mortis.integrations import github
@@ -227,7 +228,11 @@ def publish(finding_id):
             with transaction() as db:
                 finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == finding_id).with_for_update())
                 if finding and finding.issue.get("operation_id") == approved["operation_id"]:
-                    finding.issue = {**finding.issue, "started": approved["started"], "publication_status": "needs_review"}
+                    finding.issue = {**finding.issue, "started": approved["started"],
+                                     "publication_status": approved["publication_status"]
+                                     if isinstance(exc, TransientAuthorizationError) else "needs_review"}
+        if isinstance(exc, TransientAuthorizationError):
+            raise
         failure(finding_id, str(exc), uncertain=True)
 
 
@@ -351,6 +356,8 @@ def sync(finding_id):
                              "synced_at": now().isoformat(), "error": None}
             if saved.get("desired_state"):
                 repository_security.activity(db, "issue_state_synced", finding=finding, state=remote["state"], commit=scan_sha)
+    except TransientAuthorizationError:
+        raise
     except Exception as exc:
         failure(finding_id, str(exc))
 

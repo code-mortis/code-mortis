@@ -497,12 +497,16 @@ def perform_review(run_id: str, claim: str | None = None):
             from code_mortis.mcp import provenance as _mcp
 
             _run = db.get(ReviewRun, run_id)
-            if _run is not None and _mcp.run_revoked(db, _run):
-                _mcp.revoke_work(db, _mcp.provenance_from_run(_run)["grant_id"])
-                return
-            if _run is not None and _pat.run_revoked(db, _run):
-                _pat.revoke_work(db, _pat.provenance_from_run(_run)["token_id"])
-                return
+            if _run is not None:
+                mcp_denied = _mcp.run_revoked(db, _run)
+                pat_denied = _pat.run_revoked(db, _run)
+                if mcp_denied and (origin := _mcp.provenance_from_run(_run)) is not None:
+                    _mcp.revoke_work(db, origin["grant_id"])
+                if pat_denied and (origin := _pat.provenance_from_run(_run)) is not None:
+                    _pat.revoke_work(db, origin["token_id"])
+                if mcp_denied or pat_denied:
+                    cancel_review(db, _run)
+                    return
 
         def progress(value):
             with transaction() as db:
