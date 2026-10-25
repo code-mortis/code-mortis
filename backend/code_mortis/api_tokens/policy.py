@@ -21,7 +21,7 @@ DEFAULT_EXPIRATION_DAYS = 30
 MAX_EXPIRATION_DAYS = 365
 MAX_ACTIVE_TOKENS = 20
 
-# (method, route template) -> required PAT scope. 52 baseline operations plus /auth/token.
+# (method, route template) -> required PAT scope. Token identity is classified separately.
 PAT_ROUTE_SCOPES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/repositories"): "repositories:read",
     ("GET", "/api/v1/repositories/{repository_id}/pulls"): "reviews:read",
@@ -30,6 +30,7 @@ PAT_ROUTE_SCOPES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/analytics/findings"): "analytics:read",
     ("GET", "/api/v1/analytics/reviews"): "analytics:read",
     ("GET", "/api/v1/analytics/usage"): "analytics:read",
+    ("GET", "/api/v1/analytics/security"): "analytics:read",
     ("GET", "/api/v1/pulls"): "reviews:read",
     ("GET", "/api/v1/pulls/{pr_id}"): "reviews:read",
     ("PUT", "/api/v1/pulls/{pr_id}/ignore"): "reviews:write",

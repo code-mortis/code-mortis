@@ -10,8 +10,10 @@ from code_mortis.schemas.analytics import (
     AnalyticsFindings,
     AnalyticsOverview,
     AnalyticsReviews,
+    AnalyticsSecurity,
     AnalyticsUsage,
 )
+from code_mortis.security_scans.analytics import security
 
 router = APIRouter()
 
@@ -34,3 +36,8 @@ def analytics_reviews(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Q
 @router.get("/analytics/usage", response_model=AnalyticsUsage)
 def analytics_usage(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Query()]):
     return analytics.usage(analytics.Scope(db, user, filters))
+
+
+@router.get("/analytics/security", response_model=AnalyticsSecurity)
+def analytics_security(db: DB, user: USER, filters: Annotated[AnalyticsFilters, Query()]):
+    return security(db, user, filters)

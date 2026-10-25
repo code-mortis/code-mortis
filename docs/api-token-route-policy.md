@@ -6,6 +6,8 @@ The baseline has 111 HTTP operations, of which 52 are proposed for PAT access. B
 
 Implementation must encode the exact method and route template, with explicit session-only and special-protocol classifications. Unknown routes deny PAT access. A test must compare the policy against `app.openapi()` and separately account for WebSockets, static assets, schema delivery, and other routes omitted from OpenAPI. A route added later is not automatically enabled for tokens.
 
+Added after the baseline: `GET /api/v1/analytics/security` uses `analytics:read`, with the same selected-repository and current-access checks as the other analytics endpoints. It returns aggregate counts only, without finding evidence or scan configuration.
+
 ## Baseline operation policy
 
 | Method | Route template | PAT policy |

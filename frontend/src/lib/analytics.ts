@@ -1,4 +1,4 @@
-export const analyticsTabs = ["overview", "findings", "reviews", "usage"] as const;
+export const analyticsTabs = ["overview", "findings", "reviews", "usage", "security"] as const;
 export type AnalyticsTab = typeof analyticsTabs[number];
 export const analyticsPeriods = ["7", "30", "90", "all", "custom"];
 

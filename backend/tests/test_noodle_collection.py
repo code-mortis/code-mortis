@@ -34,8 +34,8 @@ policy = pytest.importorskip("code_mortis.api_tokens.policy")
 
 COLLECTION = Path(__file__).resolve().parents[2] / "collections" / "code-mortis"
 
-# Exact PAT inventory from docs/api-token-route-policy.md: 52 baseline
-# operations. GET /api/v1/auth/token is asserted separately because it carries
+# Exact PAT inventory from docs/api-token-route-policy.md, including additions.
+# GET /api/v1/auth/token is asserted separately because it carries
 # no permission scope, only a valid PAT.
 EXPECTED_PAT_SCOPES = {
     ("GET", "/api/v1/repositories"): "repositories:read",
@@ -45,6 +45,7 @@ EXPECTED_PAT_SCOPES = {
     ("GET", "/api/v1/analytics/findings"): "analytics:read",
     ("GET", "/api/v1/analytics/reviews"): "analytics:read",
     ("GET", "/api/v1/analytics/usage"): "analytics:read",
+    ("GET", "/api/v1/analytics/security"): "analytics:read",
     ("GET", "/api/v1/pulls"): "reviews:read",
     ("GET", "/api/v1/pulls/{pr_id}"): "reviews:read",
     ("PUT", "/api/v1/pulls/{pr_id}/ignore"): "reviews:write",
@@ -239,7 +240,7 @@ def test_noodle_requests_match_pat_policy():
 
     assert seen_api == set(implemented) | {TOKEN_IDENTITY}
     assert seen_public == EXPECTED_PUBLIC
-    assert len(smoke) == 13
+    assert len(smoke) == 14
 
     readme = (COLLECTION / "README.md").read_text()
     for marker in ("Browser-only workflows", "/api/v1/auth/me", "/api/v1/api-tokens", "cm_api_token"):
@@ -336,7 +337,7 @@ def test_noodle_pat_over_http(seed, github_stub, monkeypatch, tmp_path):
             code, result = run_noodle("collection", "run", str(collection), "--tag", "smoke", "--fail-fast",
                                       token=token)
             assert code == 0, result
-            assert result["data"]["summary"]["requestSuccesses"] == 13
+            assert result["data"]["summary"]["requestSuccesses"] == 14
 
             # Reversible write: the seeded PR is not ignored, so this is a no-op write.
             code, result = run_noodle("request", "run", "api/pulls/ignore-pull", token=token)

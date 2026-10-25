@@ -345,6 +345,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/security": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Analytics Security */
+        get: operations["analytics_security_api_v1_analytics_security_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls": {
         parameters: {
             query?: never;
@@ -1844,6 +1861,28 @@ export interface components {
             bucket: "day" | "week" | "month";
             /** Repositories */
             repositories: components["schemas"]["InboxRepository"][];
+        };
+        /** AnalyticsSecurity */
+        AnalyticsSecurity: {
+            scope: components["schemas"]["AnalyticsScope"];
+            /** Scans */
+            scans: number;
+            /** Findings */
+            findings: number;
+            /** Open */
+            open: number;
+            /** Resolved */
+            resolved: number;
+            /** Trend */
+            trend: components["schemas"]["AnalyticsPoint"][];
+            /** Severities */
+            severities: components["schemas"]["AnalyticsCount"][];
+            /** Kinds */
+            kinds: components["schemas"]["AnalyticsCount"][];
+            /** States */
+            states: components["schemas"]["AnalyticsCount"][];
+            /** Outcomes */
+            outcomes: components["schemas"]["AnalyticsCount"][];
         };
         /** AnalyticsUsage */
         AnalyticsUsage: {
@@ -4571,6 +4610,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalyticsUsage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analytics_security_api_v1_analytics_security_get: {
+        parameters: {
+            query?: {
+                ordering?: ("count" | "-count" | "key" | "-key") | null;
+                repo?: number[];
+                from_at?: string | null;
+                to_at?: string | null;
+                all_time?: boolean;
+                timezone?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsSecurity"];
                 };
             };
             /** @description Validation Error */

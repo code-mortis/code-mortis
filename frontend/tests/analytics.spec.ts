@@ -22,6 +22,13 @@ const usage: Schema["AnalyticsUsage"] = { scope, total, trend,
   stages: ["review", "assessment", "verification", "summary"].map((key) => ({ key, repository_id: null, usage: { ...total, tokens: 311450 } })),
   repositories: repositories.map((repo) => ({ key: repo.full_name, repository_id: repo.id, usage: total })),
   models: [{ key: "review-model", repository_id: null, usage: total }], efforts: [{ key: "high", repository_id: null, usage: total }] };
+const security: Schema["AnalyticsSecurity"] = { scope, scans: 12, findings: 12, open: 6, resolved: 3,
+  trend: trend.map((point, index) => ({ ...point, runs: ({ 1: 2, 10: 5, 20: 5 }[index] ?? 0), findings: ({ 1: 2, 10: 7, 20: 3 }[index] ?? 0) })),
+  severities: [{ key: "critical", count: 2 }, { key: "high", count: 5 }, { key: "medium", count: 3 }, { key: "low", count: 2 }],
+  kinds: [{ key: "code", count: 5 }, { key: "dependency", count: 4 }, { key: "secret", count: 2 }, { key: "infrastructure", count: 1 }],
+  states: [{ key: "open", count: 6 }, { key: "resolved", count: 3 }, { key: "false_positive", count: 1 }, { key: "accepted_risk", count: 2 }],
+  outcomes: [{ key: "completed", count: 8 }, { key: "partial", count: 2 }, { key: "failed", count: 1 }, { key: "cancelled", count: 1 }],
+};
 
 async function mock(page: Page, override?: (view: string, params: URLSearchParams) => object | undefined) {
   const requests: URL[] = [];
@@ -35,7 +42,7 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
     else if (path.startsWith("/analytics/")) {
       requests.push(url);
       const view = path.split("/").at(-1)!;
-      json = override?.(view, url.searchParams) ?? ({ overview, findings, reviews, usage }[view]);
+      json = override?.(view, url.searchParams) ?? ({ overview, findings, reviews, usage, security }[view]);
     } else json = {};
     await route.fulfill({ json });
   });
@@ -163,15 +170,58 @@ test("custom dates validate before requesting and keyboard switches tabs", async
   expect(requests.at(-1)?.searchParams.get("to_at")).toContain("2026-10-19");
 });
 
-test("permission loss hides cached analytics and offers recovery", async ({ page }) => {
+for (const tab of ["usage", "security"]) test(`permission loss hides cached ${tab} analytics and offers recovery`, async ({ page }) => {
   await mock(page);
-  await page.goto("/analytics?tab=usage");
-  await expect(page.getByRole("heading", { name: "Usage by model", exact: true })).toBeVisible();
-  await page.route("**/api/v1/analytics/usage?**", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
+  const heading = tab === "usage" ? "Usage by model" : "Security activity";
+  await page.goto(`/analytics?tab=${tab}`);
+  await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+  await page.route(`**/api/v1/analytics/${tab}?**`, (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Repository access was revoked");
-  await expect(page.getByRole("heading", { name: "Usage by model", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: heading, exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry analytics", exact: true })).toBeVisible();
+});
+
+test("security analytics preserves filters and exposes accessible scan data", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/analytics?tab=security&period=90&repo=23&severity=critical&status=dismissed");
+  const tab = page.getByRole("tab", { name: "Security", exact: true });
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#analytics-panel dl dd")).toHaveText(["12", "12", "6", "3"]);
+  expect(requests.every((url) => url.pathname.endsWith("/security"))).toBe(true);
+  expect(requests.at(-1)?.searchParams.get("repo")).toBe("23");
+  expect(requests.at(-1)?.searchParams.has("severity")).toBe(false);
+  expect(requests.at(-1)?.searchParams.has("status")).toBe(false);
+  await page.getByText("View security activity data", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("table", { name: "Security activity data", exact: true }).getByRole("columnheader")).toHaveText(["Period starting", "Security scans", "Findings detected"]);
+  await page.getByText("View current resolution data", { exact: true }).click();
+  await expect(page.getByRole("table", { name: "Current resolution data", exact: true })).toContainText("Accepted risk");
+  await page.getByRole("tab", { name: "Usage", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Usage", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/tab=security/);
+  await page.reload();
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/period=90&repo=23/);
+  await page.getByText("About these metrics", { exact: true }).click();
+  await expect(page.getByText(/not the entire backlog/)).toBeVisible();
+});
+
+test("security distinguishes empty history from scans without findings", async ({ page }) => {
+  let scans = 0;
+  await mock(page, (view) => view === "security" ? { ...security, scans, findings: 0, open: 0, resolved: 0,
+    trend: [], severities: [], kinds: [], states: [], outcomes: scans ? [{ key: "failed", count: 1 }] : [],
+  } : undefined);
+  await page.goto("/analytics?tab=security&period=7");
+  await expect(page.getByText("No security activity in this period", { exact: true })).toBeVisible();
+  scans = 1;
+  await page.getByRole("button", { name: "View all time", exact: true }).click();
+  await expect(page).toHaveURL(/period=all/);
+  await expect(page.locator("#analytics-panel dl dd")).toHaveText(["1", "0", "0", "0"]);
+  await expect(page.getByRole("heading", { name: "Scan outcomes", exact: true })).toBeVisible();
+  await expect(page.getByText(/Partial, failed, and unscanned work/)).toBeVisible();
 });
 
 test("date controls align, wrap and show themed calendar popovers", async ({ page }, info) => {
@@ -242,11 +292,12 @@ test("charts follow every palette and remain keyboard accessible", async ({ page
 });
 
 test("capture Analytics in each tab and theme with long labels", async ({ page }, info) => {
+  await page.clock.setFixedTime(new Date("2026-09-30T12:00:00Z"));
   await mock(page, (view) => view === "usage" ? { ...usage, models: [{ key: "provider/a-very-long-model-identifier-that-must-wrap-without-widening-the-workspace", repository_id: null, usage: total }] } : undefined);
   await page.goto("/analytics");
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   await mkdir("../.impeccable/review", { recursive: true });
-  for (const tab of ["Overview", "Findings", "Reviews", "Usage"]) {
+  for (const tab of ["Overview", "Findings", "Reviews", "Usage", "Security"]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-busy", "false");
     await expect(page.locator("[data-slot=chart]").first()).toBeVisible();
@@ -292,9 +343,22 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe("dark");
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.screenshot({ path: `../.impeccable/review/analytics-overview-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
+  await page.getByRole("tab", { name: "Security", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Security activity", exact: true })).toBeVisible();
+  await page.screenshot({ path: `../.impeccable/review/analytics-security-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
+  if (info.project.name === "mobile") {
+    await page.setViewportSize({ width: 320, height: 720 });
+    const tabs = await page.getByRole("tablist").boundingBox();
+    for (const name of ["Overview", "Findings", "Reviews", "Usage", "Security"]) {
+      const box = await page.getByRole("tab", { name, exact: true }).boundingBox();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(tabs!.x + tabs!.width + 1);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(tabs!.y + tabs!.height + 1);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
 });
 
-for (const tab of ["overview", "findings", "reviews", "usage"] as const) {
+for (const tab of ["overview", "findings", "reviews", "usage", "security"] as const) {
   test(`analytics ${tab} filters order backend breakdowns and keep date order`, async ({ page }) => {
     const requests = await mock(page);
     await page.goto(`/analytics?tab=${tab}&period=all`);

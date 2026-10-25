@@ -77,7 +77,8 @@ export default function Analytics() {
   const findings = useApi<Schema["AnalyticsFindings"]>(`/analytics/findings?${findingQuery}`, false, valid && tab === "findings");
   const reviews = useApi<Schema["AnalyticsReviews"]>(`/analytics/reviews?${base}`, false, valid && tab === "reviews");
   const usage = useApi<Schema["AnalyticsUsage"]>(`/analytics/usage?${base}`, false, valid && tab === "usage");
-  const query = tab === "findings" ? findings : tab === "reviews" ? reviews : tab === "usage" ? usage : overview;
+  const security = useApi<Schema["AnalyticsSecurity"]>(`/analytics/security?${base}`, false, valid && tab === "security");
+  const query = tab === "findings" ? findings : tab === "reviews" ? reviews : tab === "usage" ? usage : tab === "security" ? security : overview;
   const scope = !query.error && valid ? query.data?.scope : undefined;
   function change(key: string, values: string[]) {
     const next = new URLSearchParams(params);
@@ -106,7 +107,8 @@ export default function Analytics() {
   }
   const selectRepository = (id: number) => change("repo", [String(id)]);
   const empty = scope && (tab === "overview" ? !overview.data?.findings && !overview.data?.trend.some((point) => point.runs)
-    : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs : !usage.data?.total.total_runs);
+    : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs
+    : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
     <h1 className="sr-only">Analytics</h1>
@@ -119,13 +121,14 @@ export default function Analytics() {
       <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
       </FilterBar>
     </div>
-    <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
+    <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
       <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{{
         overview: "Review activity, findings, and resolution for the selected repositories and period.",
         findings: "Explore findings by severity, category, and current resolution status.",
         reviews: "Review outcomes, execution time, validated file coverage, assessments, and contributor activity.",
         usage: "Token usage by stage, repository, model, and effort, with averages per run and reviewed PR.",
+        security: "Security scan activity and unique findings first detected in the selected repositories and period.",
       }[tab]}</p>
       <div className="min-w-0 space-y-6">
       {tab === "findings" && scope && scope.repositories.length > 0 && !empty && findings.data && <div role="status"><Metrics items={[
@@ -142,7 +145,7 @@ export default function Analytics() {
         {["severity", "category", "status"].some((key) => params.has(key)) && <Button variant="ghost" onClick={() => { const next = new URLSearchParams(params); ["severity", "category", "status"].forEach((key) => next.delete(key)); setParams(next); }}>Clear finding filters</Button>}
       </FilterBar></div>}
       {range.error ? <ErrorNotice error={range.error} /> : query.error ? <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry analytics</Button><Button variant="ghost" onClick={() => change("repo", [])}>Clear repository selection</Button></div> : query.isPending ? <Loading /> : <>
-        {scope && !scope.repositories.length ? <Empty title="No repositories available">Analytics includes repositories you can currently access. <Link className="underline underline-offset-4" to="/settings?tab=github">Manage GitHub connections</Link>.</Empty> : empty ? <Empty title={tab === "findings" ? "No findings recorded in this period" : "No review activity in this period"}>Choose a wider date range or another repository. No findings does not establish complete review coverage.<Button variant="outline" className="mt-4" onClick={() => setPeriod("all")}>View all time</Button></Empty> : <>
+        {scope && !scope.repositories.length ? <Empty title="No repositories available">Analytics includes repositories you can currently access. <Link className="underline underline-offset-4" to="/settings?tab=github">Manage GitHub connections</Link>.</Empty> : empty ? <Empty title={tab === "findings" ? "No findings recorded in this period" : tab === "security" ? "No security activity in this period" : "No review activity in this period"}>Choose a wider date range or another repository. No findings does not establish complete review coverage.<Button variant="outline" className="mt-4" onClick={() => setPeriod("all")}>View all time</Button></Empty> : <>
           {tab === "overview" && overview.data && <>
             <Metrics items={[
               { label: "PRs reviewed", value: number(overview.data.reviewed_prs) },
@@ -185,14 +188,34 @@ export default function Analytics() {
             <AnalyticsPanel title="Usage by stage" description="Each saved consumption record is counted once."><DataTable label="Usage by stage" headings={["Stage", "Reported tokens", "Missing reports"]} rows={usage.data.stages.map((row) => [label(row.key), number(row.usage.tokens), number(row.usage.missing_reports)])} /></AnalyticsPanel>
             <UsageTable title="Usage by repository" rows={usage.data.repositories} onRepository={selectRepository} /><UsageTable title="Usage by model" rows={usage.data.models} /><UsageTable title="Usage by effort" rows={usage.data.efforts} />
           </>}
+          {tab === "security" && security.data && <>
+            <Metrics items={[
+              { label: "Security scans", value: number(security.data.scans) },
+              { label: "Findings detected", value: number(security.data.findings) },
+              { label: "Open findings", value: number(security.data.open) },
+              { label: "Resolved findings", value: number(security.data.resolved) },
+            ]} />
+            <TrendChart title="Security activity" description="Scans are grouped by creation date; unique findings by first detection. Repeated observations do not add findings." data={security.data.trend} keys={["runs", "findings"]} runLabel="Security scans" />
+            <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+              <BreakdownChart title="Severity" description="Severity of unique findings first detected in this period, across all current states." data={security.data.severities} severity />
+              <BreakdownChart title="Finding types" description="Saved security classifications, including code, dependencies, secrets, and infrastructure." data={security.data.kinds} />
+              <BreakdownChart title="Current resolution" description="Current state of findings first detected in this period. False positives and accepted risk are separate from resolved findings." data={security.data.states} />
+              <BreakdownChart title="Scan outcomes" description="Saved execution status for scans started in this period. Partial, failed, and unscanned work never implies a clean repository." data={security.data.outcomes} />
+            </div>
+          </>}
         </>}
       </>}
       </div>
     </div>
     <details className="border-t pt-4 text-xs leading-relaxed text-muted-foreground"><summary className="cursor-pointer rounded-sm font-medium text-foreground">About these metrics</summary><div className="mt-3 max-w-[75ch] space-y-2">
+      {tab === "security" ? <>
+        <p>Security analytics includes saved repository scans and unique findings in repositories you can currently access. Scans use their creation date; findings use their first detection date. Retried scans count as separate scans.</p>
+        <p>Open and resolved counts describe the current state of findings first detected in the selected period, not the entire backlog. Reopening changes these counts. Accepted risk and false positives remain separate; absence from a later scan never establishes a fix.</p>
+      </> : <>
       <p>Analytics includes saved history for open, merged, closed, and ignored pull requests in repositories you can currently access. Review runs use their creation date; findings use the date they were first detected.</p>
       <p>Resolved means the confirmed current status of findings first detected in the selected period. Reopening changes this count. A resolved thread is not necessarily a verified bug fix; dismissal and absence from later reviews do not count as resolution.</p>
       <p>Reported tokens are saved consumption, not billing estimates. Missing reports, reservations, and ambiguous legacy values are excluded. Run and PR averages use fully reported samples. Models and effort come from saved execution settings, including summary retries.</p>
+      </>}
     </div></details>
   </div>;
 }

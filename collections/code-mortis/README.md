@@ -1,6 +1,6 @@
 # Code Mortis in Noodle
 
-53 requests for the Code Mortis REST API operations available to personal API
+54 requests for the Code Mortis REST API operations available to personal API
 tokens, plus 3 unauthenticated health/setup requests. Tested with Noodle
 0.10.2. Commands below run from the repository root.
 
@@ -46,7 +46,7 @@ tokens, plus 3 unauthenticated health/setup requests. Tested with Noodle
     noodle collection run collections/code-mortis --env development --tag smoke --fail-fast
     ```
 
-    The smoke suite has 13 read-only GET requests: health/readiness/setup,
+    The smoke suite has 14 read-only GET requests: health/readiness/setup,
     token identity, repositories, PR inbox, provider catalog, connections,
     security repositories, and analytics. It performs no model execution and
     no GitHub publication. It needs a token with the read permissions behind

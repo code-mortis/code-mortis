@@ -31,11 +31,12 @@ export function DataTable({ label, headings, rows }: { label: string; headings: 
   </div>;
 }
 
-export function TrendChart({ title, description, data, keys }: {
-  title: string; description: string; data: Schema["AnalyticsPoint"][]; keys: (keyof typeof series)[];
+export function TrendChart({ title, description, data, keys, runLabel = "Review runs" }: {
+  title: string; description: string; data: Schema["AnalyticsPoint"][]; keys: (keyof typeof series)[]; runLabel?: string;
 }) {
+  const config = { ...series, runs: { ...series.runs, label: runLabel } };
   return <AnalyticsPanel title={title} description={description}>
-    <ChartContainer config={series} className="h-64 w-full aspect-auto sm:h-72">
+    <ChartContainer config={config} className="h-64 w-full aspect-auto sm:h-72">
       <LineChart accessibilityLayer data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis dataKey="date" tickFormatter={dateLabel} tickLine={false} axisLine={false} minTickGap={36} tickMargin={10} />
@@ -47,7 +48,7 @@ export function TrendChart({ title, description, data, keys }: {
     </ChartContainer>
     <details className="mt-4 border-t pt-3 text-xs">
       <summary className="cursor-pointer rounded-sm font-medium">View {title.toLowerCase()} data</summary>
-      <div className="mt-3"><DataTable label={`${title} data`} headings={["Period starting", ...keys.map((key) => series[key].label), ...(keys.includes("tokens") ? ["Missing reports"] : [])]}
+      <div className="mt-3"><DataTable label={`${title} data`} headings={["Period starting", ...keys.map((key) => config[key].label), ...(keys.includes("tokens") ? ["Missing reports"] : [])]}
         rows={data.map((row) => [row.date, ...keys.map((key) => analyticsNumber(row[key])), ...(keys.includes("tokens") ? [analyticsNumber(row.missing_reports)] : [])])} /></div>
     </details>
   </AnalyticsPanel>;

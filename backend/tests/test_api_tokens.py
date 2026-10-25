@@ -30,7 +30,7 @@ def test_policy_covers_every_api_operation():
              | set(policy.SPECIAL_ROUTES) | policy.PUBLIC_ROUTES | {policy.AUTH_TOKEN_ROUTE})
     assert len(operations) > 90
     assert operations - known == set()
-    assert len(policy.PAT_ROUTE_SCOPES) == 52
+    assert len(policy.PAT_ROUTE_SCOPES) == 53
     assert policy.AUTH_TOKEN_ROUTE not in policy.PAT_ROUTE_SCOPES
     assert policy.pat_scope("GET", "/api/v1/repositories") == "repositories:read"
     assert policy.pat_scope("GET", "/api/v1/nope") is None
@@ -70,6 +70,8 @@ def test_every_session_only_route_refuses_pat(pat_client):
 def test_unselected_repository_cannot_leak_history_counts_or_facets(pat_client):
     from test_analytics import finding, run
     from test_inbox import pull
+    from test_security_analytics import finding as security_finding
+    from test_security_analytics import scan
 
     client, raw, token_id = pat_client
     with transaction() as db:
@@ -79,9 +81,12 @@ def test_unselected_repository_cannot_leak_history_counts_or_facets(pat_client):
         pull(db, "hidden-pull", repo=23)
         run(db, "hidden-run", pr="hidden-pull")
         finding(db, "hidden-finding", pr_id="hidden-pull", last_seen_run_id="hidden-run", category="hidden-category")
+        scan(db, "hidden-scan", repository_id=23)
+        security_finding(db, "hidden-security", repository_id=23, first_scan_id="hidden-scan", last_scan_id="hidden-scan", kind="hidden-kind")
     headers = {"Authorization": f"Bearer {raw}"}
     for path in ("/repositories", "/pulls", "/security/repositories", "/analytics/overview?all_time=true",
-                 "/analytics/findings?all_time=true", "/analytics/reviews?all_time=true", "/analytics/usage?all_time=true"):
+                 "/analytics/findings?all_time=true", "/analytics/reviews?all_time=true", "/analytics/usage?all_time=true",
+                 "/analytics/security?all_time=true"):
         response = client.get("/api/v1" + path, headers=headers)
         assert response.status_code == 200, (path, response.text)
         assert "hidden-" not in response.text, (path, response.text)
