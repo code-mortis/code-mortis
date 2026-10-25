@@ -843,8 +843,8 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
   await mock(page, { role });
   await page.goto("/repositories/22");
   const sections = role === "admin"
-    ? [["connections", "AI connections"], ["api-tokens", "API tokens"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
-    : [["connections", "AI connections"], ["api-tokens", "API tokens"], ["appearance", "Appearance"]];
+    ? [["connections", "AI connections"], ["api-tokens", "API tokens"], ["mcp", "MCP access"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
+    : [["connections", "AI connections"], ["api-tokens", "API tokens"], ["mcp", "MCP access"], ["appearance", "Appearance"]];
   for (const [tab, label] of sections) {
     await openNavigation(page);
     await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();

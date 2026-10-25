@@ -1,5 +1,5 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { ChartNoAxesCombined, FolderGit2, Github, Inbox, KeyRound, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Bot, ChartNoAxesCombined, FolderGit2, Github, Inbox, KeyRound, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
@@ -166,6 +166,9 @@ export function AppSidebar({ user, onLogout, signingOut }: {
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
                   <Link to="/settings?tab=api-tokens" onClick={closeMobile}><KeyRound aria-hidden="true" />API tokens</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
+                  <Link to="/settings?tab=mcp" onClick={closeMobile}><Bot aria-hidden="true" />MCP access</Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild className="min-h-10 lg:min-h-8">
                   <Link to="/settings?tab=appearance" onClick={closeMobile}><Palette aria-hidden="true" />Appearance</Link>
