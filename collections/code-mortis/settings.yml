@@ -1,0 +1,8 @@
+collection_id: 493cd87a-5bfa-4439-b2d6-7a22b59091d9
+environment: development
+name: Code Mortis
+description: Code Mortis REST API. GitHub session cookie authentication with automatic
+  CSRF. Run the smoke tag first; select writes individually.
+timeline_max_entries: 0
+cookies:
+  enabled: false

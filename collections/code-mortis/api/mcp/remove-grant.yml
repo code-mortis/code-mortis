@@ -1,0 +1,16 @@
+name: Remove Grant
+method: DELETE
+url: $base_url/api/v1/mcp/grants/:grant_id
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: grant_id
+    value: $grant_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

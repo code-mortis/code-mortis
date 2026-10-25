@@ -1,0 +1,16 @@
+name: Refresh Repository
+method: POST
+url: $base_url/api/v1/repositories/:repository_id/sync
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: repository_id
+    value: $repository_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 202

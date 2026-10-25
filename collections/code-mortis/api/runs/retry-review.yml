@@ -1,0 +1,16 @@
+name: Retry Review
+method: POST
+url: $base_url/api/v1/runs/:run_id/retry
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: run_id
+    value: $run_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 202

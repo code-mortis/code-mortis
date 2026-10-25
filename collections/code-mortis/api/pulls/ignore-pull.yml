@@ -1,0 +1,22 @@
+name: Ignore Pull
+method: PUT
+url: $base_url/api/v1/pulls/:pr_id/ignore
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: pr_id
+    value: $pr_id
+body: |-
+  {
+    "ignored": false
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 200

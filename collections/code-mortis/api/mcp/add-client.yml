@@ -1,0 +1,23 @@
+name: Add Client
+method: POST
+url: $base_url/api/v1/mcp/clients
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+body: |-
+  {
+    "client_id": "$client_id",
+    "client_name": "Noodle",
+    "redirect_uris": [
+      "http://127.0.0.1:8765/callback"
+    ]
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 201

@@ -1,0 +1,14 @@
+name: Providers
+method: GET
+url: $base_url/api/v1/providers
+timeout: 30000
+tags:
+  - read
+  - smoke
+followRedirects: false
+maxRedirects: 5
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

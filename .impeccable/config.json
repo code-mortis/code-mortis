@@ -13,5 +13,6 @@
         "reason": "Agent decision: retain documented Inter Variable for the compact review workspace; PRODUCT.md defers distinctive branding and DESIGN.md records the readable interface typography."
       }
     ]
-  }
+  },
+  "buildPath": "code"
 }

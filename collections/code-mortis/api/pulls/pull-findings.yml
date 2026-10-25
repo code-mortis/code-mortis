@@ -1,0 +1,23 @@
+name: Pull Findings
+method: GET
+url: $base_url/api/v1/pulls/:pr_id/findings
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: ordering
+    value: -severity
+    enabled: false
+  - name: page
+    value: '1'
+    enabled: false
+path_params:
+  - name: pr_id
+    value: $pr_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

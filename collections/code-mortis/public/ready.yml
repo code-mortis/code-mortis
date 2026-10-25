@@ -1,0 +1,14 @@
+name: Ready
+method: GET
+url: $base_url/health/ready
+timeout: 30000
+tags:
+  - read
+  - smoke
+followRedirects: false
+maxRedirects: 5
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

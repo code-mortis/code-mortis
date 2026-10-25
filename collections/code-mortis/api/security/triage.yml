@@ -1,0 +1,24 @@
+name: Triage
+method: PATCH
+url: $base_url/api/v1/security/findings/:finding_id
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: finding_id
+    value: $security_finding_id
+body: |-
+  {
+    "state": "accepted_risk",
+    "reason": "$reason",
+    "version": $finding_version
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 200

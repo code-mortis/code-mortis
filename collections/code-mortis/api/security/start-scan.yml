@@ -1,0 +1,31 @@
+name: Start Scan
+method: POST
+url: $base_url/api/v1/security/repositories/:repository_id/scans
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: repository_id
+    value: $repository_id
+body: |-
+  {
+    "connection_id": "$connection_id",
+    "model": "$model",
+    "concurrency": 1,
+    "timeout_seconds": 900,
+    "token_budget": 200000,
+    "request_key": "$random.uuid"
+  }
+body_type: json
+capture:
+  scan_id:
+    value: body.id
+    persist: environment
+assert:
+  - expression: status
+    operator: equals
+    value: 202

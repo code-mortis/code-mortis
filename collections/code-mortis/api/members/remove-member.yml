@@ -1,0 +1,16 @@
+name: Remove Member
+method: DELETE
+url: $base_url/api/v1/members/:user_id
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: user_id
+    value: $user_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

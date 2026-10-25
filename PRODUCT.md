@@ -16,7 +16,7 @@ An owner and explicitly allowed teammates using their own self-hosted instance t
 
 ## Product Purpose
 
-Turn OCR reviews into actionable GitHub comments while preserving review history and the current resolution state of every finding.
+Turn OCR and official-client reviews into actionable GitHub comments while preserving review history and the current resolution state of every finding. Scan repository default branches for security findings and inspect saved coverage, evidence, and fix verification in the same workspace.
 
 ## Operating Context
 
@@ -24,7 +24,7 @@ Users connect their own GitHub App, shared API credentials or personal ChatGPT a
 
 ## Capabilities and Constraints
 
-MIT open source. The committed delivery includes shared API connections and personal ChatGPT and Claude Code subscriptions for manual and automatic reviews. Personal automation requires the owner's explicit authorization per repository. Official clients manage subscription authentication in persistent private server profiles. GitHub is application identity. Review coverage, blocked accounts and publication failures remain visible. Findings are never silently marked fixed merely because they disappear from a later model response. No silent provider fallback is allowed.
+MIT open source. The committed delivery includes shared API connections and personal ChatGPT and Claude Code subscriptions for manual and automatic reviews. Personal automation requires the owner's explicit authorization per repository. Official clients manage subscription authentication in persistent private server profiles. GitHub is application identity. Review coverage, blocked accounts and publication failures remain visible. Findings are never silently marked fixed merely because they disappear from a later model response. No silent provider fallback is allowed. Security scans preserve immutable reports and distinguish coverage, freshness, grade, assessment, and current finding resolution. GitHub issue publication requires reviewing the exact draft. Analytics uses saved accessible history and reported consumption, with missing reports kept explicit. Authenticated Reviews and Security MCP endpoints, plus separately authorized management tools, are off by default and require per-user browser consent; public or destructive actions require exact-argument approval.
 
 ## Brand Commitments
 

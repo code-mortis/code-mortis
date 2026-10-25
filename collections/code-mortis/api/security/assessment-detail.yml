@@ -1,0 +1,18 @@
+name: Assessment Detail
+method: GET
+url: $base_url/api/v1/security/scans/:scan_id/assessments/:assessment_id
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: scan_id
+    value: $scan_id
+  - name: assessment_id
+    value: $assessment_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

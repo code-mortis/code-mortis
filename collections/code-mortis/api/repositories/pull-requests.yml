@@ -1,0 +1,29 @@
+name: Pull Requests
+method: GET
+url: $base_url/api/v1/repositories/:repository_id/pulls
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: visibility
+    value: visible
+    enabled: false
+  - name: state
+    value: all
+    enabled: false
+  - name: ordering
+    value: -updated_at
+    enabled: false
+  - name: page
+    value: '1'
+    enabled: false
+path_params:
+  - name: repository_id
+    value: $repository_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

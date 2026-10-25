@@ -1,0 +1,22 @@
+name: Draft Models
+method: POST
+url: $base_url/api/v1/connections/models
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+body: |-
+  {
+    "connection_id": "$connection_id",
+    "provider": "openai",
+    "protocol": "openai-responses",
+    "base_url": "$provider_base_url"
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 200

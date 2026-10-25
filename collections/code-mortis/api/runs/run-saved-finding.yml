@@ -1,0 +1,22 @@
+name: Run Saved Finding
+method: GET
+url: $base_url/api/v1/runs/:run_id/findings/:finding_id
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: status
+    value: open
+    enabled: false
+path_params:
+  - name: run_id
+    value: $run_id
+  - name: finding_id
+    value: $finding_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

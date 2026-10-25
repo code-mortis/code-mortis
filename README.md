@@ -69,4 +69,6 @@ bun run test
 
 Backend tests require the isolated `mortis_test` database on port 55439 and Redis on 56389. Browser tests use the production build with mocked application APIs. Container checks exercise real OCR and native client binaries with controlled or empty profiles. These tests do not prove authenticated provider or GitHub integration. See [acceptance evidence](docs/acceptance.md) for exact commands and remaining live checks.
 
+The [Noodle API collection](collections/code-mortis/README.md) includes session authentication, automatic CSRF, and a read-only smoke suite for local or hosted instances.
+
 See [operations](docs/operations.md) for upgrading an existing App, backups, restoration and troubleshooting. Code Mortis is MIT licensed; dependencies retain their licenses in [third-party notices](THIRD_PARTY_NOTICES.md).

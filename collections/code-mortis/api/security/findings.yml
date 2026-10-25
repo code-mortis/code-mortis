@@ -1,0 +1,23 @@
+name: Findings
+method: GET
+url: $base_url/api/v1/security/repositories/:repository_id/findings
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: page
+    value: '1'
+    enabled: false
+  - name: ordering
+    value: -severity
+    enabled: false
+path_params:
+  - name: repository_id
+    value: $repository_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

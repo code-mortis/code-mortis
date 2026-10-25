@@ -1,0 +1,26 @@
+name: Start Run
+method: POST
+url: $base_url/api/v1/pulls/:pr_id/runs
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: pr_id
+    value: $pr_id
+body: |-
+  {
+    "connection_id": "$connection_id"
+  }
+body_type: json
+capture:
+  run_id:
+    value: body.id
+    persist: environment
+assert:
+  - expression: status
+    operator: equals
+    value: 202

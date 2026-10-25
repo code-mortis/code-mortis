@@ -1,0 +1,16 @@
+name: Finding Detail
+method: GET
+url: $base_url/api/v1/findings/:finding_id
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: finding_id
+    value: $finding_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

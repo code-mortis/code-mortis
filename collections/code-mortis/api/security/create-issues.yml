@@ -1,0 +1,30 @@
+name: Create Issues
+method: POST
+url: $base_url/api/v1/security/repositories/:repository_id/github-issues
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: repository_id
+    value: $repository_id
+body: |-
+  {
+    "issues": [
+      {
+        "finding_id": "$security_finding_id",
+        "title": "Review this security finding",
+        "body": "Replace with the reviewed, redacted issue description.",
+        "version": $finding_version,
+        "public": false
+      }
+    ]
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 202

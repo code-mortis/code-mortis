@@ -1,0 +1,31 @@
+name: Retry Scan
+method: POST
+url: $base_url/api/v1/security/scans/:scan_id/retry
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: scan_id
+    value: $scan_id
+body: |-
+  {
+    "connection_id": "$connection_id",
+    "model": "$model",
+    "concurrency": 1,
+    "timeout_seconds": 900,
+    "token_budget": 200000,
+    "request_key": "$random.uuid"
+  }
+body_type: json
+capture:
+  scan_id:
+    value: body.id
+    persist: environment
+assert:
+  - expression: status
+    operator: equals
+    value: 202

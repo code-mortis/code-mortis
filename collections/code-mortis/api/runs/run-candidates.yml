@@ -1,0 +1,26 @@
+name: Run Candidates
+method: GET
+url: $base_url/api/v1/runs/:run_id/candidates
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: ordering
+    value: -severity
+    enabled: false
+  - name: page
+    value: '1'
+    enabled: false
+  - name: page_size
+    value: '10'
+    enabled: false
+path_params:
+  - name: run_id
+    value: $run_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

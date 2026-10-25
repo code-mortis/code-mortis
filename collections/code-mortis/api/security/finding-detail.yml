@@ -1,0 +1,20 @@
+name: Finding Detail
+method: GET
+url: $base_url/api/v1/security/findings/:finding_id
+timeout: 30000
+tags:
+  - read
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: finding_id
+    value: $security_finding_id
+body_type: none
+capture:
+  finding_version:
+    value: body.finding.version
+    persist: environment
+assert:
+  - expression: status
+    operator: equals
+    value: 200

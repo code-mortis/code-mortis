@@ -1,0 +1,5 @@
+meta:
+  name: Authenticated API
+  seq: 2
+scripts:
+  pre: ./scripts/auth.js

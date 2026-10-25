@@ -1,0 +1,21 @@
+name: Analytics Findings
+method: GET
+url: $base_url/api/v1/analytics/findings
+timeout: 30000
+tags:
+  - read
+  - smoke
+followRedirects: false
+maxRedirects: 5
+params:
+  - name: all_time
+    value: 'false'
+    enabled: false
+  - name: timezone
+    value: UTC
+    enabled: false
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 200

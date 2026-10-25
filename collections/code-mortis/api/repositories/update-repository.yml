@@ -1,0 +1,36 @@
+name: Update Repository
+method: PUT
+url: $base_url/api/v1/repositories/:repository_id
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: repository_id
+    value: $repository_id
+body: |-
+  {
+    "enabled": false,
+    "connection_id": "$connection_id",
+    "settings": {
+      "automatic": false,
+      "auto_resolve": false,
+      "concurrency": 1,
+      "timeout_seconds": 900,
+      "token_budget": 200000,
+      "assessment_token_budget": 200000,
+      "verification_token_budget": 200000,
+      "summary_token_budget": 60000,
+      "summary_timeout_seconds": 180,
+      "delegated_context_bytes": 800000,
+      "max_files": 40
+    }
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 200

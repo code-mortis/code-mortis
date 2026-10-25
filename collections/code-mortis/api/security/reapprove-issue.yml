@@ -1,0 +1,25 @@
+name: Reapprove Issue
+method: POST
+url: $base_url/api/v1/security/findings/:finding_id/github-issue/reapprove
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+headers:
+  Content-Type: application/json
+path_params:
+  - name: finding_id
+    value: $security_finding_id
+body: |-
+  {
+    "version": $finding_version,
+    "operation_id": "$operation_id",
+    "approval_revision": $approval_revision,
+    "reason": "$reason"
+  }
+body_type: json
+assert:
+  - expression: status
+    operator: equals
+    value: 202

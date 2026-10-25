@@ -1,0 +1,16 @@
+name: Retry Finding Sync
+method: POST
+url: $base_url/api/v1/findings/:finding_id/sync
+timeout: 30000
+tags:
+  - write
+followRedirects: false
+maxRedirects: 5
+path_params:
+  - name: finding_id
+    value: $finding_id
+body_type: none
+assert:
+  - expression: status
+    operator: equals
+    value: 202
