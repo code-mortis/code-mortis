@@ -37,6 +37,22 @@ from code_mortis.models import (
 )
 
 
+def pytest_collection_modifyitems(config, items):
+    if "PYTEST_SHARD_INDEX" not in os.environ and "PYTEST_SHARD_COUNT" not in os.environ:
+        return
+    try:
+        index = int(os.environ["PYTEST_SHARD_INDEX"])
+        count = int(os.environ["PYTEST_SHARD_COUNT"])
+    except (KeyError, ValueError) as exc:
+        raise pytest.UsageError("PYTEST_SHARD_INDEX and PYTEST_SHARD_COUNT must be integers") from exc
+    if not 0 <= index < count:
+        raise pytest.UsageError("PYTEST_SHARD_COUNT must be positive and 0 <= PYTEST_SHARD_INDEX < PYTEST_SHARD_COUNT")
+    # Interleave individual cases so large parametrized modules span isolated CI jobs.
+    ordered = sorted(items, key=lambda item: item.nodeid)
+    config.hook.pytest_deselected(items=[item for i, item in enumerate(ordered) if i % count != index])
+    items[:] = ordered[index::count]
+
+
 @pytest.fixture(scope="session", autouse=True)
 def database():
     assert engine().url.database == "mortis_test", "Tests only run against the isolated mortis_test database"

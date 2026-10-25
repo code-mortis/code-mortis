@@ -7,7 +7,7 @@ const workflows = await Promise.all(filenames.map(async (name) =>
 const allJobs = ["backend", "export-openapi", "frontend", "image", "native-clients"]
 const required = (files: string[], event: "push" | "pull_request") => workflows
   .filter((workflow) => files.some((file) => workflow.on[event].paths.some((pattern: string) => new Bun.Glob(pattern).match(file))))
-  .flatMap((workflow) => Object.keys(workflow.jobs)).sort()
+  .flatMap((workflow) => Object.keys(workflow.jobs).filter((job) => job !== "backend-tests")).sort()
 
 test.each([
   ["documentation", ["README.md", "docs/operations.md"], []],
@@ -75,15 +75,17 @@ test.each([
   }
 })
 
-test("keeps exactly five jobs, scoped concurrency, and the OpenAPI dependency", () => {
-  expect(workflows.flatMap((workflow) => Object.keys(workflow.jobs)).sort()).toEqual(allJobs)
+test("keeps required checks, scoped concurrency, and the OpenAPI dependency", () => {
+  expect(workflows.flatMap((workflow) => Object.keys(workflow.jobs)).sort()).toEqual([...allJobs, "backend-tests"].sort())
   expect(new Set(workflows.map((workflow) => workflow.name)).size).toBe(workflows.length)
   for (const workflow of workflows) {
     expect(workflow.on.push.branches).toEqual(["main"])
     expect(workflow.on.pull_request).toEqual(workflow.on.push)
     expect(workflow.on).toHaveProperty("workflow_dispatch")
     expect(workflow.concurrency.group).toContain("github.workflow")
-    for (const job of Object.values(workflow.jobs)) expect(job.strategy).toBeUndefined()
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name !== "backend-tests") expect(job.strategy).toBeUndefined()
+    }
   }
   const frontend = workflows.find((workflow) => workflow.jobs.frontend)
   expect(frontend.jobs.frontend.needs).toBe("export-openapi")
@@ -93,4 +95,20 @@ test("keeps exactly five jobs, scoped concurrency, and the OpenAPI dependency", 
   const download = frontend.jobs.frontend.steps.find((step) => step.uses?.startsWith("actions/download-artifact@"))
   expect(upload.with.name).toBe(download.with.name)
   expect(frontend.jobs.frontend.steps.some((step) => step.run === "git diff --exit-code -- src/api.generated.ts")).toBe(true)
+})
+
+test("requires every isolated backend shard to pass", () => {
+  const { jobs } = workflows.find((workflow) => workflow.jobs["backend-tests"])
+  const shards = jobs["backend-tests"]
+  expect(shards.strategy).toEqual({ "fail-fast": false, matrix: { shard: [1, 2, 3, 4] } })
+  expect(shards.env).toEqual({
+    PYTEST_SHARD_INDEX: "${{ strategy.job-index }}",
+    PYTEST_SHARD_COUNT: "${{ strategy.job-total }}",
+  })
+  expect(shards.services.postgres).toBeDefined()
+  expect(shards.services.redis).toBeDefined()
+  expect(jobs.backend.needs).toBe("backend-tests")
+  expect(jobs.backend.if).toBe("always()")
+  expect(jobs.backend.steps[0].env.RESULT).toBe("${{ needs.backend-tests.result }}")
+  expect(jobs.backend.steps[0].run).toBe('test "$RESULT" = success')
 })

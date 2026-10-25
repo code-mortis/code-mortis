@@ -32,7 +32,7 @@ def test_noodle_requests_match_api_contract():
     variables.update(cm_session="test-session", provider_api_key="test-key", member_login="teammate")
     seen = set()
     for file in COLLECTION.rglob("*.yml"):
-        if file.name in {"folder.yml", "settings.yml"}:
+        if file.name in {"folder.yml", "settings.yml"} or ".noodle" in file.relative_to(COLLECTION).parts:
             continue
         request = yaml.safe_load(file.read_text())
         path = re.sub(r":(\w+)", r"{\1}", request["url"].removeprefix("$base_url"))

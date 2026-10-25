@@ -18,8 +18,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  backend:
+  backend-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      PYTEST_SHARD_INDEX: ${{ strategy.job-index }}
+      PYTEST_SHARD_COUNT: ${{ strategy.job-total }}
     services:
       postgres:
         image: mirror.gcr.io/library/postgres:17-alpine
@@ -42,3 +49,12 @@ jobs:
       - run: uv sync --frozen --python 3.13
       - run: uv run ruff check .
       - run: uv run python -m pytest -q --durations=20
+  backend:
+    needs: backend-tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every backend shard to pass
+        env:
+          RESULT: ${{ needs.backend-tests.result }}
+        run: test "$RESULT" = success
