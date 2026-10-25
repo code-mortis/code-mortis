@@ -17,7 +17,7 @@ import { BackgroundField } from "./components/background-field";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
-import { ApiTokensSection } from "./components/api-tokens";
+import { ApiTokensSection, CreateApiTokenPage } from "./components/api-tokens";
 import { McpSettingsSection } from "./mcp";
 import type { ColorMode, ThemeId } from "./lib/appearance";
 import { Avatar, AvatarFallback } from "./components/ui/avatar";
@@ -791,13 +791,14 @@ function ConnectionForm({
   );
 }
 
-export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeChange }: {
+export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeChange, creatingToken = false }: {
   user: Schema["UserOut"];
   mode: ColorMode;
   theme: ThemeId;
   dark: boolean;
   onModeChange: (mode: ColorMode) => void;
   onThemeChange: (theme: ThemeId) => void;
+  creatingToken?: boolean;
 }) {
   const isAdmin = user.role === "admin";
   const [params] = useSearchParams();
@@ -811,7 +812,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     ] : []),
     { value: "appearance", label: "Appearance", icon: Palette },
   ];
-  const tab = sections.some(({ value }) => value === params.get("tab"))
+  const tab = creatingToken ? "api-tokens" : sections.some(({ value }) => value === params.get("tab"))
     ? params.get("tab")! : "connections";
   const query = useApi<Instance>("/settings", true, isAdmin && tab !== "appearance");
   const connections = useApi<Connection[]>("/connections", true, tab === "connections");
@@ -875,7 +876,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
       <div className="settings-content min-w-0 space-y-6">
         {tab !== "appearance" && <ErrorNotice error={query.error} />}
         {tab === "appearance" && <AppearanceSettings mode={mode} theme={theme} dark={dark} onModeChange={onModeChange} onThemeChange={onThemeChange} />}
-        {tab === "api-tokens" && <ApiTokensSection />}
+        {tab === "api-tokens" && (creatingToken ? <CreateApiTokenPage /> : <ApiTokensSection />)}
         {tab === "mcp" && <McpSettingsSection canAdminister={isAdmin} />}
         {tab === "connections" && <section aria-labelledby="connections-heading" className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">

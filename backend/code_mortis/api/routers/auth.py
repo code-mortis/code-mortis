@@ -111,7 +111,7 @@ def manifest_callback(request: Request, db: DB, state: str = "", code: str = "")
 
 @router.get("/auth/login")
 def login(request: Request, db: DB, installation_id: int | None = None, return_to: str = "/"):
-    if return_to != "/" and return_to != "/settings?tab=api-tokens" and not (
+    if return_to not in {"/", "/settings?tab=api-tokens", "/settings/api-tokens/new"} and not (
         return_to.startswith("/mcp/authorize?request_id=")
         and re.fullmatch(r"/mcp/authorize\?request_id=[a-f0-9-]{36}", return_to)
     ):

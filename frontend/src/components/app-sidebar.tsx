@@ -127,8 +127,8 @@ export function AppSidebar({ user, onLogout, signingOut }: {
     <SidebarFooter className="gap-3 p-4">
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton asChild isActive={route.pathname === "/settings"} className="h-10">
-            <Link to="/settings" aria-current={route.pathname === "/settings" ? "page" : undefined} onClick={closeMobile}><Settings aria-hidden="true" /><span>Settings</span></Link>
+          <SidebarMenuButton asChild isActive={route.pathname === "/settings" || route.pathname.startsWith("/settings/")} className="h-10">
+            <Link to="/settings" aria-current={route.pathname === "/settings" || route.pathname.startsWith("/settings/") ? "page" : undefined} onClick={closeMobile}><Settings aria-hidden="true" /><span>Settings</span></Link>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

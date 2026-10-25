@@ -282,6 +282,10 @@ function App() {
                 path="/settings"
                 element={<SettingsPage user={session.data} mode={mode} theme={colorTheme} dark={dark} onModeChange={setMode} onThemeChange={setColorTheme} />}
               />
+              <Route
+                path="/settings/api-tokens/new"
+                element={<SettingsPage creatingToken user={session.data} mode={mode} theme={colorTheme} dark={dark} onModeChange={setMode} onThemeChange={setColorTheme} />}
+              />
               <Route path="/mcp/authorize" element={<McpAuthorizePage />} />
               <Route path="/mcp/approvals/:id" element={<McpApprovalPage />} />
               <Route

@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Plus } from "lucide-react";
 import { ApiError, api, useApi, useAction, type Repository, type Schema } from "../api";
 import { Button } from "./ui/button";
@@ -30,7 +32,8 @@ type ApiTokenCreated = Omit<Schema["ApiTokenCreated"], "item"> & { item: ApiToke
 
 const EXPIRY_CANDIDATES = [7, 30, 90, 180, 365];
 const RETURN_TO = "/settings?tab=api-tokens";
-const loginHref = `/api/v1/auth/login?return_to=${encodeURIComponent(RETURN_TO)}`;
+const CREATE_PATH = "/settings/api-tokens/new";
+const loginHref = `/api/v1/auth/login?return_to=${encodeURIComponent(CREATE_PATH)}`;
 
 function expiryOptions(maxDays: number, defaultDays: number) {
   const options = EXPIRY_CANDIDATES.filter((days) => days <= maxDays);
@@ -61,14 +64,13 @@ export function ApiTokensSection() {
   const inactive = useApi<ApiTokenList>(`/api-tokens?status=inactive&page=${inactivePage}`);
   const repos = useApi<Repository[]>("/repositories", false, true);
   const revokeAction = useAction<{ revoked: boolean }>();
-  const [creating, setCreating] = useState(false);
-  const [createPending, setCreatePending] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const detailsTrigger = useRef<HTMLElement | null>(null);
   const detailsHeading = useRef<HTMLHeadingElement>(null);
   const detailsRevoke = useRef<HTMLButtonElement>(null);
   const [revoking, setRevoking] = useState<ApiTokenItem | null>(null);
-  const returnFocus = useRef<HTMLElement | null>(null);
+  const location = useLocation();
+  const newTokenLink = useRef<HTMLAnchorElement>(null);
   const createHeading = useRef<HTMLHeadingElement>(null);
   const selected = [...(list.data?.items ?? []), ...(inactive.data?.items ?? [])].find((token) => token.id === selectedId);
   const repoNames = new Map((repos.data ?? []).map((repo) => [repo.id, repo.full_name]));
@@ -78,16 +80,9 @@ export function ApiTokensSection() {
     else detailsRevoke.current?.focus();
   }, [revoking]);
 
-  function restoreFocus(event: Event) {
-    event.preventDefault();
-    returnFocus.current?.focus();
-  }
-
-  function closeCreate() {
-    if (createPending) return;
-    setCreating(false);
-    void list.refetch();
-  }
+  useEffect(() => {
+    if (location.state?.focusNewToken) newTokenLink.current?.focus();
+  }, [location.state]);
 
   async function revoke(token: ApiTokenItem) {
     await revokeAction.mutateAsync({
@@ -99,8 +94,6 @@ export function ApiTokensSection() {
     setRevoking(null);
   }
 
-  const permissions = list.data?.permissions ?? [];
-  const maxDays = list.data?.max_expiration_days ?? 365;
   const activeCount = list.data?.active_count;
 
   const renderTokens = (data: ApiTokenList | undefined, fetching: boolean, onPage: (page: number) => void, label: string) => (
@@ -157,10 +150,7 @@ export function ApiTokensSection() {
           Create personal tokens for scripts and Noodle. Tokens act as you, limited to their permissions and repositories.
         </p>
       </div>
-      <Button disabled={!list.data || revokeAction.isPending} onClick={(event) => {
-        returnFocus.current = event.currentTarget;
-        setCreating(true);
-      }}><Plus aria-hidden="true" className="size-4" />New token</Button>
+      <Button asChild><Link ref={newTokenLink} to={CREATE_PATH}><Plus aria-hidden="true" className="size-4" />New token</Link></Button>
     </div>
 
     <section aria-labelledby="api-token-list-heading" className="space-y-4">
@@ -189,26 +179,9 @@ export function ApiTokensSection() {
       </details>}
       <ErrorNotice error={repos.error} title="Repositories unavailable" />
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Store each token as a secret and send it as a bearer credential. Closing the one-time panel loses the secret permanently; revoke the unused token and create another. Revoked tokens stop new requests immediately while queued cleanup finishes in the background.
+        Store each token as a secret and send it as a bearer credential. Leaving the creation page loses the secret permanently; revoke the unused token and create another. Revoked tokens stop new requests immediately while queued cleanup finishes in the background.
       </p>
     </section>
-
-    <Dialog open={creating} onOpenChange={(open) => { if (!open) closeCreate(); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onCloseAutoFocus={restoreFocus}>
-        <CreateTokenDialog
-          permissions={permissions}
-          permissionsPending={list.isPending}
-          maxDays={maxDays}
-          defaultDays={list.data?.default_expiration_days ?? 30}
-          reauthRequired={!!list.data?.reauth_required}
-          repositories={repos.data ?? []}
-          reposPending={repos.isPending}
-          pending={createPending}
-          setPending={setCreatePending}
-          onDone={closeCreate}
-        />
-      </DialogContent>
-    </Dialog>
 
     <Dialog open={!!selected || !!revoking} onOpenChange={(open) => {
       if (open || revokeAction.isPending) return;
@@ -284,14 +257,40 @@ export function ApiTokensSection() {
   </section>;
 }
 
-function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDays, reauthRequired, repositories, reposPending, pending, setPending, onDone }: {
+export function CreateApiTokenPage() {
+  const metadata = useApi<ApiTokenList>("/api-tokens?status=active&page=1");
+  const repositories = useApi<Repository[]>("/repositories");
+  const [pending, setPending] = useState(false);
+  const navigate = useNavigate();
+  function backToTokens() {
+    if (!pending) navigate(RETURN_TO, { replace: true, state: { focusNewToken: true } });
+  }
+  return <section aria-label="Create API token" className="max-w-3xl space-y-6">
+    <ErrorNotice error={metadata.error ?? repositories.error} />
+    {(metadata.error || repositories.error) && <Button variant="outline" disabled={metadata.isFetching || repositories.isFetching}
+      onClick={() => { void metadata.refetch(); void repositories.refetch(); }}>Retry token settings</Button>}
+    {metadata.data && repositories.data ? <CreateTokenForm
+      permissions={metadata.data.permissions}
+      maxDays={metadata.data.max_expiration_days}
+      defaultDays={metadata.data.default_expiration_days}
+      reauthRequired={metadata.data.reauth_required}
+      repositories={repositories.data}
+      pending={pending}
+      setPending={setPending}
+      onDone={backToTokens}
+    /> : <>
+      <h2 className="text-xl font-semibold tracking-tight">New API token</h2>
+      {(metadata.isPending || repositories.isPending) && <Loading />}
+    </>}
+  </section>;
+}
+
+function CreateTokenForm({ permissions, maxDays, defaultDays, reauthRequired, repositories, pending, setPending, onDone }: {
   permissions: ApiTokenPermission[];
-  permissionsPending: boolean;
   maxDays: number;
   defaultDays: number;
   reauthRequired: boolean;
   repositories: Repository[];
-  reposPending: boolean;
   pending: boolean;
   setPending: (pending: boolean) => void;
   onDone: () => void;
@@ -300,7 +299,6 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
   const [name, setName] = useState("");
   const [expiresInDays, setExpiresInDays] = useState(String(defaultDays));
   const [scopes, setScopes] = useState<string[]>(() => permissions.filter((item) => item.id.endsWith(":read")).map((item) => item.id));
-  const [scopedOnce, setScopedOnce] = useState(false);
   const [repositoryIds, setRepositoryIds] = useState<number[]>([]);
   const [error, setError] = useState<unknown>();
   const [lost, setLost] = useState<string | null>(null);
@@ -308,13 +306,19 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
   // a query cache, toast, log, or browser storage, and is cleared on unmount.
   const [created, setCreated] = useState<ApiTokenCreated | null>(null);
   const [copyState, setCopyState] = useState<"copied" | "failed" | null>(null);
-  useEffect(() => () => setCreated(null), []);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const errorSummary = useRef<HTMLDivElement>(null);
+  const cache = useQueryClient();
   useEffect(() => {
-    if (!scopedOnce && permissions.length) {
-      setScopes(permissions.filter((item) => item.id.endsWith(":read")).map((item) => item.id));
-      setScopedOnce(true);
+    heading.current?.focus();
+    window.scrollTo(0, 0);
+  }, [created]);
+  useEffect(() => {
+    if (error) {
+      errorSummary.current?.focus();
+      errorSummary.current?.scrollIntoView({ block: "center" });
     }
-  }, [permissions, scopedOnce]);
+  }, [error]);
 
   function toggleScope(value: string) {
     setScopes((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
@@ -356,6 +360,7 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
         expires_in_days: days,
       });
       setCreated(result);
+      void cache.invalidateQueries();
     } catch (requestError) {
       if (requestError instanceof ApiError && (requestError.status === 0 || requestError.status === 504)) {
         setLost(trimmed);
@@ -378,12 +383,12 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
   }
 
   if (created) return <>
-    <DialogHeader>
-      <DialogTitle>Token created</DialogTitle>
-      <DialogDescription>
-        Copy “{created.item.name}” now and store it as a secret, for example with Noodle. This secret is shown once: closing this panel loses it permanently. If the secret is lost, revoke the unused token from the list and create another.
-      </DialogDescription>
-    </DialogHeader>
+    <header>
+      <h2 ref={heading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Token created</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Copy “{created.item.name}” now and store it as a secret, for example with Noodle. This secret is shown once: leaving this page loses it permanently. If the secret is lost, revoke the unused token from the list and create another.
+      </p>
+    </header>
     <div className="space-y-2">
       <Label htmlFor={`${id}-secret`}>One-time token</Label>
       <div className="flex flex-col gap-2 sm:flex-row">
@@ -407,17 +412,17 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
         Send it as an Authorization bearer header over HTTPS. It never appears in this list again; only its name and prefix remain.
       </p>
     </div>
-    <DialogFooter>
+    <div className="flex justify-end border-t pt-4">
       <Button onClick={() => { setCreated(null); onDone(); }}>Done</Button>
-    </DialogFooter>
+    </div>
   </>;
 
   const options = expiryOptions(maxDays, defaultDays);
   return <>
-    <DialogHeader>
-      <DialogTitle>New API token</DialogTitle>
-      <DialogDescription>Create a named, expiring token that acts as you within its permissions and repositories.</DialogDescription>
-    </DialogHeader>
+    <header>
+      <h2 ref={heading} tabIndex={-1} className="text-xl font-semibold tracking-tight">New API token</h2>
+      <p className="mt-1 text-sm text-muted-foreground">Create a named, expiring token that acts as you within its permissions and repositories.</p>
+    </header>
     {reauthRequired && <div role="alert" className="rounded-md border border-amber-700/25 bg-amber-700/5 p-4 text-sm">
       <p className="font-medium">Sign in with GitHub again to create a token.</p>
       <p className="mt-1 leading-relaxed text-muted-foreground">
@@ -427,8 +432,8 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
         <a href={loginHref}>Sign in with GitHub</a>
       </Button>
     </div>}
-    <form className="space-y-5" onSubmit={(event) => void submit(event)}>
-      <ErrorNotice error={error} />
+    <form aria-label="New API token" className="space-y-6" onSubmit={(event) => void submit(event)}>
+      {!!error && <div ref={errorSummary} tabIndex={-1}><ErrorNotice error={error} /></div>}
       {lost && <div role="alert" className="rounded-md border border-amber-700/25 bg-amber-700/5 p-4 text-sm">
         <p className="font-medium">The request did not complete.</p>
         <p className="mt-1 leading-relaxed text-muted-foreground">
@@ -436,61 +441,68 @@ function CreateTokenDialog({ permissions, permissionsPending, maxDays, defaultDa
           revoke any unused duplicate, then create another if needed.
         </p>
       </div>}
-      <Field
-        label="Token name"
-        hint="A name you will recognize in the token list, such as Noodle on laptop."
-      >
-        {(fieldId) => <Input id={fieldId} required maxLength={100} value={name}
-          onChange={(event) => setName(event.target.value)} placeholder="noodle-laptop" />}
-      </Field>
-      <Field label="Expires in">
-        {(fieldId) => <select id={fieldId} value={expiresInDays} onChange={(event) => setExpiresInDays(event.target.value)}
-          className="h-9 w-full rounded-md border border-input bg-card px-3 text-base shadow-xs md:text-sm">
-          {options.map((days) => <option key={days} value={days}>{days} days{days === defaultDays ? " (default)" : ""}</option>)}
-        </select>}
-      </Field>
-      <fieldset className="space-y-3">
-        <legend className="text-sm font-medium">Permissions</legend>
-        {permissionsPending && <Loading />}
-        {!permissionsPending && !permissions.length && <p className="text-sm text-muted-foreground">No permissions are available right now. Try again later.</p>}
-        {groupPermissions(permissions).map(([group, items]) => <section key={group} aria-label={`${group} permissions`} className="space-y-2 rounded-lg border bg-card p-4">
-          <h3 className="text-sm font-semibold capitalize">{group}</h3>
-          {items.some((item) => runScope(item.id)) && <p className="text-xs leading-relaxed text-muted-foreground">
-            Run permissions can start model-assisted work and publish GitHub comments. Provider usage applies.
-          </p>}
-          {items.some((item) => item.id.endsWith(":write")) && <p className="text-xs leading-relaxed text-muted-foreground">
-            Write permissions change saved state and can update GitHub threads.
-          </p>}
-          {items.map((item) => <label key={item.id} className="flex min-h-11 cursor-pointer items-start gap-3 text-sm sm:min-h-8">
-            <Checkbox
-              className="mt-0.5"
-              checked={scopes.includes(item.id)}
-              onCheckedChange={() => toggleScope(item.id)}
-              aria-describedby={`${id}-${item.id}-hint`}
-            />
-            <span className="min-w-0">
-              <span className="block font-medium">{item.label} <span className="font-mono text-xs font-normal text-muted-foreground">{item.id}</span></span>
-              <span id={`${id}-${item.id}-hint`} className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{item.description}</span>
-            </span>
-          </label>)}
-        </section>)}
+      <section aria-labelledby="token-basics-heading" className="space-y-4">
+        <h3 id="token-basics-heading" className="text-base font-semibold">Name and expiration</h3>
+        <div className="grid gap-4 @min-[28rem]/settings:grid-cols-2">
+          <Field
+            label="Token name"
+            hint="A name you will recognize in the token list, such as Noodle on laptop."
+          >
+            {(fieldId) => <Input id={fieldId} required maxLength={100} value={name}
+              onChange={(event) => setName(event.target.value)} placeholder="noodle-laptop" />}
+          </Field>
+          <Field label="Expires in">
+            {(fieldId) => <select id={fieldId} value={expiresInDays} onChange={(event) => setExpiresInDays(event.target.value)}
+              className="h-9 w-full rounded-md border border-input bg-card px-3 text-base shadow-xs md:text-sm">
+              {options.map((days) => <option key={days} value={days}>{days} days{days === defaultDays ? " (default)" : ""}</option>)}
+            </select>}
+          </Field>
+        </div>
+      </section>
+      <fieldset className="space-y-4">
+        <legend className="text-base font-semibold">Permissions</legend>
+        {!permissions.length && <p className="text-sm text-muted-foreground">No permissions are available right now. Try again later.</p>}
+        <div className="divide-y rounded-lg border bg-card">
+          {groupPermissions(permissions).map(([group, items]) => <section key={group} aria-label={`${group} permissions`} className="space-y-2 p-4 sm:px-5">
+            <h3 className="text-sm font-semibold capitalize">{group}</h3>
+            {items.some((item) => runScope(item.id)) && <p className="text-xs leading-relaxed text-muted-foreground">
+              Run permissions can start model-assisted work and publish GitHub comments. Provider usage applies.
+            </p>}
+            {items.some((item) => item.id.endsWith(":write")) && <p className="text-xs leading-relaxed text-muted-foreground">
+              Write permissions change saved state and can update GitHub threads.
+            </p>}
+            {items.map((item) => <label key={item.id} className="flex min-h-11 cursor-pointer items-start gap-3 text-sm sm:min-h-8">
+              <Checkbox
+                className="mt-0.5"
+                checked={scopes.includes(item.id)}
+                onCheckedChange={() => toggleScope(item.id)}
+                aria-describedby={`${id}-${item.id}-hint`}
+              />
+              <span className="min-w-0">
+                <span className="block font-medium">{item.label} <span className="font-mono text-xs font-normal text-muted-foreground">{item.id}</span></span>
+                <span id={`${id}-${item.id}-hint`} className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{item.description}</span>
+              </span>
+            </label>)}
+          </section>)}
+        </div>
       </fieldset>
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Repositories</legend>
+      <fieldset className="space-y-4">
+        <legend className="text-base font-semibold">Repositories</legend>
         <p className="text-xs leading-relaxed text-muted-foreground">Only these repositories. New repositories are never added automatically.</p>
-        {reposPending && <Loading />}
-        {!reposPending && !repositories.length && <p className="text-sm text-muted-foreground">No repositories are available. Ask your administrator to connect one.</p>}
-        {repositories.map((repo) => <label key={repo.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border px-3 text-sm sm:min-h-8">
-          <Checkbox
-            checked={repositoryIds.includes(repo.id)}
-            onCheckedChange={() => toggleRepository(repo.id)}
-          />
-          <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
-        </label>)}
+        {!repositories.length && <p className="text-sm text-muted-foreground">No repositories are available. Ask your administrator to connect one.</p>}
+        <div className="divide-y rounded-lg border bg-card">
+          {repositories.map((repo) => <label key={repo.id} className="flex min-h-11 cursor-pointer items-center gap-3 px-4 py-3 text-sm sm:px-5">
+            <Checkbox
+              checked={repositoryIds.includes(repo.id)}
+              onCheckedChange={() => toggleRepository(repo.id)}
+            />
+            <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
+          </label>)}
+        </div>
       </fieldset>
-      <div className="flex flex-wrap justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2 pt-4">
         <Button type="button" variant="outline" disabled={pending} onClick={onDone}>Cancel</Button>
-        <Button type="submit" disabled={pending || reauthRequired || permissionsPending}>
+        <Button type="submit" disabled={pending || reauthRequired}>
           {pending ? "Creating…" : "Create token"}
         </Button>
       </div>

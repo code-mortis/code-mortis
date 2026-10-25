@@ -212,6 +212,31 @@ def test_create_requires_fresh_session(seed, client):
     assert client.get("/api/v1/api-tokens").json()["reauth_required"] is True
 
 
+def test_sign_in_returns_to_token_creation_page(seed, client, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from code_mortis.integrations import github
+
+    monkeypatch.setattr(github, "exchange_code", lambda *a: {"access_token": "token"})
+    monkeypatch.setattr(github, "request", lambda *a, **k: {"id": 7, "login": "owner", "avatar_url": ""})
+    client.get("/api/v1/setup/status")
+    login = client.get("/api/v1/auth/login", params={"return_to": "/settings/api-tokens/new"}, follow_redirects=False)
+    assert login.status_code == 303
+    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+    callback = client.get("/api/v1/auth/callback", params={"code": "valid", "state": state}, follow_redirects=False)
+    assert callback.headers["location"] == "http://testserver/settings/api-tokens/new"
+    assert client.get("/api/v1/api-tokens").json()["reauth_required"] is False
+
+
+@pytest.mark.parametrize("destination", [
+    "https://example.com/settings/api-tokens/new", "//example.com/settings/api-tokens/new",
+    "/settings/api-tokens/new?next=https://example.com", "/settings/api-tokens/other",
+])
+def test_token_creation_return_address_stays_exact(seed, client, destination):
+    response = client.get("/api/v1/auth/login", params={"return_to": destination}, follow_redirects=False)
+    assert response.status_code == 400
+
+
 @pytest.mark.parametrize("refresh", [False, True])
 def test_create_with_real_github_credential_transaction(fresh_session, monkeypatch, refresh):
     from contextlib import contextmanager
