@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Check, Copy } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { api, useAction, useApi, type Repository } from "./api";
 import { Button } from "./components/ui/button";
@@ -8,8 +8,8 @@ import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
 import { Switch } from "./components/ui/switch";
 import { Badge } from "./components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
-import { date, Empty, ErrorNotice, Field, Loading } from "./components/common";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
+import { date, Empty, ErrorNotice, Field, Loading, Status } from "./components/common";
 
 export type McpSettings = {
   reviews_enabled: boolean;
@@ -237,9 +237,9 @@ function ClientRegistration() {
   const [error, setError] = useState<unknown>();
   return (
     <details>
-      <summary className="cursor-pointer text-base font-semibold">Pre-registered clients</summary>
+      <summary className="cursor-pointer text-base font-semibold">Registered clients</summary>
       <div className="mt-4 space-y-4">
-        <p className="text-sm text-muted-foreground">Manual registration for clients that need a fixed client ID and exact redirect URIs. The Codex installation instructions use automatic registration.</p>
+        <p className="text-sm text-muted-foreground">Includes clients registered automatically when connecting an agent, such as Codex, and clients registered manually. Repository access is managed through connected grants.</p>
         <ErrorNotice error={clients.error} />
         {clients.isPending ? <Loading /> : clients.data?.length ? (
           <div className="overflow-hidden rounded-lg border bg-card">
@@ -283,7 +283,7 @@ function ClientRegistration() {
           </div>
         ) : null}
         <form
-          aria-label="Pre-register a client"
+          aria-labelledby="mcp-client-registration-heading"
           className="space-y-4 rounded-lg border bg-card p-5"
           onSubmit={async (event) => {
             event.preventDefault();
@@ -309,6 +309,10 @@ function ClientRegistration() {
             }
           }}
         >
+          <div className="space-y-1">
+            <h4 id="mcp-client-registration-heading" className="text-sm font-medium">Register a client manually</h4>
+            <p className="text-xs text-muted-foreground">For clients that need a fixed client ID and exact redirect URIs. Codex uses automatic registration.</p>
+          </div>
           <ErrorNotice error={error} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Client ID">{(id) => <Input id={id} required value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="my-agent" />}</Field>
@@ -326,74 +330,142 @@ function ClientRegistration() {
   );
 }
 
+function grantStatus(grant: McpGrant) {
+  return grant.revoked_at ? "revoked" : new Date(grant.expires_at).getTime() <= Date.now() ? "expired" : "active";
+}
+
 function Grants() {
   const grants = useApi<McpGrant[]>("/mcp/grants");
   const repositories = useApi<Repository[]>("/repositories", false, !grants.isPending);
   const action = useAction();
   const [error, setError] = useState<unknown>();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const selected = grants.data?.find((grant) => grant.id === selectedId);
+  const detailsHeading = useRef<HTMLHeadingElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const currentGrants = (grants.data ?? []).filter((grant) => !grant.revoked_at);
+  const revokedGrants = (grants.data ?? []).filter((grant) => grant.revoked_at);
   const names = new Map((repositories.data ?? []).map((r) => [r.id, r.full_name]));
+  const renderGrants = (items: McpGrant[]) => (
+    <div className="overflow-hidden rounded-lg border bg-card">
+      <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
+        <span>Connection</span><span>Access</span><span>Status</span><span />
+      </div>
+      {items.map((grant) => {
+        const status = grantStatus(grant);
+        return <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`}
+          className="settings-record settings-connection-row group relative border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 sm:px-5">
+          <div className="settings-identity flex min-w-0 items-start gap-3">
+            <Bot aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <h4 className="break-words font-medium group-hover:text-primary">
+                <button type="button" aria-label={`View ${grant.client_name} ${grant.domain} grant`} aria-haspopup="dialog"
+                  className="max-w-full cursor-pointer break-words text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
+                  onClick={(event) => { returnFocus.current = event.currentTarget; setSelectedId(grant.id); setError(undefined); action.reset(); }}>
+                  {grant.client_name}
+                </button>
+              </h4>
+              <p className="mt-1 text-xs text-muted-foreground">{grant.domain === "reviews" ? "Reviews" : "Security"} MCP</p>
+            </div>
+          </div>
+          <div className="min-w-0 text-xs leading-relaxed">
+            <span aria-hidden="true" className="settings-cell-label mb-1 text-muted-foreground">Access</span>
+            <p>{grant.repository_ids.length} {grant.repository_ids.length === 1 ? "repository" : "repositories"}</p>
+            <p className="mt-1 text-muted-foreground">Expires {date(grant.expires_at)}</p>
+          </div>
+          <div className="min-w-0 text-xs text-muted-foreground">
+            <span aria-hidden="true" className="settings-cell-label mb-1">Status</span>
+            <Status value={status} label={status === "active" ? "Active" : status === "expired" ? "Expired" : "Revoked"}
+              icon={status === "active" ? <Check aria-hidden="true" className="size-3" /> : undefined} />
+          </div>
+          <div className="settings-actions flex items-center justify-end gap-1">
+            <ChevronRight aria-hidden="true" className="m-2 size-4 text-muted-foreground" />
+          </div>
+        </article>;
+      })}
+    </div>
+  );
   return (
     <section aria-labelledby="mcp-grants-heading" className="space-y-4">
       <div>
-        <h3 id="mcp-grants-heading" className="text-base font-semibold">Connected grants</h3>
+        <h3 id="mcp-grants-heading" ref={heading} tabIndex={-1} className="text-base font-semibold">Connected grants</h3>
         <p className="mt-1 text-sm text-muted-foreground">Connections appear here after browser authorization. Review their repositories and permissions or revoke access.</p>
       </div>
       <ErrorNotice error={grants.error ?? repositories.error} />
       {grants.error && <Button variant="outline" size="sm" disabled={grants.isFetching} onClick={() => void grants.refetch()}>Retry grants</Button>}
-      {grants.isPending ? <Loading /> : grants.data?.length ? (
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground sm:grid">
-            <span>Client</span><span>Access</span><span>Expiry</span><span />
-          </div>
-          {grants.data.map((grant) => (
-            <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`} className="grid gap-3 border-b px-5 py-4 text-sm last:border-b-0 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-start sm:gap-4">
-              <div className="min-w-0">
-                <p className="break-words font-medium">{grant.client_name}</p>
-                <p className="mt-1 flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="font-normal">{grant.domain}</Badge>
-                  {grant.revoked_at ? <Badge variant="destructive">Revoked</Badge> : null}
-                </p>
-                <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{grant.client_id}</p>
-              </div>
-              <div className="min-w-0 text-xs leading-relaxed text-muted-foreground">
-                <p className="break-words"><span className="font-medium text-foreground">Scopes: </span>{grant.scopes.join(", ") || "None"}</p>
-                <p className="mt-1 break-words"><span className="font-medium text-foreground">Repositories: </span>
-                  {grant.repository_ids.length ? grant.repository_ids.map((id) => names.get(id) ?? `#${id}`).join(", ") : "None selected"}
-                </p>
-                {grant.last_used_at && <p className="mt-1">Last used {date(grant.last_used_at)}</p>}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                <p>Granted {date(grant.created_at)}</p>
-                <p className="mt-1">Expires {date(grant.expires_at)}</p>
-              </div>
-              <div className="flex sm:justify-end">
-                {!grant.revoked_at && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={action.isPending}
-                    onClick={async () => {
-                      setError(undefined);
-                      try {
-                        await action.mutateAsync({ path: `/mcp/grants/${encodeURIComponent(grant.id)}`, method: "DELETE" });
-                        toast.success("Grant revoked.");
-                        void grants.refetch();
-                      } catch (e) {
-                        setError(e);
-                      }
-                    }}
-                  >
-                    Revoke
-                  </Button>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
+      {grants.isPending ? <Loading /> : currentGrants.length ? (
+        renderGrants(currentGrants)
       ) : !grants.error ? (
         <Empty title="No connected agents">Approve an agent from its authorization page to see it here.</Empty>
       ) : null}
-      <ErrorNotice error={error ?? action.error} />
+      {revokedGrants.length > 0 && <details className="group">
+        <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground outline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+          Revoked grants <span className="text-xs tabular-nums">{revokedGrants.length}</span>
+          <ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-3">{renderGrants(revokedGrants)}</div>
+      </details>}
+      <Dialog open={!!selected} onOpenChange={(open) => { if (!open && !action.isPending) setSelectedId(null); }}>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          detailsHeading.current?.focus();
+        }} onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          (returnFocus.current?.isConnected ? returnFocus.current : heading.current)?.focus();
+        }}>
+          {selected && <>
+            <DialogHeader className="min-w-0 pr-6 text-left">
+              <DialogTitle ref={detailsHeading} tabIndex={-1} className="break-words leading-snug">{selected.client_name}</DialogTitle>
+              <DialogDescription>{selected.domain === "reviews" ? "Reviews" : "Security"} MCP access</DialogDescription>
+            </DialogHeader>
+            {selected.revoked_at && <div><Status value="revoked" label="Revoked" /></div>}
+            <dl className="space-y-4 text-sm">
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Client ID</dt>
+                <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{selected.client_id}</dd>
+              </div>
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Scopes</dt>
+                <dd className="min-w-0"><ul className="space-y-1 text-xs leading-relaxed">
+                  {selected.scopes.length ? selected.scopes.map((scope) => <li key={scope} className="break-words">{scope}</li>) : <li>None</li>}
+                </ul></dd>
+              </div>
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Repositories</dt>
+                <dd className="min-w-0 text-xs leading-relaxed">
+                  {repositories.isPending ? "Loading repositories…" : <ul className="space-y-1">
+                    {selected.repository_ids.length ? selected.repository_ids.map((id) => <li key={id} className="break-words">{names.get(id) ?? `#${id}`}</li>) : <li>None selected</li>}
+                  </ul>}
+                </dd>
+              </div>
+              {[
+                ["Granted", date(selected.created_at)],
+                ["Expires", date(selected.expires_at)],
+                ["Last used", selected.last_used_at ? date(selected.last_used_at) : "Never used"],
+                ...(selected.revoked_at ? [["Revoked", date(selected.revoked_at)]] : []),
+              ].map(([label, value]) => <div key={label} className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">{label}</dt><dd className="text-xs leading-relaxed">{value}</dd>
+              </div>)}
+            </dl>
+            <ErrorNotice error={error ?? action.error ?? repositories.error} />
+            {!selected.revoked_at && <DialogFooter className="border-t pt-4">
+              <Button variant="outline" disabled={action.isPending} onClick={async () => {
+                setError(undefined);
+                try {
+                  await action.mutateAsync({ path: `/mcp/grants/${encodeURIComponent(selected.id)}`, method: "DELETE" });
+                  toast.success("Grant revoked.");
+                  returnFocus.current = heading.current;
+                  setSelectedId(null);
+                  void grants.refetch();
+                } catch (e) {
+                  setError(e);
+                }
+              }}>{action.isPending ? "Revoking…" : "Revoke"}</Button>
+            </DialogFooter>}
+          </>}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

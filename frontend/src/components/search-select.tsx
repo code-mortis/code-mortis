@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import {
   Combobox, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList,
 } from "./ui/combobox";
-import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
-import { InputGroupAddon } from "./ui/input-group";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { InputGroupAddon, InputGroupButton } from "./ui/input-group";
 import { cn } from "../lib/utils";
 
 export function SearchSelect({
@@ -52,7 +53,7 @@ export function SearchSelect({
         changeOpen(false);
       }}
       itemToStringLabel={label}
-      filter={(item, query) => `${label(item)} ${item}`.toLowerCase().includes(query.trim().toLowerCase())}
+      filter={open && search === null ? null : (item, query) => `${label(item)} ${item}`.toLowerCase().includes(query.trim().toLowerCase())}
       disabled={disabled}
       required={required}
       autoHighlight
@@ -72,7 +73,7 @@ export function SearchSelect({
         <PopoverAnchor asChild>
           <div ref={anchor} className={cn("w-full min-w-0", className)}>
             <ComboboxInput id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} aria-expanded={open && !disabled} disabled={disabled}
-              placeholder={placeholder} className="w-full bg-card dark:bg-card"
+              placeholder={placeholder} className="w-full bg-card dark:bg-card" showTrigger={false}
               onBlur={() => {
                 commitCustom();
                 if (allowCustom) changeOpen(false);
@@ -85,13 +86,24 @@ export function SearchSelect({
                 }
               }}
               maxLength={allowCustom ? 100 : undefined}>
+              <InputGroupAddon align="inline-end">
+                <PopoverTrigger asChild>
+                  <InputGroupButton size="icon-xs" disabled={disabled} aria-label="Show options" aria-haspopup="listbox"
+                    onMouseDown={(event) => event.preventDefault()}>
+                    <ChevronDownIcon className="size-4 text-muted-foreground" />
+                  </InputGroupButton>
+                </PopoverTrigger>
+              </InputGroupAddon>
               {selectedIcon && <InputGroupAddon align="inline-start"><span aria-hidden="true" className="flex">{selectedIcon}</span></InputGroupAddon>}
             </ComboboxInput>
           </div>
         </PopoverAnchor>
         <PopoverContent role="presentation" align="start" sideOffset={6} collisionPadding={16}
           className="w-(--radix-popover-trigger-width) max-w-[calc(100vw-2rem)] p-0"
-          onOpenAutoFocus={(event) => event.preventDefault()}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            anchor.current?.querySelector("input")?.focus();
+          }}
           onCloseAutoFocus={(event) => event.preventDefault()}
           onInteractOutside={(event) => {
             if (anchor.current?.contains(event.target as Node)) event.preventDefault();

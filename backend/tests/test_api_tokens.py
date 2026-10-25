@@ -30,7 +30,7 @@ def test_policy_covers_every_api_operation():
              | set(policy.SPECIAL_ROUTES) | policy.PUBLIC_ROUTES | {policy.AUTH_TOKEN_ROUTE})
     assert len(operations) > 90
     assert operations - known == set()
-    assert len(policy.PAT_ROUTE_SCOPES) == 52
+    assert len(policy.PAT_ROUTE_SCOPES) == 53
     assert policy.AUTH_TOKEN_ROUTE not in policy.PAT_ROUTE_SCOPES
     assert policy.pat_scope("GET", "/api/v1/repositories") == "repositories:read"
     assert policy.pat_scope("GET", "/api/v1/nope") is None
@@ -70,6 +70,8 @@ def test_every_session_only_route_refuses_pat(pat_client):
 def test_unselected_repository_cannot_leak_history_counts_or_facets(pat_client):
     from test_analytics import finding, run
     from test_inbox import pull
+    from test_security_analytics import finding as security_finding
+    from test_security_analytics import scan
 
     client, raw, token_id = pat_client
     with transaction() as db:
@@ -79,9 +81,12 @@ def test_unselected_repository_cannot_leak_history_counts_or_facets(pat_client):
         pull(db, "hidden-pull", repo=23)
         run(db, "hidden-run", pr="hidden-pull")
         finding(db, "hidden-finding", pr_id="hidden-pull", last_seen_run_id="hidden-run", category="hidden-category")
+        scan(db, "hidden-scan", repository_id=23)
+        security_finding(db, "hidden-security", repository_id=23, first_scan_id="hidden-scan", last_scan_id="hidden-scan", kind="hidden-kind")
     headers = {"Authorization": f"Bearer {raw}"}
     for path in ("/repositories", "/pulls", "/security/repositories", "/analytics/overview?all_time=true",
-                 "/analytics/findings?all_time=true", "/analytics/reviews?all_time=true", "/analytics/usage?all_time=true"):
+                 "/analytics/findings?all_time=true", "/analytics/reviews?all_time=true", "/analytics/usage?all_time=true",
+                 "/analytics/security?all_time=true"):
         response = client.get("/api/v1" + path, headers=headers)
         assert response.status_code == 200, (path, response.text)
         assert "hidden-" not in response.text, (path, response.text)
@@ -210,6 +215,31 @@ def test_create_requires_fresh_session(seed, client):
         "name": "stale", "scopes": ["repositories:read"], "repository_ids": [22], "expires_in_days": 30})
     assert response.status_code == 403
     assert client.get("/api/v1/api-tokens").json()["reauth_required"] is True
+
+
+def test_sign_in_returns_to_token_creation_page(seed, client, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from code_mortis.integrations import github
+
+    monkeypatch.setattr(github, "exchange_code", lambda *a: {"access_token": "token"})
+    monkeypatch.setattr(github, "request", lambda *a, **k: {"id": 7, "login": "owner", "avatar_url": ""})
+    client.get("/api/v1/setup/status")
+    login = client.get("/api/v1/auth/login", params={"return_to": "/settings/api-tokens/new"}, follow_redirects=False)
+    assert login.status_code == 303
+    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+    callback = client.get("/api/v1/auth/callback", params={"code": "valid", "state": state}, follow_redirects=False)
+    assert callback.headers["location"] == "http://testserver/settings/api-tokens/new"
+    assert client.get("/api/v1/api-tokens").json()["reauth_required"] is False
+
+
+@pytest.mark.parametrize("destination", [
+    "https://example.com/settings/api-tokens/new", "//example.com/settings/api-tokens/new",
+    "/settings/api-tokens/new?next=https://example.com", "/settings/api-tokens/other",
+])
+def test_token_creation_return_address_stays_exact(seed, client, destination):
+    response = client.get("/api/v1/auth/login", params={"return_to": destination}, follow_redirects=False)
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize("refresh", [False, True])
@@ -493,6 +523,21 @@ def test_list_paginates_in_sql(fresh_session, github_stub, monkeypatch):
         assert client.get("/api/v1/api-tokens?status=active").json()["total"] == 10
         assert client.get("/api/v1/api-tokens?status=expired").json()["total"] == 1
         assert client.get("/api/v1/api-tokens?status=revoked").json()["total"] == 1
+        inactive = client.get("/api/v1/api-tokens?status=inactive").json()
+        assert (inactive["total"], inactive["has_more"]) == (2, False)
+        assert {item["status"] for item in inactive["items"]} == {"revoked", "expired"}
+
+        with transaction() as db:
+            for token in db.scalars(select(PersonalApiToken).where(
+                    PersonalApiToken.user_id == user.id, PersonalApiToken.revoked_at.is_(None),
+                    PersonalApiToken.expires_at > now()).limit(9)):
+                token.expires_at = now() - timedelta(seconds=1)
+        first = client.get("/api/v1/api-tokens?status=inactive").json()
+        second = client.get("/api/v1/api-tokens?status=inactive&page=2").json()
+        assert (first["total"], len(first["items"]), first["has_more"], first["active_count"]) == (11, 10, True, 1)
+        assert (len(second["items"]), second["has_more"], second["page"]) == (1, False, 2)
+        assert len({item["id"] for item in first["items"] + second["items"]}) == 11
+        assert all(item["status"] != "active" for item in first["items"] + second["items"])
 
 
 def test_create_rejects_non_integer_repository_ids(fresh_session, client):

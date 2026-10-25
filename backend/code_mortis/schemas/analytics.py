@@ -117,6 +117,19 @@ class AnalyticsReviews(StrictModel):
     contributors: list[AnalyticsCount]
 
 
+class AnalyticsSecurity(StrictModel):
+    scope: AnalyticsScope
+    scans: int
+    findings: int
+    open: int
+    resolved: int
+    trend: list[AnalyticsPoint]
+    severities: list[AnalyticsCount]
+    kinds: list[AnalyticsCount]
+    states: list[AnalyticsCount]
+    outcomes: list[AnalyticsCount]
+
+
 class AnalyticsUsageGroup(StrictModel):
     key: str
     repository_id: int | None = None

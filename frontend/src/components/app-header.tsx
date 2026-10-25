@@ -71,6 +71,10 @@ export function AppHeader({ admin, dark, onToggleTheme }: {
     crumbs.push({ label: "Agent authorization", to: path + route.search });
   } else if (path.startsWith("/mcp/approvals/")) {
     crumbs.push({ label: "Review action", to: path });
+  } else if (path === "/settings/api-tokens/new") {
+    crumbs.push({ label: "Settings", to: "/settings" });
+    crumbs.push({ label: "API tokens", to: "/settings?tab=api-tokens" });
+    crumbs.push({ label: "New token", to: path });
   } else if (path === "/settings") {
     const tab = params.get("tab") === "appearance" || params.get("tab") === "mcp" || params.get("tab") === "api-tokens" || admin ? params.get("tab") : null;
     crumbs.push({ label: "Settings", to: "/settings" });

@@ -51,7 +51,7 @@ class Scope:
     def counts(self, values, order=()):
         return counts(values, order, self.filters.ordering)
 
-    def __init__(self, db, user, filters):
+    def __init__(self, db, user, filters, models=(ReviewRun, Finding)):
         self.db, self.filters = db, filters
         repositories = github.visible_repositories(db, user)
         permitted = {repo.id for repo in repositories}
@@ -65,10 +65,8 @@ class Scope:
         self.start = filters.from_at or (local_end.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=29))
         if filters.all_time:
             firsts = union_all(*[
-                select(func.min(model.created_at).label("first"))
-                .join(PullRequest, PullRequest.id == model.pr_id)
-                .where(PullRequest.repository_id.in_(self.ids), model.created_at < self.end)
-                for model in (ReviewRun, Finding)
+                self.source(model, func.min(model.created_at).label("first")).where(model.created_at < self.end)
+                for model in models
             ]).subquery()
             self.start = db.scalar(select(func.min(firsts.c.first))) or self.start
         if self.start >= self.end:
@@ -80,11 +78,14 @@ class Scope:
             repositories=[{"id": repo.id, "full_name": repo.full_name} for repo in repositories],
         )
 
-    def conditions(self, model):
-        return (PullRequest.repository_id.in_(self.ids), model.created_at >= self.start, model.created_at < self.end)
+    def source(self, model, *fields):
+        query = select(*fields).select_from(model)
+        if hasattr(model, "repository_id"):
+            return query.where(model.repository_id.in_(self.ids))
+        return query.join(PullRequest, PullRequest.id == model.pr_id).where(PullRequest.repository_id.in_(self.ids))
 
     def query(self, model, *fields):
-        return select(*fields).select_from(model).join(PullRequest, PullRequest.id == model.pr_id).where(*self.conditions(model))
+        return self.source(model, *fields).where(model.created_at >= self.start, model.created_at < self.end)
 
     def date(self, timestamp):
         local = timestamp.astimezone(self.zone).date()
