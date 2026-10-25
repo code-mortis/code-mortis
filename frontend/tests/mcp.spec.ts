@@ -134,6 +134,13 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
+async function openGrant(page: Page, client: string, domain: string) {
+  await page.getByRole("button", { name: `View ${client} ${domain} grant`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: client, exact: true });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 test("admin toggles domains, registers a client, and revokes a grant", async ({ page }, info) => {
   const writes = await mockMcp(page);
   await page.goto("/settings?tab=mcp");
@@ -164,7 +171,9 @@ test("admin toggles domains, registers a client, and revokes a grant", async ({ 
     reviews_enabled: true, security_enabled: true, allowed_client_domains: ["agent.example.com", "partner.example.org"],
   });
 
-  await expect(page.getByRole("article", { name: "My agent reviews grant" }).getByText("my-agent", { exact: true })).toBeVisible();
+  const details = await openGrant(page, "My agent", "reviews");
+  await expect(details.getByText("my-agent", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.locator("summary").filter({ hasText: "Registered clients" }).click();
   await expect(page.getByRole("form", { name: "Register a client manually" })).toBeVisible();
   await expect(page.getByText("Includes clients registered automatically", { exact: false })).toBeVisible();
@@ -181,7 +190,8 @@ test("admin toggles domains, registers a client, and revokes a grant", async ({ 
   await page.locator("summary").filter({ hasText: "Registered clients" }).click();
   await expect(page.getByRole("form", { name: "Register a client manually" })).not.toBeVisible();
 
-  await page.getByRole("article", { name: "My agent reviews grant" }).getByRole("button", { name: "Revoke", exact: true }).click();
+  await openGrant(page, "My agent", "reviews");
+  await details.getByRole("button", { name: "Revoke", exact: true }).click();
   await expect(page.getByText("Grant revoked.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Connected grants", exact: true })).toBeFocused();
   await expect(page.getByRole("heading", { name: "No connected agents", exact: true })).toBeVisible();
@@ -212,7 +222,7 @@ test("member sees instance status and grants without admin switches", async ({ p
   await expect(page.getByRole("button", { name: "Reviews installation instructions", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Security installation instructions", exact: true })).toBeVisible();
   await expect(page.locator("summary").filter({ hasText: "Advanced settings" })).toHaveCount(0);
-  await expect(page.getByRole("article", { name: "My agent reviews grant" })).toContainText("acme/payments");
+  await expect(page.getByRole("article", { name: "My agent reviews grant" })).toContainText("1 repository");
   await expect(page.getByRole("navigation", { name: "Breadcrumb", exact: true }).locator('[aria-current="page"]')).toHaveText("MCP access");
   if (info.project.name === "mobile") {
     await page.evaluate(() => localStorage.setItem("theme", "dark"));
@@ -236,7 +246,7 @@ test("settings errors offer retry and empty grants stay readable", async ({ page
   await expect(page.locator("summary").filter({ hasText: "Revoked grants" })).toHaveCount(0);
 });
 
-test("connected grants keep full access details readable at narrow widths", async ({ page }, info) => {
+test("compact grants open full access details at narrow widths", async ({ page }, info) => {
   const writes = await mockMcp(page, { role: "member", settingsOverride: { can_manage: false } });
   const clientId = "8d8a5622-831d-42de-b25d-6618b6faede7";
   const repositoryName = `acme/${"long-repository-name-".repeat(4)}service`;
@@ -254,12 +264,23 @@ test("connected grants keep full access details readable at narrow widths", asyn
   const connected = page.getByRole("region", { name: "Connected grants" });
   const active = connected.getByRole("article", { name: "Codex reviews grant", exact: true });
   const revoked = connected.getByRole("article", { name: "Codex security grant", exact: true });
-  await expect(active.getByText(clientId, { exact: true })).toBeVisible();
-  await expect(active).toContainText("reviews:read, reviews:run, reviews:write");
-  await expect(active).toContainText("Granted");
+  await expect(active).not.toContainText(clientId);
+  await expect(active).not.toContainText("reviews:read");
+  await expect(active).toContainText("1 repository");
   await expect(active).toContainText("Expires");
-  await expect(active).toContainText("Last used");
-  await expect(active.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled();
+  const trigger = active.getByRole("button");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const details = page.getByRole("dialog", { name: "Codex", exact: true });
+  await expect(details.getByText(clientId, { exact: true })).toBeVisible();
+  await expect(details).toContainText("reviews:read");
+  await expect(details).toContainText("reviews:run");
+  await expect(details).toContainText("reviews:write");
+  await expect(details).toContainText("Granted");
+  await expect(details).toContainText("Last used");
+  await expect(details.getByRole("button", { name: "Revoke", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
   await expect(connected.getByRole("heading", { level: 4 })).toHaveText(["Codex", longClientName]);
   await expect(revoked).toHaveCount(0);
   const history = connected.locator("summary").filter({ hasText: "Revoked grants" });
@@ -267,11 +288,15 @@ test("connected grants keep full access details readable at narrow widths", asyn
   await history.focus();
   await page.keyboard.press("Enter");
   await expect(revoked.getByText("Revoked", { exact: true })).toBeVisible();
-  await expect(revoked).toContainText(repositoryName);
-  await expect(revoked).toContainText("#999");
-  await expect(revoked.getByRole("button", { name: "Revoke" })).toHaveCount(0);
-  await expect(connected.getByText("Never used", { exact: true })).toBeVisible();
-  await expect(connected.getByText("None selected", { exact: true })).toBeVisible();
+  const revokedDetails = await openGrant(page, "Codex", "security");
+  await expect(revokedDetails).toContainText(repositoryName);
+  await expect(revokedDetails).toContainText("#999");
+  await expect(revokedDetails.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  const emptyDetails = await openGrant(page, longClientName, "reviews");
+  await expect(emptyDetails.getByText("Never used", { exact: true })).toBeVisible();
+  await expect(emptyDetails.getByText("None selected", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => localStorage.setItem("theme", value), theme);
@@ -295,6 +320,11 @@ test("connected grants keep full access details readable at narrow widths", asyn
     await noOverflow(page);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: `/private/tmp/mcp-grants-history-${info.project.name}-${theme}.png`, fullPage: true });
+    const modal = await openGrant(page, "Codex", "security");
+    await noOverflow(page);
+    expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/mcp-grant-details-${info.project.name}-${theme}.png` });
+    await page.keyboard.press("Escape");
   }
   expect(writes).toEqual([]);
 });

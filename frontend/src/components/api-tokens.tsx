@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, ChevronDown, Copy, KeyRound, Plus } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Plus } from "lucide-react";
 import { ApiError, api, useApi, useAction, type Repository, type Schema } from "../api";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -63,10 +63,20 @@ export function ApiTokensSection() {
   const revokeAction = useAction<{ revoked: boolean }>();
   const [creating, setCreating] = useState(false);
   const [createPending, setCreatePending] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const detailsTrigger = useRef<HTMLElement | null>(null);
+  const detailsHeading = useRef<HTMLHeadingElement>(null);
+  const detailsRevoke = useRef<HTMLButtonElement>(null);
   const [revoking, setRevoking] = useState<ApiTokenItem | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const createHeading = useRef<HTMLHeadingElement>(null);
+  const selected = [...(list.data?.items ?? []), ...(inactive.data?.items ?? [])].find((token) => token.id === selectedId);
   const repoNames = new Map((repos.data ?? []).map((repo) => [repo.id, repo.full_name]));
+
+  useEffect(() => {
+    if (revoking) detailsHeading.current?.focus();
+    else detailsRevoke.current?.focus();
+  }, [revoking]);
 
   function restoreFocus(event: Event) {
     event.preventDefault();
@@ -84,7 +94,8 @@ export function ApiTokensSection() {
       path: `/api-tokens/${token.id}`,
       method: "DELETE",
     });
-    returnFocus.current = createHeading.current;
+    detailsTrigger.current = createHeading.current;
+    setSelectedId(null);
     setRevoking(null);
   }
 
@@ -93,56 +104,41 @@ export function ApiTokensSection() {
   const activeCount = list.data?.active_count;
 
   const renderTokens = (data: ApiTokenList | undefined, fetching: boolean, onPage: (page: number) => void, label: string) => (
-    data && (data.items.length > 0 || data.page > 1) ? <div className="divide-y rounded-lg border bg-card">
-      {data.items.map((token) => {
-        const known = token.repository_ids.filter((id) => repoNames.has(id));
-        const unknown = token.repository_ids.filter((id) => !repoNames.has(id));
-        return <article key={token.id} aria-label={`API token ${token.name}`}
-          className="space-y-4 px-4 py-4 text-sm sm:px-5">
-          <div className="flex items-start justify-between gap-4">
+    data && (data.items.length > 0 || data.page > 1) ? <div className="overflow-hidden rounded-lg border bg-card">
+      <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
+        <span>Token</span><span>Access</span><span>Status</span><span />
+      </div>
+      {data.items.map((token) => (
+        <article key={token.id} aria-label={`API token ${token.name}`}
+          className="settings-record settings-connection-row group relative border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 sm:px-5">
+          <div className="settings-identity flex min-w-0 items-start gap-3">
+            <KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
             <div className="min-w-0">
-              <div className="flex items-start gap-3">
-                <KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <h4 className="min-w-0 break-words font-medium">{token.name}</h4>
-                  <Status value={token.status} label={token.status === "active" ? "Active" : token.status === "expired" ? "Expired" : "Revoked"} />
-                </div>
-              </div>
-              <p className="mt-1 break-all font-mono text-xs text-muted-foreground" title="Token prefix">
-                <span className="sr-only">Prefix: </span>{token.prefix}…
-              </p>
+              <h4 className="break-words font-medium group-hover:text-primary">
+                <button type="button" aria-label={`View API token ${token.name}`} aria-haspopup="dialog"
+                  className="max-w-full cursor-pointer break-words text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
+                  onClick={(event) => { detailsTrigger.current = event.currentTarget; setSelectedId(token.id); }}>
+                  {token.name}
+                </button>
+              </h4>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground"><span className="sr-only">Prefix: </span>{token.prefix}…</p>
             </div>
-            {token.status === "active" && <Button variant="outline" size="sm" disabled={revokeAction.isPending}
-              onClick={(event) => {
-                returnFocus.current = event.currentTarget;
-                revokeAction.reset();
-                setRevoking(token);
-              }}>
-              Revoke
-            </Button>}
           </div>
-          <dl className="space-y-2 text-xs leading-relaxed">
-            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
-              <dt className="text-muted-foreground">Permissions</dt>
-              <dd className="min-w-0 break-words">{token.scopes.join(", ") || "None"}</dd>
-            </div>
-            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
-              <dt className="text-muted-foreground">Repositories</dt>
-              <dd className="min-w-0 break-words">
-                {repos.isPending ? "Loading repositories…" : !repos.data ? "Repository names unavailable" : <>
-                  {known.map((id) => repoNames.get(id)).join(", ") || (unknown.length ? "" : "None")}
-                  {unknown.length > 0 && <span className="text-muted-foreground">{known.length > 0 ? "; " : ""}{unknown.map((id) => `#${id}`).join(", ")} unavailable</span>}
-                </>}
-              </dd>
-            </div>
-          </dl>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <p>Created {date(token.created_at)}</p>
-            <p>Expires {date(token.expires_at)}</p>
-            <p>{token.last_used_at ? <>Last used {date(token.last_used_at)} (approximate)</> : "Never used"}</p>
+          <div className="min-w-0 text-xs leading-relaxed">
+            <span aria-hidden="true" className="settings-cell-label mb-1 text-muted-foreground">Access</span>
+            <p>{token.repository_ids.length} {token.repository_ids.length === 1 ? "repository" : "repositories"}</p>
+            <p className="mt-1 text-muted-foreground">Expires {date(token.expires_at)}</p>
           </div>
-        </article>;
-      })}
+          <div className="min-w-0 text-xs text-muted-foreground">
+            <span aria-hidden="true" className="settings-cell-label mb-1">Status</span>
+            <Status value={token.status} label={token.status === "active" ? "Active" : token.status === "expired" ? "Expired" : "Revoked"}
+              icon={token.status === "active" ? <Check aria-hidden="true" className="size-3" /> : undefined} />
+          </div>
+          <div className="settings-actions flex items-center justify-end gap-1">
+            <ChevronRight aria-hidden="true" className="m-2 size-4 text-muted-foreground" />
+          </div>
+        </article>
+      ))}
       {(data.page > 1 || data.has_more) && <nav aria-label={`${label} tokens pagination`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" disabled={data.page <= 1 || fetching} onClick={() => onPage(data.page - 1)}>Previous<span className="sr-only"> tokens</span></Button>
@@ -214,22 +210,75 @@ export function ApiTokensSection() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={!!revoking} onOpenChange={(open) => { if (!open && !revokeAction.isPending) { setRevoking(null); revokeAction.reset(); } }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={restoreFocus}>
-        <DialogHeader>
-          <DialogTitle>Revoke {revoking?.name ? `“${revoking.name}”` : "token"}?</DialogTitle>
-          <DialogDescription>
-            Future requests with this token will fail, and unfinished work started by this token will be stopped.
-            Queued cleanup continues in the background, so already running work may take a moment to settle. Completed results are kept.
-          </DialogDescription>
-        </DialogHeader>
-        <ErrorNotice error={revokeAction.error} />
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" disabled={revokeAction.isPending} onClick={() => { setRevoking(null); revokeAction.reset(); }}>Cancel</Button>
-          <Button variant="destructive" disabled={revokeAction.isPending} onClick={() => { if (revoking) void revoke(revoking).catch(() => { /* Keep the dialog open and display the action error. */ }); }}>
-            {revokeAction.isPending ? "Revoking…" : "Revoke token"}
-          </Button>
-        </div>
+    <Dialog open={!!selected || !!revoking} onOpenChange={(open) => {
+      if (open || revokeAction.isPending) return;
+      if (revoking) { setRevoking(null); revokeAction.reset(); }
+      else setSelectedId(null);
+    }}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        detailsHeading.current?.focus();
+      }} onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        (detailsTrigger.current?.isConnected ? detailsTrigger.current : createHeading.current)?.focus();
+      }}>
+        {revoking ? <>
+          <DialogHeader>
+            <DialogTitle ref={detailsHeading} tabIndex={-1}>Revoke {revoking?.name ? `“${revoking.name}”` : "token"}?</DialogTitle>
+            <DialogDescription>
+              Future requests with this token will fail, and unfinished work started by this token will be stopped.
+              Queued cleanup continues in the background, so already running work may take a moment to settle. Completed results are kept.
+            </DialogDescription>
+          </DialogHeader>
+          <ErrorNotice error={revokeAction.error} />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" disabled={revokeAction.isPending} onClick={() => { setRevoking(null); revokeAction.reset(); }}>Cancel</Button>
+            <Button variant="destructive" disabled={revokeAction.isPending} onClick={() => { if (revoking) void revoke(revoking).catch(() => { /* Keep the dialog open and display the action error. */ }); }}>
+              {revokeAction.isPending ? "Revoking…" : "Revoke token"}
+            </Button>
+          </div>
+        </> : selected ? <>
+          <DialogHeader className="min-w-0 pr-6 text-left">
+            <DialogTitle ref={detailsHeading} tabIndex={-1} className="break-words leading-snug">{selected.name}</DialogTitle>
+            <DialogDescription>API token details</DialogDescription>
+          </DialogHeader>
+          <div><Status value={selected.status} label={selected.status === "active" ? "Active" : selected.status === "expired" ? "Expired" : "Revoked"} /></div>
+          <dl className="space-y-4 text-sm">
+            <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+              <dt className="text-muted-foreground">Token prefix</dt>
+              <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{selected.prefix}…</dd>
+            </div>
+            <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+              <dt className="text-muted-foreground">Permissions</dt>
+              <dd className="min-w-0"><ul className="space-y-1 text-xs leading-relaxed">
+                {selected.scopes.length ? selected.scopes.map((scope) => <li key={scope} className="break-words">{scope}</li>) : <li>None</li>}
+              </ul></dd>
+            </div>
+            <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+              <dt className="text-muted-foreground">Repositories</dt>
+              <dd className="min-w-0 text-xs leading-relaxed">
+                {repos.isPending ? "Loading repositories…" : !repos.data ? "Repository names unavailable" : <ul className="space-y-1">
+                  {selected.repository_ids.length ? selected.repository_ids.map((id) => <li key={id} className="break-words">{repoNames.get(id) ?? `#${id} unavailable`}</li>) : <li>None</li>}
+                </ul>}
+              </dd>
+            </div>
+            {[
+              ["Created", date(selected.created_at)],
+              ["Expires", date(selected.expires_at)],
+              ["Last used", selected.last_used_at ? `${date(selected.last_used_at)} (approximate)` : "Never used"],
+              ...(selected.revoked_at ? [["Revoked", date(selected.revoked_at)]] : []),
+            ].map(([label, value]) => <div key={label} className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+              <dt className="text-muted-foreground">{label}</dt><dd className="text-xs leading-relaxed">{value}</dd>
+            </div>)}
+          </dl>
+          <ErrorNotice error={repos.error} title="Repositories unavailable" />
+          {selected.status === "active" && <DialogFooter className="border-t pt-4">
+            <Button ref={detailsRevoke} variant="outline" disabled={revokeAction.isPending} onClick={() => {
+              revokeAction.reset();
+              setRevoking(selected);
+            }}>Revoke</Button>
+          </DialogFooter>}
+        </> : null}
       </DialogContent>
     </Dialog>
   </section>;

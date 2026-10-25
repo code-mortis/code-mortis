@@ -105,6 +105,13 @@ async function openCreate(page: Page) {
   await expect(page.getByRole("dialog", { name: "New API token", exact: true })).toBeVisible();
 }
 
+async function openToken(page: Page, name: string) {
+  await page.getByRole("button", { name: `View API token ${name}`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name, exact: true });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 for (const role of ["admin", "member"] as const) {
   test(`${role} sees the API tokens section with metadata and navigation`, async ({ page }, info) => {
     await mockTokens(page, { role });
@@ -203,7 +210,8 @@ test("stale sessions see the sign-in link while emergency revoke stays available
   expect(writes).toHaveLength(0);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "New token", exact: true })).toBeFocused();
-  await page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByRole("button", { name: "Revoke", exact: true }).click();
+  const details = await openToken(page, "noodle-laptop");
+  await details.getByRole("button", { name: "Revoke", exact: true }).click();
   const revoke = page.getByRole("dialog", { name: /Revoke/, exact: false });
   await expect(revoke).toContainText("“noodle-laptop”");
   await expect(revoke).toContainText("unfinished work started by this token will be stopped");
@@ -256,7 +264,7 @@ test("repository names load before selected repositories are labeled unavailable
     return route.fallback();
   });
   await page.goto("/settings?tab=api-tokens");
-  const token = page.getByRole("article", { name: "API token loading-repos", exact: true });
+  const token = await openToken(page, "loading-repos");
   await expect(token).toContainText("Loading repositories…");
   await expect(token).not.toContainText("unavailable");
   release();
@@ -294,6 +302,12 @@ test("revoked and expired tokens stay in collapsed history like MCP grants", asy
   await expect(history.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: `/private/tmp/api-tokens-history-expanded-${info.project.name}.png`, fullPage: true });
+  for (const name of ["revoked-token", "expired-token"]) {
+    const details = await openToken(page, name);
+    await expect(details.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+    await expect(details).toContainText("reviews:read");
+    await page.keyboard.press("Escape");
+  }
 });
 
 test("active tokens and inactive history paginate independently", async ({ page }) => {
@@ -369,7 +383,12 @@ test("keyboard users can create, dismiss, and reach revoke", async ({ page }) =>
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New token", exact: true })).toBeFocused();
-  const revokeButton = page.getByRole("article", { name: "API token noodle-laptop", exact: true }).getByRole("button", { name: "Revoke", exact: true });
+  const trigger = page.getByRole("button", { name: "View API token noodle-laptop", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const details = page.getByRole("dialog", { name: "noodle-laptop", exact: true });
+  await expect(details).toBeVisible();
+  const revokeButton = details.getByRole("button", { name: "Revoke", exact: true });
   await revokeButton.focus();
   await page.keyboard.press("Enter");
   const revoke = page.getByRole("dialog", { name: /Revoke/, exact: false });
@@ -378,4 +397,42 @@ test("keyboard users can create, dismiss, and reach revoke", async ({ page }) =>
   await page.keyboard.press("Escape");
   await expect(revoke).toHaveCount(0);
   await expect(revokeButton).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(details).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+
+test("compact token cards open complete details without overflowing", async ({ page }, info) => {
+  const name = `Script${"WithALongName".repeat(6)}`;
+  const repository = `acme/${"long-repository-name-".repeat(5)}service`;
+  const writes = await mockTokens(page, { seed: [record(name, {
+    scopes: permissions.map((permission) => permission.id), repository_ids: [22, 23, 999], last_used_at: at,
+  })] });
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repositories[0], { ...repositories[1], full_name: repository }] }));
+  await page.goto("/settings?tab=api-tokens");
+  const card = page.getByRole("article", { name: `API token ${name}`, exact: true });
+  await expect(card).toContainText("3 repositories");
+  await expect(card).toContainText("Expires");
+  await expect(card).not.toContainText("reviews:read");
+  await expect(card).toContainText("ab12cd34");
+  await expect(card).not.toContainText(repository);
+  await card.click({ position: { x: 12, y: 12 } });
+  const details = page.getByRole("dialog", { name, exact: true });
+  await expect(details.getByRole("heading", { name, exact: true })).toBeFocused();
+  for (const permission of permissions) await expect(details.getByText(permission.id, { exact: true })).toBeVisible();
+  await expect(details).toContainText(repository);
+  await expect(details).toContainText("#999 unavailable");
+  await expect(details).toContainText("ab12cd34");
+  await expect(details).toContainText("Last used");
+  await expect(details).toContainText("approximate");
+  for (const width of info.project.name === "desktop" ? [1277, 768] : [390, 320]) {
+    await page.setViewportSize({ width, height: 905 });
+    await noOverflow(page);
+    expect(await details.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/api-token-details-${width}.png` });
+  }
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: `View API token ${name}`, exact: true })).toBeFocused();
+  expect(writes).toEqual([]);
 });

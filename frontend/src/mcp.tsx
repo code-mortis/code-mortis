@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, Copy } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { api, useAction, useApi, type Repository } from "./api";
 import { Button } from "./components/ui/button";
@@ -8,7 +8,7 @@ import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
 import { Switch } from "./components/ui/switch";
 import { Badge } from "./components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
 import { date, Empty, ErrorNotice, Field, Loading, Status } from "./components/common";
 
 export type McpSettings = {
@@ -330,71 +330,60 @@ function ClientRegistration() {
   );
 }
 
+function grantStatus(grant: McpGrant) {
+  return grant.revoked_at ? "revoked" : new Date(grant.expires_at).getTime() <= Date.now() ? "expired" : "active";
+}
+
 function Grants() {
   const grants = useApi<McpGrant[]>("/mcp/grants");
   const repositories = useApi<Repository[]>("/repositories", false, !grants.isPending);
   const action = useAction();
   const [error, setError] = useState<unknown>();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const selected = grants.data?.find((grant) => grant.id === selectedId);
+  const detailsHeading = useRef<HTMLHeadingElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const currentGrants = (grants.data ?? []).filter((grant) => !grant.revoked_at);
   const revokedGrants = (grants.data ?? []).filter((grant) => grant.revoked_at);
   const names = new Map((repositories.data ?? []).map((r) => [r.id, r.full_name]));
   const renderGrants = (items: McpGrant[]) => (
-    <div className="divide-y rounded-lg border bg-card">
-      {items.map((grant) => (
-        <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`} className="space-y-4 px-4 py-4 text-sm sm:px-5">
-          <div className="flex items-start justify-between gap-4">
+    <div className="overflow-hidden rounded-lg border bg-card">
+      <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
+        <span>Connection</span><span>Access</span><span>Status</span><span />
+      </div>
+      {items.map((grant) => {
+        const status = grantStatus(grant);
+        return <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`}
+          className="settings-record settings-connection-row group relative border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 sm:px-5">
+          <div className="settings-identity flex min-w-0 items-start gap-3">
+            <Bot aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
             <div className="min-w-0">
-              <div className="flex items-start gap-3">
-                <Bot aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <h4 className="min-w-0 break-words font-medium">{grant.client_name}</h4>
-                  <Badge variant="outline" className="font-normal capitalize">{grant.domain}</Badge>
-                  {grant.revoked_at && <Status value="revoked" label="Revoked" />}
-                </div>
-              </div>
-              <p className="mt-1 break-all font-mono text-xs text-muted-foreground"><span className="sr-only">Client ID: </span><span>{grant.client_id}</span></p>
+              <h4 className="break-words font-medium group-hover:text-primary">
+                <button type="button" aria-label={`View ${grant.client_name} ${grant.domain} grant`} aria-haspopup="dialog"
+                  className="max-w-full cursor-pointer break-words text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
+                  onClick={(event) => { returnFocus.current = event.currentTarget; setSelectedId(grant.id); setError(undefined); action.reset(); }}>
+                  {grant.client_name}
+                </button>
+              </h4>
+              <p className="mt-1 text-xs text-muted-foreground">{grant.domain === "reviews" ? "Reviews" : "Security"} MCP</p>
             </div>
-            {!grant.revoked_at && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={action.isPending}
-                onClick={async () => {
-                  setError(undefined);
-                  try {
-                    await action.mutateAsync({ path: `/mcp/grants/${encodeURIComponent(grant.id)}`, method: "DELETE" });
-                    toast.success("Grant revoked.");
-                    heading.current?.focus();
-                    void grants.refetch();
-                  } catch (e) {
-                    setError(e);
-                  }
-                }}
-              >
-                Revoke
-              </Button>
-            )}
           </div>
-          <dl className="space-y-2 text-xs leading-relaxed">
-            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
-              <dt className="text-muted-foreground">Scopes</dt>
-              <dd className="min-w-0 break-words">{grant.scopes.join(", ") || "None"}</dd>
-            </div>
-            <div className="grid gap-1 @min-[28rem]/settings:grid-cols-[6rem_minmax(0,1fr)] @min-[28rem]/settings:gap-4">
-              <dt className="text-muted-foreground">Repositories</dt>
-              <dd className="min-w-0 break-words">
-                {grant.repository_ids.length ? grant.repository_ids.map((id) => names.get(id) ?? `#${id}`).join(", ") : "None selected"}
-              </dd>
-            </div>
-          </dl>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <p>Granted {date(grant.created_at)}</p>
-            <p>Expires {date(grant.expires_at)}</p>
-            <p>{grant.last_used_at ? <>Last used {date(grant.last_used_at)}</> : "Never used"}</p>
+          <div className="min-w-0 text-xs leading-relaxed">
+            <span aria-hidden="true" className="settings-cell-label mb-1 text-muted-foreground">Access</span>
+            <p>{grant.repository_ids.length} {grant.repository_ids.length === 1 ? "repository" : "repositories"}</p>
+            <p className="mt-1 text-muted-foreground">Expires {date(grant.expires_at)}</p>
           </div>
-        </article>
-      ))}
+          <div className="min-w-0 text-xs text-muted-foreground">
+            <span aria-hidden="true" className="settings-cell-label mb-1">Status</span>
+            <Status value={status} label={status === "active" ? "Active" : status === "expired" ? "Expired" : "Revoked"}
+              icon={status === "active" ? <Check aria-hidden="true" className="size-3" /> : undefined} />
+          </div>
+          <div className="settings-actions flex items-center justify-end gap-1">
+            <ChevronRight aria-hidden="true" className="m-2 size-4 text-muted-foreground" />
+          </div>
+        </article>;
+      })}
     </div>
   );
   return (
@@ -417,7 +406,66 @@ function Grants() {
         </summary>
         <div className="mt-3">{renderGrants(revokedGrants)}</div>
       </details>}
-      <ErrorNotice error={error ?? action.error} />
+      <Dialog open={!!selected} onOpenChange={(open) => { if (!open && !action.isPending) setSelectedId(null); }}>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          detailsHeading.current?.focus();
+        }} onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          (returnFocus.current?.isConnected ? returnFocus.current : heading.current)?.focus();
+        }}>
+          {selected && <>
+            <DialogHeader className="min-w-0 pr-6 text-left">
+              <DialogTitle ref={detailsHeading} tabIndex={-1} className="break-words leading-snug">{selected.client_name}</DialogTitle>
+              <DialogDescription>{selected.domain === "reviews" ? "Reviews" : "Security"} MCP access</DialogDescription>
+            </DialogHeader>
+            {selected.revoked_at && <div><Status value="revoked" label="Revoked" /></div>}
+            <dl className="space-y-4 text-sm">
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Client ID</dt>
+                <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{selected.client_id}</dd>
+              </div>
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Scopes</dt>
+                <dd className="min-w-0"><ul className="space-y-1 text-xs leading-relaxed">
+                  {selected.scopes.length ? selected.scopes.map((scope) => <li key={scope} className="break-words">{scope}</li>) : <li>None</li>}
+                </ul></dd>
+              </div>
+              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">Repositories</dt>
+                <dd className="min-w-0 text-xs leading-relaxed">
+                  {repositories.isPending ? "Loading repositories…" : <ul className="space-y-1">
+                    {selected.repository_ids.length ? selected.repository_ids.map((id) => <li key={id} className="break-words">{names.get(id) ?? `#${id}`}</li>) : <li>None selected</li>}
+                  </ul>}
+                </dd>
+              </div>
+              {[
+                ["Granted", date(selected.created_at)],
+                ["Expires", date(selected.expires_at)],
+                ["Last used", selected.last_used_at ? date(selected.last_used_at) : "Never used"],
+                ...(selected.revoked_at ? [["Revoked", date(selected.revoked_at)]] : []),
+              ].map(([label, value]) => <div key={label} className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                <dt className="text-muted-foreground">{label}</dt><dd className="text-xs leading-relaxed">{value}</dd>
+              </div>)}
+            </dl>
+            <ErrorNotice error={error ?? action.error ?? repositories.error} />
+            {!selected.revoked_at && <DialogFooter className="border-t pt-4">
+              <Button variant="outline" disabled={action.isPending} onClick={async () => {
+                setError(undefined);
+                try {
+                  await action.mutateAsync({ path: `/mcp/grants/${encodeURIComponent(selected.id)}`, method: "DELETE" });
+                  toast.success("Grant revoked.");
+                  returnFocus.current = heading.current;
+                  setSelectedId(null);
+                  void grants.refetch();
+                } catch (e) {
+                  setError(e);
+                }
+              }}>{action.isPending ? "Revoking…" : "Revoke"}</Button>
+            </DialogFooter>}
+          </>}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
