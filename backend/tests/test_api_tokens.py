@@ -1,5 +1,6 @@
 """Personal API token contracts: policy inventory, lifecycle and auth boundary."""
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -300,6 +301,40 @@ def test_pat_auth_boundary(pat_client, github_stub):
     assert identity.json()["token"]["scopes"] == ["connections:read", "repositories:read", "reviews:read"]
     assert identity.json()["user"] == {"id": 7, "login": "owner", "avatar_url": "", "role": "admin"}
     assert "csrf" not in identity.json()["user"]
+
+
+@pytest.mark.parametrize("reason", ["duplicate_credential", "cleartext_transport", "mixed_credential",
+                                    "malformed_credential", "malformed_token"])
+@pytest.mark.parametrize("status", [401, 429, 503])
+def test_early_credential_refusals_check_redis_outside_event_loop(client, monkeypatch, reason, status):
+    checks, reasons = [], []
+
+    def check_failed_auth(identity):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        checks.append(identity)
+        if status == 429:
+            raise HTTPException(429, "Too many API token requests.", headers={"Retry-After": "60"})
+        if status == 503:
+            raise service.TokenUnavailable()
+
+    monkeypatch.setattr(service, "check_failed_auth", check_failed_auth)
+    monkeypatch.setattr(service, "log_failed_auth", lambda request, cause: reasons.append(cause))
+    if reason != "mixed_credential":
+        client.cookies.clear()
+    headers = [("Authorization", "Basic invalid" if reason == "malformed_credential" else "Bearer invalid")]
+    if reason == "duplicate_credential":
+        headers *= 2
+    path = "/api/v1/auth/token"
+    if reason == "cleartext_transport":
+        path = "http://remote.test" + path
+    response = client.get(path, headers=headers)
+    assert response.status_code == status
+    assert len(checks) == 1 and reasons == [reason]
+    if status == 401:
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+    if status == 429:
+        assert response.headers["Retry-After"] == "60"
 
 
 def test_pat_scope_and_repo_restriction(pat_client):

@@ -142,27 +142,27 @@ async def request_principal(request: Request, db: DB) -> AsyncIterator[User]:
 
     authorizations = request.headers.getlist("authorization")
     if len(authorizations) > 1:
-        _refuse_credential(request, "duplicate_credential")
+        await run_in_threadpool(_refuse_credential, request, "duplicate_credential")
         raise _bearer_challenge(401, "Send exactly one Authorization credential.")
     cookie = request.cookies.get("cm_session", "")
     if authorizations:
         from code_mortis.api_tokens import service as pat_service
 
         if not _pat_transport_allowed(request):
-            _refuse_credential(request, "cleartext_transport")
+            await run_in_threadpool(_refuse_credential, request, "cleartext_transport")
             raise _bearer_challenge(401, "Send API tokens over HTTPS, not cleartext HTTP.")
         if cookie:
-            _refuse_credential(request, "mixed_credential")
+            await run_in_threadpool(_refuse_credential, request, "mixed_credential")
             raise _bearer_challenge(401, "Send either an API token or a browser session, not both.")
         scheme, _, credential = authorizations[0].partition(" ")
         if scheme.lower() != "bearer" or not credential.strip() or len(authorizations[0]) > pat_service.MAX_CREDENTIAL_BYTES:
-            _refuse_credential(request, "malformed_credential")
+            await run_in_threadpool(_refuse_credential, request, "malformed_credential")
             raise _bearer_challenge(401, "This API token is invalid. Check the value and try again.")
         try:
             raw = pat_service.parse_raw_token(credential.strip())
         except HTTPException:
             # A valid MCP credential must fail PAT authentication without cookie fallback.
-            _refuse_credential(request, "malformed_token")
+            await run_in_threadpool(_refuse_credential, request, "malformed_token")
             raise _bearer_challenge(401, "This API token is invalid. Check the value and try again.") from None
         principal = await run_in_threadpool(_authenticate_pat, request, db, raw)
         route = request.scope.get("route")

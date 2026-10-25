@@ -254,7 +254,9 @@ def read_requested_source(repo, env, sha, path, options, stopped, *, revision, f
 
 
 def filter_context(repo, env, sources, options, stopped):
-    """Use OCR's own protected-path, language and exclusion filters on inert Git-object copies."""
+    """Use OCR's exclusions on inert evidence, including Markdown supporting documents."""
+    from code_mortis.security_scans.engine import INSTRUCTION_FILES, PROTECTED
+
     with tempfile.TemporaryDirectory(prefix="verify-scope-", dir=repo.parent) as temp:
         root = Path(temp)
         ocr.git(root, env, "init", "--quiet", stopped=stopped)
@@ -285,7 +287,16 @@ def filter_context(repo, env, sources, options, stopped):
         if code:
             raise ValueError("The review engine could not check which evidence files are excluded. Check file exclusions and review rules before starting another review.")
         data = json.loads(output)
-        selected = {item["path"] for item in data.get("files", []) if item.get("will_review") is True}
+        protected = {part.lower() for part in (*PROTECTED, *INSTRUCTION_FILES)}
+        selected = set()
+        for item in data.get("files", []):
+            path = Path(item["path"])
+            markdown = path.suffix.lower() in {".md", ".markdown"}
+            if markdown and protected.intersection(part.lower() for part in path.parts):
+                continue
+            # OCR checks secrets and user exclusions before rejecting unsupported extensions.
+            if item.get("will_review") is True or (markdown and item.get("exclude_reason") == "unsupported_ext"):
+                selected.add(item["path"])
         return set(sources) & selected
 
 

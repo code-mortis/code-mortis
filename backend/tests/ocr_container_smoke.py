@@ -356,6 +356,15 @@ def main():
             options = RepoSettings().model_dump()
             for sources in ({"main.py": "count = 1\n"}, {"nested/main.py": "count = 2\n"}):
                 assert verification.filter_context(root, env, sources, options, lambda: False) == set(sources)
+            documents = dict.fromkeys(("docs/operations.md", "collections/code-mortis/README.md", "AGENTS.md",
+                                       ".claude/guide.md", ".env.md", "notes.txt"), "# Evidence\n")
+            assert verification.filter_context(root, env, documents, options, lambda: False) == {
+                "docs/operations.md", "collections/code-mortis/README.md"}
+            options["exclusions"] = "docs/**,**/README.md"
+            assert not verification.filter_context(root, env, documents, options, lambda: False)
+            options["exclusions"], options["rules"] = "", {"exclude": ["**/*.md"]}
+            assert not verification.filter_context(root, env, documents, options, lambda: False)
+            options["rules"] = None
             options["exclusions"] = "**/private.py"
             assert not verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
             # Reproduce the real PR: an excluded test changes alongside a fix in source.
