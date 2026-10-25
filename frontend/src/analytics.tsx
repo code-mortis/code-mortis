@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { CalendarIcon, RefreshCw } from "lucide-react";
 import { useApi, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components/common";
-import { AnalyticsPanel, BreakdownChart, DataTable, TrendChart } from "./components/analytics-charts";
+import { AnalyticsNumber, AnalyticsPanel, BreakdownChart, DataTable, TrendChart } from "./components/analytics-charts";
 import { normalizeOrdering } from "./lib/ordering";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
@@ -13,7 +13,9 @@ import { Label } from "./components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { useUrlTab } from "./hooks/use-url-tab";
-import { analyticsLabel as label, analyticsNumber as number, analyticsPercent as percent, analyticsRange, analyticsTabs, calendarDate, localDate } from "./lib/analytics";
+import { analyticsLabel as label, analyticsPercent as percent, analyticsRange, analyticsTabs, calendarDate, localDate } from "./lib/analytics";
+
+const number = (value: number | null | undefined) => <AnalyticsNumber value={value} />;
 
 function DateFilter({ id, name, value, onChange }: { id: string; name: string; value: string | null; onChange: (value: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -66,8 +68,6 @@ export default function Analytics() {
   const valid = !range.error;
   const orderings = { count: tab === "usage" ? "Tokens" : "Count", key: "Name" };
   const ordering = normalizeOrdering(params.get("ordering"), orderings, "-count");
-  const orderingControl = { value: ordering, options: orderings, defaultValue: "-count", onChange: (value: string) => change("ordering", [value]),
-    hint: "Orders breakdowns and tables. Trends stay chronological." };
   const baseParams = new URLSearchParams(range.query);
   baseParams.set("ordering", ordering);
   const base = baseParams.toString();
@@ -113,7 +113,7 @@ export default function Analytics() {
   return <div className="min-w-0 space-y-6">
     <h1 className="sr-only">Analytics</h1>
     <div role="group" aria-label="Analytics filters">
-      <FilterBar ordering={orderingControl} filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change}>
+      <FilterBar filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
         { value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }, { value: "90", label: "Last 90 days" }, { value: "all", label: "All time" }, { value: "custom", label: "Custom dates" },
       ]} /></div>
@@ -137,7 +137,7 @@ export default function Analytics() {
         { label: "Resolved", value: number(findings.data.statuses.find((row) => row.key === "resolved")?.count ?? 0) },
         { label: "Dismissed", value: number(findings.data.statuses.find((row) => row.key === "dismissed")?.count ?? 0) },
       ]} /></div>}
-      {tab === "findings" && !query.error && <div role="group" aria-label="Finding filters"><FilterBar ordering={orderingControl} filters={[
+      {tab === "findings" && !query.error && <div role="group" aria-label="Finding filters"><FilterBar filters={[
         { key: "severity", label: "Severity", values: params.getAll("severity"), choices: choices(["critical", "high", "medium", "low"]) },
         { key: "category", label: "Category", values: params.getAll("category"), choices: choices(findings.data?.category_options ?? params.getAll("category")), searchPlaceholder: "Find a category…" },
         { key: "status", label: "Status", values: params.getAll("status"), choices: choices(["open", "resolved", "dismissed"]) },
@@ -169,18 +169,18 @@ export default function Analytics() {
           {tab === "reviews" && reviews.data && <>
             <Metrics items={[
               { label: "Review runs", value: number(reviews.data.runs) }, { label: "PRs reviewed", value: number(reviews.data.reviewed_prs) },
-              { label: "Average review duration", value: reviews.data.mean_duration_seconds == null ? "Unavailable" : reviews.data.mean_duration_seconds < 60 ? `${number(reviews.data.mean_duration_seconds)} sec` : `${number(reviews.data.mean_duration_seconds / 60)} min` },
+              { label: "Average review duration", value: reviews.data.mean_duration_seconds == null ? "Unavailable" : reviews.data.mean_duration_seconds < 60 ? <>{number(reviews.data.mean_duration_seconds)} sec</> : <>{number(reviews.data.mean_duration_seconds / 60)} min</> },
               { label: "Contributors", value: number(reviews.data.contributors.length) },
             ]} />
             <BreakdownChart title="Review outcomes" description="Execution status is separate from GitHub publication and finding resolution." data={reviews.data.outcomes} />
-            <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="File review results" description={`Validated results per run; a file reviewed again counts again. ${number(reviews.data.coverage_missing_runs)} runs have no valid saved coverage.`} data={reviews.data.coverage} />
-              <BreakdownChart title="Assessment outcomes" description={`Each candidate appears in one outcome. ${number(reviews.data.assessment_missing_runs)} legacy runs have no recorded assessment policy.`} data={reviews.data.assessments} /></div>
+            <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="File review results" description={<>Validated results per run; a file reviewed again counts again. {number(reviews.data.coverage_missing_runs)} runs have no valid saved coverage.</>} data={reviews.data.coverage} />
+              <BreakdownChart title="Assessment outcomes" description={<>Each candidate appears in one outcome. {number(reviews.data.assessment_missing_runs)} legacy runs have no recorded assessment policy.</>} data={reviews.data.assessments} /></div>
             <AnalyticsPanel title="Contributor activity" description="Distinct reviewed PRs by saved PR author. Activity counts do not measure code quality."><DataTable label="Contributor activity" headings={["PR author", "PRs reviewed"]} rows={reviews.data.contributors.map((row) => [row.key, number(row.count)])} /></AnalyticsPanel>
           </>}
           {tab === "usage" && usage.data && <>
             <Metrics items={[
               { label: "Reported tokens", value: number(usage.data.total.tokens) },
-              { label: "Fully reported runs", value: `${number(usage.data.total.complete_runs)} / ${number(usage.data.total.total_runs)}` },
+              { label: "Fully reported runs", value: <>{number(usage.data.total.complete_runs)} / {number(usage.data.total.total_runs)}</> },
               { label: "Mean tokens / run", value: number(usage.data.total.mean_per_run) },
               { label: "Mean tokens / reviewed PR", value: number(usage.data.total.mean_per_reviewed_pr) },
             ]} />

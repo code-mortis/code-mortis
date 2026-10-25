@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import type { Schema } from "../src/api";
-import { analyticsRange } from "../src/lib/analytics";
+import { analyticsCompactNumber, analyticsRange } from "../src/lib/analytics";
 import { themes } from "../src/lib/appearance";
 
 const repositories = [{ id: 22, full_name: "acme/code-mortis" }, { id: 23, full_name: "acme/noodle" }];
@@ -62,28 +62,82 @@ test("date presets and custom ranges preserve local calendar boundaries", () => 
   expect(analyticsRange(new URLSearchParams("period=custom&start=2026-10-19&end=2026-10-18"), today).error).toBeTruthy();
   expect(analyticsRange(new URLSearchParams("period=all"), today).query?.get("from_at")).toBeNull();
   const defaults = analyticsRange(new URLSearchParams(), today);
-  expect(defaults.period).toBe("custom");
+  expect(defaults.period).toBe("30");
   expect(defaults.start).toBe("2026-09-19");
   expect(defaults.end).toBe("2026-10-18");
   expect(analyticsRange(new URLSearchParams("period=invalid"), today)).toEqual(defaults);
 });
 
-test("custom dates default to the last 30 days on each new visit", async ({ page }) => {
+test("last 30 days rolls forward by default while explicit custom dates stay fixed", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   const requests = await mock(page);
   await page.goto("/analytics");
-  await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Custom dates");
-  await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 19, 2026");
-  await expect(page.getByRole("button", { name: "Through", exact: true })).toHaveAccessibleDescription("Oct 18, 2026");
-  await expect(page).toHaveURL(/period=custom&start=2026-09-19&end=2026-10-18/);
+  await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Last 30 days");
+  await expect(page.getByRole("button", { name: "From", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Through", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   expect(requests.at(-1)?.searchParams.get("from_at")).toContain("2026-09-19");
   expect(requests.at(-1)?.searchParams.get("to_at")).toContain("2026-10-19");
   await page.clock.setFixedTime(new Date("2026-10-19T12:00:00Z"));
   await page.reload();
-  await expect(page).toHaveURL(/start=2026-09-19&end=2026-10-18/);
-  await page.goto("/analytics");
+  await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Last 30 days");
+  await expect.poll(() => requests.at(-1)?.searchParams.get("from_at")).toContain("2026-09-20");
+  expect(requests.at(-1)?.searchParams.get("to_at")).toContain("2026-10-20");
+  await expect(page).not.toHaveURL(/start=|end=/);
+  await page.getByRole("combobox", { name: "Date range", exact: true }).fill("Custom");
+  await page.getByRole("option", { name: "Custom dates", exact: true }).click();
   await expect(page).toHaveURL(/period=custom&start=2026-09-20&end=2026-10-19/);
+  await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 20, 2026");
+  await expect(page.getByRole("button", { name: "Through", exact: true })).toHaveAccessibleDescription("Oct 19, 2026");
+  await page.clock.setFixedTime(new Date("2026-10-20T12:00:00Z"));
+  await page.reload();
+  await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Custom dates");
+  await expect(page).toHaveURL(/start=2026-09-20&end=2026-10-19/);
+  await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
+  expect(requests.at(-1)?.searchParams.get("to_at")).toContain("2026-10-20");
+});
+
+test("compact numbers preserve zero, missing values and magnitude boundaries", () => {
+  for (const [value, expected] of [[0, "0"], [999, "999"], [1000, "1k"], [1245, "1.2k"], [999999, "1M"], [441757065, "441.8M"], [1200000000, "1.2B"], [null, "Unavailable"], [undefined, "Unavailable"]] as const) {
+    expect(analyticsCompactNumber(value)).toBe(expected);
+  }
+});
+
+test("compact metrics and table values expose full numbers on hover, focus and tap", async ({ page }, info) => {
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
+  await mock(page, (view) => view === "overview" ? { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] } : view === "security" ? { ...security, scans: 1200 } : undefined);
+  await page.goto("/analytics");
+  const metric = page.locator("dl").getByRole("button", { name: "441,757,065", exact: true });
+  await expect(metric).toHaveText("441.8M");
+  if (info.project.name === "mobile") await metric.tap();
+  else await metric.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("441,757,065");
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.screenshot({ path: `../.impeccable/review/analytics-compact-${info.project.name}.png`, animations: "disabled" });
+  if (info.project.name === "mobile") await page.locator("dl dt").filter({ hasText: "PRs reviewed" }).tap();
+  else await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Overview", exact: true }).focus();
+  await metric.focus();
+  await expect(page.getByRole("tooltip")).toHaveText("441,757,065");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Critical: 1,200 findings", exact: true })).toContainText("1.2k");
+  await page.getByText("View severity data", { exact: true }).click();
+  const severityValue = page.getByRole("table", { name: "Severity data", exact: true }).getByRole("button", { name: "1,200", exact: true });
+  await expect(severityValue).toHaveText("1.2k");
+  await severityValue.focus();
+  await expect(page.getByRole("tooltip")).toHaveText("1,200");
+  await page.getByRole("tab", { name: "Usage", exact: true }).click();
+  await expect(page.locator("#analytics-panel dl dd")).toHaveText(["1.2M", "26 / 28", "43.9k", "65.1k"]);
+  const modelValue = page.getByRole("table", { name: "Usage by model", exact: true }).getByRole("button", { name: "1,245,800", exact: true });
+  await expect(modelValue).toHaveText("1.2M");
+  await modelValue.focus();
+  await expect(page.getByRole("tooltip")).toHaveText("1,245,800");
+  await page.getByText("View token usage data", { exact: true }).click();
+  await expect(page.getByRole("table", { name: "Token usage data", exact: true }).getByRole("button", { name: "1,709", exact: true })).toHaveText("1.7k");
+  await page.getByRole("tab", { name: "Security", exact: true }).click();
+  await expect(page.locator("dl").getByRole("button", { name: "1,200", exact: true })).toHaveText("1.2k");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
@@ -359,17 +413,22 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
 });
 
 for (const tab of ["overview", "findings", "reviews", "usage", "security"] as const) {
-  test(`analytics ${tab} filters order backend breakdowns and keep date order`, async ({ page }) => {
+  test(`analytics ${tab} hides ordering controls and preserves saved ordering`, async ({ page }, info) => {
+    if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
     const requests = await mock(page);
     await page.goto(`/analytics?tab=${tab}&period=all`);
-    const toolbar = page.getByRole("group", { name: "Analytics filters", exact: true });
-    await toolbar.getByRole("button", { name: `Sort by ${tab === "usage" ? "Tokens" : "Count"}`, exact: true }).click();
-    await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
-    await expect.poll(() => requests.at(-1)?.searchParams.get("ordering")).toBe("key");
-    await toolbar.getByRole("button", { name: "Sort descending", exact: true }).click();
+    await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
+    await expect(page.getByRole("group", { name: "Ordering", exact: true })).toHaveCount(0);
+    expect(requests.at(-1)?.searchParams.get("ordering")).toBe("-count");
+    await page.goto(`/analytics?tab=${tab}&period=all&ordering=-key`);
     await expect.poll(() => requests.at(-1)?.searchParams.get("ordering")).toBe("-key");
+    await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
     expect(requests.at(-1)?.pathname).toBe(`/api/v1/analytics/${tab}`);
-    if (tab === "findings") await expect(page.getByRole("group", { name: "Finding filters", exact: true }).getByRole("button", { name: "Sort by Name", exact: true })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Ordering", exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (tab === "overview" || tab === "findings") {
+      await mkdir("../.impeccable/review", { recursive: true });
+      await page.screenshot({ path: `../.impeccable/review/analytics-no-ordering-${tab}-${info.project.name}.png`, animations: "disabled" });
+    }
   });
 }

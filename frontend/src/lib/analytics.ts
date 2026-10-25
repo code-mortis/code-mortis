@@ -13,7 +13,7 @@ export function calendarDate(value: string | null) {
 }
 
 export function analyticsRange(params: URLSearchParams, today = new Date()) {
-  const period = analyticsPeriods.includes(params.get("period") ?? "") ? params.get("period")! : "custom";
+  const period = analyticsPeriods.includes(params.get("period") ?? "") ? params.get("period")! : "30";
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
   const start = new Date(end);
   start.setDate(start.getDate() - (period === "7" ? 7 : period === "90" ? 90 : 30));
@@ -33,6 +33,7 @@ export function analyticsRange(params: URLSearchParams, today = new Date()) {
 }
 
 export const analyticsNumber = (value: number | null | undefined) => value == null ? "Unavailable" : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+export const analyticsCompactNumber = (value: number | null | undefined) => value == null || Math.abs(value) < 1000 ? analyticsNumber(value) : value.toLocaleString("en", { notation: "compact", maximumFractionDigits: 1 }).replace("K", "k");
 export const analyticsPercent = (part: number, total: number) => total ? `${Math.round(part / total * 100)}%` : "No findings";
 export const analyticsLabel = (value: string) => ({
   new: "New findings", repeated: "Repeated observations", rejected: "Not supported", withheld: "Withheld",

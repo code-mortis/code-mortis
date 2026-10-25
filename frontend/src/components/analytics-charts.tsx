@@ -1,18 +1,28 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { Schema } from "../api";
-import { analyticsLabel, analyticsNumber } from "../lib/analytics";
+import { analyticsCompactNumber, analyticsLabel, analyticsNumber } from "../lib/analytics";
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "./ui/chart";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const series = {
   runs: { label: "Review runs", color: "var(--chart-1)" },
   findings: { label: "Findings detected", color: "var(--chart-2)" },
   tokens: { label: "Reported tokens", color: "var(--chart-1)" },
 } satisfies ChartConfig;
-const axisNumber = (value: number) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 const dateLabel = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-export function AnalyticsPanel({ title, description, children, className = "" }: { title: string; description?: string; children: ReactNode; className?: string }) {
+export function AnalyticsNumber({ value }: { value: number | null | undefined }) {
+  const [open, setOpen] = useState(false);
+  const full = analyticsNumber(value);
+  if (value == null || Math.abs(value) < 1000) return full;
+  return <Tooltip open={open} onOpenChange={setOpen}>
+    <TooltipTrigger asChild><button type="button" className="cursor-help rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-label={full} onClick={(event) => { event.preventDefault(); setOpen(true); }}>{analyticsCompactNumber(value)}</button></TooltipTrigger>
+    <TooltipContent sideOffset={6}>{full}</TooltipContent>
+  </Tooltip>;
+}
+
+export function AnalyticsPanel({ title, description, children, className = "" }: { title: string; description?: ReactNode; children: ReactNode; className?: string }) {
   return <section aria-label={title} className={`min-w-0 rounded-lg border bg-card p-4 sm:p-5 ${className}`}>
     <h2 className="text-sm font-semibold">{title}</h2>
     {description && <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-muted-foreground">{description}</p>}
@@ -40,7 +50,7 @@ export function TrendChart({ title, description, data, keys, runLabel = "Review 
       <LineChart accessibilityLayer data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis dataKey="date" tickFormatter={dateLabel} tickLine={false} axisLine={false} minTickGap={36} tickMargin={10} />
-        <YAxis tickFormatter={axisNumber} tickLine={false} axisLine={false} width={42} allowDecimals={false} />
+        <YAxis tickFormatter={analyticsCompactNumber} tickLine={false} axisLine={false} width={42} allowDecimals={false} />
         <ChartTooltip content={<ChartTooltipContent labelFormatter={(label) => String(label)} />} />
         <ChartLegend content={<ChartLegendContent />} />
         {keys.map((key) => <Line key={key} dataKey={key} type="linear" stroke={`var(--color-${key})`} strokeWidth={2} dot={data.length === 1} activeDot={{ r: 4 }} connectNulls={false} isAnimationActive={false} />)}
@@ -49,13 +59,13 @@ export function TrendChart({ title, description, data, keys, runLabel = "Review 
     <details className="mt-4 border-t pt-3 text-xs">
       <summary className="cursor-pointer rounded-sm font-medium">View {title.toLowerCase()} data</summary>
       <div className="mt-3"><DataTable label={`${title} data`} headings={["Period starting", ...keys.map((key) => config[key].label), ...(keys.includes("tokens") ? ["Missing reports"] : [])]}
-        rows={data.map((row) => [row.date, ...keys.map((key) => analyticsNumber(row[key])), ...(keys.includes("tokens") ? [analyticsNumber(row.missing_reports)] : [])])} /></div>
+        rows={data.map((row) => [row.date, ...keys.map((key) => <AnalyticsNumber value={row[key]} />), ...(keys.includes("tokens") ? [<AnalyticsNumber value={row.missing_reports} />] : [])])} /></div>
     </details>
   </AnalyticsPanel>;
 }
 
 export function BreakdownChart({ title, description, data, onSelect, severity = false }: {
-  title: string; description?: string; data: Schema["AnalyticsCount"][]; onSelect?: (key: string) => void; severity?: boolean;
+  title: string; description?: ReactNode; data: Schema["AnalyticsCount"][]; onSelect?: (key: string) => void; severity?: boolean;
 }) {
   const visible = data.slice(0, 10).map((row) => ({ ...row, label: analyticsLabel(row.key) }));
   const colors: Record<string, string> = { critical: "var(--chart-critical)", high: "var(--chart-high)", medium: "var(--chart-medium)", low: "var(--chart-low)" };
@@ -63,7 +73,7 @@ export function BreakdownChart({ title, description, data, onSelect, severity = 
     {data.some((row) => row.count > 0) ? <ChartContainer config={{ count: { label: title, color: "var(--chart-1)" } }} className="w-full aspect-auto" style={{ height: Math.max(170, visible.length * 36) }}>
       <BarChart accessibilityLayer data={visible} layout="vertical" margin={{ left: 0, right: 12 }}>
         <CartesianGrid horizontal={false} />
-        <XAxis type="number" tickLine={false} axisLine={false} tickFormatter={axisNumber} allowDecimals={false} />
+        <XAxis type="number" tickLine={false} axisLine={false} tickFormatter={analyticsCompactNumber} allowDecimals={false} />
         <YAxis type="category" dataKey="label" tickLine={false} axisLine={false} width={116} tick={{ width: 106, maxLines: 2, style: { fontSize: 11 } }} />
         <ChartTooltip content={<ChartTooltipContent labelFormatter={(_label, payload) => payload[0]?.payload.label} />} />
         <Bar dataKey="count" fill="var(--color-count)" radius={3} maxBarSize={18} isAnimationActive={false}
@@ -72,10 +82,13 @@ export function BreakdownChart({ title, description, data, onSelect, severity = 
         </Bar>
       </BarChart>
     </ChartContainer> : <p className="py-7 text-sm text-muted-foreground">No recorded results in this period.</p>}
-    {data.length > 10 && <p className="mt-2 text-xs text-muted-foreground">Showing the first 10. All {data.length} results are available below.</p>}
-    {onSelect && <div className="mt-3 flex flex-wrap gap-2" aria-label={`Filter by ${title.toLowerCase()}`}>{visible.map((row) => <button key={row.key} aria-label={`${row.label}: ${analyticsNumber(row.count)} findings`} onClick={() => onSelect(row.key)} className="min-h-11 max-w-full rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"><span className="break-words">{row.label}</span><span className="ml-2 tabular-nums text-muted-foreground">{analyticsNumber(row.count)}</span></button>)}</div>}
+    {data.length > 10 && <p className="mt-2 text-xs text-muted-foreground">Showing the first 10. All <AnalyticsNumber value={data.length} /> results are available below.</p>}
+    {onSelect && <div className="mt-3 flex flex-wrap gap-2" aria-label={`Filter by ${title.toLowerCase()}`}>{visible.map((row) => <Tooltip key={row.key}>
+      <TooltipTrigger asChild><button aria-label={`${row.label}: ${analyticsNumber(row.count)} findings`} onClick={() => onSelect(row.key)} className="min-h-11 max-w-full rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"><span className="break-words">{row.label}</span><span className="ml-2 tabular-nums text-muted-foreground">{analyticsCompactNumber(row.count)}</span></button></TooltipTrigger>
+      {row.count >= 1000 && <TooltipContent sideOffset={6}>{analyticsNumber(row.count)}</TooltipContent>}
+    </Tooltip>)}</div>}
     <details className="mt-4 border-t pt-3 text-xs"><summary className="cursor-pointer rounded-sm font-medium">View {title.toLowerCase()} data</summary>
-      <div className="mt-3"><DataTable label={`${title} data`} headings={[title, "Count"]} rows={data.map((row) => [onSelect ? <button onClick={() => onSelect(row.key)} className="rounded-sm text-left underline underline-offset-4">{analyticsLabel(row.key)}</button> : analyticsLabel(row.key), analyticsNumber(row.count)])} /></div>
+      <div className="mt-3"><DataTable label={`${title} data`} headings={[title, "Count"]} rows={data.map((row) => [onSelect ? <button onClick={() => onSelect(row.key)} className="rounded-sm text-left underline underline-offset-4">{analyticsLabel(row.key)}</button> : analyticsLabel(row.key), <AnalyticsNumber value={row.count} />])} /></div>
     </details>
   </AnalyticsPanel>;
 }
