@@ -388,13 +388,14 @@ def execute_job(job_id: str):
     from code_mortis.api_tokens import provenance as _pat
     from code_mortis.mcp import provenance as _mcp
 
-    _mcp_token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
-    # Bind the effective stored origin (payload first, then run/scan/intent
-    # fallback) so children of retried or summary work keep the origin even
-    # when the job payload itself carries none.
-    with transaction() as fresh:
-        _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
+    _mcp_token = _pat_token = None
     try:
+        _mcp_token = _mcp.execution_context.set(_mcp.provenance_from_payload(payload))
+        # Bind the effective stored origin (payload first, then run/scan/intent
+        # fallback) so children of retried or summary work keep the origin even
+        # when the job payload itself carries none.
+        with transaction() as fresh:
+            _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
         execute(kind, execution if kind in {"review", "security_scan", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
     except _pat.TransientAuthorizationError:
@@ -519,8 +520,10 @@ def execute_job(job_id: str):
                 job.payload = {"event": payload["event"]}
         log.info("job_completed id=%s kind=%s run_id=%s", job_id, kind, payload.get("run_id"))
     finally:
-        _pat.execution_context.reset(_pat_token)
-        _mcp.execution_context.reset(_mcp_token)
+        if _pat_token is not None:
+            _pat.execution_context.reset(_pat_token)
+        if _mcp_token is not None:
+            _mcp.execution_context.reset(_mcp_token)
 
 
 def job_queue(kind, payload=None):
