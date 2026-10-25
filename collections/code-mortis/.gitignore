@@ -1,2 +1,3 @@
 .timeline/
 .environments/*.local.env
+.noodle/ui-state.yml

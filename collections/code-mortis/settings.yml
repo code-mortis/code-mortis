@@ -3,6 +3,6 @@ environment: development
 name: Code Mortis
 description: Code Mortis REST API. Personal API token bearer authentication, no
   browser cookies. Run the smoke tag first; select writes individually.
-timeline_max_entries: 0
+timeline_max_entries: 50
 cookies:
   enabled: false
