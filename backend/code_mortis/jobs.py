@@ -122,8 +122,15 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
 
         actor = None
         if automatic and _pat.current_provenance() is not None:
-            actor, _ = _pat.validate(db, _pat.current_provenance(),
-                                     repository_id=repository_id, write=True)
+            try:
+                actor, _ = _pat.validate(db, _pat.current_provenance(),
+                                         repository_id=repository_id, write=True)
+            except _pat.TransientAuthorizationError:
+                raise
+            except Exception as exc:
+                if _pat._is_transient(exc):
+                    raise _pat.TransientAuthorizationError("Token authorization is temporarily unavailable.") from exc
+                raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE) from exc
         token = github.installation_token(db, repo.installation_id)
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
         if not tracked:
@@ -311,7 +318,8 @@ def execute(kind: str, payload: dict):
     elif kind == "scan_repository":
         scan_repository(payload["repository_id"])
     elif kind == "sync_pr":
-        sync_pr(**payload)
+        sync_pr(payload["repository_id"], payload["number"],
+                automatic=payload.get("automatic", True), sender_type=payload.get("sender_type"))
     elif kind == "test_connection":
         with transaction() as db:
             connection = db.get(Connection, payload["connection_id"])

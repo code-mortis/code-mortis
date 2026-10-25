@@ -5,13 +5,14 @@ from datetime import timedelta
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
+from test_review_flow import remote
 
 from code_mortis import jobs
 from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.api_tokens import service as pat_service
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import digest
-from code_mortis.integrations import github
+from code_mortis.integrations import github, ocr
 from code_mortis.mcp import provenance as mcp_provenance
 from code_mortis.models import (
     Finding,
@@ -436,7 +437,8 @@ def test_explicit_adoption_replaces_and_session_clears(seed, pat_setup):
         assert pat_provenance.run_revoked(db, run) is False
 
 
-def test_sync_pr_descendant_sets_owner_actor(seed, pat_setup, monkeypatch):
+@pytest.mark.parametrize("worker", [False, True])
+def test_sync_pr_descendant_sets_owner_actor(seed, pat_setup, monkeypatch, worker):
     monkeypatch.setattr(github, "installation_token", lambda *a, **k: "token")
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": seed["repo"].id})
     pr_data = {"title": "t", "user": {"login": "owner", "type": "User"}, "html_url": "u",
@@ -445,9 +447,24 @@ def test_sync_pr_descendant_sets_owner_actor(seed, pat_setup, monkeypatch):
                "base": {"sha": "b" * 40}}
     monkeypatch.setattr(github, "request", lambda *a, **k: pr_data)
     monkeypatch.setattr(github, "threads", lambda *a, **k: [])
+    create = jobs.create_run
+    def create_with_owner(db, pr, repo, trigger, actor):
+        assert actor.api_token_id == pat_setup["token"].id
+        assert actor.api_token_repository_ids == frozenset({seed["repo"].id})
+        return create(db, pr, repo, trigger, actor=actor)
+    monkeypatch.setattr(jobs, "create_run", create_with_owner)
     with pat_provenance.scoped(pat_setup["record"]):
-        jobs.sync_pr(seed["repo"].id, seed["pr"].number)
+        if worker:
+            with transaction() as db:
+                job_id = reviews.enqueue(db, "sync_pr", {"repository_id": seed["repo"].id,
+                                                         "number": seed["pr"].number}).id
+        else:
+            jobs.sync_pr(seed["repo"].id, seed["pr"].number)
+    if worker:
+        jobs.execute_job(job_id)
     with transaction() as db:
+        if worker:
+            assert db.get(Job, job_id).status == "done", db.get(Job, job_id).error
         run = db.scalars(select(ReviewRun).where(
             ReviewRun.pr_id == seed["pr"].id, ReviewRun.actor_id == seed["user"].id
         ).order_by(ReviewRun.created_at.desc()).limit(1)).one_or_none()
@@ -456,8 +473,94 @@ def test_sync_pr_descendant_sets_owner_actor(seed, pat_setup, monkeypatch):
     with transaction() as db:
         db.get(PersonalApiToken, pat_setup["token"].id).revoked_at = now()
     with pat_provenance.scoped(pat_setup["record"]):
-        with pytest.raises(HTTPException):
+        with pytest.raises(ocr.ReviewStopped, match="revoked or expired"):
             jobs.sync_pr(seed["repo"].id, seed["pr"].number)
+
+
+@pytest.mark.parametrize("failure", ["revoked", "expired", "http403", "http404", "github403", "github404",
+                                     "http503", "github503", "rate_limit", "network", "transient"])
+def test_sync_pr_revalidates_after_admission_without_losing_origin(seed, pat_setup, monkeypatch, failure):
+    executing, requests = [False], []
+    transient = failure in {"http503", "github503", "rate_limit", "network", "transient"}
+    errors = {"http403": HTTPException(403, "Permission removed"), "http404": HTTPException(404, "Unavailable"),
+              "github403": github.GitHubError(403, "Permission removed"), "github404": github.GitHubError(404, "Unavailable"),
+              "http503": HTTPException(503, "Unavailable"), "github503": github.GitHubError(503, "Unavailable"),
+              "rate_limit": github.GitHubError(403, "Rate limit", retry_after=60), "network": ConnectionError("Connection reset"),
+              "transient": pat_provenance.TransientAuthorizationError("Unavailable")}
+    def authorize(db, user, name, write=False):
+        assert write
+        if executing[0] and failure in errors:
+            raise errors[failure]
+        return {"id": seed["repo"].id}
+    monkeypatch.setattr(github, "authorize_repo", authorize)
+    monkeypatch.setattr(github, "installation_token", lambda *a: requests.append("token") or "token")
+    monkeypatch.setattr(github, "request", lambda *a, **kw: requests.append("pull") or remote())
+    monkeypatch.setattr(github, "threads", lambda *a: requests.append("threads") or [])
+    origin = pat_provenance.job_provenance
+    def after_admission(db, job):
+        executing[0] = True
+        token = db.get(PersonalApiToken, pat_setup["token"].id)
+        if failure == "revoked":
+            token.revoked_at = now()
+        elif failure == "expired":
+            token.expires_at = now() - timedelta(seconds=1)
+        return origin(db, job)
+    monkeypatch.setattr(pat_provenance, "job_provenance", after_admission)
+    with pat_provenance.scoped(pat_setup["record"]), transaction() as db:
+        job_id = reviews.enqueue(db, "sync_pr", {"repository_id": seed["repo"].id, "number": seed["pr"].number}).id
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        assert job.status == ("queued" if transient else "failed")
+        assert job.error == (None if transient else pat_provenance.REVOKED_MESSAGE)
+        assert job.attempts == 1 and job.lease_until is None and job.dispatched_at is None
+        assert job.payload["pat"] == pat_setup["record"]
+        assert db.scalar(select(ReviewRun)) is None
+        if transient:
+            assert job.available_at > now()
+    assert requests == [] and pat_provenance.current_provenance() is None
+    monkeypatch.setattr(pat_provenance, "job_provenance", origin)
+    executing[0] = False
+    with transaction() as db:
+        plain_id = reviews.enqueue(db, "sync_pr", {"repository_id": seed["repo"].id,
+                                                   "number": seed["pr"].number, "automatic": False}).id
+    jobs.execute_job(plain_id)
+    with transaction() as db:
+        assert db.get(Job, plain_id).status == "done"
+        assert "pat" not in db.get(Job, plain_id).payload
+        if transient:
+            db.get(Job, job_id).available_at = now()
+    if transient:
+        jobs.execute_job(job_id)
+        with transaction() as db:
+            assert db.get(Job, job_id).status == "done" and db.get(Job, job_id).attempts == 2
+            run = db.scalars(select(ReviewRun)).one()
+            assert run.actor_id == seed["user"].id and run.progress["pat"] == pat_setup["record"]
+
+
+@pytest.mark.parametrize("automatic,sender_type", [(True, None), (False, None), (True, "Bot")])
+def test_sync_pr_mcp_dispatch_preserves_origin_and_options(seed, mcp_grant, monkeypatch, automatic, sender_type):
+    from code_mortis.models import AppConfig
+
+    monkeypatch.setattr(github, "authorize_repo", lambda *a, **kw: {"id": seed["repo"].id})
+    monkeypatch.setattr(github, "installation_token", lambda *a: "token")
+    monkeypatch.setattr(github, "request", lambda *a, **kw: remote())
+    monkeypatch.setattr(github, "threads", lambda *a: [])
+    with mcp_provenance.scoped(mcp_grant), transaction() as db:
+        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
+        job_id = reviews.enqueue(db, "sync_pr", {"repository_id": seed["repo"].id, "number": seed["pr"].number,
+                                                 "automatic": automatic, "sender_type": sender_type}).id
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        assert job.status == "done", job.error
+        assert job.payload["mcp"] == mcp_grant
+        run = db.scalar(select(ReviewRun))
+        if automatic and sender_type is None:
+            assert run is not None and run.progress["mcp"] == mcp_grant
+        else:
+            assert run is None
+    assert mcp_provenance.current_provenance() is None
 
 
 def test_reconciliation_dedup_matches_complete_origins(seed, pat_setup, mcp_grant):
