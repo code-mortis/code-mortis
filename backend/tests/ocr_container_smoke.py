@@ -369,6 +369,12 @@ def main():
             assert not verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
             # Reproduce the real PR: an excluded test changes alongside a fix in source.
             options["exclusions"] = ""
+            blocked_path = "collections/code-mortis/api/repositories/pull-requests.yml"
+            allowed_path = "collections/code-mortis/scripts/auth.js"
+            for path, content in ((blocked_path, "url: excluded-evidence-marker\n"), (allowed_path, "const guard = true;\n")):
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
             (root / "main.py").write_text("while True: retry()\n")
             git("add", ".")
             git("commit", "-m", "original finding")
@@ -378,10 +384,27 @@ def main():
             (root / "tests/test_retry.py").write_text("assert True # excluded fixture\n")
             git("add", ".")
             git("commit", "-m", "fix with regression test")
+            options["exclusions"] = "collections/code-mortis/api/*/*.yml"
             actual_context = verification.build_context(root, env, env, {"path": "main.py"}, original_sha,
                                                         git("rev-parse", "HEAD"), options, lambda: False)
+            assert actual_context["exclusions"] == options["exclusions"]
             assert actual_context["excluded_paths"] == ["tests/test_retry.py"]
             assert "excluded fixture" not in json.dumps(actual_context)
+            for task in ("assessment", "verification"):
+                expanded = deepcopy(actual_context)
+                try:
+                    if task == "assessment":
+                        run = SimpleNamespace(base_sha=original_sha, head_sha=actual_context["head_sha"], config={"settings": options})
+                        assessment.expand_context(root, env, run, expanded, [blocked_path, allowed_path], lambda: False)
+                    else:
+                        verification.expand_context(root, env, expanded,
+                            [{"revision": "current", "path": path} for path in (blocked_path, allowed_path)], options, lambda: False)
+                except verification.ResultValidationError as exc:
+                    assert exc.feedback["required_paths"] == [blocked_path]
+                else:
+                    raise AssertionError("Excluded evidence must produce scope feedback")
+                assert allowed_path in expanded["sources"]["current"] and blocked_path in expanded["excluded_paths"]
+                assert blocked_path not in expanded["sources"]["current"] and "excluded-evidence-marker" not in json.dumps(expanded)
             context = actual_context
             scan_output = []
             original_command = ocr.command

@@ -1453,12 +1453,63 @@ def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline
     assert not pipeline["reviews"]
 
 
-@pytest.mark.parametrize("failure", ["limit", "unknown_usage", "excluded", "round_limit"])
+@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("outcome", ["uncertain", "rejected", "repeated"])
+@pytest.mark.parametrize("request_pass", [1, 2])
+def test_excluded_requested_evidence_is_feedback_not_an_execution_failure(pipeline, monkeypatch, kind, outcome, request_pass):
+    if kind != "api":
+        with transaction() as db:
+            connection = db.get(Connection, "connection")
+            connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
+    excluded = "collections/code-mortis/api/repositories/pull-requests.yml"
+    allowed = "collections/code-mortis/scripts/auth.js"
+    reads = []
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {excluded})
+    def read(repo, env, sha, path, stopped):
+        assert path != excluded
+        reads.append(path)
+        return "guard = True\n"
+    monkeypatch.setattr(verification, "read_source", read)
+    monkeypatch.setattr(ocr, "git", lambda *a, **kw: "")
+    def respond(context):
+        step = pipeline["calls"]
+        if step < request_pass:
+            return verdict(context, verdict="uncertain", required_paths=["collections/code-mortis/README.md"])
+        if step == request_pass:
+            return verdict(context, verdict="uncertain", required_paths=[excluded, allowed])
+        assert context["excluded_paths"] == [excluded]
+        assert context["sources"]["current"][allowed] == "guard = True\n"
+        assert excluded not in context["sources"]["current"]
+        feedback = context["validation_feedback"]
+        assert feedback["field"] == "required_paths" and feedback["required_paths"] == [excluded]
+        assert "excluded or unsupported" in feedback["reason"]
+        return verdict(context, verdict="rejected" if outcome == "rejected" else "uncertain",
+                       explanation="The permitted source disproves the claim." if outcome == "rejected" else
+                                   "Necessary evidence is excluded by review scope; the claim remains uncertain.",
+                       required_paths=[excluded] if outcome == "repeated" else [])
+    pipeline["respond"] = respond
+    identity = new_run(assessed=True, parallel=True)
+    reviews.perform_review(identity)
+    reviews.publish_run(identity)
+    expected_calls = 3 if outcome == "repeated" else request_pass + 1
+    with transaction() as db:
+        row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        assert row.status == "completed" and row.error is None and row.finding_id is None
+        assert row.result["verdict"] == ("rejected" if outcome == "rejected" else "uncertain")
+        assert row.usage == {"tokens": 25 * expected_calls}
+        counts = assessment.summary(db, db.get(ReviewRun, identity))
+        assert counts.failed == 0 and counts.incomplete == int(outcome != "rejected")
+    assert reads == (["collections/code-mortis/README.md"] if request_pass == 2 else []) + [allowed]
+    assert pipeline["calls"] == expected_calls and not pipeline["reviews"]
+    assert pipeline["allowances"] == [pipeline["allowances"][0] - 25 * index for index in range(expected_calls)]
+
+
+@pytest.mark.parametrize("failure", ["limit", "unknown_usage", "scope_check", "round_limit"])
 def test_followup_failure_never_publishes_or_reuses_spent_allowance(pipeline, monkeypatch, failure):
     calls = []
     def expand(repo, env, run, context, paths, stopped):
-        if failure == "excluded":
-            raise ValueError("Necessary assessment evidence is excluded")
+        if failure == "scope_check":
+            raise ValueError("The review engine could not check which evidence files are excluded")
         context["sources"]["current"][paths[0]] = "dependency = 1\n"
     monkeypatch.setattr(assessment, "expand_context", expand)
     def api(*args, **kwargs):
@@ -1929,7 +1980,7 @@ def test_parallel_worker_failure_joins_peers_and_never_replays_unknown_usage(pip
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("failure", ["citation", "identity", "expand", "excluded", "unknown", "invalid_twice", "three_passes"])
+@pytest.mark.parametrize("failure", ["citation", "identity", "expand", "scope_check", "unknown", "invalid_twice", "three_passes"])
 def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, monkeypatch, failure):
     pipeline["comments"] = independent_comments(2)
     with transaction() as db:
@@ -1937,8 +1988,8 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
     counts, lock, barrier = {}, Lock(), Barrier(2)
     def expand(repo, env, run, context, paths, stopped):
         assert paths in (["helper1.py"], ["helper2.py"]) if failure == "three_passes" else paths == ["helper.py"]
-        if failure == "excluded":
-            raise ValueError("Necessary assessment evidence is excluded")
+        if failure == "scope_check":
+            raise ValueError("The review engine could not check which evidence files are excluded")
         context["sources"]["current"][paths[0]] = "dependency = 1\n"
     def api(*args, **kwargs):
         context = args[4]
@@ -1958,7 +2009,7 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
                     raw["evidence"][0]["quote"] = "invented"
                 elif failure == "identity":
                     raw.update(relationship="duplicate", finding_id="not-a-finding")
-                elif failure in {"expand", "excluded", "three_passes"}:
+                elif failure in {"expand", "scope_check", "three_passes"}:
                     raw.update(verdict="uncertain", required_paths=[f"helper{attempt}.py" if failure == "three_passes" else "helper.py"])
             elif failure == "expand":
                 assert context["sources"]["current"]["helper.py"] == "dependency = 1\n"
@@ -1977,15 +2028,15 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
         assert rows[1].status == "completed" and rows[1].usage == {"tokens": 25}
-        withheld = failure in {"excluded", "unknown", "invalid_twice", "three_passes"}
-        assert rows[0].status == ("failed" if failure in {"excluded", "unknown", "invalid_twice"} else "completed")
-        assert rows[0].usage == {"tokens": None if failure == "unknown" else 25 if failure == "excluded" else 75 if failure == "three_passes" else 50}
+        withheld = failure in {"scope_check", "unknown", "invalid_twice", "three_passes"}
+        assert rows[0].status == ("failed" if failure in {"scope_check", "unknown", "invalid_twice"} else "completed")
+        assert rows[0].usage == {"tokens": None if failure == "unknown" else 25 if failure == "scope_check" else 75 if failure == "three_passes" else 50}
         assert assessment.summary(db, db.get(ReviewRun, identity)).new_findings == (1 if withheld else 2)
         if failure == "three_passes":
             assert rows[0].result["verdict"] == "uncertain"
         if failure == "expand":
             assert rows[0].context["sources"]["current"]["helper.py"] == "dependency = 1\n"
-    assert counts == {"file_0.py": 1 if failure in {"excluded", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
+    assert counts == {"file_0.py": 1 if failure in {"scope_check", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
 
 
 def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch):

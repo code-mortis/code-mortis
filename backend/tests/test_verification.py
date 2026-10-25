@@ -432,7 +432,7 @@ def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request"])
+@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request", "excluded_request", "excluded_uncertain"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
     identity = scenario["run"]
     with transaction() as db:
@@ -469,7 +469,10 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         calls.append((copy.deepcopy(context), budget))
         raw = copy.deepcopy(RESULT)
         loaded = "helper.py" in context["sources"]["current"]
-        if sequence == "missing_request" and len(calls) == 1:
+        if sequence.startswith("excluded_") and len(calls) == 1:
+            raw.update(verdict="uncertain", required_sources=[
+                {"revision": "current", "path": path} for path in ("private/helper.py", "helper.py")])
+        elif sequence == "missing_request" and len(calls) == 1:
             raw.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "app/helper.py"}])
         elif sequence == "multiple_citations":
             if len(calls) == 1:
@@ -495,6 +498,13 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             start = 1 if sequence == "request_correct" and len(calls) == 2 else 3
             raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": start,
                                     "end_line": start + 1, "quote": helper.strip()})
+            if sequence.startswith("excluded_"):
+                assert context["excluded_paths"] == ["private/helper.py"]
+                assert context["validation_feedback"]["field"] == "required_sources"
+                assert context["validation_feedback"]["required_paths"] == ["private/helper.py"]
+                assert "private/helper.py" not in context["sources"]["current"]
+                if sequence == "excluded_uncertain":
+                    raw.update(verdict="uncertain", explanation="Required evidence is excluded by review scope.")
         return raw
 
     def api(repo, env, connection, credentials, context, budget, remaining, stopped):
@@ -523,12 +533,15 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         jobs.execute_job.run(job_id)
     with transaction() as db:
         row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
-        assert row.status == "completed" and row.verdict == "fixed", row.error
+        assert row.status == "completed" and row.verdict == ("uncertain" if sequence == "excluded_uncertain" else "fixed"), row.error
+        if sequence == "excluded_uncertain":
+            assert db.get(Finding, scenario["finding"]).desired_status is None
+            assert not scenario["mutations"]
         assert row.usage == {"tokens": 25 * len(calls)}
         if sequence != "multiple_citations":
             assert row.context["sources"]["current"]["helper.py"] == helper
         assert "required_sources" not in row.result
-    assert len(calls) == (2 if sequence in {"request", "multiple_citations"} else 3)
+    assert len(calls) == (2 if sequence in {"request", "multiple_citations", "excluded_request", "excluded_uncertain"} else 3)
     assert reads == ([] if sequence == "multiple_citations" else
                      [(HEAD, "app/helper.py"), (HEAD, "helper.py")] if sequence == "missing_request" else
                      [(HEAD, "helper.py")])
@@ -573,6 +586,9 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
                 db.get(Connection, "connection").base_url = "https://changed.example.com/v1"
             elif stop == "finding":
                 db.get(Finding, scenario["finding"]).sync_version += 1
+        if stop == "excluded" and len(calls) > 1:
+            assert context["validation_feedback"]["required_paths"] == [f"helper{len(calls) - 1}.py"]
+            assert "excluded or unsupported" in context["validation_feedback"]["reason"]
         if stop == "missing" and len(calls) > 1:
             assert context["validation_feedback"]["path"] == f"helper{len(calls) - 1}.py"
         return {**RESULT, "verdict": "uncertain", "required_sources": [
@@ -580,10 +596,10 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
         ]}, {"tokens": None if stop == "missing_unknown" else 25}
     monkeypatch.setattr(verification, "api_verify", infer)
     row, finding, _ = perform(scenario)
-    assert len(calls) == (3 if stop in {"three_passes", "missing"} else 2 if stop == "repeat_citation" else 1)
+    assert len(calls) == (3 if stop in {"three_passes", "missing", "excluded"} else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
     assert row.usage == {"tokens": calls[0] if stop == "unknown" else None if stop == "missing_unknown" else 25 * len(calls)}
-    assert row.status == ("completed" if stop in {"three_passes", "missing"} else "failed" if stop in {"connection", "excluded", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
+    assert row.status == ("completed" if stop in {"three_passes", "missing", "excluded"} else "failed" if stop in {"connection", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
     if stop == "missing":
         assert "three passes" in row.result["explanation"]
 
@@ -630,6 +646,23 @@ def test_requested_original_dependency_uses_pinned_revision(tmp_path, monkeypatc
     assert not context["diff_only_paths"]
     assert 'original source: "helper.py"' in verification.evidence_bundle(context)
     assert "1 | old dependency" in verification.evidence_bundle(context)
+
+
+@pytest.mark.parametrize("task", ["assessment", "verification"])
+@pytest.mark.parametrize("extra_permitted", [False, True])
+def test_excluded_evidence_does_not_consume_source_capacity(tmp_path, monkeypatch, task, extra_permitted):
+    context = {"sources": {"current": {f"source{i}.py": "safe" for i in range(100)}}, "diff": ""}
+    requested = ["private.yml", *(["helper.py"] if extra_permitted else [])]
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"private.yml"})
+    monkeypatch.setattr(verification, "read_source", lambda *a: pytest.fail("No further source may be loaded"))
+    error = ValueError if extra_permitted else verification.ResultValidationError
+    with pytest.raises(error, match="100-source-file" if extra_permitted else "excluded.*private.yml"):
+        if task == "assessment":
+            assessment.expand_context(tmp_path, {}, SimpleNamespace(config={"settings": {}}), context, requested, lambda: False)
+        else:
+            verification.expand_context(tmp_path, {}, context,
+                [{"revision": "current", "path": path} for path in requested], {}, lambda: False)
+    assert len(context["sources"]["current"]) == 100
 
 
 @pytest.mark.parametrize("verdict,count,path", [("fixed", 1, "helper.py"), ("uncertain", 11, "helper.py"), ("uncertain", 1, "../secret")])

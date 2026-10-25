@@ -54,7 +54,10 @@ INSTRUCTIONS = (
     "The initial evidence is focused on this finding, not the whole pull request. "
     "If a caller, dependency, contract or other file is needed, return verdict uncertain and list its exact "
     "repository-relative path in required_paths. Request only necessary files; unchanged files may be requested. "
-    "Their complete current source and PR diff will be supplied for reassessment. "
+    "Permitted files' complete current source and PR diff will be supplied for reassessment. "
+    "Paths matching exclusions or listed in excluded_paths are unavailable; do not request them. "
+    "If validation_feedback reports unavailable evidence, use other permitted evidence or remain uncertain "
+    "with an explanation of the limitation and no further request for those paths. "
     "If validation_feedback reports a missing required_paths entry, correct the path using available_paths "
     "or remain uncertain if the necessary evidence is unavailable. Missing paths are not source evidence. "
     "Use an empty required_paths list only when the supplied evidence suffices or the missing evidence "
@@ -359,18 +362,21 @@ def expand_context(repo, env, run, context, paths, stopped):
             review_context.evidence_feedback(paths, "required_paths"))
     allowed = verification.filter_context(repo, env, dict.fromkeys(requested, "# context\n"),
                                           run.config["settings"], stopped)
-    if requested != allowed:
-        raise ValueError("Necessary assessment evidence is excluded or unsupported by OCR: "
-                         + ", ".join(sorted(requested - allowed)))
-    if len(requested | context["sources"].get("current", {}).keys()) > 100:
+    excluded = requested - allowed
+    if excluded:
+        context["excluded_paths"] = sorted(set(context.get("excluded_paths", [])) | excluded)
+    if len(allowed | context["sources"].get("current", {}).keys()) > 100:
         raise ValueError("Assessment exceeds its 100-source-file evidence limit.")
-    for path in sorted(requested):
+    for path in sorted(allowed):
         source = verification.read_requested_source(repo, env, run.head_sha, path, run.config["settings"], stopped,
                                                     revision="current", field="required_paths")
         context["sources"].setdefault("current", {})[path] = source
         context["diff"] += ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
                                    f"{run.base_sha}...{run.head_sha}", "--", f":(literal){path}", stopped=stopped)
     check_context_size(context, run.config["settings"])
+    if excluded:
+        raise verification.ResultValidationError("Necessary assessment evidence is excluded or unsupported by OCR: "
+            + ", ".join(sorted(excluded)), review_context.unavailable_evidence_feedback(excluded, "required_paths"))
     if repeated:
         raise verification.ResultValidationError("Some requested files are already supplied.",
             review_context.evidence_feedback(repeated, "required_paths"))
