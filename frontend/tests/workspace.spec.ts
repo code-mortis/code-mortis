@@ -843,8 +843,8 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
   await mock(page, { role });
   await page.goto("/repositories/22");
   const sections = role === "admin"
-    ? [["connections", "AI connections"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
-    : [["connections", "AI connections"], ["appearance", "Appearance"]];
+    ? [["connections", "AI connections"], ["api-tokens", "API tokens"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
+    : [["connections", "AI connections"], ["api-tokens", "API tokens"], ["appearance", "Appearance"]];
   for (const [tab, label] of sections) {
     await openNavigation(page);
     await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
@@ -5854,7 +5854,7 @@ for (const role of ["admin", "member"]) {
     await page.goto("/settings");
     const navigation = page.getByRole("navigation", { name: "Settings sections" });
     await expect(navigation.getByRole("link")).toHaveText(role === "admin"
-      ? ["AI connections", "MCP access", "GitHub", "Team", "Appearance"] : ["AI connections", "MCP access", "Appearance"]);
+      ? ["AI connections", "API tokens", "MCP access", "GitHub", "Team", "Appearance"] : ["AI connections", "API tokens", "MCP access", "Appearance"]);
     await navigation.getByRole("link", { name: "Appearance", exact: true }).click();
     await expect(page).toHaveURL(/\/settings\?tab=appearance$/);
     await expect(page.getByRole("region", { name: "Appearance", exact: true })).toBeVisible();
@@ -6023,7 +6023,7 @@ test("members manage personal subscriptions without administrative controls", as
 }, info) => {
   await mock(page, { role: "member", personal: true });
   await page.goto("/settings");
-  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "MCP access", "Appearance"]);
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText(["AI connections", "API tokens", "MCP access", "Appearance"]);
   await expect(
     page.getByRole("link", { name: "GitHub", exact: true }),
   ).toHaveCount(0);
@@ -6806,7 +6806,7 @@ test("settings group visible connections and distinguish tests from authenticati
 test("shared API logos cover the provider catalog with custom and unknown fallbacks", async ({ page }, info) => {
   await mock(page);
   const catalog: { name: string; displayName: string; protocol: string }[] = JSON.parse(
-    await readFile(new URL("../../backend/code_mortis/providers.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../backend/code_mortis/integrations/providers.json", import.meta.url), "utf8"),
   );
   await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [
     ...catalog.map((provider) => ({
@@ -6843,7 +6843,7 @@ test("shared API logos cover the provider catalog with custom and unknown fallba
 test("connection selectors show logos in options and selected values, but hide them during search", async ({ page }, info) => {
   await mock(page);
   const catalog: { name: string; displayName: string }[] = JSON.parse(
-    await readFile(new URL("../../backend/code_mortis/providers.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../backend/code_mortis/integrations/providers.json", import.meta.url), "utf8"),
   );
   await page.route("**/api/v1/providers", (route) => route.fulfill({ json: catalog }));
   await page.goto("/settings?tab=connections");
@@ -8030,7 +8030,7 @@ test("personal model and repository errors stay with their operation", async ({ 
     ? route.fulfill({ status: 403, json: { detail: "Repository authorization denied." } }) : route.fallback());
   await page.goto("/settings?tab=team");
   const sections = page.getByRole("navigation", { name: "Settings sections" });
-  await expect(sections.getByRole("link")).toHaveText(["AI connections", "MCP access", "Appearance"]);
+  await expect(sections.getByRole("link")).toHaveText(["AI connections", "API tokens", "MCP access", "Appearance"]);
   await expect(sections.getByRole("link", { name: "AI connections", exact: true })).toHaveAttribute("aria-current", "page");
   await page.getByRole("region", { name: "Your subscriptions" }).getByRole("button", { name: "Complete sign in", exact: true }).click();
   await page.getByRole("tab", { name: "General", exact: true }).click();

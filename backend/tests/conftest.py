@@ -37,6 +37,22 @@ from code_mortis.models import (
 )
 
 
+def pytest_collection_modifyitems(config, items):
+    if "PYTEST_SHARD_INDEX" not in os.environ and "PYTEST_SHARD_COUNT" not in os.environ:
+        return
+    try:
+        index = int(os.environ["PYTEST_SHARD_INDEX"])
+        count = int(os.environ["PYTEST_SHARD_COUNT"])
+    except (KeyError, ValueError) as exc:
+        raise pytest.UsageError("PYTEST_SHARD_INDEX and PYTEST_SHARD_COUNT must be integers") from exc
+    if not 0 <= index < count:
+        raise pytest.UsageError("PYTEST_SHARD_COUNT must be positive and 0 <= PYTEST_SHARD_INDEX < PYTEST_SHARD_COUNT")
+    # Interleave individual cases so large parametrized modules span isolated CI jobs.
+    ordered = sorted(items, key=lambda item: item.nodeid)
+    config.hook.pytest_deselected(items=[item for i, item in enumerate(ordered) if i % count != index])
+    items[:] = ordered[index::count]
+
+
 @pytest.fixture(scope="session", autouse=True)
 def database():
     assert engine().url.database == "mortis_test", "Tests only run against the isolated mortis_test database"
@@ -57,11 +73,13 @@ def clean_database(database):
 def clean_permission_cache():
     assert settings().redis_url == "redis://127.0.0.1:56389/0", "Use the isolated test Redis"
     with Redis.from_url(settings().redis_url) as cache:
-        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
-            cache.delete(key)
+        for pattern in ("code-mortis:github-permissions:v1:*", "code-mortis:pat:*"):
+            for key in cache.scan_iter(pattern):
+                cache.delete(key)
         yield
-        for key in cache.scan_iter("code-mortis:github-permissions:v1:*"):
-            cache.delete(key)
+        for pattern in ("code-mortis:github-permissions:v1:*", "code-mortis:pat:*"):
+            for key in cache.scan_iter(pattern):
+                cache.delete(key)
 
 
 @pytest.fixture

@@ -24,6 +24,7 @@ backend/
 │   │                       # summaries, checks, context and review queries
 │   ├── security_scans/      # Scan lifecycle, analysis, assessment and GitHub issues
 │   ├── mcp/                 # OAuth, transports, tools, grant models and provenance
+│   ├── api_tokens/          # Personal token lifecycle, exact route policy and provenance
 │   └── schemas/             # Shared Pydantic contracts for HTTP, workers and runner
 ├── migrations/              # Additive Alembic revisions and metadata registration
 └── tests/                   # Backend regressions and container smoke scripts

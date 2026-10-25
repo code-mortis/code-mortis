@@ -13,6 +13,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
+from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
@@ -251,15 +252,27 @@ def cancel_access(db, *, repository_ids=None, connection_id=None, actor_id=None,
 
 
 def checkpoint(scan_id, key, state, **values):
+    authorization_error = None
     with transaction() as db:
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status != "running" or scan.cancel_requested:
             raise ocr.ReviewStopped("Security scan is no longer running.")
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             scan.cancel_requested = True
             raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+        try:
+            pat_denied = _pat.scan_revoked(db, scan, repository_id=scan.repository_id)
+        except TransientAuthorizationError as exc:
+            if state not in {"completed", "failed"}:
+                raise
+            # Save already consumed usage and results before retrying authorization.
+            authorization_error, pat_denied = exc, False
+        if pat_denied:
+            scan.cancel_requested = True
+            raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
@@ -268,6 +281,8 @@ def checkpoint(scan_id, key, state, **values):
         elif type(values.get("tokens")) is int and state in {"completed", "failed"}:
             previous = previous + values["tokens"] if previous is not None else None
         scan.progress = {**scan.progress, "tasks": tasks, "tokens": previous}
+    if authorization_error is not None:
+        raise authorization_error
 
 
 def stage(scan_id, name, status, **values):
@@ -494,10 +509,14 @@ def perform(scan_id, claim):
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status not in ACTIVE or scan.cancel_requested:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
+            return
+        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
             return
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
@@ -545,9 +564,13 @@ def perform(scan_id, claim):
             row = db.get(SecurityScan, scan_id)
             if not row or row.cancel_requested or row.status != "running" or row.progress.get("execution") != claim:
                 return True
+            from code_mortis.api_tokens import provenance as _pat
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
+                row.cancel_requested = True
+                return True
+            if _pat.scan_revoked(db, row, repository_id=row.repository_id, network=False):
                 row.cancel_requested = True
                 return True
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
@@ -585,10 +608,13 @@ def perform(scan_id, claim):
             return cached["result"]
         with transaction() as db:
             row = db.get(SecurityScan, scan_id)
+            from code_mortis.api_tokens import provenance as _pat
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
                 raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+            if _pat.scan_revoked(db, row, repository_id=row.repository_id):
+                raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
         if used is None:
@@ -606,6 +632,8 @@ def perform(scan_id, claim):
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
+        except TransientAuthorizationError:
+            raise
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
             feedback = getattr(exc, "feedback", None)
@@ -807,6 +835,14 @@ def perform(scan_id, claim):
             stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values()) else "completed", findings=len(verdicts))
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]))
+    except TransientAuthorizationError:
+        with transaction() as db:
+            row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
+            if row and row.status == "running" and row.progress.get("execution") == claim:
+                interrupt_work(row)
+                row.status = "queued"
+                row.progress = {**row.progress, "execution": None}
+        raise
     except ocr.ReviewStopped:
         with transaction() as db:
             cancel(db, db.get(SecurityScan, scan_id))
@@ -832,10 +868,14 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         scan = db.get(SecurityScan, scan_id)
         if not scan or scan.status != "running" or scan.cancel_requested:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
+            return
+        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
             return
         authorize(db, db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id))
     with transaction() as db:

@@ -123,6 +123,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tokens */
+        get: operations["list_tokens_api_v1_api_tokens_get"];
+        put?: never;
+        /** Create Token */
+        post: operations["create_token_api_v1_api_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/api-tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Token */
+        delete: operations["revoke_token_api_v1_api_tokens__token_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Token Identity */
+        get: operations["token_identity_api_v1_auth_token_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories": {
         parameters: {
             query?: never;
@@ -1849,6 +1901,110 @@ export interface components {
             reviewed_pr_samples: number;
             /** Mean Per Reviewed Pr */
             mean_per_reviewed_pr?: number | null;
+        };
+        /** ApiTokenCreateInput */
+        ApiTokenCreateInput: {
+            /** Name */
+            name: string;
+            /** Scopes */
+            scopes: string[];
+            /** Repository Ids */
+            repository_ids: number[];
+            /**
+             * Expires In Days
+             * @default 30
+             */
+            expires_in_days: number;
+        };
+        /** ApiTokenCreated */
+        ApiTokenCreated: {
+            /** Token */
+            token: string;
+            item: components["schemas"]["ApiTokenOut"];
+        };
+        /** ApiTokenIdentity */
+        ApiTokenIdentity: {
+            user: components["schemas"]["ApiTokenUser"];
+            token: components["schemas"]["ApiTokenOut"];
+        };
+        /** ApiTokenOut */
+        ApiTokenOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /** Scopes */
+            scopes: string[];
+            /** Repository Ids */
+            repository_ids: number[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /** Status */
+            status: string;
+        };
+        /** ApiTokenPage */
+        ApiTokenPage: {
+            /** Items */
+            items: components["schemas"]["ApiTokenOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Has More */
+            has_more: boolean;
+            /** Active Count */
+            active_count: number;
+            /** Permissions */
+            permissions: components["schemas"]["ApiTokenScope"][];
+            /**
+             * Default Expiration Days
+             * @default 30
+             */
+            default_expiration_days: number;
+            /**
+             * Max Expiration Days
+             * @default 365
+             */
+            max_expiration_days: number;
+            /** Reauth Required */
+            reauth_required: boolean;
+        };
+        /** ApiTokenScope */
+        ApiTokenScope: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+        };
+        /**
+         * ApiTokenUser
+         * @description Identity for PAT callers: no session values, and never a csrf field.
+         */
+        ApiTokenUser: {
+            /** Id */
+            id: number;
+            /** Login */
+            login: string;
+            /** Avatar Url */
+            avatar_url: string;
+            /** Role */
+            role: string;
         };
         /** AssessmentResult */
         AssessmentResult: {
@@ -3962,6 +4118,124 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    list_tokens_api_v1_api_tokens_get: {
+        parameters: {
+            query?: {
+                status?: string;
+                page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_token_api_v1_api_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiTokenCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_token_api_v1_api_tokens__token_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    token_identity_api_v1_auth_token_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenIdentity"];
                 };
             };
         };

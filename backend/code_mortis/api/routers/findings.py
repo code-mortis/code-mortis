@@ -63,5 +63,9 @@ def retry_finding_sync(finding_id: str, db: DB, user: USER) -> dict:
             "actor_id": user.id, "reason": "Retry pending synchronization.",
         }
     finding.sync_error = None
+    # Explicit retry adopts the initiating session (or its PAT), never the stored origin.
+    from code_mortis.api_tokens import provenance as _pat
+
+    finding.sync_intent = _pat.adopt_intent(finding.sync_intent)
     job = enqueue(db, "resolve", finding.sync_intent)
     return {"job_id": job.id}

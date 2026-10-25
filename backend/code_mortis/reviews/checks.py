@@ -52,7 +52,16 @@ def enqueue_sync(db: Session, run: ReviewRun):
         .where(Job.kind == "sync_check", Job.status == "queued", Job.payload["run_id"].as_string() == run.id)
         .limit(1)
     ):
-        db.add(Job(id=uid(), kind="sync_check", payload={"run_id": run.id}))
+        # The check follows its run: inherit the run's stored PAT origin only,
+        # never ambient context, so unrelated work cannot misattribute it.
+        # MCP deliberately leaves sync_check unattributed; see provenance docs.
+        from code_mortis.api_tokens import provenance as _pat
+
+        payload = {"run_id": run.id}
+        origin = _pat.provenance_from_run(run)
+        if origin is not None:
+            payload[_pat.PROVENANCE_KEY] = origin
+        db.add(Job(id=uid(), kind="sync_check", payload=payload))
 
 
 @event.listens_for(Session, "before_flush")
@@ -204,8 +213,31 @@ def sync_check(run_id: str):
         repo = db.get(Repository, pr.repository_id)
         if not repo.active or not db.get(Installation, repo.installation_id).active:
             raise ValueError("GitHub check cannot be updated because installation access was removed.")
+        from code_mortis.api_tokens import provenance as _pat
+
+        pat_closeout = False
+        if _pat.PROVENANCE_KEY in (run.progress or {}):
+            if _pat.revoked(db, (run.progress or {}).get(_pat.PROVENANCE_KEY), repository_id=repo.id):
+                # Revoked after claim or retried after revocation: only a
+                # terminal closeout PATCH to the existing check is allowed,
+                # never a new check, new findings, full content or model work.
+                if run.status not in {"cancelled", "superseded"} or not run.check_id:
+                    run.check_pending, run.check_error = False, _pat.REVOKED_MESSAGE
+                    return
+                pat_closeout = True
         count = db.scalar(select(func.count()).select_from(Occurrence).where(Occurrence.run_id == run.id))
-        payload = check_payload(run, count)
+        if pat_closeout:
+            payload = {
+                "name": "Code Mortis",
+                "external_id": run.id,
+                "details_url": f"{settings().public_url}/runs/{run.id}",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "output": {"title": "Review cancelled",
+                           "summary": _pat.REVOKED_MESSAGE},
+            }
+        else:
+            payload = check_payload(run, count)
         fingerprint = digest(json.dumps(payload, sort_keys=True))
         if run.check_id and run.check_payload_hash == fingerprint:
             run.check_pending, run.check_error = False, None

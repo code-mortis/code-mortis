@@ -149,11 +149,16 @@ def perform(payload):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded", "completed", "partial", "failed", "skipped"} or run.stages.get(stage, {}).get("status") in TERMINAL:
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
                         repository_id=db.get(PullRequest, run.pr_id).repository_id):
             fail_stage(db, run, stage, _mcp.REVOKED_MESSAGE)
+            return
+        if _pat.revoked(db, _pat.origin_for(payload, run),
+                        repository_id=db.get(PullRequest, run.pr_id).repository_id):
+            fail_stage(db, run, stage, _pat.REVOKED_MESSAGE)
             return
         if run.status != "running":
             raise runner_client.RunnerBlocked("busy")

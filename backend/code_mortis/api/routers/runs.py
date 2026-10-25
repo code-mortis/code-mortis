@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from code_mortis.api.dependencies import DB, USER, pr_access, review_pr_access
 from code_mortis.api.presenters import pr_out, repo_out
+from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core.ordering import RunFindingOrdering, list_order
 from code_mortis.integrations import github
 from code_mortis.models import (
@@ -182,9 +183,10 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     candidate.status, candidate.result, candidate.error, candidate.finished_at = "queued", None, None, None
     candidate.failure_reason = None
     candidate.context, candidate.usage = ({"assessment_only": True} if assessment_only else {}), {}
-    run.progress = {**run.progress, "assessment_retry": {
+    # Explicit retry adopts the initiating session (or its PAT) for the stored origin.
+    run.progress = pat_provenance.adopt_progress({**run.progress, "assessment_retry": {
         "candidate_id": candidate.id, "actor_id": user.id, "assessment_only": assessment_only,
-    }}
+    }})
     if assessment_only:
         pr.state = "merged"
     run.status, run.error, run.blocked_reason = "queued", None, None
@@ -231,6 +233,8 @@ def retry_review(run_id: str, db: DB, user: USER):
     authorize_connection(db, connection, repo, trigger, user)
     run.status, run.error, run.blocked_reason = "queued", None, None
     run.failure_reason = None
+    # Explicit resume adopts the initiating session (or its PAT) for the stored origin.
+    run.progress = pat_provenance.adopt_progress(run.progress)
     enqueue(db, "review", {"run_id": run.id})
     return RunOut.model_validate(run)
 
@@ -247,6 +251,8 @@ def retry_publication(run_id: str, db: DB, user: USER) -> dict:
         raise HTTPException(409, "There are no failed GitHub comments to resend for this review. Refresh the page to see its current status.")
     run.publication, run.publication_error = "pending", None
     run.progress = {key: value for key, value in run.progress.items() if key != "publication_stopped"}
+    # Explicit retry adopts the initiating session (or its PAT) for the stored origin.
+    run.progress = pat_provenance.adopt_progress(run.progress)
     job = enqueue(db, "publish", {"run_id": run.id})
     return {"job_id": job.id}
 

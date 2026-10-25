@@ -42,8 +42,10 @@ INSTRUCTIONS = (
     "how subsequent changes remove its cause. Absence from another review, outdated GitHub threads, "
     "renames, line movement, deletions, and matching suggested patches are not proof. Missing necessary "
     "context means uncertain. A false positive means uncertain with dismissal_recommended=true. "
-    "Excluded paths are listed without their contents. If those files are needed to establish the "
-    "defect or its fix, return uncertain. Files in diff_only_paths are supplied as changed hunks only. "
+    "Paths matching exclusions or listed in excluded_paths are unavailable; do not request them. "
+    "If validation_feedback reports unavailable evidence, use other permitted evidence or remain uncertain "
+    "with an explanation of the limitation and no further request for those paths. "
+    "Files in diff_only_paths are supplied as changed hunks only. "
     "If necessary dependency code is missing, return uncertain and request up to 10 required_sources, each "
     "with revision (original or current) and repository-relative path. This can include unchanged dependencies. "
     "Use an empty required_sources list when no additional source is needed. Cite only the numbered source "
@@ -254,7 +256,9 @@ def read_requested_source(repo, env, sha, path, options, stopped, *, revision, f
 
 
 def filter_context(repo, env, sources, options, stopped):
-    """Use OCR's own protected-path, language and exclusion filters on inert Git-object copies."""
+    """Use OCR's exclusions on inert evidence, including Markdown supporting documents."""
+    from code_mortis.security_scans.engine import INSTRUCTION_FILES, PROTECTED
+
     with tempfile.TemporaryDirectory(prefix="verify-scope-", dir=repo.parent) as temp:
         root = Path(temp)
         ocr.git(root, env, "init", "--quiet", stopped=stopped)
@@ -285,7 +289,16 @@ def filter_context(repo, env, sources, options, stopped):
         if code:
             raise ValueError("The review engine could not check which evidence files are excluded. Check file exclusions and review rules before starting another review.")
         data = json.loads(output)
-        selected = {item["path"] for item in data.get("files", []) if item.get("will_review") is True}
+        protected = {part.lower() for part in (*PROTECTED, *INSTRUCTION_FILES)}
+        selected = set()
+        for item in data.get("files", []):
+            path = Path(item["path"])
+            markdown = path.suffix.lower() in {".md", ".markdown"}
+            if markdown and protected.intersection(part.lower() for part in path.parts):
+                continue
+            # OCR checks secrets and user exclusions before rejecting unsupported extensions.
+            if item.get("will_review") is True or (markdown and item.get("exclude_reason") == "unsupported_ext"):
+                selected.add(item["path"])
         return set(sources) & selected
 
 
@@ -336,6 +349,7 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
                     original_sha, head_sha, "--", *(f":(literal){path}" for path in sorted(selected)), stopped=stopped)
     context = {"finding": original, "original_sha": original_sha, "head_sha": head_sha,
                "current_path": current_path, "sources": sources, "diff": patch,
+               "exclusions": options.get("exclusions", ""),
                "excluded_paths": sorted(all_paths - selected), "diff_only_paths": sorted(selected - required)}
     check_context_size(context)
     return context
@@ -357,20 +371,26 @@ def expand_context(repo, env, context, requested, options, stopped):
     paths = {path for _, path in missing}
     for path in paths:
         ocr.ReviewComment.relative_path(path)
-    if len(paths | set(context.get("diff_only_paths", []))
+    allowed = filter_context(repo, env, dict.fromkeys(paths, "# context\n"), options, stopped)
+    if len(allowed | set(context.get("diff_only_paths", []))
            | {path for sources in context["sources"].values() for path in sources}) > 100:
         raise ValueError("Fix verification exceeds its 100-source-file evidence limit.")
-    allowed = filter_context(repo, env, dict.fromkeys(paths, "# context\n"), options, stopped)
-    if paths != allowed:
-        raise ValueError("Necessary verification evidence is excluded or unsupported by OCR: "
-                         + ", ".join(sorted(paths - allowed)))
+    excluded = paths - allowed
+    if excluded:
+        context["excluded_paths"] = sorted(set(context.get("excluded_paths", [])) | excluded)
     for revision, path in sorted(missing):
+        if path not in allowed:
+            continue
         sha = context["original_sha" if revision == "original" else "head_sha"]
         source = read_requested_source(repo, env, sha, path, options, stopped,
                                        revision=revision, field="required_sources")
         context["sources"].setdefault(revision, {})[path] = source
         check_context_size(context)
-    context["diff_only_paths"] = sorted(set(context.get("diff_only_paths", [])) - paths)
+    context["diff_only_paths"] = sorted(set(context.get("diff_only_paths", [])) - allowed)
+    if excluded:
+        check_context_size(context)
+        raise ResultValidationError("Necessary verification evidence is excluded or unsupported by OCR: "
+            + ", ".join(sorted(excluded)), review_context.unavailable_evidence_feedback(excluded, "required_sources"))
     repeated = [item["path"] for item in requested if (item["revision"], item["path"]) not in missing]
     if repeated:
         raise ResultValidationError("Some requested files are already supplied.",
@@ -1133,11 +1153,16 @@ def synchronize(payload):
         if not resolution_authorized(db, run, repo) and not row.sync_attempt:
             abandon(db, row, finding, "Automatic resolution is no longer authorized or current.")
             return
+        from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload) or _mcp.provenance_from_run(run),
                         repository_id=repo.id):
             abandon(db, row, finding, _mcp.REVOKED_MESSAGE)
+            return
+        if _pat.revoked(db, _pat.origin_for(payload, run),
+                        repository_id=repo.id):
+            abandon(db, row, finding, _pat.REVOKED_MESSAGE)
             return
         recovering = bool(row.sync_attempt)
         row.resolution, row.error, finding.sync_error = "applying", None, None

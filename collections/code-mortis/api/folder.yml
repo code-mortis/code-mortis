@@ -1,5 +1,8 @@
 meta:
   name: Authenticated API
   seq: 2
+auth:
+  type: bearer
+  token: $cm_api_token
 scripts:
   pre: ./scripts/auth.js

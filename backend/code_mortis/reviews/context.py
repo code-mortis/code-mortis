@@ -105,6 +105,14 @@ def evidence_feedback(paths, field):
                       "Use their source blocks and request only absent paths."}
 
 
+def unavailable_evidence_feedback(paths, field):
+    return {"field": field, "required_paths": sorted(paths),
+            "reason": "These paths are excluded or unsupported by the configured review scope; their contents "
+                      "cannot be supplied. Do not request them again. Use the permitted sources or request other "
+                      "necessary permitted paths. If this evidence is indispensable, return uncertain, explain "
+                      "what is unavailable, and leave the requested-source list empty."}
+
+
 def execution_credentials(db, repository_id, credentials, token):
     from sqlalchemy import select
 

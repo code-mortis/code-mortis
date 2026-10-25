@@ -729,15 +729,17 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 exc.usage = {"tokens": used}
                 raise
         if attempt == 3:
+            reason = "Additional source was still required after four evidence passes."
             break
         unavailable = {}
         for path in dict.fromkeys(result["required_paths"]):
             if path in context["sources"]["current"]:
                 unavailable[path] = "These complete source files are already supplied, including empty files. Use their source blocks and remove them from required_paths."
                 continue
-            if path not in item.inventory:
+            if path not in context["available_paths"]:
                 unavailable[path] = next((entry["reason"] for entry in [*item.excluded, *item.problems]
                                if isinstance(entry, dict) and entry.get("path") == path),
+                              "This path is not permitted as supporting source." if path in item.inventory else
                               "This path is not in the prepared snapshot at the scanned commit.")
                 continue
             if len(context["sources"]["current"]) >= 100:
@@ -755,7 +757,20 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             paths = list(unavailable)
             reason = "; ".join(f"{path}: {message}" for path, message in unavailable.items())
             if evidence_corrected:
+                if task != "analysis" and any(path not in context["available_paths"] for path in paths):
+                    break
                 evidence_unavailable(paths, reason)
             feedback = {"kind": "evidence", "task": task, "required_paths": paths, "reason": reason}
             evidence_corrected = True
-    evidence_unavailable(result["required_paths"], "Additional source was still required after four evidence passes.")
+    if task != "analysis":
+        result.update(verdict="uncertain", required_paths=[],
+                      explanation=("Required security evidence remains unavailable: "
+                                   + ", ".join(result["required_paths"]) + ". " + reason)[:12000])
+        if task == "assessment":
+            result["finding_id"] = None
+        try:
+            return redacted_context(item, result), {"tokens": used}
+        except verification.VerificationOutputError as exc:
+            exc.usage = {"tokens": used}
+            raise
+    evidence_unavailable(result["required_paths"], reason)

@@ -29,3 +29,5 @@ assert:
   - expression: status
     operator: equals
     value: 202
+auth:
+  type: inherit

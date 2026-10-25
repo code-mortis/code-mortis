@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -33,7 +34,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import checks, pipeline, verification
+from code_mortis.reviews import assessment, checks, pipeline, verification
 from code_mortis.reviews import service as reviews
 from code_mortis.schemas.common import RepoSettings
 
@@ -53,6 +54,104 @@ RESULT = {
         for revision, source in CONTEXT["sources"].items()
     ],
 }
+
+
+@pytest.mark.parametrize("rule_source", ["none", "project", "custom"])
+def test_markdown_context_preserves_scope_and_protected_paths(tmp_path, monkeypatch, rule_source):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    rules = {"exclude": ["private/**"]}
+    if rule_source == "project":
+        folder = repo / ".opencodereview"
+        folder.mkdir()
+        (folder / "rule.json").write_text(json.dumps(rules))
+    options = {"exclusions": "excluded/**", "rules": rules if rule_source == "custom" else None}
+    reasons = {
+        "main.py": None,
+        "docs/operations.md": "unsupported_ext",
+        "collections/code-mortis/README.md": "unsupported_ext",
+        "docs/guide.MARKDOWN": "unsupported_ext",
+        "docs/notes.txt": "unsupported_ext",
+        "excluded/guide.md": "user_rule",
+        "private/guide.md": "user_rule",
+        ".env.md": "secret_path",
+        "docs/binary.md": "binary",
+        "docs/large.md": "too_large",
+        "AGENTS.md": "unsupported_ext",
+        "nested/agents.MD": "unsupported_ext",
+        "CLAUDE.md": "unsupported_ext",
+        "GEMINI.md": "unsupported_ext",
+        "copilot-instructions.md": "unsupported_ext",
+        ".agents/guide.md": "unsupported_ext",
+        ".claude/guide.md": "unsupported_ext",
+        ".codex/guide.md": "unsupported_ext",
+        ".cursor/guide.md": "unsupported_ext",
+        ".aws/guide.md": "unsupported_ext",
+        ".ssh/guide.md": "unsupported_ext",
+        ".opencodereview/guide.md": "unsupported_ext",
+    }
+    original_command = ocr.command
+
+    def preview(args, root, env, **kwargs):
+        if args[0] != ocr.settings().ocr_binary:
+            return original_command(args, root, env, **kwargs)
+        assert args[:3] == [ocr.settings().ocr_binary, "scan", "--preview"]
+        assert args[-2:] == (["--rule", args[-1]] if rule_source == "custom" else ["--exclude", "excluded/**"])
+        if rule_source == "project":
+            assert json.loads((root / ".opencodereview/rule.json").read_text()) == rules
+        if rule_source == "custom":
+            assert json.loads(Path(args[-1]).read_text()) == rules
+        return 0, json.dumps({"files": [{"path": path, "will_review": reason is None,
+                                        "exclude_reason": reason} for path, reason in reasons.items()]}), ""
+
+    monkeypatch.setattr(ocr, "command", preview)
+    selected = verification.filter_context(repo, ocr.child_environment(), dict.fromkeys(reasons, "# context\n"), options, lambda: False)
+    assert selected == {"main.py", "docs/operations.md", "collections/code-mortis/README.md", "docs/guide.MARKDOWN"}
+
+
+@pytest.mark.parametrize("stage", ["assessment", "verification"])
+@pytest.mark.parametrize("path", ["docs/operations.md", "collections/code-mortis/README.md"])
+@pytest.mark.parametrize("content_kind", ["text", "binary", "symlink", "oversized"])
+def test_markdown_evidence_expansion_keeps_git_and_size_checks(tmp_path, monkeypatch, stage, path, content_kind):
+    env = ocr.child_environment()
+    source = "# Operations\n\nUse HTTPS through the reverse proxy.\n"
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if content_kind == "symlink":
+        target.symlink_to("/etc/passwd")
+    else:
+        target.write_text("\x00binary" if content_kind == "binary" else "x" * 1_500_000 if content_kind == "oversized" else source)
+    ocr.git(tmp_path, env, "init", "--quiet")
+    ocr.git(tmp_path, env, "add", ".")
+    ocr.git(tmp_path, env, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "--quiet", "-m", "Evidence")
+    sha = ocr.git(tmp_path, env, "rev-parse", "HEAD").strip()
+    options = RepoSettings().model_dump()
+    context = {"original_sha": sha, "head_sha": sha, "sources": {"current": {}}, "diff": ""}
+    original_command = ocr.command
+
+    def preview(args, *a, **k):
+        if args[0] != ocr.settings().ocr_binary:
+            return original_command(args, *a, **k)
+        return 0, json.dumps({"files": [
+            {"path": path, "will_review": False, "exclude_reason": "unsupported_ext"},
+        ]}), ""
+
+    monkeypatch.setattr(ocr, "command", preview)
+
+    def expand():
+        if stage == "assessment":
+            run = SimpleNamespace(base_sha=sha, head_sha=sha, config={"settings": options})
+            assessment.expand_context(tmp_path, env, run, context, [path], lambda: False)
+        else:
+            verification.expand_context(tmp_path, env, context, [{"revision": "current", "path": path}], options, lambda: False)
+
+    if content_kind == "text":
+        expand()
+        assert context["sources"]["current"][path] == source
+    else:
+        message = {"binary": "binary", "symlink": "not a regular file", "oversized": "limit"}[content_kind]
+        with pytest.raises(ValueError, match=message):
+            expand()
 
 
 @pytest.fixture
@@ -333,7 +432,7 @@ def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
 
 @pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request"])
+@pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request", "excluded_request", "excluded_uncertain"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
     identity = scenario["run"]
     with transaction() as db:
@@ -370,7 +469,10 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         calls.append((copy.deepcopy(context), budget))
         raw = copy.deepcopy(RESULT)
         loaded = "helper.py" in context["sources"]["current"]
-        if sequence == "missing_request" and len(calls) == 1:
+        if sequence.startswith("excluded_") and len(calls) == 1:
+            raw.update(verdict="uncertain", required_sources=[
+                {"revision": "current", "path": path} for path in ("private/helper.py", "helper.py")])
+        elif sequence == "missing_request" and len(calls) == 1:
             raw.update(verdict="uncertain", required_sources=[{"revision": "current", "path": "app/helper.py"}])
         elif sequence == "multiple_citations":
             if len(calls) == 1:
@@ -396,6 +498,13 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             start = 1 if sequence == "request_correct" and len(calls) == 2 else 3
             raw["evidence"].append({"revision": "current", "path": "helper.py", "start_line": start,
                                     "end_line": start + 1, "quote": helper.strip()})
+            if sequence.startswith("excluded_"):
+                assert context["excluded_paths"] == ["private/helper.py"]
+                assert context["validation_feedback"]["field"] == "required_sources"
+                assert context["validation_feedback"]["required_paths"] == ["private/helper.py"]
+                assert "private/helper.py" not in context["sources"]["current"]
+                if sequence == "excluded_uncertain":
+                    raw.update(verdict="uncertain", explanation="Required evidence is excluded by review scope.")
         return raw
 
     def api(repo, env, connection, credentials, context, budget, remaining, stopped):
@@ -424,12 +533,15 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         jobs.execute_job.run(job_id)
     with transaction() as db:
         row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))
-        assert row.status == "completed" and row.verdict == "fixed", row.error
+        assert row.status == "completed" and row.verdict == ("uncertain" if sequence == "excluded_uncertain" else "fixed"), row.error
+        if sequence == "excluded_uncertain":
+            assert db.get(Finding, scenario["finding"]).desired_status is None
+            assert not scenario["mutations"]
         assert row.usage == {"tokens": 25 * len(calls)}
         if sequence != "multiple_citations":
             assert row.context["sources"]["current"]["helper.py"] == helper
         assert "required_sources" not in row.result
-    assert len(calls) == (2 if sequence in {"request", "multiple_citations"} else 3)
+    assert len(calls) == (2 if sequence in {"request", "multiple_citations", "excluded_request", "excluded_uncertain"} else 3)
     assert reads == ([] if sequence == "multiple_citations" else
                      [(HEAD, "app/helper.py"), (HEAD, "helper.py")] if sequence == "missing_request" else
                      [(HEAD, "helper.py")])
@@ -474,6 +586,9 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
                 db.get(Connection, "connection").base_url = "https://changed.example.com/v1"
             elif stop == "finding":
                 db.get(Finding, scenario["finding"]).sync_version += 1
+        if stop == "excluded" and len(calls) > 1:
+            assert context["validation_feedback"]["required_paths"] == [f"helper{len(calls) - 1}.py"]
+            assert "excluded or unsupported" in context["validation_feedback"]["reason"]
         if stop == "missing" and len(calls) > 1:
             assert context["validation_feedback"]["path"] == f"helper{len(calls) - 1}.py"
         return {**RESULT, "verdict": "uncertain", "required_sources": [
@@ -481,10 +596,10 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
         ]}, {"tokens": None if stop == "missing_unknown" else 25}
     monkeypatch.setattr(verification, "api_verify", infer)
     row, finding, _ = perform(scenario)
-    assert len(calls) == (3 if stop in {"three_passes", "missing"} else 2 if stop == "repeat_citation" else 1)
+    assert len(calls) == (3 if stop in {"three_passes", "missing", "excluded"} else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
     assert row.usage == {"tokens": calls[0] if stop == "unknown" else None if stop == "missing_unknown" else 25 * len(calls)}
-    assert row.status == ("completed" if stop in {"three_passes", "missing"} else "failed" if stop in {"connection", "excluded", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
+    assert row.status == ("completed" if stop in {"three_passes", "missing", "excluded"} else "failed" if stop in {"connection", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
     if stop == "missing":
         assert "three passes" in row.result["explanation"]
 
@@ -531,6 +646,23 @@ def test_requested_original_dependency_uses_pinned_revision(tmp_path, monkeypatc
     assert not context["diff_only_paths"]
     assert 'original source: "helper.py"' in verification.evidence_bundle(context)
     assert "1 | old dependency" in verification.evidence_bundle(context)
+
+
+@pytest.mark.parametrize("task", ["assessment", "verification"])
+@pytest.mark.parametrize("extra_permitted", [False, True])
+def test_excluded_evidence_does_not_consume_source_capacity(tmp_path, monkeypatch, task, extra_permitted):
+    context = {"sources": {"current": {f"source{i}.py": "safe" for i in range(100)}}, "diff": ""}
+    requested = ["private.yml", *(["helper.py"] if extra_permitted else [])]
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"private.yml"})
+    monkeypatch.setattr(verification, "read_source", lambda *a: pytest.fail("No further source may be loaded"))
+    error = ValueError if extra_permitted else verification.ResultValidationError
+    with pytest.raises(error, match="100-source-file" if extra_permitted else "excluded.*private.yml"):
+        if task == "assessment":
+            assessment.expand_context(tmp_path, {}, SimpleNamespace(config={"settings": {}}), context, requested, lambda: False)
+        else:
+            verification.expand_context(tmp_path, {}, context,
+                [{"revision": "current", "path": path} for path in requested], {}, lambda: False)
+    assert len(context["sources"]["current"]) == 100
 
 
 @pytest.mark.parametrize("verdict,count,path", [("fixed", 1, "helper.py"), ("uncertain", 11, "helper.py"), ("uncertain", 1, "../secret")])

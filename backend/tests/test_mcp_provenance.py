@@ -1,11 +1,13 @@
 """MCP grant provenance across queued jobs and follow-up work."""
 
+from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
 
 from code_mortis import jobs
+from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp_provenance
@@ -120,6 +122,58 @@ def test_execute_job_blocks_revoked_without_side_effects(seed, mcp_setup, monkey
     with transaction() as db:
         assert db.get(Job, job_id).status == "failed"
         assert db.get(ReviewRun, run_id).status == "cancelled"
+
+
+@pytest.mark.parametrize("failure", ["lookup", "transaction_entry", "transaction_exit"])
+@pytest.mark.parametrize("transient", [False, True])
+def test_job_context_setup_failure_cleans_context_and_claim(seed, mcp_setup, github_stub, monkeypatch, failure, transient):
+    with mcp_provenance.scoped(mcp_setup["reviews"]), transaction() as db:
+        job_id = reviews.enqueue(db, "sync_pr", {"repository_id": 22, "number": 9}).id
+    error = pat_provenance.TransientAuthorizationError if transient else RuntimeError
+    outer_pat = {"token_id": "outer-token", "user_id": 7, "scope": "reviews:run"}
+    job_pat = {**outer_pat, "token_id": "job-token"}
+    original_provenance = pat_provenance.job_provenance
+    transactions, executed = [], []
+
+    def provenance(db, job):
+        if job.id == job_id:
+            if failure == "lookup":
+                raise error("Context setup unavailable")
+            return job_pat
+        return original_provenance(db, job)
+
+    @contextmanager
+    def worker_transaction():
+        transactions.append(1)
+        setup = len(transactions) == 2
+        if setup and failure == "transaction_entry":
+            raise error("Context setup unavailable")
+        with transaction() as db:
+            yield db
+            if setup and failure == "transaction_exit":
+                raise error("Context setup unavailable")
+
+    monkeypatch.setattr(jobs, "transaction", worker_transaction)
+    monkeypatch.setattr(pat_provenance, "job_provenance", provenance)
+    monkeypatch.setattr(jobs, "execute", lambda *a, **k: executed.append(
+        (mcp_provenance.current_provenance(), pat_provenance.current_provenance())))
+    with mcp_provenance.scoped(mcp_setup["security"]), pat_provenance.scoped(outer_pat):
+        jobs.execute_job(job_id)
+        assert mcp_provenance.current_provenance() == mcp_setup["security"]
+        assert pat_provenance.current_provenance() == outer_pat
+    assert executed == []
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        assert job.status == ("queued" if transient else "failed")
+        assert job.lease_until is None and job.dispatched_at is None
+        assert job.attempts == 1
+        plain = reviews.enqueue(db, "sync_pr", {"repository_id": 22, "number": 10})
+        assert "mcp" not in plain.payload and "pat" not in plain.payload
+        plain_id = plain.id
+    jobs.execute_job(plain_id)
+    assert executed == [(None, None)]
+    with transaction() as db:
+        assert db.get(Job, plain_id).status == "done"
 
 
 def test_publish_blocked_after_revocation_without_github(seed, mcp_setup, monkeypatch):

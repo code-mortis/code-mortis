@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from code_mortis.api.dependencies import DB, USER
+from code_mortis.api.dependencies import DB, SESSION_USER
 from code_mortis.api.oauth import auth_error, browser_binding, consume_state, start_attempt
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
@@ -111,7 +111,7 @@ def manifest_callback(request: Request, db: DB, state: str = "", code: str = "")
 
 @router.get("/auth/login")
 def login(request: Request, db: DB, installation_id: int | None = None, return_to: str = "/"):
-    if return_to != "/" and not (
+    if return_to != "/" and return_to != "/settings?tab=api-tokens" and not (
         return_to.startswith("/mcp/authorize?request_id=")
         and re.fullmatch(r"/mcp/authorize\?request_id=[a-f0-9-]{36}", return_to)
     ):
@@ -170,6 +170,7 @@ def login_callback(request: Request, db: DB, state: str = "", code: str = "", er
             user_id=user.id,
             csrf=csrf,
             expires_at=now() + timedelta(days=settings().session_days),
+            authenticated_at=now(),
         )
     )
     response = RedirectResponse(settings().public_url + attempt.return_path, status_code=303)
@@ -186,12 +187,12 @@ def login_callback(request: Request, db: DB, state: str = "", code: str = "", er
 
 
 @router.get("/auth/me", response_model=UserOut)
-def me(request: Request, user: USER):
+def me(request: Request, user: SESSION_USER):
     return UserOut.model_validate(user).model_copy(update={"csrf": request.state.login_session.csrf})
 
 
 @router.post("/auth/logout")
-def logout(request: Request, response: Response, db: DB, user: USER) -> dict:
+def logout(request: Request, response: Response, db: DB, user: SESSION_USER) -> dict:
     db.delete(request.state.login_session)
     response.delete_cookie("cm_session", path="/")
     return {"ok": True}

@@ -57,6 +57,8 @@ class LoginSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     csrf: Mapped[str] = mapped_column(String(100))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # Set only by a successful GitHub callback; issuance freshness for API tokens.
+    authenticated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OAuthState(Base):
@@ -397,3 +399,31 @@ PullRequest.summary_pending = column_property(or_(
     select(Job.id).where(Job.kind == "sync_summary", Job.status.in_(["queued", "running"]),
                          Job.payload["pr_id"].as_string() == PullRequest.id).correlate_except(Job).exists(),
 ))
+
+
+class PersonalApiToken(Base):
+    __tablename__ = "personal_api_tokens"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(20))
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    repository_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Approximate: refreshed at most every five minutes on authenticated use.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiTokenEvent(Base):
+    """Feature-local lifecycle audit for issuance and revocation."""
+
+    __tablename__ = "api_token_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    token_id: Mapped[str] = mapped_column(ForeignKey("personal_api_tokens.id"), index=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    event: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
