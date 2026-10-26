@@ -37,7 +37,7 @@ Production serves the compiled frontend and API from one HTTPS origin. Developme
 
 ## Future feature plans
 
-- [Optional code graph](docs/code-graph-plan.md): [Phase 0 evaluation complete](docs/code-graph-phase0.md); Phase 1A contracts and additive persistence are implemented and verified locally. Indexing, retrieval and user activation are not available yet. Direct parsing was selected after twelve-language fixtures and bounded local benchmarks. No embeddings or pgvector are required; the full-stack 8 GB target remains unverified. The expanded plan tracks checkpoints 1A–1E and resumes at the isolated parser/transport in 1B.
+- [Optional code graph](docs/code-graph-plan.md): [Phase 0 evaluation complete](docs/code-graph-phase0.md); Phases 1A and 1B contracts, additive persistence, isolated parsing and bounded worker transport are implemented and verified locally. Indexing, retrieval and user activation are not available yet. Direct parsing was selected after twelve-language fixtures and bounded local benchmarks. No embeddings or pgvector are required; the full-stack 8 GB target remains unverified. The expanded plan tracks checkpoints 1A–1E and resumes at authorized acquisition, durable indexing and retention in 1C.
 
 ## Definition of done
 

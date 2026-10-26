@@ -18,6 +18,7 @@ backend/
 │   │   └── routers/         # Auth, repositories, pulls, runs, findings,
 │   │                       # connections, subscriptions, installations,
 │   │                       # members, settings, analytics, security and webhooks
+│   ├── code_graph/          # Optional isolated parser, syntax rules and trusted worker transport
 │   ├── core/                # Settings, database, encryption, ordering, telemetry
 │   ├── integrations/        # GitHub, OCR, model discovery, runner client, providers
 │   ├── reviews/             # Review lifecycle, assessment, verification,
@@ -47,3 +48,7 @@ The deployment entry points remain `code_mortis.main:app`, `code_mortis.native_r
 Run the backend suite and Ruff after moving modules. Export OpenAPI and regenerate frontend types with the commands in [AGENTS.md](../AGENTS.md); a structural refactor should preserve the public contract. CI path filters and their tests in `.github/` must follow moved files and cover newly added router modules.
 
 The native runner keeps its restricted imports and receives no database or GitHub credentials. Container and real-account acceptance remain separate from local tests; see [operations](operations.md) and [acceptance](acceptance.md).
+
+## Optional code graph parser
+
+`code_mortis.code_graph.server:app` is a separate private ASGI entry point in `Dockerfile.code-graph`, enabled only by the code graph Compose overlay. Its disposable child runs `python -m code_mortis.code_graph.extract` on supplied bounded bytes. `code_graph/client.py` is the trusted worker transport and validates results against the submitted exact-revision manifest. Parser-facing schemas import only Pydantic and the standard library; grammar imports stay inside the isolated extraction module. The base application and native runner entry points are unchanged. Authorized acquisition and persistence jobs are the next checkpoint, not yet wired to this transport.

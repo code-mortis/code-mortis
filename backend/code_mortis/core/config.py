@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     webhook_url: str = ""
     runner_url: str = "http://runner:8090"
     runner_token: str = ""
+    code_graph_parser_url: str = ""
+    code_graph_token: str = ""
     encryption_key: str
     bootstrap_token: str = Field(min_length=24)
     owner_github_login: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")

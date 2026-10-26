@@ -1,0 +1,31 @@
+# Optional overlay for compose.yaml or compose.dev.yaml. No repository is enabled by this file.
+services:
+  review-worker:
+    environment:
+      CM_CODE_GRAPH_PARSER_URL: http://code-graph-parser:8091
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:?Generate a separate code graph service token}
+    networks: [code-graph]
+  code-graph-parser:
+    image: code-mortis-code-graph:0.1.0
+    build: {context: ., dockerfile: Dockerfile.code-graph}
+    environment:
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:?Generate a separate code graph service token}
+    networks: [code-graph]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=128m"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8091/health',headers={'Authorization':'Bearer '+os.environ['CM_CODE_GRAPH_TOKEN']}),timeout=5)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+networks:
+  code-graph:
+    internal: true

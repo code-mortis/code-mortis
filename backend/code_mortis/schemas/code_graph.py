@@ -1,18 +1,26 @@
 """Internal structural extraction contracts; these do not authorize source access."""
 
+import base64
+import binascii
 import hashlib
 from pathlib import PurePosixPath
 from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, Field, model_validator
-
-from code_mortis.schemas.common import StrictModel
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 MAX_FILES = 1000
 MAX_FILE_BYTES = 1024 * 1024
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_FACTS = 100_000
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
+EXTRACTION_SECONDS = 120
+EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/1"
+
+
+class StrictModel(BaseModel):
+    # This contract also runs in the parser image, without application dependencies.
+    model_config = ConfigDict(extra="forbid")
 
 
 def stored_text(value: str) -> str:
@@ -147,4 +155,58 @@ class CodeGraphResult(StrictModel):
                     raise ValueError("Resolved imports require an available target in the same snapshot")
         if len(self.model_dump_json().encode()) > MAX_RESULT_BYTES:
             raise ValueError("Graph result exceeds the serialized byte limit")
+        return self
+
+
+def blob_sha(source: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
+
+
+def source_lines(source: bytes) -> int:
+    return source.count(b"\n") + bool(source and not source.endswith(b"\n"))
+
+
+class CodeGraphSource(StrictModel):
+    path: RepositoryPath
+    blob_sha: GitSha
+    size_bytes: int = Field(ge=0, le=2**63 - 1, strict=True)
+    content_base64: str | None = Field(default=None, max_length=4 * ((MAX_FILE_BYTES + 2) // 3))
+    exclusion: Literal["excluded", "file_too_large"] | None = None
+
+    def source(self) -> bytes:
+        return base64.b64decode(self.content_base64, validate=True)
+
+    @model_validator(mode="after")
+    def content_matches_manifest(self) -> Self:
+        if self.exclusion is not None:
+            if self.content_base64 is not None:
+                raise ValueError("Excluded files must not carry source")
+            if self.exclusion == "file_too_large" and self.size_bytes <= MAX_FILE_BYTES:
+                raise ValueError("File does not exceed the per-file limit")
+        else:
+            if self.content_base64 is None or self.size_bytes > MAX_FILE_BYTES:
+                raise ValueError("Admitted files require bounded source")
+            try:
+                source = self.source()
+            except (ValueError, binascii.Error):
+                raise ValueError("Source must be valid base64") from None
+            if len(source) != self.size_bytes or blob_sha(source) != self.blob_sha:
+                raise ValueError("Source does not match the file/blob manifest")
+        return self
+
+
+class CodeGraphRequest(StrictModel):
+    schema_version: Literal["code-graph/v1"] = "code-graph/v1"
+    repository_id: int = Field(gt=0, le=2**63 - 1, strict=True)
+    commit_sha: GitSha
+    extractor_version: Literal[EXTRACTOR_VERSION] = EXTRACTOR_VERSION
+    policy_digest: Digest
+    files: list[CodeGraphSource] = Field(max_length=MAX_FILES)
+
+    @model_validator(mode="after")
+    def bounded_manifest(self) -> Self:
+        if len({item.path for item in self.files}) != len(self.files):
+            raise ValueError("Request paths must be unique")
+        if sum(item.size_bytes for item in self.files if item.exclusion is None) > MAX_SOURCE_BYTES:
+            raise ValueError("Request exceeds the source byte limit")
         return self

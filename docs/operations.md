@@ -16,6 +16,18 @@ reviews.example.com {
 
 The runner has no published port, database credentials, installation keys or Docker socket. Keep its network private and retain its service bearer token in `.env`. Run exactly one runner ASGI process and one scheduler. Each review worker uses concurrency one because OCR's configuration is process-global. The runner serializes each personal connection independently. Do not set `CM_OCR_ISOLATED_RUNTIME=true` on a normal workstation account.
 
+## Optional code graph parser
+
+The parser/transport checkpoint is available for local development; repository indexing, retention and activation are still pending. Existing installations do not start a parser and do not install its grammar dependency group. Adding this service alone does not enable repository graphs.
+
+Generate a separate `CM_CODE_GRAPH_TOKEN` with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` and store it in the environment file for that instance. Production uses `docker compose -f compose.yaml -f compose.code-graph.yaml up -d --build code-graph-parser review-worker`. Development uses `docker compose --env-file .env.dev -f compose.dev.yaml -f compose.code-graph.yaml up -d --build code-graph-parser review-worker`. For Coolify append its existing overlay as well; preserve the parser's private network and do not publish or proxy its port. Use the same overlay on subsequent lifecycle commands.
+
+The overlay gives only the trusted review worker the parser URL and dedicated internal network. The parser gets only its service token, with no app env file, GitHub/database/Redis/model credentials, source volume or Docker socket. Keep one parser replica and one ASGI worker. Limits are one CPU, 256 MiB total memory with no swap, 128 MiB temporary storage, 32 process IDs and a 120-second request deadline. A busy parser rejects additional extraction; an oversized, malformed, timed-out or killed extraction fails explicitly and cannot publish a usable snapshot. A worker disconnect kills the active parser child. No embedding/model API is involved.
+
+To verify locally, run `python3 scripts/check_code_graph.py` from the repository root. It builds disposable images, verifies the real private-network transport, and tests cancellation, the full deadline, tmpfs exhaustion and memory enforcement. It uses a separate Compose project and removes that project's containers/network afterward. Run ordinary backend graph tests against `compose.test.yaml`. The optional test stack is `compose.code-graph.test.yaml`; the existing database/test services remain separate.
+
+The protocol and future publication requirements are documented in [checkpoint 1B and the handoff](code-graph-plan.md#phase-1-execution-checklist). These parser limits do not establish full-stack operation on an 8 GB server; that remains a Phase 2 measurement.
+
 ## Upgrade an existing installation
 
 1. Back up the database, `.env` and native profiles. Let active reviews finish or cancel them in the app, then stop API, review-worker, sync-worker and scheduler. Keep the database available for backup and migration.
