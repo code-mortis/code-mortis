@@ -1,7 +1,8 @@
 name: code-mortis-code-graph-tests
 services:
   code-graph-parser:
-    extends: {file: compose.code-graph.yaml, service: code-graph-parser}
+    extends: {file: compose.yaml, service: code-graph-parser}
+    profiles: !reset []
     restart: "no"
   unrelated-peer:
     image: code-mortis-code-graph:0.1.0

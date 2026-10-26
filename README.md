@@ -23,10 +23,13 @@ Development has its own database, Redis, profiles, secrets and GitHub App. The b
 
 ```sh
 python3 backend/code_mortis/manage.py init-env --output .env.dev --owner YOUR_GITHUB_LOGIN --url http://localhost:5173 --webhook-url https://smee.io/YOUR_CHANNEL
-docker compose --env-file .env.dev -f compose.dev.yaml --profile webhooks up -d --build
+# Set COMPOSE_PROFILES=webhooks in .env.dev before starting.
+docker compose --env-file .env.dev -f compose.dev.yaml up -d --build
 ```
 
 Open [localhost:5173](http://localhost:5173), bootstrap with `.env.dev`, and register a **separate development GitHub App**. Its callbacks stay on localhost; only webhooks use the relay. HMR updates the frontend and the API reloads Python changes. Restart review-worker, sync-worker, scheduler or runner after changing their code. Restarting preserves data; `down -v` deletes development data. These commands do not reconfigure the production project.
+
+Keep optional services in the persistent `COMPOSE_PROFILES` setting. To run the experimental parser alongside the relay, use `webhooks,code-graph`; see [parser setup and current limitations](docs/operations.md#optional-code-graph-parser). An explicit `--profile` flag overrides this setting.
 
 All services, including the frontend, run in Docker. Keep port 5173 available so the browser origin and GitHub callbacks stay consistent.
 

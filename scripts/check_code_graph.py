@@ -4,13 +4,14 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "disposable-code-graph-test-token"
 ENV = os.environ | {"CM_CODE_GRAPH_TOKEN": TOKEN, "POSTGRES_PASSWORD": "test-only",
-                    "CM_RUNNER_TOKEN": "test-only", "CM_PUBLIC_HOST": "example.test", "COOLIFY_RESOURCE_UUID": "test-only"}
+                    "CM_RUNNER_TOKEN": "test-only", "COMPOSE_PROFILES": "", "CM_PUBLIC_HOST": "example.test", "COOLIFY_RESOURCE_UUID": "test-only"}
 COMPOSE = ["docker", "compose", "-f", "compose.code-graph.test.yaml"]
 
 
@@ -25,9 +26,23 @@ def inside(container, code, *args):
 def configurations():
     for base in ("compose.yaml", "compose.dev.yaml"):
         prefix = ["docker", "compose", "--env-file", "/dev/null", "-f", base]
-        original = json.loads(command(prefix + ["config", "--format", "json", "--no-env-resolution"]))
-        assert "code-graph-parser" not in original["services"]
-        configured = json.loads(command(prefix + ["-f", "compose.code-graph.yaml", "config", "--format", "json", "--no-env-resolution"]))
+        # Disabled installations must resolve without a graph token or parser service.
+        disabled_env = ENV | {"COMPOSE_PROFILES": "", "CM_CODE_GRAPH_TOKEN": ""}
+        disabled = subprocess.run(prefix + ["config", "--services"], cwd=ROOT, env=disabled_env,
+                                  text=True, capture_output=True, check=True).stdout.splitlines()
+        assert "code-graph-parser" not in disabled and "review-worker" in disabled
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "profiles.env"
+            environment.write_text("COMPOSE_PROFILES=webhooks,code-graph\n")
+            # Exercise the persistent env-file setting, not a --profile override.
+            enabled_env = {key: value for key, value in ENV.items() if key != "COMPOSE_PROFILES"}
+            enabled_prefix = ["docker", "compose", "--env-file", str(environment), "-f", base]
+            enabled = subprocess.run(enabled_prefix + ["config", "--services"], cwd=ROOT, env=enabled_env,
+                                     text=True, capture_output=True, check=True).stdout.splitlines()
+            assert "code-graph-parser" in enabled
+            if base == "compose.dev.yaml":
+                assert "relay" in enabled
+        configured = json.loads(command(prefix + ["--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
         services = configured["services"]
         parser = services["code-graph-parser"]
         assert set(parser["networks"]) == {"code-graph"}
@@ -36,7 +51,9 @@ def configurations():
         assert configured["networks"]["code-graph"]["internal"] is True
         assert {name for name, service in services.items() if "code-graph" in service.get("networks", {})} == {"code-graph-parser", "review-worker"}
         assert set(services["review-worker"]["networks"]) == {"default", "runners", "code-graph"}
-        assert services["runner"] == original["services"]["runner"]
+        if base == "compose.yaml":
+            coolify = json.loads(command(prefix + ["-f", "compose.coolify.yaml", "--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
+            assert coolify["services"]["code-graph-parser"] == parser
 
 
 STOP_CHILD = '''
@@ -107,6 +124,10 @@ def main():
         assert len(networks) == 1
         network = json.loads(command(["docker", "network", "inspect", next(iter(networks))]))[0]
         assert network["Internal"] is True
+        missing_token = subprocess.run(COMPOSE + ["run", "--rm", "--no-deps", "-e", "CM_CODE_GRAPH_TOKEN=", "code-graph-parser"],
+                                       cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=15, check=False)
+        assert missing_token.returncode != 0 and "Run upgrade-env" in missing_token.stderr
+        report["missing_token_rejected"] = True
         report["fixtures_and_max_source"] = json.loads(command(COMPOSE + ["run", "--rm", "probe"], timeout=60).strip())
         peer = command(COMPOSE + ["ps", "-q", "unrelated-peer"]).strip()
         peer_info = json.loads(command(["docker", "inspect", peer]))[0]
@@ -166,4 +187,8 @@ print('ENOSPC at 128 MiB')
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as exc:
+        print(exc.stderr, file=sys.stderr)
+        raise

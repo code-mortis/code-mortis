@@ -8,6 +8,7 @@ COPY backend/code_mortis/schemas/__init__.py backend/code_mortis/schemas/code_gr
 COPY backend/code_mortis/code_graph/ ./code_mortis/code_graph/
 ENV PATH="/app/backend/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER 65534:65534
+ENTRYPOINT ["sh", "-ec", ": \"${CM_CODE_GRAPH_TOKEN:?Run upgrade-env before enabling code-graph}\"; exec \"$@\"", "--"]
 CMD ["uvicorn", "code_mortis.code_graph.server:app", "--host", "0.0.0.0", "--port", "8091", "--workers", "1", "--http", "h11", "--ws", "none", "--lifespan", "off", "--limit-concurrency", "8", "--no-access-log"]
 
 # Disposable HTTP client for container checks; never used by the parser service.

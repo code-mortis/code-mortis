@@ -73,9 +73,11 @@ services:
     environment:
       <<: *environment
       CM_OCR_ISOLATED_RUNTIME: "true"
+      CM_CODE_GRAPH_PARSER_URL: http://code-graph-parser:8091
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
     stop_grace_period: 30s
-    networks: [default, runners]
+    networks: [default, runners, code-graph]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -128,6 +130,28 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  code-graph-parser:
+    image: code-mortis-code-graph:0.1.0
+    profiles: [code-graph]
+    build: {context: ., dockerfile: Dockerfile.code-graph}
+    environment:
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
+    networks: [code-graph]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=128m"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8091/health',headers={'Authorization':'Bearer '+os.environ['CM_CODE_GRAPH_TOKEN']}),timeout=5)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
   runner:
     image: code-mortis-runner:0.2.0
     build:
@@ -156,4 +180,6 @@ volumes:
   trivy-cache:
 
 networks:
+  code-graph:
+    internal: true
   runners:
