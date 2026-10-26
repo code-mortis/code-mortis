@@ -35,6 +35,10 @@ Production serves the compiled frontend and API from one HTTPS origin. Developme
 - Keep English UI and configurable comment language. Public SaaS, billing, GitLab and automatic code changes are excluded.
 - Authenticated MCP access is part of the product: independent reviews and security endpoints plus separately authorized management tools, all default off, with per-user browser consent, explicit repository selection, exact-argument approvals for public or destructive actions, grant provenance with revocation, and audit retention. Operator setup and troubleshooting are in docs/operations.md; evidence boundaries are in docs/acceptance.md.
 
+## Future feature plans
+
+- [Optional code graph](docs/code-graph-plan.md): [Phase 0 evaluation complete](docs/code-graph-phase0.md); production implementation not started. Direct parsing was selected after twelve-language fixtures and bounded local benchmarks. No embeddings or pgvector are required; the full-stack 8 GB target remains unverified. The plan preserves implementation gates and a Phase 1 handoff for internal context, independent MCP code access, and an impact explorer. This is not an addition to current delivery acceptance claims.
+
 ## Definition of done
 
 All capabilities above work in development and on the server; both personal subscriptions complete manual and automatic reviews; the acceptance matrix has actual evidence. Mocked tests and unauthenticated client startup are recorded separately. Missing external accounts, permissions or quota mean pending validation, not completion. See [acceptance record](docs/acceptance.md).
