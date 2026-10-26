@@ -81,6 +81,10 @@ services:
       api: {condition: service_healthy}
   review-worker:
     <<: *app
+    volumes:
+      - ./backend/code_mortis:/app/backend/code_mortis:ro
+      - ./backend/migrations:/app/backend/migrations:ro
+      - code-graph-data:/var/lib/code-mortis/code-graph
     environment:
       <<: *environment
       CM_OCR_ISOLATED_RUNTIME: "true"
@@ -188,6 +192,7 @@ volumes:
   redis-data:
   runner-profiles:
   trivy-cache:
+  code-graph-data:
   frontend-modules:
 
 networks:

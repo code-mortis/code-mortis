@@ -72,7 +72,9 @@ def command(
     timeout: int | None = 60,
     stopped: Callable[[], bool] = lambda: False,
     poll: Callable[[], None] = lambda: None,
-) -> tuple[int, str, str]:
+    *,
+    binary: bool = False,
+) -> tuple[int, str | bytes, str | bytes]:
     if args and args[0] == settings().ocr_binary and any(part in {"review", "scan"} for part in args[1:2]):
         env = {**env, "CM_OCR_REDACTION_FILE": str(Path.home() / ".opencodereview" / "redaction.json")}
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
@@ -100,10 +102,9 @@ def command(
             errors.seek(0)
             if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                 raise ValueError("Review output exceeded the 20 MB safety limit.")
-            return (
-                process.returncode,
-                output.read(MAX_OUTPUT).decode("utf-8", "replace"),
-                errors.read(MAX_OUTPUT).decode("utf-8", "replace"),
+            stdout, stderr = output.read(MAX_OUTPUT), errors.read(MAX_OUTPUT)
+            return (process.returncode, stdout, stderr) if binary else (
+                process.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"),
             )
         finally:
             if process.poll() is None:

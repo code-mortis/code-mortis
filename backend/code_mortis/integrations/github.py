@@ -226,6 +226,13 @@ def app_token(db: Session) -> str:
     )
 
 
+def repository_read_token(db: Session, installation_id: int, repository_id: int) -> str:
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db), json={
+        "repository_ids": [repository_id], "permissions": {"contents": "read", "metadata": "read"},
+    })
+    return data["token"]
+
+
 def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
     options = {"checks": checks, "resolve": resolve}
     if issues:
@@ -325,7 +332,7 @@ def user_token(db: Session, user: User) -> str:
         return unseal(locked.access_token)
 
 
-def authorize_repo(db: Session, user: User, full_name: str, write: bool = False) -> dict:
+def authorize_repo(db: Session, user: User, full_name: str, write: bool = False, *, fresh: bool = False) -> dict:
     from code_mortis.core.access import effective_repository_ids
 
     selected = effective_repository_ids(user)
@@ -335,7 +342,7 @@ def authorize_repo(db: Session, user: User, full_name: str, write: bool = False)
         if getattr(user, "api_token_repository_ids", None) is not None:
             raise GitHubError(403, "This repository was not selected for this API token.")
         raise GitHubError(403, "This repository was not selected for this MCP client.")
-    result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write)
+    result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write or fresh)
     permissions = result.get("permissions", {})
     if not permissions.get("pull") or (write and not permissions.get("push")):
         raise GitHubError(

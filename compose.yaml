@@ -70,6 +70,7 @@ services:
       retries: 3
   review-worker:
     <<: *app
+    volumes: [code-graph-data:/var/lib/code-mortis/code-graph]
     environment:
       <<: *environment
       CM_OCR_ISOLATED_RUNTIME: "true"
@@ -178,6 +179,7 @@ volumes:
   redis-data:
   runner-profiles:
   trivy-cache:
+  code-graph-data:
 
 networks:
   code-graph:

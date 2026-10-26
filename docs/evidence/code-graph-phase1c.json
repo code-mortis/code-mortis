@@ -1,0 +1,45 @@
+{
+  "recorded_at": "2026-10-26T18:44:00.053587+00:00",
+  "phase": "1C authorized indexing and retention",
+  "scope": "Local uncommitted implementation; no production deployment, real repository activation, paid inference, commit or push.",
+  "validation": {
+    "full_backend": {
+      "command": "cd backend && uv run python -m pytest -q",
+      "passed": 2807,
+      "warnings": 637,
+      "seconds": 440.05,
+      "boundary": "Completed before final locked-row refresh, activation recheck, terminal-retention, packfile-monitor and sanitized job-error refinements; the final 126-case graph suite covers those changes and three added cases."
+    },
+    "final_graph_suite": {
+      "command": "cd backend && uv run python -m pytest -q tests/test_code_graph_workflow.py tests/test_code_graph_storage.py tests/test_code_graph_parser.py",
+      "passed": 126,
+      "seconds": 74.0
+    },
+    "ruff": "uv run ruff check . passed",
+    "migration": "Isolated DB downgrade/upgrade preservation and graph metadata comparison passed; development upgraded additively to 20261026_graph_jobs.",
+    "public_contract": "OpenAPI export and bun run api:types passed with no generated public type diff.",
+    "build": "Application Docker build passed, including tsc and Vite; existing bundle-size warning remains.",
+    "compose": "Production, development and Coolify profile checks passed; graph source volume is mounted only on the review worker.",
+    "development": "Workers drained before restart; 13 services running, API readiness and frontend HTTP 200, all 5 Celery workers ping, no tracebacks/error lines in inspected startup logs.",
+    "preserved_records": {
+      "users": 1,
+      "repositories": 6,
+      "connections": 4,
+      "review_runs": 180,
+      "findings": 354,
+      "occurrences": 377,
+      "security_scans": 31,
+      "method": "Counts and SHA-256 digests of sorted primary keys match before/after."
+    },
+    "real_container_smoke": "UID 10001 can write graph volume; synthetic bare Git commit -> manifest -> actual private parser -> exact retained blob -> graph-ref pruning passed. Temporary fixture removed.",
+    "real_repositories_opted_in": 0,
+    "real_snapshots_indexed": 0
+  },
+  "boundaries": [
+    "GitHub permissions, token issuance and acquisition are stubbed in workflow tests; actual Git object storage, PostgreSQL and Redis are exercised.",
+    "Container smoke uses synthetic source and does not publish a database snapshot.",
+    "Full parser CPU/memory/network/destructive resource acceptance remains the separate Phase 1B evidence; unchanged parser isolation was not stress-tested again.",
+    "No live GitHub acquisition, public graph API, MCP code tools, browser graph controls, hosted CI or full-stack 8 GB benchmark.",
+    "Disk limits are polled (256 MiB/repository, 1 GiB/instance), not filesystem quotas; the store requires a shared POSIX-lock-capable volume."
+  ]
+}

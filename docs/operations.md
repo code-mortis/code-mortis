@@ -18,7 +18,7 @@ The runner has no published port, database credentials, installation keys or Doc
 
 ## Optional code graph parser
 
-The parser/transport checkpoint is available for local development; repository indexing, retention and activation are still pending. Existing installations do not start a parser and do not install its grammar dependency group. Adding this service alone does not enable repository graphs.
+The internal parser, authorized indexing jobs and retention are implemented locally; public retrieval and repository activation are still pending. Existing installations do not start a parser and do not install its grammar dependency group. Adding this service alone does not enable repository graphs.
 
 The parser service lives directly in `compose.yaml` and `compose.dev.yaml`, behind the `code-graph` profile. Fresh `init-env` configurations include a separate `CM_CODE_GRAPH_TOKEN`; existing installations run `python3 backend/code_mortis/manage.py upgrade-env --file .env` (or `--file .env.dev`). This adds missing service tokens without rotating existing credentials or changing active profiles.
 
@@ -28,9 +28,15 @@ Only the trusted review worker and parser join the dedicated internal network. T
 
 To disable the service, stop `code-graph-parser` with the normal Compose command, then remove `code-graph` from `COMPOSE_PROFILES` while preserving other profiles. Removing a profile alone does not stop an already running container. The parser has no persistent data volume to delete.
 
+Indexing uses an additional named `code-graph-data` volume on the trusted review worker, owned by UID/GID 10001. Rebuild the application image before starting that worker so a new volume gets the correct ownership. All review-worker replicas must share this same POSIX-lock-capable volume. The parser and native runner never mount it. The volume contains private repository Git objects, including excluded files retained as part of a commit, even though excluded bytes never go to the parser. Protect its backups like the source repositories.
+
+Back up `code-graph-data` together with PostgreSQL while graph work is stopped. Restoring graph rows without this volume leaves source unavailable; lookup must never substitute another revision. Retention keeps the latest successful default-branch snapshot and one other usable snapshot for seven days, removes terminal attempt records after seven days, and prunes orphan graph refs/objects under the shared lock. A periodic cleanup job runs only after graph configuration/work exists. Failed/cancelled attempts require explicit retry; successful identities remain immutable. Do not delete Git refs manually while workers run. Graph cleanup never deletes saved review evidence. Missing objects require restoring the matching volume or a deliberate graph-cache rebuild through future administration controls.
+
+Initial indexing admits at most two pending snapshots per repository and sixteen per instance, with one extraction at a time. Git acquisition monitors 256 MiB per repository and 1 GiB total on disk, alongside the parser's source limits. These polling limits can overshoot during a fetch and are not hard disk quotas. Disabling the parser profile does not erase retained graph data or change repository opt-ins; the browser controls for those opt-ins are still phase 1E.
+
 To verify locally, run `python3 scripts/check_code_graph.py` from the repository root. It builds disposable images, verifies the real private-network transport, and tests cancellation, the full deadline, tmpfs exhaustion and memory enforcement. It uses a separate Compose project and removes that project's containers/network afterward. Run ordinary backend graph tests against `compose.test.yaml`. The optional test stack is `compose.code-graph.test.yaml`; the existing database/test services remain separate.
 
-The protocol and future publication requirements are documented in [checkpoint 1B and the handoff](code-graph-plan.md#phase-1-execution-checklist). These parser limits do not establish full-stack operation on an 8 GB server; that remains a Phase 2 measurement.
+The protocol, publication and retention requirements are documented in [checkpoint 1B and the handoff](code-graph-plan.md#phase-1-execution-checklist). These parser limits do not establish full-stack operation on an 8 GB server; that remains a Phase 2 measurement.
 
 ## Upgrade an existing installation
 

@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     or_,
     select,
+    text,
 )
 from sqlalchemy.orm import Mapped, column_property, mapped_column
 
@@ -133,6 +134,14 @@ class Repository(Base):
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class CodeGraphRepository(Base):
+    __tablename__ = "code_graph_repositories"
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    default_sha: Mapped[str | None] = mapped_column(String(40))
+
+
 class CodeGraphSnapshot(Base):
     __tablename__ = "code_graph_snapshots"
     __table_args__ = (
@@ -156,6 +165,8 @@ class CodeGraphSnapshot(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
 
 
 class CodeGraphFile(Base):

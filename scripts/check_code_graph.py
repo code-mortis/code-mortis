@@ -51,6 +51,10 @@ def configurations():
         assert configured["networks"]["code-graph"]["internal"] is True
         assert {name for name, service in services.items() if "code-graph" in service.get("networks", {})} == {"code-graph-parser", "review-worker"}
         assert set(services["review-worker"]["networks"]) == {"default", "runners", "code-graph"}
+        stores = [(name, volume) for name, service in services.items() for volume in service.get("volumes", [])
+                  if volume.get("source") == "code-graph-data"]
+        assert len(stores) == 1 and stores[0][0] == "review-worker"
+        assert stores[0][1]["target"] == "/var/lib/code-mortis/code-graph" and not stores[0][1].get("read_only")
         if base == "compose.yaml":
             coolify = json.loads(command(prefix + ["-f", "compose.coolify.yaml", "--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
             assert coolify["services"]["code-graph-parser"] == parser
