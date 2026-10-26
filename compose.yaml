@@ -70,15 +70,12 @@ services:
       retries: 3
   review-worker:
     <<: *app
-    volumes: [code-graph-data:/var/lib/code-mortis/code-graph]
     environment:
       <<: *environment
       CM_OCR_ISOLATED_RUNTIME: "true"
-      CM_CODE_GRAPH_PARSER_URL: http://code-graph-parser:8091
-      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
     stop_grace_period: 30s
-    networks: [default, runners, code-graph]
+    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -131,6 +128,27 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  code-graph-worker:
+    <<: *app
+    profiles: [code-graph]
+    volumes: [code-graph-data:/var/lib/code-mortis/code-graph]
+    environment:
+      <<: *environment
+      CM_CODE_GRAPH_PARSER_URL: http://code-graph-parser:8091
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, code-graph, --concurrency=1, --loglevel=INFO, --hostname=graph@%h]
+    networks: [default, code-graph]
+    tmpfs: ["/tmp:mode=1777,size=128m"]
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1
+    pids_limit: 64
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      code-graph-parser: {condition: service_healthy}
   code-graph-parser:
     image: code-mortis-code-graph:0.1.0
     profiles: [code-graph]

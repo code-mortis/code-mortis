@@ -30,7 +30,7 @@ def configurations():
         disabled_env = ENV | {"COMPOSE_PROFILES": "", "CM_CODE_GRAPH_TOKEN": ""}
         disabled = subprocess.run(prefix + ["config", "--services"], cwd=ROOT, env=disabled_env,
                                   text=True, capture_output=True, check=True).stdout.splitlines()
-        assert "code-graph-parser" not in disabled and "review-worker" in disabled
+        assert not {"code-graph-parser", "code-graph-worker"}.intersection(disabled) and "review-worker" in disabled
         with tempfile.TemporaryDirectory() as directory:
             environment = Path(directory) / "profiles.env"
             environment.write_text("COMPOSE_PROFILES=webhooks,code-graph\n")
@@ -39,7 +39,7 @@ def configurations():
             enabled_prefix = ["docker", "compose", "--env-file", str(environment), "-f", base]
             enabled = subprocess.run(enabled_prefix + ["config", "--services"], cwd=ROOT, env=enabled_env,
                                      text=True, capture_output=True, check=True).stdout.splitlines()
-            assert "code-graph-parser" in enabled
+            assert {"code-graph-parser", "code-graph-worker"}.issubset(enabled)
             if base == "compose.dev.yaml":
                 assert "relay" in enabled
         configured = json.loads(command(prefix + ["--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
@@ -49,15 +49,24 @@ def configurations():
         assert set(parser["environment"]) == {"CM_CODE_GRAPH_TOKEN"}
         assert not parser.get("volumes") and not parser.get("ports") and not parser.get("env_file")
         assert configured["networks"]["code-graph"]["internal"] is True
-        assert {name for name, service in services.items() if "code-graph" in service.get("networks", {})} == {"code-graph-parser", "review-worker"}
-        assert set(services["review-worker"]["networks"]) == {"default", "runners", "code-graph"}
+        worker = services["code-graph-worker"]
+        assert {name for name, service in services.items() if "code-graph" in service.get("networks", {})} == {"code-graph-parser", "code-graph-worker"}
+        assert set(services["review-worker"]["networks"]) == {"default", "runners"}
+        assert set(worker["networks"]) == {"default", "code-graph"}
+        assert worker["image"] == services["review-worker"]["image"]
+        assert worker["build"] == services["review-worker"]["build"]
+        assert worker["command"][worker["command"].index("-Q") + 1] == "code-graph"
+        assert "--concurrency=1" in worker["command"] and worker["profiles"] == ["code-graph"]
+        assert int(worker["mem_limit"]) == int(worker["memswap_limit"]) == 768 * 1024**2 and worker["cpus"] == 1
+        assert worker["read_only"] and not worker.get("ports")
         stores = [(name, volume) for name, service in services.items() for volume in service.get("volumes", [])
                   if volume.get("source") == "code-graph-data"]
-        assert len(stores) == 1 and stores[0][0] == "review-worker"
+        assert len(stores) == 1 and stores[0][0] == "code-graph-worker"
         assert stores[0][1]["target"] == "/var/lib/code-mortis/code-graph" and not stores[0][1].get("read_only")
         if base == "compose.yaml":
             coolify = json.loads(command(prefix + ["-f", "compose.coolify.yaml", "--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
             assert coolify["services"]["code-graph-parser"] == parser
+            assert coolify["services"]["code-graph-worker"] == worker
 
 
 STOP_CHILD = '''

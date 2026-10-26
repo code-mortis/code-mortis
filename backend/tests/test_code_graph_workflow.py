@@ -256,7 +256,7 @@ def test_instance_serialization_requeues_without_consuming_attempt(graph):
     with store.locked():
         row, job = run(identity)
     assert row.status == "queued" and job.status == "queued" and job.attempts == 0
-    assert jobs.job_queue("code_graph") == jobs.job_queue("code_graph_cleanup") == "reviews"
+    assert jobs.job_queue("code_graph") == jobs.job_queue("code_graph_cleanup") == "code-graph"
 
 
 def test_retention_expiry_and_consumer_lock(graph):
