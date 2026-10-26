@@ -1,6 +1,6 @@
 # Code graph: feature proposal and implementation plan
 
-Status: **Phase 0 complete; Phases 1A and 1B complete locally**, 2026-10-26. Phase 1 remains in progress; 1C–1E and Phases 2–5 are not started. See the [evaluation report and decisions](code-graph-phase0.md) and [recorded evidence](evidence/code-graph-phase0.json). Contracts, additive persistence, an isolated parser and worker transport are implemented; no indexer, graph API, MCP code tools, or graph UI is available yet.
+Status: **Phase 0 complete; Phases 1A–1C complete locally**, 2026-10-26. Phase 1 remains in progress; 1D–1E and Phases 2–5 are not started. Authorized durable indexing, atomic publication and retained Git source are implemented in `ee7bee4`; see [1C evidence](evidence/code-graph-phase1c.json). Public graph retrieval, MCP code tools and repository activation in the UI are still pending.
 
 This document preserves the investigation and follow-up decisions so development can resume without the original conversation. The user requested documentation for later development; this document does not authorize implementation, paid runs, deployment, commits, or pushes by itself. Read [AGENTS.md](../AGENTS.md), [PLAN.md](../PLAN.md), [PRODUCT.md](../PRODUCT.md), and the relevant source again before implementation.
 
@@ -12,7 +12,7 @@ The first benefit to establish is better cross-file review: finding unchanged ca
 
 ## Decisions and clarifications to preserve
 
-These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Authorization/lifecycle integration and public interfaces remain to be implemented and verified.
+These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Phase 1C adds authorized durable jobs, atomic publication and source retention. Public retrieval and repository activation remain pending in 1D–1E.
 
 | Topic | Working direction |
 | --- | --- |
@@ -175,9 +175,9 @@ Gate met locally: [report](code-graph-phase0.md), [runnable assertions](../scrip
 ### Phase 1: persist snapshots and expose bounded retrieval internally
 
 - [x] Add minimal models/contracts and additive migrations; prove upgrade with existing review/history data intact. See checkpoint 1A and its validation below.
-- [ ] Implement authorized snapshot creation, reuse, atomic publication, cancellation/retry, and cleanup through existing durable job patterns.
+- [x] Implement authorized snapshot creation, reuse, atomic publication, cancellation/retry, and cleanup through existing durable job patterns. See checkpoint 1C.
 - [ ] Implement exact symbol/text lookup, typed relationship traversal, impact candidates, and safe source retrieval with snapshot provenance and limits.
-- [ ] Handle deletion, rename, parser/version/policy changes, concurrent jobs, worker restart, unavailable commits, partial parsing, and restricted paths.
+- [x] Handle deletion, rename, parser/version/policy changes, concurrent jobs, worker restart, unavailable commits, partial parsing, and restricted paths. Verified in the 1C graph tests.
 - [ ] Add the repository opt-in/readiness control through the normal API and generated types; keep the feature off by default.
 
 Gate: focused backend checks prove correctness, authorization, recovery, and bounded behavior. No new mandatory infrastructure for installations with the feature disabled; the optional isolated parser container has no database/Redis dependency or credentials. No embedding dependency. Disabled repositories keep their current behavior.
@@ -226,15 +226,17 @@ Deployment: the optional `code-graph` profile in [`compose.yaml`](../compose.yam
 
 Validation commands: `cd backend && uv run python -m pytest -q tests/test_code_graph_parser.py tests/test_code_graph_storage.py`; `python3 scripts/check_code_graph.py docs/evidence/code-graph-phase1b.json` from the repository root builds disposable parser/client images, checks production/development Compose wiring, and removes its own test stack. The container check deliberately pauses real parser processes, fills only its disposable tmpfs, and exceeds only its disposable memory cgroup. It makes no GitHub/model calls. Resource caps are admission/failure boundaries, not guarantees that every 8 MiB repository can finish successfully.
 
-**1C. Authorized acquisition, durable indexing and retention (not started)**
+**1C. Authorized acquisition, durable indexing and retention (complete locally)**
 
-- [ ] Add a focused `code_graph/` workflow and integrate the existing `Job` dispatch/lease/recovery patterns. Persist activation's initiating user, revalidate current membership/GitHub repository access at admission, acquisition and publication, and stop on disable/revocation/uninstall.
-- [ ] Reuse authorized GitHub/Git helpers with a fixed repository identity. Retain a trusted bare object store under the application data directory, pinning each snapshot's exact commit with a server-generated ref. Read regular blobs via the tree/object database; never check out or execute repository content. Excluded paths do not reach the parser.
-- [ ] Deduplicate by the full snapshot key, serialize extraction across the instance, and use claim/attempt fencing so expired workers cannot publish after a retry. State flow: queued -> running -> ready/partial/failed/cancelled; retries of failed/cancelled attempts remain explicit. Ready/partial snapshots are immutable.
-- [ ] Validate the entire extraction before a short transaction inserts all facts and marks the snapshot usable. Failed/cancelled attempts keep the prior ready revision available under its original SHA. Never substitute that older snapshot for an exact-head request.
-- [ ] Handle deletion/rename through full rebuilds; changing parser/policy produces a new identity. Missing Git objects return unavailable, not another revision's source. Verify retained blob IDs against the pinned tree before source reads.
-- [ ] Keep the latest default-branch and most recent other unpinned ready snapshots; expire the latter after seven days. Bound building/pinned work, release pins in all terminal paths, and prune graph-owned rows/refs only after consumers finish. Saved review evidence remains independent.
-- [ ] Exercise duplicate admission, interrupted acquisition, expired leases, stale publication, cancellation, changed policies, retention and access loss with the isolated DB and stubbed external GitHub responses.
+- [x] Add a focused `code_graph/` workflow and integrate the existing `Job` dispatch/lease/recovery patterns. Persist activation's initiating user, revalidate current membership/GitHub repository access at admission, acquisition and publication, and stop on disable/revocation/uninstall.
+- [x] Reuse authorized GitHub/Git helpers with a fixed repository identity. Retain a trusted bare object store under the application data directory, pinning each snapshot's exact commit with a server-generated ref. Read regular blobs via the tree/object database; never check out or execute repository content. Excluded paths do not reach the parser.
+- [x] Deduplicate by the full snapshot key, serialize extraction across the instance, and use claim/attempt fencing so expired workers cannot publish after a retry. State flow: queued -> running -> ready/partial/failed/cancelled; retries of failed/cancelled attempts remain explicit. Ready/partial snapshots are immutable.
+- [x] Validate the entire extraction before a short transaction inserts all facts and marks the snapshot usable. Failed/cancelled attempts keep the prior ready revision available under its original SHA. Never substitute that older snapshot for an exact-head request.
+- [x] Handle deletion/rename through full rebuilds; changing parser/policy produces a new identity. Missing Git objects return unavailable, not another revision's source. Verify retained blob IDs against the pinned tree before source reads.
+- [x] Keep the latest default-branch and most recent other unpinned ready snapshots; expire the latter after seven days. Bound building/pinned work, release pins in all terminal paths, and prune graph-owned rows/refs only after consumers finish. Saved review evidence remains independent.
+- [x] Exercise duplicate admission, interrupted acquisition, expired leases, stale publication, cancellation, changed policies, retention and access loss with the isolated DB and stubbed external GitHub responses.
+
+1C evidence: implementation is committed at `ee7bee4`, including [`service.py`](../backend/code_mortis/code_graph/service.py), [`store.py`](../backend/code_mortis/code_graph/store.py), durable Job integration, migration `20261026_graph_jobs` and workflow tests. The final graph suite passed **126 tests**; the earlier full backend suite passed **2,807**, before the final focused refinements. Development was migrated and its workers restarted with existing records preserved. A synthetic check exercised the real worker volume, bare Git manifest, private parser, exact source bytes and pruning. See [the evidence and its boundaries](evidence/code-graph-phase1c.json): GitHub acquisition is stubbed in workflow tests; production, public graph APIs and full-stack 8 GB capacity are not established. No real repository was enabled automatically.
 
 **1D. Bounded authorized internal retrieval (not started)**
 
@@ -251,7 +253,7 @@ Validation commands: `cd backend && uv run python -m pytest -q tests/test_code_g
 - [ ] Measure database/index/WAL size and retained Git storage on the recorded modest corpora; document the optional container and upgrade/backup/cleanup procedure. Full-stack 8 GB and review quality/token benchmarks remain Phase 2.
 - [ ] Complete backend, migration, schema-generation, frontend/build and container checks appropriate to the finished phase. Update acceptance with actual evidence; keep real-account, hosted CI and deployment claims separate.
 
-Source retention and graph persistence are separate responsibilities: database rows contain identifiers, ranges, provenance and status, while exact source stays in the pinned trusted Git object store. The source-retention mechanism is a 1C implementation requirement, not established by the 1A schema.
+Source retention and graph persistence are separate responsibilities: database rows contain identifiers, ranges, provenance and status, while exact source stays in the pinned trusted Git object store. The source-retention mechanism is implemented in 1C through the review worker's shared `code-graph-data` volume. A database-only backup cannot restore pinned source objects; see [operations](operations.md#optional-code-graph-parser).
 
 ### Phase 2: integrate review context and measure quality/cost
 
@@ -296,7 +298,7 @@ Gate: opt-in rollout is reviewable, recoverable, and supported by local, hosted,
 
 1. Which additional definition/import forms and symbol resolvers meet the same accuracy gates beyond the Phase 0 matrix?
 2. Do the selected admission, parser and retention limits fit the full stack under the 8 GB target, including database/storage growth and overlapping work?
-3. How should 1C serialize authorized indexing jobs around the now-tested private parser transport, fence retries and retain pinned Git objects? Initial snapshots rebuild fully; artifact sharing/incremental invalidation is deferred.
+3. Does measured load justify parallel readers or incremental snapshots beyond the serialized full rebuilds implemented in 1C? Multi-host storage/locking and artifact sharing remain deferred.
 4. What exact OCR/API context integration is available in the pinned engine?
 5. How should the selected independent `/mcp/code` resource extend discovery, settings, domain types, consent and redaction without widening existing grants?
 6. Which benchmark cases and quality/cost thresholds justify release? Establish these before claiming improvements.
@@ -316,14 +318,14 @@ Reviewed during the 2026-10-25/26 discussion. These describe vendor capabilities
 
 ## Handoff for the next session
 
-Completed locally: investigation, **Phase 0**, **Phase 1A contracts/persistence**, and the **Phase 1B isolated parser/transport implementation**. The focused checks and disposable-container acceptance checks passed; the rest of Phase 1 remains unfinished. Direct Tree-sitter parsing is selected. Graphify remains a local navigation tool. No embeddings or pgvector.
+Completed locally: **Phase 0**, **1A contracts/persistence**, **1B isolated parser/transport**, and **1C authorized indexing/retention**. Direct Tree-sitter parsing remains selected. Graphify is a local navigation tool. No embeddings or pgvector.
 
-Baseline: Phase 0 is committed at `0cd3d2f`, Phase 1A at `227b9bf`, and Phase 1B at `3529c57`. The current local diff simplifies deployment into the existing Compose files, adds persistent profile/token setup, removes the graph deployment overlay and updates checks/documentation. Development was restarted at the user's request with `webhooks,code-graph` enabled; all 13 services and the internal extraction path passed verification, with data/volumes preserved and schema at `20261026_code_graph`. Production was not deployed or restarted. No real model review, external MCP integration, hosted CI, commit or push was performed.
+Relevant commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, and 1C `ee7bee4`. The recorded development checks reached migration `20261026_graph_jobs`, preserved existing identities/counts and verified 13 running services. Final focused graph tests: 126 passed. See [1C evidence](evidence/code-graph-phase1c.json) for the full-suite boundary and real versus simulated checks. No real repository was opted in or indexed. Production, hosted CI and real GitHub acquisition were not exercised.
 
-Next useful work: **Phase 1C**, authorized source acquisition, durable jobs, attempt fencing, atomic publication and retention. `code_graph.client.extract(request, stopped)` is the worker entry point; it is intentionally not called from production jobs yet. Build requests from an authorized exact Git tree, keep excluded source out, revalidate access before publication, and never return a previous SHA as an exact-head result. Follow with 1D internal retrieval and 1E repository opt-in. Keep disabled repositories unchanged. Full rebuilds precede incremental caching; file dependencies are not resolved calls.
+Next useful work: **Phase 1D**, bounded authorized internal retrieval. Reuse `code_graph/service.py`, `store.py`, `client.py` and immutable graph facts. Internal exact-blob reads currently use the enabling actor and shared storage lock; they are not a public retrieval contract. Generalize authorization deliberately, authorize before lookup/counts/traversal, enforce 1D response limits and preserve exact-revision semantics. Follow with **1E** browser repository opt-in, readiness and scheduling. Enabling the environment profile starts the parser infrastructure only.
 
 Suggested resume request:
 
-> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, docs/code-graph-phase0.md, backend/code_mortis/schemas/code_graph.py, backend/code_mortis/code_graph/client.py and the graph tests. Phases 1A and 1B are complete locally. Resume Phase 1C using the existing parser, transport and schema. Do not redo the migration/parser foundation. Preserve the no-embeddings, opt-in, exact-revision, source-manifest validation and isolated-parser boundaries. Update this plan with actual evidence and the next handoff.
+> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, backend/code_mortis/code_graph/service.py, store.py, client.py and tests/test_code_graph_workflow.py. Phases 1A–1C are complete locally. Start Phase 1D bounded authorized retrieval using the existing jobs and source-retention foundation. Preserve no embeddings, repository opt-in, independent code authorization, exact revisions and isolated parsing. Update this plan with actual evidence and the next handoff.
 
 After each development session, update this section with completed items, relevant commit or local diff, commands/results, real versus mocked evidence and the next concrete task. Keep unfinished checkboxes open. Never infer deployment, performance or language support from the existence of this plan.
