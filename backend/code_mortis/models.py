@@ -5,8 +5,10 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -129,6 +131,100 @@ class Repository(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     connection_id: Mapped[str | None] = mapped_column(ForeignKey("connections.id"))
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class CodeGraphSnapshot(Base):
+    __tablename__ = "code_graph_snapshots"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "commit_sha", "extractor_version", "policy_digest",
+                         name="uq_code_graph_snapshot_identity"),
+        CheckConstraint("commit_sha ~ '^[a-f0-9]{40}$'", name="ck_code_graph_snapshot_commit"),
+        CheckConstraint("policy_digest ~ '^[a-f0-9]{64}$'", name="ck_code_graph_snapshot_policy"),
+        CheckConstraint("length(extractor_version) > 0", name="ck_code_graph_snapshot_extractor"),
+        CheckConstraint("status IN ('queued', 'running', 'ready', 'partial', 'failed', 'cancelled')",
+                        name="ck_code_graph_snapshot_status"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    commit_sha: Mapped[str] = mapped_column(String(40))
+    extractor_version: Mapped[str] = mapped_column(String(128))
+    policy_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class CodeGraphFile(Base):
+    __tablename__ = "code_graph_files"
+    __table_args__ = (
+        CheckConstraint("octet_length(path) BETWEEN 1 AND 2000", name="ck_code_graph_file_path"),
+        CheckConstraint("blob_sha ~ '^[a-f0-9]{40}$'", name="ck_code_graph_file_blob"),
+        CheckConstraint("size_bytes >= 0 AND (line_count IS NULL OR line_count >= 0) "
+                        "AND (unresolved_calls IS NULL OR unresolved_calls >= 0)", name="ck_code_graph_file_counts"),
+        CheckConstraint("status IN ('parsed', 'partial', 'unsupported', 'excluded', 'failed')",
+                        name="ck_code_graph_file_status"),
+        CheckConstraint("status NOT IN ('parsed', 'partial') OR (language IS NOT NULL AND line_count IS NOT NULL)",
+                        name="ck_code_graph_file_parsed"),
+    )
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("code_graph_snapshots.id", ondelete="CASCADE"), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    blob_sha: Mapped[str] = mapped_column(String(40))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    language: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20))
+    line_count: Mapped[int | None] = mapped_column(Integer)
+    unresolved_calls: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str | None] = mapped_column(String(50))
+
+
+class CodeGraphSymbol(Base):
+    __tablename__ = "code_graph_symbols"
+    __table_args__ = (
+        ForeignKeyConstraint(["snapshot_id", "file_path"], ["code_graph_files.snapshot_id", "code_graph_files.path"],
+                             ondelete="CASCADE", name="fk_code_graph_symbol_file"),
+        UniqueConstraint("snapshot_id", "file_path", "start_byte", "end_byte", "kind", name="uq_code_graph_symbol_location"),
+        CheckConstraint("key ~ '^[a-f0-9]{64}$'", name="ck_code_graph_symbol_key"),
+        CheckConstraint("start_byte >= 0 AND end_byte > start_byte AND start_line >= 1 AND end_line >= start_line",
+                        name="ck_code_graph_symbol_range"),
+        Index("ix_code_graph_symbols_name", "snapshot_id", "name"),
+    )
+    snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(String(512))
+    kind: Mapped[str] = mapped_column(String(64))
+    start_byte: Mapped[int] = mapped_column(Integer)
+    end_byte: Mapped[int] = mapped_column(Integer)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+
+
+class CodeGraphImport(Base):
+    __tablename__ = "code_graph_imports"
+    __table_args__ = (
+        ForeignKeyConstraint(["snapshot_id", "file_path"], ["code_graph_files.snapshot_id", "code_graph_files.path"],
+                             ondelete="CASCADE", name="fk_code_graph_import_source"),
+        ForeignKeyConstraint(["snapshot_id", "target_path"], ["code_graph_files.snapshot_id", "code_graph_files.path"],
+                             ondelete="CASCADE", name="fk_code_graph_import_target"),
+        CheckConstraint("start_byte >= 0 AND end_byte > start_byte AND start_line >= 1 AND end_line >= start_line",
+                        name="ck_code_graph_import_range"),
+        CheckConstraint("(target_path IS NULL AND provenance = 'unresolved') OR "
+                        "(target_path IS NOT NULL AND provenance = 'relative_path')", name="ck_code_graph_import_resolution"),
+        Index("ix_code_graph_imports_target", "snapshot_id", "target_path"),
+    )
+    snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    start_byte: Mapped[int] = mapped_column(Integer, primary_key=True)
+    end_byte: Mapped[int] = mapped_column(Integer)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    specifier: Mapped[str] = mapped_column(Text)
+    target_path: Mapped[str | None] = mapped_column(Text)
+    provenance: Mapped[str] = mapped_column(String(20))
 
 
 class PullRequest(Base):

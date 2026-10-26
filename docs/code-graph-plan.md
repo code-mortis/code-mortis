@@ -1,6 +1,6 @@
 # Code graph: feature proposal and implementation plan
 
-Status: **Phase 0 evaluation complete**, 2026-10-26; Phases 1–5 not started. See the [evaluation report and decisions](code-graph-phase0.md) and [recorded evidence](evidence/code-graph-phase0.json). No production indexer, graph API, MCP code tools, or graph UI has been implemented by this work.
+Status: **Phase 0 complete; Phase 1A complete locally**, 2026-10-26. Phase 1 remains in progress; 1B–1E and Phases 2–5 are not started. See the [evaluation report and decisions](code-graph-phase0.md) and [recorded evidence](evidence/code-graph-phase0.json). Contracts and additive persistence are implemented; no indexer, graph API, MCP code tools, or graph UI is available yet.
 
 This document preserves the investigation and follow-up decisions so development can resume without the original conversation. The user requested documentation for later development; this document does not authorize implementation, paid runs, deployment, commits, or pushes by itself. Read [AGENTS.md](../AGENTS.md), [PLAN.md](../PLAN.md), [PRODUCT.md](../PRODUCT.md), and the relevant source again before implementation.
 
@@ -12,7 +12,7 @@ The first benefit to establish is better cross-file review: finding unchanged ca
 
 ## Decisions and clarifications to preserve
 
-These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Production schemas and integration remain to be implemented and verified.
+These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements the storage schema and internal contracts; parser execution, authorization/lifecycle integration and public interfaces remain to be implemented and verified.
 
 | Topic | Working direction |
 | --- | --- |
@@ -87,7 +87,7 @@ flowchart LR
 
 Phase 0 selected direct Tree-sitter parsing with conservative relative-file resolution. See the [capability matrix and rejected alternatives](code-graph-phase0.md). Syntax definitions and file dependencies form the initial tier; resolved symbol references/calls require additional validated language-aware work. SCIP is deferred. Do not enable repository execution to gain language coverage.
 
-Use a small feature domain following [architecture.md](architecture.md), with shared Pydantic contracts and explicit route/tool adapters. Exact filenames and tables are to be finalized after the extractor evaluation; do not add a generic graph platform or provider abstraction in advance.
+Follow [architecture.md](architecture.md): Phase 1A places the four graph tables in `models.py` and internal contracts in `schemas/code_graph.py`. The later `code_graph/` workflow and explicit route/tool adapters share those records. Do not add a generic graph platform or provider abstraction in advance.
 
 Minimum conceptual records:
 
@@ -158,7 +158,7 @@ Link authorized findings and their immutable occurrences where useful, while dis
 
 ## Implementation phases and completion gates
 
-**Phase 0 is complete** with the linked report, fixtures and measurements. Phases 1–5 are **not started**. Mark later items complete only with linked evidence and update the handoff section after work.
+**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is in progress** using the checkpoints below; Phases 2–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
 
 ### Phase 0: choose an extractor and establish feasibility
 
@@ -174,13 +174,68 @@ Gate met locally: [report](code-graph-phase0.md), [runnable assertions](../scrip
 
 ### Phase 1: persist snapshots and expose bounded retrieval internally
 
-- [ ] Add minimal models/contracts and additive migrations; prove upgrade with existing review/history data intact.
+- [x] Add minimal models/contracts and additive migrations; prove upgrade with existing review/history data intact. See checkpoint 1A and its validation below.
 - [ ] Implement authorized snapshot creation, reuse, atomic publication, cancellation/retry, and cleanup through existing durable job patterns.
 - [ ] Implement exact symbol/text lookup, typed relationship traversal, impact candidates, and safe source retrieval with snapshot provenance and limits.
 - [ ] Handle deletion, rename, parser/version/policy changes, concurrent jobs, worker restart, unavailable commits, partial parsing, and restricted paths.
 - [ ] Add the repository opt-in/readiness control through the normal API and generated types; keep the feature off by default.
 
 Gate: focused backend checks prove correctness, authorization, recovery, and bounded behavior. No new mandatory infrastructure for installations with the feature disabled; the optional isolated parser container has no database/Redis dependency or credentials. No embedding dependency. Disabled repositories keep their current behavior.
+
+#### Phase 1 execution checklist
+
+Implement these checkpoints in order. The first deliverable is 1A, with runnable database/contract checks and no public activation. Completing one checkpoint does not complete Phase 1.
+
+**1A. Contracts and additive persistence (complete locally)**
+
+- [x] Add snapshot, file, symbol and import records to [models.py](../backend/code_mortis/models.py), and strict internal contracts in [schemas/code_graph.py](../backend/code_mortis/schemas/code_graph.py). Parser-facing contracts import without database/API/worker startup.
+- [x] Add [migration 20261026_code_graph](../backend/migrations/versions/20261026_code_graph.py), descending from `20261025_api_tokens`. Create graph tables only; do not rewrite repository settings, users, review history, security findings, jobs or grants.
+- [x] Identify a snapshot by repository, exact commit SHA, extractor version and policy digest. Store explicit queued/running/ready/partial/failed/cancelled states and timestamps. A snapshot ID alone is never an authorization credential.
+- [x] Use composite foreign keys to prevent symbols/imports from referencing another snapshot's files. Keep same-named definitions distinct by file and source range. File membership provides `defines`; resolved import records provide directed `imports_file` edges. General call/reference edge storage waits for validated resolvers.
+- [x] Preserve unresolved import specifiers with a null target and explicit provenance. Store unresolved call counts per file, not copies of every call expression. Parser status and relationship capability remain separate; a parsed file does not imply complete call/reference coverage.
+- [x] Validate canonical repository-relative paths, SHA formats, byte/line ranges, duplicate identities and missing endpoints. Bound record counts and serialized result size. Parsed facts must fall within their file; unparsed files cannot originate definitions/imports. Excluded/failed files cannot be resolved targets; a known unsupported file can be a dependency target without claiming parsed symbols.
+- [x] Prove previous-schema upgrade preserves existing rows, rejects cross-snapshot relationships and duplicate snapshot identities, and cascades graph cleanup only into graph-owned records. Check the ORM/migration schema agrees.
+
+1A evidence: [60 contract/storage cases](../backend/tests/test_code_graph_storage.py) passed against the isolated PostgreSQL/Redis environment. They exercise upgrade from `20261025_api_tokens`, compare all pre-existing table rows, retain a review/finding/occurrence through graph deletion, verify same-snapshot foreign keys and identity uniqueness, and compare the graph ORM metadata with the migrated schema. Ruff passes. OpenAPI export and frontend type regeneration produce no public contract diff.
+
+Full backend run: **2,734 passed and three new test assertions failed** because Pydantic rejected invalid Unicode before the custom validator, with a different error message. Only those assertions were corrected; the final graph-file rerun passed **60/60**. No runtime code changed after the full run; it was not repeated after this test-only correction. Existing deprecation warnings remain outside this change.
+
+Implementation limits: paths are canonical POSIX paths of at most 2,000 UTF-8 bytes, keeping composite PostgreSQL index entries bounded; symbol names are capped at 512 characters. A result permits at most 1,000 file records and 100,000 symbols/import sites each, subject to the 32 MiB serialized limit and Phase 0 source limits. These are admission rules, not measured capacity guarantees. The 1B transport must enforce byte limits before decoding JSON, and 1C must verify the reported files/blobs/ranges against trusted input before publication. 1A does not authorize access, acquire source, publish snapshots, schedule jobs or expose routes.
+
+**1B. Isolated parser and bounded transport (not started)**
+
+- [ ] Adapt the tested extraction into a dedicated parser entry point; pin only the selected Tree-sitter packages. Reuse Phase 0 fixtures while adding contract/range tests for TSX/JSX, malformed files, aliases and unsupported constructs.
+- [ ] Add an optional parser image/service with a dedicated internal network shared only with the trusted worker, no public port, database/Redis/model/GitHub credentials, Docker socket, builds or external egress. Keep the native runner unchanged. Wire equivalent opt-in deployment/development/test configuration without starting it for disabled installations.
+- [ ] Use explicit request/response bodies with a protocol version and expected snapshot identity. The worker verifies output against the request's file/blob manifest; it never trusts a parser-supplied repository, revision, path, range or success claim without validation.
+- [ ] Enforce one parser request at a time, one CPU, 256 MiB total memory, 128 MiB temporary storage, a 120-second deadline and response-byte limits before JSON parsing. Enforce the Phase 0 file/count/source limits before input transfer. Oversize/malformed requests fail explicitly; do not truncate evidence silently.
+- [ ] Run real container tests for offline extraction, isolated networks, limits, cancellation/termination and repository-execution traps. A mocked parser HTTP response is not isolation evidence.
+
+**1C. Authorized acquisition, durable indexing and retention (not started)**
+
+- [ ] Add a focused `code_graph/` workflow and integrate the existing `Job` dispatch/lease/recovery patterns. Persist activation's initiating user, revalidate current membership/GitHub repository access at admission, acquisition and publication, and stop on disable/revocation/uninstall.
+- [ ] Reuse authorized GitHub/Git helpers with a fixed repository identity. Retain a trusted bare object store under the application data directory, pinning each snapshot's exact commit with a server-generated ref. Read regular blobs via the tree/object database; never check out or execute repository content. Excluded paths do not reach the parser.
+- [ ] Deduplicate by the full snapshot key, serialize extraction across the instance, and use claim/attempt fencing so expired workers cannot publish after a retry. State flow: queued -> running -> ready/partial/failed/cancelled; retries of failed/cancelled attempts remain explicit. Ready/partial snapshots are immutable.
+- [ ] Validate the entire extraction before a short transaction inserts all facts and marks the snapshot usable. Failed/cancelled attempts keep the prior ready revision available under its original SHA. Never substitute that older snapshot for an exact-head request.
+- [ ] Handle deletion/rename through full rebuilds; changing parser/policy produces a new identity. Missing Git objects return unavailable, not another revision's source. Verify retained blob IDs against the pinned tree before source reads.
+- [ ] Keep the latest default-branch and most recent other unpinned ready snapshots; expire the latter after seven days. Bound building/pinned work, release pins in all terminal paths, and prune graph-owned rows/refs only after consumers finish. Saved review evidence remains independent.
+- [ ] Exercise duplicate admission, interrupted acquisition, expired leases, stale publication, cancellation, changed policies, retention and access loss with the isolated DB and stubbed external GitHub responses.
+
+**1D. Bounded authorized internal retrieval (not started)**
+
+- [ ] Add shared exact-revision symbol/name/text lookup, file dependency traversal, candidate impact and bounded source reads. Authorize before lookup/traversal/counts; filter restricted paths before ranking/pagination. Keep code access independent from Reviews/Security/PAT grants.
+- [ ] Start with at most 100 results, traversal depth 2, 500 visited nodes, 10 source files and 64 KiB total source per response; validate these retrieval limits in focused tests before exposing them. Always report snapshot SHA/version, capability gaps, unavailable source and truncation.
+- [ ] Derive `defines` from file/symbol ownership and `imports_file` from resolved import rows. Return an explicit unsupported relationship state for callers/references; an empty supported-edge list must not imply no possible callers.
+- [ ] Test repository/revision isolation, permission revocation, excluded neighbors/counts, cycles, bounded traversal, stale/unavailable snapshots and exact source citations. Do not wire review prompt enrichment or external MCP yet.
+
+**1E. Repository opt-in, readiness and phase acceptance (not started)**
+
+- [ ] Add a default-false repository setting through the current browser administration flow and shared schemas. Record the enabling user for authorized background work; absent settings on upgraded repositories remain false. Keep token/MCP management access closed unless separately designed and tested.
+- [ ] Schedule initial/default-branch work only for enabled repositories and permitted actors. Add bounded readiness/retry/cancel controls with truthful partial/stale/error states. Preserve repository settings not owned by this feature.
+- [ ] Regenerate OpenAPI/frontend types and add a small setting/status UI using the established design system. Verify disabled behavior, permissions and accessible state transitions with focused API/browser tests.
+- [ ] Measure database/index/WAL size and retained Git storage on the recorded modest corpora; document the optional container and upgrade/backup/cleanup procedure. Full-stack 8 GB and review quality/token benchmarks remain Phase 2.
+- [ ] Complete backend, migration, schema-generation, frontend/build and container checks appropriate to the finished phase. Update acceptance with actual evidence; keep real-account, hosted CI and deployment claims separate.
+
+Source retention and graph persistence are separate responsibilities: database rows contain identifiers, ranges, provenance and status, while exact source stays in the pinned trusted Git object store. The source-retention mechanism is a 1C implementation requirement, not established by the 1A schema.
 
 ### Phase 2: integrate review context and measure quality/cost
 
@@ -245,14 +300,16 @@ Reviewed during the 2026-10-25/26 discussion. These describe vendor capabilities
 
 ## Handoff for the next session
 
-Completed locally: investigation, this plan, and **Phase 0**. Read [code-graph-phase0.md](code-graph-phase0.md) for the extractor decision, twelve-language capability tiers, adversarial/revision checks, measured corpora, operational defaults and MCP resource choice. Direct Tree-sitter parsing is selected; Graphify 0.9.37's complete graph is rejected as authoritative evidence for now. No embeddings or pgvector.
+Completed locally: investigation, **Phase 0**, the expanded Phase 1 checklist, and **Phase 1A contracts/persistence**. Read [code-graph-phase0.md](code-graph-phase0.md) for the extractor decision, twelve-language capability tiers, adversarial/revision checks, measured corpora, operational defaults and MCP resource choice. Direct Tree-sitter parsing is selected; Graphify 0.9.37's complete graph is rejected as authoritative evidence for now. No embeddings or pgvector.
 
-Local additions: `scripts/code_graph_eval/`, the evaluation report, and `docs/evidence/code-graph-phase0.json`; PLAN.md links the result. Commands and immutable corpus commits are in the report. Both fixture suites and twelve bounded benchmark runs passed; Ruff passed. Dependencies are pinned only in the evaluation image. No production dependency, migration, review/model run, external MCP integration, full-stack 8 GB test, hosted CI, deployment, commit or push was performed.
+Phase 0 baseline is committed at `0cd3d2f`. This session's local diff adds the four graph models, internal extraction contracts, migration `20261026_code_graph`, 60 contract/storage tests and the updated documentation. The migration was exercised only in the isolated test database; development and production were not migrated or restarted. No parser dependencies were added to the application. No review/model run, external MCP integration, full-stack 8 GB test, hosted CI, deployment, commit or push was performed in this session.
 
-Next useful work: **Phase 1**, beginning with exact-revision snapshot/file/symbol/dependency contracts and additive persistence, followed by authorized isolated indexing and bounded internal retrieval. Implement the selected capability tiers honestly: file dependencies are not resolved calls. Full rebuilds precede incremental caching. Keep the feature off by default and preserve the current native runner boundary.
+Recheck with `cd backend && uv run python -m pytest -q tests/test_code_graph_storage.py` and `uv run ruff check .` after starting `compose.test.yaml`. Full-run versus final focused-run evidence is recorded in 1A above. OpenAPI/types were regenerated with no diff. Local development Graphify refresh is navigation only.
+
+Next useful work: **Phase 1B**, implementing the isolated parser and bounded worker transport using the new contracts and Phase 0 fixtures. Follow with 1C authorized acquisition/jobs/retention, 1D internal retrieval and 1E repository opt-in. Implement the selected capability tiers honestly: file dependencies are not resolved calls. Full rebuilds precede incremental caching. Keep the feature off by default and preserve the current native runner boundary.
 
 Suggested resume request:
 
-> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, and docs/code-graph-phase0.md. Resume Phase 1 of the optional structural code graph feature using the Phase 0 decisions and fixtures. Preserve the no-embeddings, opt-in, exact-revision and isolated-parser boundaries. Do not advertise unresolved calls as authoritative relationships. Update the plan with actual validation and the next handoff.
+> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, docs/code-graph-phase0.md, backend/code_mortis/schemas/code_graph.py, and backend/tests/test_code_graph_storage.py. Phase 1A is complete locally. Resume Phase 1B using the existing contracts and fixtures; do not redo the migration/schema foundation. Preserve the no-embeddings, opt-in, exact-revision and isolated-parser boundaries. Do not advertise unresolved calls as authoritative relationships. Update the plan with actual validation and the next handoff.
 
 After each development session, update this section with the exact completed phase/items, relevant commit or local diff, commands/results, real versus mocked evidence, unresolved decisions, and the next concrete task. Keep unfinished checkboxes open. Never infer deployment, performance, or language support from the existence of this plan.
