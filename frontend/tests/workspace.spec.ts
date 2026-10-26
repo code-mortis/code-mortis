@@ -13,6 +13,7 @@ const installation: Schema["InstallationOut"] = {
   unavailable_reason: null, job_id: null, operation_status: null, operation_error: null,
 };
 const repo = {
+  code_graph_enabled: false,
   id: 22,
   installation_id: 10,
   full_name: "acme/payments",
@@ -44,6 +45,76 @@ const repo = {
   open_prs: 2,
   has_running_review: false,
 };
+
+test("code graph stays opt-in and saves with the existing repository draft", async ({ page }) => {
+  const requests = await mock(page);
+  let statusReads = 0;
+  await page.route("**/api/v1/repositories/22/code-graph", async (route) => { statusReads++; await route.fulfill({ json: { state: "disabled" } }); });
+  await page.goto("/repositories/22/settings?tab=context");
+  const toggle = page.getByRole("switch", { name: "Code graph", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByText("Save to start indexing.", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Existing project context");
+  await repositorySection(page, "Review behavior");
+  await repositorySection(page, "Project context");
+  await expect(toggle).toBeChecked();
+  expect(statusReads).toBe(0);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
+  expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
+    code_graph_enabled: true, enabled: true, connection_id: "connection", settings: { background: "Existing project context" },
+  });
+});
+
+for (const mode of ["light", "dark"] as const) {
+  test(`code graph readiness and retry cancel actions ${mode}`, async ({ page }, info) => {
+    await page.addInitScript((value) => localStorage.setItem("theme", value), mode);
+    const requests = await mock(page);
+    await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, code_graph_enabled: true }] }));
+    const status: Schema["CodeGraphStatus"] = { enabled: true, paused: false, state: "partial", refreshing: false,
+      commit_sha: "b".repeat(40), indexed_sha: "b".repeat(40), snapshot_id: "snapshot", checked_at: at, finished_at: at, error: null };
+    const actions: string[] = [];
+    await page.route("**/api/v1/repositories/22/code-graph**", async (route) => {
+      if (route.request().method() === "POST") {
+        const action = new URL(route.request().url()).pathname.split("/").at(-1)!;
+        actions.push(action);
+        status.state = action === "retry" ? "queued" : "cancelled";
+        status.paused = action === "cancel";
+        status.error = null;
+      }
+      await route.fulfill({ json: status });
+    });
+    await page.goto("/repositories/22/settings?tab=context");
+    await expect(page.getByText("Some files or relationships could not be indexed.", { exact: false })).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/code-graph-${info.project.name}-${mode}.png`, fullPage: true });
+    status.state = "failed";
+    status.error = "Could not update the code index. Check repository access and retry.";
+    await page.reload();
+    await expect(page.getByRole("alert").filter({ hasText: status.error })).toBeVisible();
+    const retry = page.getByRole("button", { name: "Retry indexing", exact: true });
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Cancel indexing", exact: true }).click();
+    await expect(page.getByText("Indexing is paused. Retry to resume automatic updates.")).toBeVisible();
+    expect(actions).toEqual(["retry", "cancel"]);
+    expect(requests.filter((r) => r.path === "/repositories/22")).toHaveLength(0);
+    await page.getByRole("switch", { name: "Code graph", exact: true }).uncheck();
+    await expect(page.getByText("Save to disable indexing and code access.")).toBeVisible();
+    await expect(retry).toBeHidden();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
+    expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({ code_graph_enabled: false });
+  });
+}
+
+test("code graph is unavailable to workspace members", async ({ page }) => {
+  await mock(page, { role: "member" });
+  await page.goto("/repositories/22/settings?tab=context");
+  await expect(page.getByRole("switch", { name: "Code graph", exact: true })).toBeHidden();
+});
 const run = {
   id: "run",
   connection_id: "connection",

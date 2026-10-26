@@ -14,6 +14,7 @@ import { PersonalConnection } from "./subscriptions";
 import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
+import { CodeGraphSettings } from "./components/code-graph-settings";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
@@ -156,6 +157,7 @@ export function RepositorySettings({
     return next;
   }
   const [enabled, setEnabled] = useState(repo.enabled);
+  const [codeGraphEnabled, setCodeGraphEnabled] = useState(repo.code_graph_enabled ?? false);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState({
     ...repo.settings,
@@ -219,6 +221,7 @@ export function RepositorySettings({
             method: "PUT",
             body: {
               enabled,
+              code_graph_enabled: codeGraphEnabled,
               connection_id: connection || null,
               settings: {
                 ...settings,
@@ -388,9 +391,11 @@ export function RepositorySettings({
               <h2 id={`${id}-context`} className="text-xl font-semibold tracking-tight">Project context</h2>
               <p className="mt-1 text-sm text-muted-foreground">Give reviewers context and choose which files to exclude.</p>
             </div>
+            <CodeGraphSettings repositoryId={repo.id} enabled={codeGraphEnabled} savedEnabled={repo.code_graph_enabled ?? false}
+              visible={section === "context"} onChange={setCodeGraphEnabled} />
             <Field
               label="Exclude files"
-              hint="Comma-separated OCR glob patterns, such as **/*.lock,dist/**."
+              hint="Comma-separated glob patterns, such as **/*.lock,dist/**. Also excludes files from the code graph."
             >
               {(id) => (
                 <Input

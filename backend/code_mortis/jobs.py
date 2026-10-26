@@ -272,11 +272,13 @@ def process_webhook(payload: dict):
 
 
 def execute(kind: str, payload: dict):
-    if kind in {"code_graph", "code_graph_cleanup"}:
+    if kind in {"code_graph", "code_graph_cleanup", "code_graph_refresh"}:
         from code_mortis.code_graph import service as graphs
 
         if kind == "code_graph":
             graphs.perform(payload["snapshot_id"], payload["_job_id"], payload["_attempt"])
+        elif kind == "code_graph_refresh":
+            graphs.refresh(payload["repository_id"], payload["_job_id"], payload["_attempt"], payload["actor_id"], retry=payload["retry"])
         else:
             graphs.cleanup()
     elif kind == "revoke_api_token_work":
@@ -397,7 +399,7 @@ def execute_job(job_id: str):
                          if job.kind == "generate_background" else 7200)
         if job.kind == "security_scan":
             lease_seconds = 360
-        if job.kind in {"code_graph", "code_graph_cleanup"}:
+        if job.kind in {"code_graph", "code_graph_cleanup", "code_graph_refresh"}:
             lease_seconds = 600
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
@@ -414,7 +416,7 @@ def execute_job(job_id: str):
         with transaction() as fresh:
             _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "security_scan", "code_graph", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
+        execute(kind, execution if kind in {"review", "security_scan", "code_graph", "code_graph_refresh", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
     except _pat.TransientAuthorizationError:
         # Temporary authorization outage, not revocation: requeue for retry
         # instead of failing the work as revoked.
@@ -552,7 +554,7 @@ def job_queue(kind, payload=None):
         return "verification"
     if kind in {"summarize_review", "generate_summary"}:
         return "summaries"
-    if kind in {"review", "assess_candidates", "test_connection", "generate_background", "code_graph", "code_graph_cleanup"}:
+    if kind in {"review", "assess_candidates", "test_connection", "generate_background", "code_graph", "code_graph_cleanup", "code_graph_refresh"}:
         return "reviews"
     if kind in {"sync_repositories", "scan_repository"} or (kind == "sync_pr" and not (payload or {}).get("sender_type")):
         return "sync"
@@ -670,9 +672,19 @@ def dispatch():
 
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
-    with transaction() as db:
-        from code_mortis.models import CodeGraphRepository
+    from code_mortis.code_graph.service import schedule_refresh
+    from code_mortis.models import CodeGraphRepository
 
+    with transaction() as db:
+        identities = list(db.scalars(select(CodeGraphRepository.repository_id).where(
+            CodeGraphRepository.enabled.is_(True), CodeGraphRepository.paused.is_(False),
+        ).order_by(CodeGraphRepository.checked_at.asc().nulls_first(), CodeGraphRepository.repository_id).limit(16)))
+    # Keep configuration locks out of the reconciliation transaction's job locks.
+    for identity in identities:
+        with transaction() as db:
+            schedule_refresh(db, identity)
+
+    with transaction() as db:
         if (db.scalar(select(CodeGraphRepository.repository_id).limit(1))
             or db.scalar(select(Job.id).where(Job.kind == "code_graph").limit(1))):
             enqueue_reconciliation(db, "code_graph_cleanup", {})

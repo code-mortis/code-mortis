@@ -37,7 +37,7 @@ Production serves the compiled frontend and API from one HTTPS origin. Developme
 
 ## Future feature plans
 
-- [Optional code graph](docs/code-graph-plan.md): Phase 0 and checkpoints 1A–1C are implemented locally: contracts, isolated parsing, authorized durable indexing, atomic publication and retained exact Git source. Public retrieval and repository activation remain pending in 1D–1E. No real repository is opted in automatically. No embeddings or pgvector are required; full-stack 8 GB capacity remains unverified. See the plan and local evidence for the next handoff.
+- [Optional code graph](docs/code-graph-plan.md): Phase 0 and checkpoints 1A–1E are implemented locally: contracts, isolated parsing, authorized indexing/retention, bounded exact-revision retrieval and browser repository opt-in/readiness. Reviews and external code MCP are not integrated yet. No real repository is opted in automatically. No embeddings or pgvector are required; full-stack 8 GB capacity remains unverified. See the plan and [validation report](docs/code-graph-phase1de.md) for the Phase 2 handoff.
 
 ## Definition of done
 

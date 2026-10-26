@@ -209,6 +209,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/code-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Code Graph Status */
+        get: operations["code_graph_status_api_v1_repositories__repository_id__code_graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/code-graph/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Code Graph */
+        post: operations["retry_code_graph_api_v1_repositories__repository_id__code_graph_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/code-graph/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Code Graph */
+        post: operations["cancel_code_graph_api_v1_repositories__repository_id__code_graph_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/background": {
         parameters: {
             query?: never;
@@ -2280,6 +2331,42 @@ export interface components {
              */
             page_size: number;
         };
+        /** CodeGraphStatus */
+        CodeGraphStatus: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /**
+             * State
+             * @default disabled
+             * @enum {string}
+             */
+            state: "disabled" | "not_indexed" | "queued" | "running" | "ready" | "partial" | "stale" | "failed" | "cancelled";
+            /**
+             * Refreshing
+             * @default false
+             */
+            refreshing: boolean;
+            /** Commit Sha */
+            commit_sha?: string | null;
+            /** Indexed Sha */
+            indexed_sha?: string | null;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Checked At */
+            checked_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Error */
+            error?: string | null;
+        };
         /** ConnectionInput */
         ConnectionInput: {
             /**
@@ -2977,6 +3064,8 @@ export interface components {
         RepositoryInput: {
             /** Enabled */
             enabled: boolean;
+            /** Code Graph Enabled */
+            code_graph_enabled?: boolean | null;
             /** Connection Id */
             connection_id?: string | null;
             settings?: components["schemas"]["RepoSettings"];
@@ -2995,6 +3084,11 @@ export interface components {
             active: boolean;
             /** Enabled */
             enabled: boolean;
+            /**
+             * Code Graph Enabled
+             * @default false
+             */
+            code_graph_enabled: boolean;
             /** Connection Id */
             connection_id: string | null;
             settings: components["schemas"]["RepoSettings"];
@@ -4321,6 +4415,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    code_graph_status_api_v1_repositories__repository_id__code_graph_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeGraphStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_code_graph_api_v1_repositories__repository_id__code_graph_retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeGraphStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_code_graph_api_v1_repositories__repository_id__code_graph_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeGraphStatus"];
                 };
             };
             /** @description Validation Error */

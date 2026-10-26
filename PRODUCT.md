@@ -28,6 +28,8 @@ MIT open source. The committed delivery includes shared API connections and pers
 
 Members can issue named, expiring personal API tokens in Settings for Noodle and scripts. Each token is limited to explicit permissions, selected repositories, and the owner's current GitHub access. Token management, credentials, administration, MCP consent, and public security-issue publication stay in the browser. Revocation and expiry stop future token-origin execution while preserving saved results and publication history.
 
+Repository code graphs are an independent, default-off setting in Project context. Administrators can enable default-branch indexing, inspect readiness, retry and cancel it. Indexing uses no model tokens or embeddings. Definitions use the tested language adapters; resolved file imports are limited to conservative Python and JavaScript/TypeScript relative paths. Callers and references are unsupported. Internal retrieval is revision-specific and bounded. Review enrichment, external code MCP and a visual graph explorer remain later phases.
+
 ## Brand Commitments
 
 Code Mortis. Workflow-focused first release; distinctive mascot and branding work are deferred. English interface, configurable review-comment language.

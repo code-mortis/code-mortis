@@ -147,6 +147,7 @@ class RepoSettings(RunLimits):
 
 class RepositoryInput(StrictModel):
     enabled: bool
+    code_graph_enabled: bool | None = None
     connection_id: str | None = None
     settings: RepoSettings = Field(default_factory=RepoSettings)
 
@@ -301,6 +302,7 @@ class RepositoryOut(ORMModel):
     private: bool
     active: bool
     enabled: bool
+    code_graph_enabled: bool = False
     connection_id: str | None
     settings: RepoSettings
     open_prs: int = 0

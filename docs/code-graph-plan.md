@@ -1,6 +1,6 @@
 # Code graph: feature proposal and implementation plan
 
-Status: **Phase 0 complete; Phases 1A–1C complete locally**, 2026-10-26. Phase 1 remains in progress; 1D–1E and Phases 2–5 are not started. Authorized durable indexing, atomic publication and retained Git source are implemented in `ee7bee4`; see [1C evidence](evidence/code-graph-phase1c.json). Public graph retrieval, MCP code tools and repository activation in the UI are still pending.
+Status: **Phase 0 and Phase 1A–1E implemented locally**, 2026-10-26. Bounded authorized retrieval and browser repository opt-in/readiness are included in the current local diff; see [1D/1E evidence](code-graph-phase1de.md). Phases 2–5 remain pending: review enrichment, external code MCP, user exploration and measured rollout. No real repository was automatically activated.
 
 This document preserves the investigation and follow-up decisions so development can resume without the original conversation. The user requested documentation for later development; this document does not authorize implementation, paid runs, deployment, commits, or pushes by itself. Read [AGENTS.md](../AGENTS.md), [PLAN.md](../PLAN.md), [PRODUCT.md](../PRODUCT.md), and the relevant source again before implementation.
 
@@ -12,7 +12,7 @@ The first benefit to establish is better cross-file review: finding unchanged ca
 
 ## Decisions and clarifications to preserve
 
-These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Phase 1C adds authorized durable jobs, atomic publication and source retention. Public retrieval and repository activation remain pending in 1D–1E.
+These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Phase 1C adds authorized durable jobs, atomic publication and source retention. Phase 1D adds bounded internal retrieval and Phase 1E adds browser repository opt-in/readiness. Review enrichment and public code MCP remain later phases.
 
 | Topic | Working direction |
 | --- | --- |
@@ -158,7 +158,7 @@ Link authorized findings and their immutable occurrences where useful, while dis
 
 ## Implementation phases and completion gates
 
-**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is in progress** using the checkpoints below; Phases 2–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
+**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is implemented locally** using the checkpoints below; Phases 2–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
 
 ### Phase 0: choose an extractor and establish feasibility
 
@@ -176,9 +176,9 @@ Gate met locally: [report](code-graph-phase0.md), [runnable assertions](../scrip
 
 - [x] Add minimal models/contracts and additive migrations; prove upgrade with existing review/history data intact. See checkpoint 1A and its validation below.
 - [x] Implement authorized snapshot creation, reuse, atomic publication, cancellation/retry, and cleanup through existing durable job patterns. See checkpoint 1C.
-- [ ] Implement exact symbol/text lookup, typed relationship traversal, impact candidates, and safe source retrieval with snapshot provenance and limits.
+- [x] Implement exact symbol/text lookup, typed relationship traversal, impact candidates, and safe source retrieval with snapshot provenance and limits.
 - [x] Handle deletion, rename, parser/version/policy changes, concurrent jobs, worker restart, unavailable commits, partial parsing, and restricted paths. Verified in the 1C graph tests.
-- [ ] Add the repository opt-in/readiness control through the normal API and generated types; keep the feature off by default.
+- [x] Add the repository opt-in/readiness control through the normal API and generated types; keep the feature off by default.
 
 Gate: focused backend checks prove correctness, authorization, recovery, and bounded behavior. No new mandatory infrastructure for installations with the feature disabled; the optional isolated parser container has no database/Redis dependency or credentials. No embedding dependency. Disabled repositories keep their current behavior.
 
@@ -212,7 +212,7 @@ Implementation limits: paths are canonical POSIX paths of at most 2,000 UTF-8 by
 
 1B evidence: **95 focused graph tests passed** (60 storage/contracts plus 35 parser/transport cases). The full backend suite passed **2,768 tests**, with 637 existing deprecation warnings, before the final explicit-version and spawn-cancellation refinements; the final 95-case selection and real container checks cover those refinements. Ruff and `git diff --check` pass. OpenAPI export and frontend type generation produce no public contract diff. The [container evidence](evidence/code-graph-phase1b.json) records the actual image and resource/network tests: 32 Phase 0 fixture files produce 37 declarations and 20 import sites, the 8 MiB source admission boundary completes, concurrent extraction is refused, cancellation and the full 120-second deadline reap paused real parser children, tmpfs returns ENOSPC at 128 MiB, a 300 MiB allocation is killed by the 256 MiB cgroup, and extraction works afterward. This is local Docker evidence, not deployment, a real-account integration or a full-stack 8 GB capacity claim.
 
-Deployment follow-up: removed the extra parser deployment overlay in favor of a persistent profile in the existing Compose files. [102 focused checks and the real container checks](acceptance.md#completed-local-checks) passed. The [authorized development restart](evidence/code-graph-compose-development.json) verified 13 running services, preserved records/volumes and a real internal worker-to-parser fixture request. Environment activation starts the parser service only; repository-level activation in the frontend is still pending in 1E. The feature does not index all repositories when its infrastructure is enabled.
+Deployment follow-up: removed the extra parser deployment overlay in favor of a persistent profile in the existing Compose files. [102 focused checks and the real container checks](acceptance.md#completed-local-checks) passed. The [authorized development restart](evidence/code-graph-compose-development.json) verified 13 running services, preserved records/volumes and a real internal worker-to-parser fixture request. Environment activation starts the parser service only; the later 1E checkpoint adds independent repository activation in the frontend. The feature does not index all repositories when its infrastructure is enabled.
 
 1B implementation: [`code_graph/extract.py`](../backend/code_mortis/code_graph/extract.py) adapts the Phase 0 syntax rules into byte/line-ranged declarations, import sites and unresolved call counts. Python multi-import statements produce distinct sites. TSX/JSX arrow definitions, UTF-8/BOM/CRLF ranges, aliases, ambiguous targets, malformed syntax, unsupported extensions and invalid encoding have runnable checks. Syntax capabilities remain the Phase 0 subset; CommonJS/dynamic imports, workspace aliases, overload resolution and callers are not advertised as resolved relationships.
 
@@ -238,20 +238,22 @@ Validation commands: `cd backend && uv run python -m pytest -q tests/test_code_g
 
 1C evidence: implementation is committed at `ee7bee4`, including [`service.py`](../backend/code_mortis/code_graph/service.py), [`store.py`](../backend/code_mortis/code_graph/store.py), durable Job integration, migration `20261026_graph_jobs` and workflow tests. The final graph suite passed **126 tests**; the earlier full backend suite passed **2,807**, before the final focused refinements. Development was migrated and its workers restarted with existing records preserved. A synthetic check exercised the real worker volume, bare Git manifest, private parser, exact source bytes and pruning. See [the evidence and its boundaries](evidence/code-graph-phase1c.json): GitHub acquisition is stubbed in workflow tests; production, public graph APIs and full-stack 8 GB capacity are not established. No real repository was enabled automatically.
 
-**1D. Bounded authorized internal retrieval (not started)**
+**1D. Bounded authorized internal retrieval (implemented locally)**
 
-- [ ] Add shared exact-revision symbol/name/text lookup, file dependency traversal, candidate impact and bounded source reads. Authorize before lookup/traversal/counts; filter restricted paths before ranking/pagination. Keep code access independent from Reviews/Security/PAT grants.
-- [ ] Start with at most 100 results, traversal depth 2, 500 visited nodes, 10 source files and 64 KiB total source per response; validate these retrieval limits in focused tests before exposing them. Always report snapshot SHA/version, capability gaps, unavailable source and truncation.
-- [ ] Derive `defines` from file/symbol ownership and `imports_file` from resolved import rows. Return an explicit unsupported relationship state for callers/references; an empty supported-edge list must not imply no possible callers.
-- [ ] Test repository/revision isolation, permission revocation, excluded neighbors/counts, cycles, bounded traversal, stale/unavailable snapshots and exact source citations. Do not wire review prompt enrichment or external MCP yet.
+- [x] Add shared exact-revision symbol/name/text lookup, file dependency traversal, candidate impact and bounded source reads. Authorize before lookup/traversal/counts; filter restricted paths before ranking/pagination. Keep code access independent from Reviews/Security/PAT grants.
+- [x] Start with at most 100 results, traversal depth 2, 500 visited nodes, 10 source files and 64 KiB total source per response; validate these retrieval limits in focused tests before exposing them. Always report snapshot SHA/version, capability gaps, unavailable source and truncation.
+- [x] Derive `defines` from file/symbol ownership and `imports_file` from resolved import rows. Return an explicit unsupported relationship state for callers/references; an empty supported-edge list must not imply no possible callers.
+- [x] Test repository/revision isolation, permission revocation, excluded neighbors/counts, cycles, bounded traversal, stale/unavailable snapshots and exact source citations. Do not wire review prompt enrichment or external MCP yet.
 
-**1E. Repository opt-in, readiness and phase acceptance (not started)**
+**1E. Repository opt-in, readiness and phase acceptance (implemented locally)**
 
-- [ ] Add a default-false repository setting through the current browser administration flow and shared schemas. Record the enabling user for authorized background work; absent settings on upgraded repositories remain false. Keep token/MCP management access closed unless separately designed and tested.
-- [ ] Schedule initial/default-branch work only for enabled repositories and permitted actors. Add bounded readiness/retry/cancel controls with truthful partial/stale/error states. Preserve repository settings not owned by this feature.
-- [ ] Regenerate OpenAPI/frontend types and add a small setting/status UI using the established design system. Verify disabled behavior, permissions and accessible state transitions with focused API/browser tests.
-- [ ] Measure database/index/WAL size and retained Git storage on the recorded modest corpora; document the optional container and upgrade/backup/cleanup procedure. Full-stack 8 GB and review quality/token benchmarks remain Phase 2.
-- [ ] Complete backend, migration, schema-generation, frontend/build and container checks appropriate to the finished phase. Update acceptance with actual evidence; keep real-account, hosted CI and deployment claims separate.
+- [x] Add a default-false repository setting through the current browser administration flow and shared schemas. Record the enabling user for authorized background work; absent settings on upgraded repositories remain false. Keep token/MCP management access closed unless separately designed and tested.
+- [x] Schedule initial/default-branch work only for enabled repositories and permitted actors. Add bounded readiness/retry/cancel controls with truthful partial/stale/error states. Preserve repository settings not owned by this feature.
+- [x] Regenerate OpenAPI/frontend types and add a small setting/status UI using the established design system. Verify disabled behavior, permissions and accessible state transitions with focused API/browser tests.
+- [x] Measure database/index/WAL size and retained Git storage on the recorded modest corpora; document the optional container and upgrade/backup/cleanup procedure. Full-stack 8 GB and review quality/token benchmarks remain Phase 2.
+- [x] Complete backend, migration, schema-generation, frontend/build and container checks appropriate to the finished phase. Update acceptance with actual evidence; keep real-account, hosted CI and deployment claims separate.
+
+1D/1E evidence: [implementation and validation report](code-graph-phase1de.md), [storage measurements](evidence/code-graph-phase1-storage.json), and [development migration/restart](evidence/code-graph-phase1de-development.json). Internal retrieval is bounded and revision-specific; browser opt-in/readiness is available under Configure → Project context. No real repository was enabled. External code MCP and review enrichment remain later phases. The recorded Noodle full tree exceeds the current 1,000-entry admission limit; the storage report distinguishes its measured source subset from full-repository acceptance.
 
 Source retention and graph persistence are separate responsibilities: database rows contain identifiers, ranges, provenance and status, while exact source stays in the pinned trusted Git object store. The source-retention mechanism is implemented in 1C through the review worker's shared `code-graph-data` volume. A database-only backup cannot restore pinned source objects; see [operations](operations.md#optional-code-graph-parser).
 
@@ -318,14 +320,16 @@ Reviewed during the 2026-10-25/26 discussion. These describe vendor capabilities
 
 ## Handoff for the next session
 
-Completed locally: **Phase 0**, **1A contracts/persistence**, **1B isolated parser/transport**, and **1C authorized indexing/retention**. Direct Tree-sitter parsing remains selected. Graphify is a local navigation tool. No embeddings or pgvector.
+Completed locally: **Phase 0** and **Phase 1 checkpoints 1A–1E**. Direct Tree-sitter parsing remains selected. Graphify is a local development navigation tool. No embeddings or pgvector. The 1D/1E implementation is in the current local diff; no commit or push was made for this work.
 
-Relevant commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, and 1C `ee7bee4`. The recorded development checks reached migration `20261026_graph_jobs`, preserved existing identities/counts and verified 13 running services. Final focused graph tests: 126 passed. See [1C evidence](evidence/code-graph-phase1c.json) for the full-suite boundary and real versus simulated checks. No real repository was opted in or indexed. Production, hosted CI and real GitHub acquisition were not exercised.
+Relevant earlier commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, and 1C `ee7bee4`. Development now uses migration `20261026_graph_readiness`; existing record counts are preserved, 13 services are running and zero real repositories are opted in. The full backend suite passed 2,834 tests before the final explicit re-enable refinement; the final selection passed 807 tests (including 151 graph cases); all validation boundaries are in [the 1D/1E report](code-graph-phase1de.md). The frontend suite passed 1,392 tests with two existing skips. GitHub acquisition is stubbed in workflow tests; the actual private parser transport is exercised separately. Production, hosted CI and real-account graph activation were not exercised.
 
-Next useful work: **Phase 1D**, bounded authorized internal retrieval. Reuse `code_graph/service.py`, `store.py`, `client.py` and immutable graph facts. Internal exact-blob reads currently use the enabling actor and shared storage lock; they are not a public retrieval contract. Generalize authorization deliberately, authorize before lookup/counts/traversal, enforce 1D response limits and preserve exact-revision semantics. Follow with **1E** browser repository opt-in, readiness and scheduling. Enabling the environment profile starts the parser infrastructure only.
+The implementation entry points are `code_graph/retrieval.py` (bounded exact-revision queries), `service.py` (authorization, jobs, readiness), `store.py` (pinned Git bytes), `api/routers/repositories.py` (browser settings/actions), and `frontend/src/components/code-graph-settings.tsx`. Retrieval allows a current authorized reader rather than only the activating administrator, but existing PAT/MCP grants still grant no code access. Never use a previous ready snapshot to answer an exact-head request. Cancel pauses indexing; Retry or explicitly re-enabling resumes it. Immutable ready snapshots cannot be rebuilt by Retry after source-volume loss; restore the matching backup or arrange an operator-controlled cache rebuild.
+
+Next useful work: **Phase 2**, integrating bounded retrieval into review/assessment/verification context and measuring benefit against ordinary text/symbol retrieval. Create a focused execution plan before changing review input contracts. Keep original output scope, evidence, coverage, exclusions and budgets intact. Real provider evaluations and source transfer need authorization for that specific evaluation. Full-stack 8 GB capacity remains a Phase 2 gate. Noodle's recorded full tree currently fails the 1,000-entry admission cap; any change to that policy needs its own capacity and exclusion tests. External graph MCP is Phase 3 and must introduce its independent resource/consent/scopes instead of widening Reviews/Security grants.
 
 Suggested resume request:
 
-> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, backend/code_mortis/code_graph/service.py, store.py, client.py and tests/test_code_graph_workflow.py. Phases 1A–1C are complete locally. Start Phase 1D bounded authorized retrieval using the existing jobs and source-retention foundation. Preserve no embeddings, repository opt-in, independent code authorization, exact revisions and isolated parsing. Update this plan with actual evidence and the next handoff.
+> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md and docs/code-graph-phase1de.md. Phases 0 and 1A–1E are implemented locally. Plan Phase 2 review-context integration using code_graph/retrieval.py and existing evidence/coverage contracts. Preserve no embeddings, opt-in activation, independent code authorization, exact revisions and isolated parsing. Separate local mocked checks from real provider evaluations, and update this handoff with actual evidence.
 
 After each development session, update this section with completed items, relevant commit or local diff, commands/results, real versus mocked evidence and the next concrete task. Keep unfinished checkboxes open. Never infer deployment, performance or language support from the existence of this plan.
