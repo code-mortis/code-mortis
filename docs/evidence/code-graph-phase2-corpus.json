@@ -1,0 +1,226 @@
+{
+  "extractor": "tree-sitter/0.25.2-mortis/1",
+  "cases": [
+    {
+      "id": "case-1",
+      "sha": "e5b347e444e5b54cf775b7985904c335d70a7c71",
+      "fix_commit": "d3b1b3eb9cbc1f4bdea2bee33acbfe99c710a456",
+      "path": "frontend/src/components/search-select.tsx",
+      "start_line": 9,
+      "end_line": 111,
+      "expected": "defect",
+      "ground_truth": "Arrow trigger belongs to the wrong combobox/popup owner.",
+      "regression_test_file": "frontend/tests/workspace.spec.ts",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 5055,
+          "prompt_sha256": "f9e805df0e998b86c78275dbfc44ce3360eee61f01370d2d159fe207c5091b6c"
+        },
+        "text_symbols": {
+          "paths": [
+            "frontend/src/components/ui/combobox.tsx",
+            "frontend/src/components/ui/popover.tsx",
+            "frontend/src/hooks/use-mobile.ts"
+          ],
+          "prompt_bytes": 18086,
+          "prompt_sha256": "90f1c597a64cd33e279a21220d8887de05069c1b609372949ce334c6f3893907"
+        },
+        "graph": {
+          "paths": [
+            "frontend/src/components/model-picker.tsx",
+            "frontend/src/components/ui/input-group.tsx",
+            "frontend/src/components/ui/popover.tsx"
+          ],
+          "prompt_bytes": 17690,
+          "prompt_sha256": "e2d7b904836e4b3356d6fe9cc4c1bb8fac73f98e52dc1cea182fbb936e80cbe4"
+        }
+      }
+    },
+    {
+      "id": "case-2",
+      "sha": "d3b1b3eb9cbc1f4bdea2bee33acbfe99c710a456",
+      "fix_commit": "d3b1b3eb9cbc1f4bdea2bee33acbfe99c710a456",
+      "path": "frontend/src/components/search-select.tsx",
+      "start_line": 10,
+      "end_line": 123,
+      "expected": "no_defect",
+      "ground_truth": "Arrow trigger belongs to the wrong combobox/popup owner.",
+      "regression_test_file": "frontend/tests/workspace.spec.ts",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 5688,
+          "prompt_sha256": "b1ed8191e64f5773bbd04443e620f3fd1950f9ddbd19b1506dd7adb0581e75e3"
+        },
+        "text_symbols": {
+          "paths": [
+            "frontend/src/components/ui/combobox.tsx",
+            "frontend/src/components/ui/popover.tsx",
+            "frontend/src/hooks/use-mobile.ts"
+          ],
+          "prompt_bytes": 18751,
+          "prompt_sha256": "75f383d8e5da341073d8a15e61161ad2c5a4c9aa02a3446171f76e80b27b5242"
+        },
+        "graph": {
+          "paths": [
+            "frontend/src/components/model-picker.tsx",
+            "frontend/src/components/ui/input-group.tsx",
+            "frontend/src/components/ui/popover.tsx"
+          ],
+          "prompt_bytes": 18323,
+          "prompt_sha256": "2aa4d1239048cf9f6680c6c2619ceaa31b224e4ed41eff27588e52fc020796ca"
+        }
+      }
+    },
+    {
+      "id": "case-3",
+      "sha": "bd3fc80dc95928c8a9c5107c2693f069f88cbbda",
+      "fix_commit": "d110e0eabbe083851097042f3d8ab88ff90139ef",
+      "path": "frontend/src/components/api-tokens.tsx",
+      "start_line": 64,
+      "end_line": 202,
+      "expected": "defect",
+      "ground_truth": "Dialog closes while creation is pending and discards one-time token state.",
+      "regression_test_file": "frontend/tests/api-tokens.spec.ts",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 9064,
+          "prompt_sha256": "1a0f188c05219f8213b41af794a4dd314042d5f4d38b0fc9e973d199fea0cdfb"
+        },
+        "text_symbols": {
+          "paths": [
+            "frontend/src/components/common.tsx",
+            "frontend/src/components/pagination.tsx",
+            "frontend/src/components/coverage-group.tsx"
+          ],
+          "prompt_bytes": 22069,
+          "prompt_sha256": "b6872a00ec04c46aaea249c95319b62a9729b5430d8b44ba7d9e898d78fec4bb"
+        },
+        "graph": {
+          "paths": [
+            "frontend/src/api.ts",
+            "frontend/src/components/ui/button.tsx",
+            "frontend/src/components/ui/checkbox.tsx"
+          ],
+          "prompt_bytes": 16779,
+          "prompt_sha256": "9f2470b8cc5eb89f69e32a48b5e45f6cb2e8e578cb6e2f4be9b269399f9c19dd"
+        }
+      }
+    },
+    {
+      "id": "case-4",
+      "sha": "d110e0eabbe083851097042f3d8ab88ff90139ef",
+      "fix_commit": "d110e0eabbe083851097042f3d8ab88ff90139ef",
+      "path": "frontend/src/components/api-tokens.tsx",
+      "start_line": 64,
+      "end_line": 210,
+      "expected": "no_defect",
+      "ground_truth": "Dialog closes while creation is pending and discards one-time token state.",
+      "regression_test_file": "frontend/tests/api-tokens.spec.ts",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 9119,
+          "prompt_sha256": "230c29415395cc1c6c3a438c7d3194cf6d0bbe1195dee12dde7724b03266e69c"
+        },
+        "text_symbols": {
+          "paths": [
+            "frontend/src/components/common.tsx",
+            "frontend/src/components/pagination.tsx",
+            "frontend/src/components/coverage-group.tsx"
+          ],
+          "prompt_bytes": 22124,
+          "prompt_sha256": "e78e88972cccd286d38b7af6bae78ba893249e5362a44c5d7fa24c72229ebec6"
+        },
+        "graph": {
+          "paths": [
+            "frontend/src/api.ts",
+            "frontend/src/components/ui/button.tsx",
+            "frontend/src/components/ui/checkbox.tsx"
+          ],
+          "prompt_bytes": 16834,
+          "prompt_sha256": "bc031895de213ae1d3548ab0ced534c07f05dee04accc49bfd44ec02bff49ae6"
+        }
+      }
+    },
+    {
+      "id": "case-5",
+      "sha": "cc2041393f217f6070f297e9636d1edd85cb666a",
+      "fix_commit": "09777abfa226673cfc220a6b2222bab1b61c6c9c",
+      "path": "backend/code_mortis/jobs.py",
+      "start_line": 267,
+      "end_line": 421,
+      "expected": "defect",
+      "ground_truth": "Forwarding the whole persisted payload passes unsupported provenance keywords.",
+      "regression_test_file": "backend/tests/test_api_token_provenance.py",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 9122,
+          "prompt_sha256": "8702270ae2c931124f0499c1e942f155972070cc9282d08b52fd0eb83fa4ed35"
+        },
+        "text_symbols": {
+          "paths": [
+            "backend/code_mortis/mcp/provenance.py",
+            "backend/migrations/versions/20261011_assessment_attempts.py",
+            "backend/code_mortis/__init__.py"
+          ],
+          "prompt_bytes": 22240,
+          "prompt_sha256": "232e377d2fcab4026a2e614ec045c9bf539f7e605f563dd640d8fd1dcf61290c"
+        },
+        "graph": {
+          "paths": [],
+          "prompt_bytes": 9122,
+          "prompt_sha256": "8702270ae2c931124f0499c1e942f155972070cc9282d08b52fd0eb83fa4ed35"
+        }
+      }
+    },
+    {
+      "id": "case-6",
+      "sha": "09777abfa226673cfc220a6b2222bab1b61c6c9c",
+      "fix_commit": "09777abfa226673cfc220a6b2222bab1b61c6c9c",
+      "path": "backend/code_mortis/jobs.py",
+      "start_line": 274,
+      "end_line": 428,
+      "expected": "no_defect",
+      "ground_truth": "Forwarding the whole persisted payload passes unsupported provenance keywords.",
+      "regression_test_file": "backend/tests/test_api_token_provenance.py",
+      "arms": {
+        "baseline": {
+          "paths": [],
+          "prompt_bytes": 9151,
+          "prompt_sha256": "0b23de3c381723a00935f9438a7372fb2454be3c29f1bdf3093da17929d4f732"
+        },
+        "text_symbols": {
+          "paths": [
+            "backend/code_mortis/mcp/provenance.py",
+            "backend/migrations/versions/20261011_assessment_attempts.py",
+            "backend/code_mortis/__init__.py"
+          ],
+          "prompt_bytes": 22269,
+          "prompt_sha256": "877d20dc431c34a9f2d6ac8e49081a769ebc556ce1a3b82d5f16ee29839a0c32"
+        },
+        "graph": {
+          "paths": [],
+          "prompt_bytes": 9151,
+          "prompt_sha256": "0b23de3c381723a00935f9438a7372fb2454be3c29f1bdf3093da17929d4f732"
+        }
+      }
+    }
+  ],
+  "model_calls": 0,
+  "source_scope": "tracked Git blobs only; no working-tree credentials or runtime configuration",
+  "limitations": [
+    "Six scoped historical defect/control probes, not representative whole-PR reviews",
+    "No inference or token/quality result is implied by byte counts",
+    "One inference per arm; requests for more context are recorded, not executed"
+  ],
+  "thresholds": {
+    "citation_accuracy": 1.0,
+    "additional_false_positives": 0,
+    "quality_or_cost": "At least one additional confirmed target defect with <=25% more total tokens, or equal defects with >=10% fewer tokens, against both baselines",
+    "p95_latency_ratio_max": 1.25
+  }
+}

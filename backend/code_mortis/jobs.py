@@ -279,7 +279,8 @@ def execute(kind: str, payload: dict):
         if kind == "code_graph":
             graphs.perform(payload["snapshot_id"], payload["_job_id"], payload["_attempt"])
         elif kind == "code_graph_refresh":
-            graphs.refresh(payload["repository_id"], payload["_job_id"], payload["_attempt"], payload["actor_id"], retry=payload["retry"])
+            graphs.refresh(payload["repository_id"], payload["_job_id"], payload["_attempt"], payload["actor_id"],
+                           retry=payload["retry"], commit_sha=payload.get("commit_sha"))
         else:
             graphs.cleanup()
     elif kind == "revoke_api_token_work":

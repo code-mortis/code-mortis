@@ -9,8 +9,9 @@ from code_mortis.core.config import settings
 from code_mortis.core.security import digest
 from code_mortis.integrations import ocr, runner_client
 from code_mortis.reviews import context as review_context
+from code_mortis.reviews import graph_context
 from code_mortis.reviews import policy as review_policy
-from code_mortis.schemas.common import ReviewComment
+from code_mortis.schemas.common import ReviewComment, native_prompt_size
 
 
 def output_schema():
@@ -47,7 +48,7 @@ def validate_result(data, path, line_count, patch):
     return comments
 
 
-def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint, *, before_analysis=None, credentials=None):
+def review(repo, env, base, head, merge_base, connection, options, run_id, stopped, progress, checkpoint, *, before_analysis=None, credentials=None, graph_options=None):
     ocr.check_version(repo, env)
     deadline = time.monotonic() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     args = ["--repo", str(repo), "--from", base, "--to", head, "--format", "json"]
@@ -92,6 +93,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
         return limited
     # Existing checkpoints belong to this immutable run and its exact commit/config snapshot.
     previous = checkpoint.get("items", {})
+    graph_selections = dict(checkpoint.get("code_graph", {})) if graph_options else {}
     items, comments = {}, []
     used = checkpoint.get("context_bytes", sum(item.get("input_bytes", 0) for item in previous.values()))
     tokens = checkpoint.get("total_tokens", None if previous or used else 0)
@@ -109,6 +111,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
                 "items": dict(items),
                 "context_bytes": used,
                 "total_tokens": tokens,
+                **({"code_graph": dict(graph_selections)} if graph_options else {}),
             }
         )
 
@@ -168,6 +171,25 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             }, credentials or {}, stopped),
             ensure_ascii=False,
         )
+        if graph_options and len(prompt) <= 4_000_000:
+            if ref != head:
+                selection, related = {"reason": "deleted_file", "files": [], "source_bytes": 0}, None
+            else:
+                remaining = graph_context.MAX_RUN_BYTES - sum(
+                    value.get("reserved_bytes", 0) for key, value in graph_selections.items() if key != path
+                )
+                selection, related = graph_context.prepare(
+                    graph_options, path, head, repo, env, options, credentials or {}, stopped,
+                    remaining=remaining, saved=graph_selections.get(path),
+                )
+            if related:
+                enriched = json.dumps({**json.loads(prompt), "code_graph": related}, ensure_ascii=False)
+                ceiling = connection.get("options", {}).get("prompt_token_ceiling", 58888)
+                if len(enriched) <= 4_000_000 and native_prompt_size(enriched, output_schema()) <= ceiling * 4 // 5:
+                    prompt = enriched
+                else:
+                    selection, _ = graph_context.omitted(selection, "prompt_limit")
+            graph_selections[path] = selection
         input_bytes = len(prompt.encode()) + 4096
         if len(prompt) > 4_000_000:
             items[path] = {
@@ -249,6 +271,7 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
             "timeout_seconds": options["timeout_seconds"],
         },
         "warnings": [],
+        **({"code_graph": {"version": graph_context.VERSION, "files": graph_selections}} if graph_options else {}),
         "summary": {"findings": len(comments), "total_tokens": tokens,
                     "budget_exceeded": budget_exceeded or (budget is not None and tokens is not None and tokens > budget)},
     }

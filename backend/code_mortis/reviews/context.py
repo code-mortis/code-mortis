@@ -58,6 +58,8 @@ def selection_context(context, schema):
     from code_mortis.security_scans.engine import model_schema
 
     supplied, schema = copy.deepcopy(context), copy.deepcopy(schema)
+    if supplied.get("code_graph", {}).get("reason") != "used":
+        supplied.pop("code_graph", None)
     supplied["task_contract"] = TASK_CONTRACT
     supplied["citation_sources"] = {
         source_id(revision, path): {"revision": revision, "path": path, "line_count": len(source.splitlines())}

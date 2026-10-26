@@ -37,7 +37,7 @@ Production serves the compiled frontend and API from one HTTPS origin. Developme
 
 ## Future feature plans
 
-- [Optional code graph](docs/code-graph-plan.md): Phase 0 and checkpoints 1A–1E are implemented locally: contracts, isolated parsing, authorized indexing/retention, bounded exact-revision retrieval and browser repository opt-in/readiness. Graph indexing, refresh and cleanup use a dedicated optional worker in the existing Compose stack. Reviews and external code MCP are not integrated yet. No real repository is opted in automatically. No embeddings or pgvector are required; full-stack 8 GB capacity remains unverified. See the plan and [validation report](docs/code-graph-phase1de.md) for the Phase 2 handoff.
+- [Optional code graph](docs/code-graph-plan.md): Phase 0 and checkpoints 1A–1E are implemented locally: contracts, isolated parsing, authorized indexing/retention, bounded exact-revision retrieval and browser repository opt-in/readiness. Graph indexing, refresh and cleanup use a dedicated optional worker in the existing Compose stack. Phase 2 adds bounded exact-commit context to new native reviews and related-file discovery in assessment/verification for all connection kinds. Initial OCR/API analysis remains explicitly unsupported. The bounded local resource experiment is recorded; real-model quality/cost evaluation is pending authorization; external code MCP remains Phase 3. No real repository is opted in automatically. No embeddings or pgvector are required; the recorded modest stack workload fits below 8 GB, while real-model overlap and general production capacity remain unverified. See the plan and [validation report](docs/code-graph-phase1de.md) for the Phase 2 handoff.
 
 ## Definition of done
 

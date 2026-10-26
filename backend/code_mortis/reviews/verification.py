@@ -357,7 +357,7 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
 
 def check_context_size(context):
     limit = 1_500_000
-    size = len(json.dumps(context).encode())
+    size = len(json.dumps({key: value for key, value in context.items() if key != "code_graph"}).encode())
     if size > limit:
         raise ValueError(f"Necessary verification context requires {size:,} bytes; limit is {limit:,} bytes.")
 
@@ -802,7 +802,7 @@ def limit_error(options, budget, remaining, usage_known):
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
-    from code_mortis.reviews import pipeline
+    from code_mortis.reviews import graph_context, pipeline
     from code_mortis.reviews.service import authorize_connection, review_stopped
 
     with transaction() as db:
@@ -894,6 +894,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise ocr.ReviewStopped("Fix verification stopped because the run, permissions, or time limit changed.")
                 if reason := limit_error(options, allowance, remaining, True):
                     raise ocr.ReviewStopped(reason + " Fix verification stopped.")
+                context = graph_context.discovery(
+                    context, run.config.get("code_graph"), repo_path, env, options, credentials, stopped,
+                    connection, INSTRUCTIONS + "\nLanguage: " + options["language"], output_schema(),
+                )
                 request_context = review_context.sanitize(
                     {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
                 check_context_size(request_context)

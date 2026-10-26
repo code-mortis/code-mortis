@@ -479,6 +479,7 @@ def review(
     saved_review: tuple | None = None,
     after_review: Callable | None = None,
     before_analysis: Callable | None = None,
+    graph_options: dict | None = None,
 ) -> tuple[str, dict, list[dict]]:
     deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
     cancelled = stopped
@@ -551,6 +552,7 @@ def review(
                 progress,
                 checkpoint or {},
                 before_analysis=before_analysis, credentials={**credentials, "redaction_values": [*credentials.get("redaction_values", []), token]},
+                graph_options=graph_options,
             ))
         from code_mortis.reviews.context import prepare_ocr_redaction
 
@@ -621,6 +623,10 @@ def review(
             return complete(limited)
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         status, report, comments = parse_report(output, code, secrets)
+        if graph_options:
+            report["code_graph"] = {"version": graph_options["version"], "reason": "unsupported_adapter",
+                                    "detail": "OCR analysis has no bounded per-file optional-context hook; "
+                                              "graph discovery remains available during assessment and verification."}
         deleted = (
             set(
                 git(

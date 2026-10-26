@@ -1,6 +1,7 @@
 """Bounded internal navigation over one authorized immutable revision."""
 
 from collections import deque
+from contextlib import nullcontext
 from typing import Literal
 
 from pydantic import Field
@@ -39,7 +40,7 @@ def snapshot(db, request, actor_id):
         CodeGraphSnapshot.commit_sha == request.commit_sha,
         CodeGraphSnapshot.extractor_version == EXTRACTOR_VERSION,
         CodeGraphSnapshot.policy_digest == store.policy_digest(rules),
-    ))
+    ).with_for_update(read=True))
     if row and row.policy != rules:
         return None
     return row
@@ -174,7 +175,8 @@ def query(request: GraphQuery, actor_id: int):
                 "status": "unavailable", "capabilities": dict(CAPABILITIES), "gaps": list(GAPS),
                 "truncated": False, "source_state": "unavailable" if request.operation in {"source", "text"} else "not_requested", "unavailable_sources": [],
                 "searched_files": [], "items": []}
-    with store.locked(), transaction() as db:
+    source_lookup = request.operation in {"source", "text"}
+    with store.locked() if source_lookup else nullcontext(), transaction() as db:
         row = snapshot(db, request, actor_id)
         if row:
             response.update(snapshot_id=row.id, policy_digest=row.policy_digest, status=row.status)
@@ -184,6 +186,9 @@ def query(request: GraphQuery, actor_id: int):
                 symbols(db, row, request, files, response)
             elif request.operation in {"dependencies", "impact"}:
                 dependencies(db, row, request, files, response)
+                paths = {item[key] for item in response["items"] for key in ("path", "target_path") if key in item}
+                response["file_manifest"] = {path: {"blob_sha": files[path].blob_sha, "size_bytes": files[path].size_bytes}
+                                             for path in sorted(paths)}
             elif request.operation in {"source", "text"}:
                 if request.operation == "text" and (not request.query or "\n" in request.query or "\r" in request.query):
                     raise ValueError("Text lookup requires a non-empty single-line literal query.")

@@ -28,7 +28,7 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import assessment, pipeline, verification
+from code_mortis.reviews import assessment, graph_context, pipeline, verification
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings
 
@@ -133,6 +133,8 @@ def create_run(
     config = {"connection": connection_snapshot(connection), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2"}
+    if graph := graph_context.configuration(db, repo, connection, actor):
+        config["code_graph"] = graph
     if options["model"]:
         config["connection"]["model"] = options["model"]
     if not config["connection"]["model"].strip():
@@ -561,6 +563,7 @@ def perform_review(run_id: str, claim: str | None = None):
             saved_review=saved_review,
             after_review=after_review,
             before_analysis=before_analysis,
+            graph_options=run.config.get("code_graph"),
         )
     except ocr.ReviewStopped:
         with transaction() as db:

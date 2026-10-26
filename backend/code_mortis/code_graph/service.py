@@ -155,13 +155,17 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     return row.id
 
 
-def schedule_refresh(db, repository_id, *, retry=False):
+def schedule_refresh(db, repository_id, *, retry=False, commit_sha=None):
+    if commit_sha is not None:
+        browser_only()
+        commit_sha = TypeAdapter(GitSha).validate_python(commit_sha)
     config = db.scalar(select(CodeGraphRepository).where(CodeGraphRepository.repository_id == repository_id).with_for_update())
     if not config or not config.enabled or config.paused:
         return None
     query = select(Job).where(Job.kind == "code_graph_refresh", Job.status.in_(ACTIVE),
                              Job.payload["repository_id"].as_integer() == repository_id,
-                             Job.payload["actor_id"].as_integer() == config.actor_id)
+                             Job.payload["actor_id"].as_integer() == config.actor_id,
+                             Job.payload["commit_sha"].as_string() == commit_sha)
     if retry:
         query = query.where(Job.payload["retry"].as_boolean().is_(True))
     job = db.scalar(query.limit(1))
@@ -169,12 +173,15 @@ def schedule_refresh(db, repository_id, *, retry=False):
         if db.scalar(select(func.count()).select_from(Job).where(Job.kind == "code_graph_refresh", Job.status.in_(ACTIVE))) >= 16:
             return None
         job = Job(id=uid(), kind="code_graph_refresh", payload={"repository_id": repository_id,
-                  "actor_id": config.actor_id, "retry": retry})
+                  "actor_id": config.actor_id, "retry": retry,
+                  **({"commit_sha": commit_sha} if commit_sha is not None else {})})
         db.add(job)
     return job.id
 
 
-def refresh(repository_id, job_id, attempt, actor_id, *, retry=False):
+def refresh(repository_id, job_id, attempt, actor_id, *, retry=False, commit_sha=None):
+    if commit_sha is not None:
+        commit_sha = TypeAdapter(GitSha).validate_python(commit_sha)
     def owner(db):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "running" or job.attempts != attempt or not job.lease_until or job.lease_until <= now():
@@ -195,7 +202,7 @@ def refresh(repository_id, job_id, attempt, actor_id, *, retry=False):
             current, _, _ = local_access(db, repository_id, actor_id)
             if (current.full_name, current.installation_id) != (repo.full_name, repo.installation_id):
                 raise AccessLost("Repository identity changed.")
-            admit(db, current, actor_id, sha, sha, retry=retry)
+            admit(db, current, actor_id, commit_sha or sha, sha, retry=retry)
     except Exception:
         with transaction() as db:
             owner(db)
