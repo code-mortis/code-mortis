@@ -158,7 +158,7 @@ Link authorized findings and their immutable occurrences where useful, while dis
 
 ## Implementation phases and completion gates
 
-**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is implemented locally** using the checkpoints below; Phase 2A/2B are implemented; Phase 2C evaluation is in progress. Phases 3–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
+**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is implemented locally** using the checkpoints below; Phase 2A/2B are implemented and 2C evaluation is complete locally; its broader-rollout gate was not met. Phases 3–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
 
 ### Phase 0: choose an extractor and establish feasibility
 
@@ -299,16 +299,16 @@ Gate: a native review can consume bounded related source when its exact index is
 - [x] Preserve exact original/current revisions, exclusion/redaction rules, scope and token budgets. Save selection provenance and explicit omissions without changing confirmed-fix or publication rules.
 - [x] Test each adapter independently, including absence of an exact snapshot and grant revocation. Do not add code access to existing Reviews/Security MCP or PAT grants.
 
-#### 2C. Quality, cost and resource evaluation (in progress)
+#### 2C. Quality, cost and resource evaluation (complete; broader-rollout gate not met)
 
 - [x] Define a recorded historical PR corpus, acceptance thresholds and a comparison protocol for current behavior, ordinary text/symbol retrieval and graph-assisted retrieval with the same model/configuration, before paid experiments. See the frozen corpus and protocol in the Phase 2 report.
-- [ ] Measure confirmed cross-file defects, false positives, citation accuracy, context expansion rounds, reported input/output tokens and latency. Keep unknown usage unknown and count every inference round; accepted comments alone are not defect ground truth.
+- [x] Measure confirmed cross-file defects, false positives, citation accuracy, context expansion rounds, reported input/output tokens and latency. **18/18 results recorded, 20 native invocations and 306,289 reported tokens including two budget-discarded attempts.** Six matched cases show no added target defects or sufficient savings against both baselines; source review fails citation accuracy. Source-expansion rounds are zero; unavailable input/output usage and internal inference counts remain unknown. Accepted comments alone are not defect ground truth. See the linked raw results and per-answer adjudication.
 - [x] Test the full stack under an 8 GB memory limit with overlapping review/security/index work, temporary files and database activity. Record CPU, repository sizes, peak memory, failures and disk growth. The recorded 434-file overlap test used a stricter 4.87 GiB Docker ceiling, peaked at 2.49 GiB across containers and had no OOM/restarts. Model/GitHub replies were stubbed and Trivy vulnerability data was stale; see the report for these explicit limits.
 - [x] Keep experimental opt-in status until measured benefit justifies cost against the simpler baseline. Real provider runs and third-party source transfer need authorization for the specific evaluation.
 
 See [phase 2 implementation and frozen evaluation protocol](code-graph-phase2.md).
 
-Gate: measured benefit justifies cost, existing invariants pass, and resource behavior is documented. If enrichment does not help, retain opt-in and revise retrieval before broad rollout.
+Gate: measured benefit justifies cost, existing invariants pass, and resource behavior is documented. **Outcome: broader-rollout gate not met.** Implementation and the frozen evaluation are complete; retain experimental opt-in. A separately versioned retrieval/evaluation follow-up is required before claiming benefit or broadening rollout.
 
 ### Phase 3: add external MCP access
 
@@ -362,9 +362,9 @@ Reviewed during the 2026-10-25/26 discussion. These describe vendor capabilities
 
 ## Handoff for the next session
 
-Completed locally: **Phase 0**, **Phase 1A–1E**, the dedicated graph worker, and **Phase 2A/2B implementation**. Phase 2C's corpus/protocol and bounded resource experiment are complete; the real model quality/cost comparison is still pending explicit evaluation authorization. Do not mark Phase 2 fully complete or claim token savings until that measurement is recorded.
+Completed locally: **Phase 0**, **Phase 1A–1E**, the dedicated graph worker, and **Phase 2A/2B implementation**. **Phase 2C evaluation is complete**, including all 18 results across six cases, 20 native invocations and 306,289 reported tokens. This includes two discarded attempts retried only after explicit budget increases (120,000 to 280,000 to 340,000 total). No additional target defects were confirmed; graph usage was only 0.29% below ordinary context and citation accuracy failed. Phase 2 implementation/evaluation is complete locally; its broader-rollout gate is not met. Keep enrichment experimental and opt-in.
 
-Earlier commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, 1C `ee7bee4`, 1D/1E `0b9d166`, and dedicated worker `c036d91`. Current Phase 2 changes are local and uncommitted. No push or production deployment was performed. Database schema remains `20261026_graph_readiness`; Phase 2 adds no migration or service. No embeddings or pgvector.
+Earlier commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, 1C `ee7bee4`, 1D/1E `0b9d166`, and dedicated worker `c036d91`. Phase 2 implementation is committed as `c4f0f6a`; this evaluation follow-up is local and uncommitted. This follow-up performed no push or production deployment. Database schema remains `20261026_graph_readiness`; Phase 2 adds no migration or service. No embeddings or pgvector.
 
 The user enabled `wilfredinni/code-mortis` after 1E. Its application records, graph activation and retained source volume are preserved. New native analysis can use bounded exact-head source; API/ChatGPT/Claude Code assessment and verification can use current-head path suggestions. Initial OCR analysis records `unsupported_adapter`. Existing PAT/MCP-origin runs and old configurations are excluded. Missing exact-head snapshots queue asynchronously; ready/partial snapshots remain immutable. Retrieval never substitutes another revision. Only the graph worker owns the retained Git volume.
 
@@ -372,12 +372,12 @@ Validation: **2,879 backend tests passed** with 637 warnings, followed by two fo
 
 Primary implementation: `reviews/graph_context.py`, `reviews/delegated.py`, `reviews/assessment.py`, `reviews/verification.py`, `reviews/context.py`, `code_graph/retrieval.py`, `code_graph/service.py`, and the `ocr.review` / `create_run` callers. Required evidence, output scope, citation validation, history identity, coverage and fix/publication rules remain authoritative.
 
-Next concrete step: obtain the pending specific evaluation authorization, then execute the frozen six-case/three-arm corpus using `scripts/code_graph_eval/quality_run.py` in the local review worker. `quality_prepare.py` recreates the private prompts and committed manifest without model calls. The requested connection is the existing ChatGPT subscription (`gpt-6-luna`), at most 18 inference calls with a 120,000-token continuation budget. Native usage arrives after each request, so that is not a hard provider cap; clarify that before execution. Separate input/output usage is unavailable in the current native transport and must stay null. Never create/publish review comments for this experiment. Record every attempt and stop on unknown usage or quota/auth failure; do not switch connections. The frozen threshold compares quality/cost against both existing-context and text/symbol baselines. Inspect citations and explanations against the recorded regression ground truth. Keep opt-in if benefit is not established.
+Next concrete step: use the Phase 2 decision as the boundary for subsequent work. There is no remaining model call in the approved experiment. Raw results and per-answer citation adjudication are in `docs/evidence/code-graph-phase2-quality*.json`; keep both failed attempts in consumption. `quality_run.py --resume` preserves known usage and completed results, but a new experiment still requires its own authorization. A future quality follow-up must version the protocol first: complete assigned source, production task contract, explicit line labels, suitable cross-file ground truth and measured bounded evidence expansion. Do not tune/relabel the frozen experiment after observing outputs. Phase 3 may be planned independently as revision-specific navigation; it must not imply measured review benefit or widen existing grants.
 
 External graph MCP remains Phase 3 and requires independent resource/consent/scopes. Do not widen Reviews/Security grants. Noodle's earlier full tree failed the 1,000-entry admission cap; changing that cap needs its own tests. A visual explorer is later scope.
 
 Suggested resume request:
 
-> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md and docs/code-graph-phase2.md. Phase 2A/2B and the bounded resource probe are implemented locally; finish the specifically authorized model evaluation for 2C, record results honestly, and mark only proven plan checks. Preserve opt-in, exact revisions, isolated parsing, existing budgets/evidence/coverage and independent code authorization. No commit, push or GitHub publication is implied.
+> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md and docs/code-graph-phase2.md. Phase 2 implementation and evaluation are complete locally; its broader-rollout gate failed, so preserve experimental opt-in. Plan the next explicitly requested phase using the recorded evidence; do not repeat model calls or claim token savings. Preserve opt-in, exact revisions, isolated parsing, existing budgets/evidence/coverage and independent code authorization. No commit, push or GitHub publication is implied.
 
 After each development session, update this section with actual evidence and the next concrete task. Keep unfinished checkboxes open. Never infer deployment, quality, token savings or broad capacity from implementation alone.

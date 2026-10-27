@@ -13,7 +13,8 @@ from pathlib import Path
 from uuid import uuid4
 
 
-def citation_accuracy(result, prompt):
+def citation_ranges(result, prompt):
+    """Check source identities and bounds only; semantic accuracy needs source review."""
     sources = {row['source_id']: row for row in json.loads(prompt)['sources']}
     evidence = result.get('evidence', [])
     valid = sum(isinstance(row, dict) and row.get('source_id') in sources
@@ -24,17 +25,37 @@ def citation_accuracy(result, prompt):
             for row in evidence if isinstance(row, dict) and row.get('source_id') in sources})}
 
 
+def resume_report(path, requests_hash, connection_id, budget):
+    report = json.loads(path.read_text())
+    if (report['requests_sha256'] != requests_hash or report['model_config']['id'] != connection_id
+        or any(type(call['tokens']) is not int or call['tokens'] < 0
+               or (call['status'] != 'completed' and (call['status'], call.get('reason')) != ('failed', 'token_limit'))
+               for call in report['calls'])):
+        raise ValueError('Resume requires the same corpus/connection and known terminal usage; only a budget failure may retry')
+    if report['spent'] != sum(call['tokens'] for call in report['calls']) or budget <= report['spent']:
+        raise ValueError('A larger explicitly approved budget and consistent saved usage are required')
+    report['budget_history'] = [*report.get('budget_history', []), report['budget']]
+    report['budget'] = budget
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--requests', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--connection-id', required=True)
     parser.add_argument('--authorized', action='store_true')
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--token-budget', type=int, default=120000)
     args = parser.parse_args()
     if not args.authorized:
         parser.error('Explicit approval of the corpus, connection and quota is required before --authorized')
-    if args.output.exists():
+    if args.output.exists() and not args.resume:
         parser.error('Choose a new output path; an evaluation must never silently repeat paid work')
+    if args.resume and not args.output.exists():
+        parser.error('Resume requires the existing evaluation checkpoint')
+    if args.token_budget <= 0:
+        parser.error('Token budget must be positive')
 
     from code_mortis.code_graph import service as graph
     from code_mortis.core.db import engine, transaction
@@ -51,12 +72,16 @@ def main():
     # Rotate arm order across cases to avoid always warming the same arm first.
     order = {'baseline': 0, 'text_symbols': 1, 'graph': 2}
     requests.sort(key=lambda r: (r['case_id'], (order[r['arm']] - int(r['case_id'].split('-')[1])) % 3))
-    report = {'calls': [], 'budget': 120000, 'spent': 0, 'model_config': None,
-              'requests_sha256': hashlib.sha256(args.requests.read_bytes()).hexdigest(),
+    requests_hash = hashlib.sha256(args.requests.read_bytes()).hexdigest()
+    report = resume_report(args.output, requests_hash, args.connection_id, args.token_budget) if args.resume else {
+              'calls': [], 'budget': args.token_budget, 'spent': 0, 'model_config': None,
+              'requests_sha256': requests_hash,
               'input_output_usage': 'Native transport reports aggregate tokens only; separate values remain unknown',
               'hard_provider_cap': False}
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     for request in requests:
+        if any(call['id'] == request['id'] and call['status'] == 'completed' for call in report['calls']):
+            continue
         if report['spent'] >= report['budget']:
             break
         with transaction() as db:
@@ -87,7 +112,7 @@ def main():
                 'token_budget': report['budget'] - report['spent'],
             }, lambda: False)
             call.update(status='completed', result=raw, tokens=usage.get('tokens'),
-                        citations=citation_accuracy(raw, prompt))
+                        citations=citation_ranges(raw, prompt))
         except runner_client.RunnerBlocked as exc:
             call.update(status='failed', reason=exc.reason, tokens=exc.usage.get('tokens'))
         finally:
