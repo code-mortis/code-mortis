@@ -65,6 +65,24 @@ Prepared hashes match the frozen manifest; sent hashes additionally reflect stan
 
 Before a broader rollout, a separately scoped follow-up should use the production task contract and complete assigned source, explicit line labels, a corpus with required cross-file evidence available to the tested resolver, and bounded measured evidence expansion. Freeze that protocol before another authorized model experiment. Do not change this experiment's labels or thresholds retrospectively.
 
+## Phase 2D: local context selection
+
+The provider-free follow-up reuses real Git objects, the production parser and PostgreSQL retrieval, and the actual `delegated.review` prompt builder. GitHub authorization/acquisition, OCR planning/scope and native model replies are stubbed. The fixtures contain small known contracts that are necessary to understand the assigned code; they measure source delivery, not defect detection. No provider calls or subscription tokens are used.
+
+| Case | Before correction | After correction |
+| --- | --- | --- |
+| Python caller with 16 incoming imports and one required contract | The 12-edge response fills with consumers; `z_contract.py` never reaches the prompt | Required contract reaches the prompt within existing limits |
+| TypeScript caller with a large consumer and a required contract that individually fits 12 KiB | Alphabetical selection consumes bytes on the consumer; `z_contract.ts` is omitted | Required contract reaches the prompt in full; the competing consumer is omitted |
+| Necessary same-file logic beyond 8 KiB | Complete assigned source already reaches the prompt | Remains complete and identical to the ordinary-context prompt |
+
+Mixed-direction dependency queries now prioritize the current file's outgoing imports before incoming consumers, before both traversal and response limits. Outgoing imports retain source order; remaining incoming edges keep deterministic path/site order. Context selection preserves that order instead of sorting the paths again. Incoming-only impact queries keep their original behavior. No new resolver, schema, model call, shared source mount or configuration is introduced.
+
+The limits remain one hop / 12 edges, three related files / 12 KiB per assignment and 48 KiB per run. Exact revision/blob checks, current permissions, exclusions/redaction, prompt ceilings and immutable attempted selections are unchanged. A saved retry can keep an older order even after its graph snapshot is removed by retention. Each new case also compares the entire required prompt and validated coverage with graph enrichment disabled; assigned code, diff and rules remain intact.
+
+Before the fix, the new cases recorded **two failures and one pass**. After the fix, all three pass within **50 focused graph/review checks** (207.02 seconds); Ruff passes. The full backend suite passed **2,883 tests** with 637 warnings in 678.54 seconds. Review and verification consumers were paused, verified empty of active/reserved/scheduled work, then both workers were restarted. All six workers responded afterward, the two consumers resumed, API readiness passed and all 14 services remained running. Application record counts were unchanged, mounted source hashes matched the corrected files, and recent worker logs had no ERROR/Traceback/FATAL lines. No frontend, API schema, migration or runner change required additional checks. See [2D evidence](evidence/code-graph-phase2d.json). The frozen 2C corpus, prompts and recorded provider results are unchanged.
+
+This ordering is a structural heuristic. More than 12 import sites, repeated imports, multiple useful direct dependencies and unsupported resolution can still omit useful source; preferring outgoing imports also leaves less room for downstream consumers. The broader-rollout gate remains failed. A future quality experiment must exercise the production context/evidence contracts and needs separate authorization.
+
 ## Resource experiment
 
 `scripts/code_graph_eval/overlap.py` runs disposable review, graph, security and database workloads inside the existing development containers, using only `mortis_test`. It refuses to run alongside pytest or when Docker's total VM memory exceeds 8 GiB. It never changes the VM's memory allocation, starts a second deployment stack, or changes repository activation in the application database.

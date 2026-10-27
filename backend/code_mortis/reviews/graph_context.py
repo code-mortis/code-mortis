@@ -70,7 +70,7 @@ def prepare(options, path, sha, repo, env, review_options, credentials, stopped,
                 if target != path:
                     neighbors[target] = {"path": target, **result["file_manifest"][target],
                                          "relationship": "imports_file"}
-            selection["files"] = [neighbors[key] for key in sorted(neighbors)]
+            selection["files"] = list(neighbors.values())
 
         sources, selected, size = {}, [], 0
         limit = MAX_BYTES if saved is not None else min(MAX_BYTES, max(0, remaining))

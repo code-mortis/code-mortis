@@ -58,7 +58,7 @@ def test_metadata_navigation_does_not_need_git_volume_and_source_still_does(rela
     selection, context = prepare(related)
     assert selection['reason'] == 'used' and len(context['sources']) == 3
     assert selection['truncated']
-    assert [row['path'] for row in context['sources']] == ['four.py', 'one.py', 'three.py']
+    assert [row['path'] for row in context['sources']] == ['one.py', 'two.py', 'three.py']
     assert 'private-fixture-value' not in json.dumps(context)
     assert 'text' not in json.dumps(selection)
     assert all(source['commit_sha'] == related['head'] for source in [context])
@@ -88,6 +88,9 @@ def test_missing_head_queues_once_without_using_default_or_waiting(related):
 
 def test_retry_uses_saved_selection_after_retention_without_requery(related, monkeypatch):
     selection, first = prepare(related)
+    # A saved order from an older selector must survive a later ordering change.
+    selection['files'].reverse()
+    first['sources'].reverse()
     with transaction() as db:
         db.delete(db.get(CodeGraphSnapshot, related['snapshot']))
     monkeypatch.setattr(retrieval, 'query', lambda *a: pytest.fail('Retry changed its graph selection'))
@@ -160,14 +163,14 @@ def test_native_eligibility_is_frozen_and_old_grants_do_not_opt_in(related, monk
         assert graph_context.configuration(db, repo, connection, actor) is None
 
 
-def native(related, monkeypatch, *, checkpoint=None, ceiling=58888, blocked=False, deleted=False, use_graph=True, background=""):
+def native(related, monkeypatch, *, checkpoint=None, ceiling=58888, blocked=False, deleted=False, use_graph=True, background="", path='a.py'):
     monkeypatch.setattr(ocr, 'check_version', lambda *a: None)
     def command(args, root, env, **kwargs):
         if 'preview' in args:
             data = {'schema_version': '1', 'reviewable_count': 1,
-                    'reviewable_files': [{'path': 'a.py', 'status': 'deleted' if deleted else 'modified'}]}
+                    'reviewable_files': [{'path': path, 'status': 'deleted' if deleted else 'modified'}]}
         else:
-            data = {'schema_version': '1', 'groups': [{'files': ['a.py'], 'rule': 'Find defects'}]}
+            data = {'schema_version': '1', 'groups': [{'files': [path], 'rule': 'Find defects'}]}
         return 0, json.dumps(data), ''
     # Delegate commands are stubbed; Git-object reads remain real.
     original = ocr.command
@@ -189,6 +192,60 @@ def native(related, monkeypatch, *, checkpoint=None, ceiling=58888, blocked=Fals
         assert blocked
         result = None
     return result, prompts, checkpoints
+
+
+@pytest.mark.parametrize('case', ['python_many_importers', 'typescript_byte_pressure', 'same_file_tail'])
+def test_required_context_reaches_complete_native_prompt(graph, monkeypatch, case):
+    if case == 'python_many_importers':
+        path, dependency = 'z_review.py', 'z_contract.py'
+        files = {
+            path: 'from .z_contract import limit\n\ndef allocate(raw):\n    return [0] * limit(raw)\n',
+            dependency: 'def limit(raw):\n    return int(raw) if raw.isdecimal() else None\n',
+            **{f'a_consumer_{i:02}.py': 'from .z_review import allocate\n' for i in range(16)},
+        }
+    elif case == 'typescript_byte_pressure':
+        path, dependency = 'review.ts', 'z_contract.ts'
+        files = {
+            path: 'import { limit } from "./z_contract";\nexport const render = (raw: string) => limit(raw).toFixed();\n',
+            dependency: '// ' + 'contract documentation ' * 400 + '\nexport const limit = (raw: string): number | null => raw ? Number(raw) : null;\n',
+            'a_consumer.ts': 'import { render } from "./review";\n// ' + 'consumer documentation ' * 350 + '\n',
+        }
+        assert len((files[dependency] + files['a_consumer.ts']).encode()) > graph_context.MAX_BYTES
+        assert len(files[dependency].encode()) < graph_context.MAX_BYTES
+    else:
+        path, dependency = 'a.py', None
+        files = {path: 'def allocate(raw):\n    return [0] * limit(raw)\n' + '# padding\n' * 900
+                 + '\ndef limit(raw):\n    return int(raw) if raw.isdecimal() else None\n'}
+        assert files[path].index('def limit') > 8192
+    for name, source in files.items():
+        (graph['source'] / name).write_text(source)
+    fixture_git(graph['source'], 'add', '.')
+    fixture_git(graph['source'], 'commit', '-qm', case)
+    graph['head'] = fixture_git(graph['source'], 'rev-parse', 'HEAD')
+    row, _ = run(service.enqueue_snapshot(22))
+    with transaction() as db:
+        connection = db.get(Connection, 'connection')
+        connection.kind, connection.owner_id = 'chatgpt', 7
+        graph['options'] = graph_context.configuration(db, db.get(Repository, 22), connection, db.get(User, 7))
+    monkeypatch.setattr(verification, 'filter_context', lambda repo, env, sources, options, stopped: set(sources))
+    baseline, plain, _ = native(graph, monkeypatch, use_graph=False, path=path)
+    result, prompts, _ = native(graph, monkeypatch, path=path)
+    payload, expected = json.loads(prompts[0]['prompt']), json.loads(plain[0]['prompt'])
+    supporting = payload.pop('code_graph', None)
+    assert payload == expected and payload['head_file'] == files[path]
+    assert result[0] == baseline[0] == 'completed'
+    assert result[1]['manifest']['coverage'] == baseline[1]['manifest']['coverage']
+    if dependency:
+        assert supporting and supporting['snapshot_id'] == row.id
+        assert supporting['commit_sha'] == graph['head']
+        sources = {source['path']: source['text'] for source in supporting['sources']}
+        assert dependency in sources, f'{case}: missing required contract; selected {list(sources)}'
+        assert sources[dependency] == files[dependency]
+        assert len(sources) <= graph_context.MAX_FILES
+        assert sum(len(source.encode()) for source in sources.values()) <= graph_context.MAX_BYTES
+    else:
+        assert supporting is None
+        assert result[1]['code_graph']['files'][path]['reason'] == 'no_related_source'
 
 
 def test_native_prompt_usage_checkpoint_and_scope(related, monkeypatch):

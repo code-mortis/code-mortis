@@ -78,8 +78,12 @@ def dependencies(db, row, request, files, response):
             conditions.append(CodeGraphImport.file_path == path)
         if direction in {"incoming", "both"}:
             conditions.append(CodeGraphImport.target_path == path)
+        ordering = [CodeGraphImport.file_path, CodeGraphImport.start_byte]
+        if direction == "both":
+            # Consumers must not crowd out this file's own dependencies at the result limit.
+            ordering.insert(0, CodeGraphImport.file_path != path)
         matches = list(db.scalars(edges.where(or_(*conditions))
-                                  .order_by(CodeGraphImport.file_path, CodeGraphImport.start_byte).limit(MAX_VISITED + 1)))
+                                  .order_by(*ordering).limit(MAX_VISITED + 1)))
         response["truncated"] |= len(matches) > MAX_VISITED
         neighbors = [(e.target_path if e.file_path == path else e.file_path, e) for e in matches[:MAX_VISITED]]
         if depth >= request.depth:
