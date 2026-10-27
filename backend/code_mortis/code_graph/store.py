@@ -54,12 +54,13 @@ def excluded(path, rules):
 
 
 @contextmanager
-def locked():
+def locked(*, shared=False):
     root = settings().code_graph_store_dir
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (root / ".lock").open("a") as lock:
+    if not shared:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (root / ".lock").open("r" if shared else "a") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RunnerBlocked("busy") from None
         try:

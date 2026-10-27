@@ -1,6 +1,6 @@
 # Code graph: feature proposal and implementation plan
 
-Status: **Phase 0 and Phase 1A–1E implemented locally**, 2026-10-26. Bounded authorized retrieval and browser repository opt-in/readiness are implemented; see [1D/1E evidence](code-graph-phase1de.md). Phases 2–5 remain pending: review enrichment, external code MCP, user exploration and measured rollout. No real repository was automatically activated.
+Status: **Phases 0–3 completed locally**, 2026-10-26. Phase 2's broader-rollout gate failed, so review enrichment stays experimental and opt-in. Phase 3 adds independent external code navigation; see the [Phase 3 report](code-graph-phase3.md). Phases 4–5 remain pending. No real repository was automatically activated.
 
 This document preserves the investigation and follow-up decisions so development can resume without the original conversation. The user requested documentation for later development; this document does not authorize implementation, paid runs, deployment, commits, or pushes by itself. Read [AGENTS.md](../AGENTS.md), [PLAN.md](../PLAN.md), [PRODUCT.md](../PRODUCT.md), and the relevant source again before implementation.
 
@@ -12,7 +12,7 @@ The first benefit to establish is better cross-file review: finding unchanged ca
 
 ## Decisions and clarifications to preserve
 
-These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Phase 1C adds authorized durable jobs, atomic publication and source retention. Phase 1D adds bounded internal retrieval and Phase 1E adds browser repository opt-in/readiness. Review enrichment and public code MCP remain later phases.
+These preserve the discussion and subsequent Phase 0 decisions. The evaluation report defines the selected parser foundation, initial capability tiers, proposed operational limits and MCP placement. Phase 1A implements storage and internal contracts. Phase 1B adds isolated parsing and bounded transport. Phase 1C adds authorized durable jobs, atomic publication and source retention. Phase 1D adds bounded internal retrieval and Phase 1E adds browser repository opt-in/readiness. Phase 2 implements experimental review enrichment; Phase 3 implements independently authorized code MCP.
 
 | Topic | Working direction |
 | --- | --- |
@@ -23,7 +23,7 @@ These preserve the discussion and subsequent Phase 0 decisions. The evaluation r
 | Languages | Python and TypeScript/JavaScript were validation examples, **not a product language limit**. Phase 0 validated basic definitions across twelve languages and relative-file dependencies for Python/TS/JS. Resolved calls/references remain unvalidated for the selected baseline. Unsupported graph languages continue through the existing review workflow. |
 | Activation | Start opt-in per repository, off for existing repositories and new installations. Proposed label: "Use code graph context". MCP source access needs separate explicit authorization. |
 | Tokens | Parsing, storing, and querying the structural graph do not consume model tokens. Supplying retrieved source to a reviewer or MCP agent does consume input context and may increase total tokens. Savings are unproven. |
-| Deployment target | Aim for a single developer on an 8 GB server with modest repositories and externally hosted review models. Phase 0 direct extraction passed under a 256 MiB container limit on two local source corpora. Full-stack concurrency/capacity remains unverified and belongs to Phase 2. |
+| Deployment target | Aim for a single developer on an 8 GB server with modest repositories and externally hosted review models. Phase 0 direct extraction passed under a 256 MiB container limit on two local source corpora. Phase 2 recorded a bounded 434-file overlapping workload below 8 GB; real-model overlap and general production capacity remain unverified. |
 | Priority | Establish useful internal retrieval first, then MCP access, then a focused visual impact explorer. |
 | First storage choice | Reuse PostgreSQL and the existing job infrastructure. Do not introduce a dedicated graph database without measured need. |
 
@@ -52,7 +52,7 @@ Deferred: embedding-based semantic search, generated architecture documentation,
 
 ## Current implementation baseline
 
-Source inspected at commit `d8a09f12956bf074cdc9f5db868ecf04895eb812` on 2026-10-26. This is navigation for a future session; inspect current callers before editing.
+The original investigation inspected commit `d8a09f12956bf074cdc9f5db868ecf04895eb812` on 2026-10-26. The handoff records subsequent implementation; inspect current callers before editing.
 
 | Area | Existing source and integration implication |
 | --- | --- |
@@ -63,7 +63,7 @@ Source inspected at commit `d8a09f12956bf074cdc9f5db868ecf04895eb812` on 2026-10
 | Project background and diagrams | [reviews/background.py](../backend/code_mortis/reviews/background.py) generates a bounded background summary; [reviews/summary.py](../backend/code_mortis/reviews/summary.py) supports PR summary diagrams. Neither is an existing persistent structural graph. |
 | Security | [security_scans/engine.py](../backend/code_mortis/security_scans/engine.py) has source inventory, protected-path rules, redaction, and requested evidence. Graph-assisted security context can reuse retrieval later without replacing scan coverage or verification. |
 | Identity and repository access | [api/dependencies.py](../backend/code_mortis/api/dependencies.py), `repo_access()`, and [core/access.py](../backend/code_mortis/core/access.py) enforce selected repositories and current GitHub access. Installation identity alone is insufficient. |
-| MCP | [mcp/auth.py](../backend/code_mortis/mcp/auth.py), [mcp/tools.py](../backend/code_mortis/mcp/tools.py), and [mcp/server.py](../backend/code_mortis/mcp/server.py) implement independent Reviews/Security resources, explicit tools, grants, consent, audit, and revocation. See [MCP plan](mcp-plan.md). No `code:read` scope currently exists. |
+| MCP | [mcp/auth.py](../backend/code_mortis/mcp/auth.py), [mcp/tools.py](../backend/code_mortis/mcp/tools.py), and [mcp/server.py](../backend/code_mortis/mcp/server.py) implement independent Reviews/Security resources, explicit tools, grants, consent, audit, and revocation. See [MCP plan](mcp-plan.md). Phase 3 adds separate `/mcp/code` and `code:read`, reusing current authorization through `mcp/code_tools.py`. |
 | API tokens | [api_tokens/policy.py](../backend/code_mortis/api_tokens/policy.py) explicitly controls bearer routes. Adding a browser graph API must not accidentally expose it under existing token permissions. See [route policy](api-token-route-policy.md). |
 | Persistence and execution | [models.py](../backend/code_mortis/models.py), [jobs.py](../backend/code_mortis/jobs.py), and [backend architecture](architecture.md) define the existing domain, migration, and job patterns. Use additive migrations and durable job handling. |
 | Runner isolation | [native_runner.py](../backend/code_mortis/native_runner.py) disables repository configuration discovery, shell execution, and MCP tools. The worker prepares graph context; the runner does not gain graph/database/GitHub access. |
@@ -128,19 +128,21 @@ Apply the shared retrieval first to the native review path, then assess the supp
 
 ## MCP and HTTP access proposal
 
-Expose small typed read operations through the same authorized domain logic as the browser. The names below are proposals, not existing tools:
+Expose small typed read operations through the same authorized domain logic as the browser. Phase 3 implements this catalog on `/mcp/code`:
 
-| Proposed tool | Inputs and result |
+| Tool | Inputs and result |
 | --- | --- |
-| `code_index_status` | Repository plus requested revision; indexed revision, readiness, supported languages, and partial/failed/excluded coverage. |
+| `code_list_repositories` | Current selected, opted-in repositories and IDs, with fresh access checks. No review/security history. |
+| `code_index_status` | Repository plus optional exact revision (otherwise last observed default-branch SHA); readiness, supported definition languages and visible coverage. Excluded names/counts stay hidden. |
 | `code_search` | Repository, revision, bounded name/text query, and pagination; matching files/symbols and source locations. No promise of embedding-based semantic search. |
 | `code_get_symbol` | Repository, revision, symbol identity; definition and bounded source with citations. |
-| `code_get_relations` | Repository, revision, symbol, relation type/direction, and limit; supported edges, provenance, and incompleteness. |
-| `code_change_impact` | Repository and explicit commit comparison or PR identity; pinned base/head and bounded potentially affected code with an explanation for each connection. |
+| `code_get_source` | Repository, exact revision, path and UTF-8 byte range; at most 64 KiB with original blob/line/byte citations. |
+| `code_get_relations` | Repository, revision, paths, relation type/direction, and limit; supported file edges, provenance, and incompleteness. Callers/references remain unsupported. |
+| `code_change_impact` | Repository and explicit base/head commits; changed visible paths and bounded incoming dependencies in both revisions. Renames appear as removal/addition, and imports indicate potential effects only. |
 
 Every result identifies the resolved immutable commit, graph snapshot and extractor version, applicable coverage gaps, and truncation/pagination. Search or traversal limits must not look like exhaustive results. The server index does not contain an agent's uncommitted working-tree edits; clients compare revisions before applying the answer locally.
 
-Phase 0 selected `code:read` on a separately activated `/mcp/code` resource, requiring separate browser consent and explicit repositories. Current server/domain schemas only support Reviews and Security, so Phase 3 requires deliberate backend, metadata, consent, settings, and client coverage. Endpoint placement must not silently widen old grants.
+Phase 0 selected `code:read` on a separately activated `/mcp/code` resource, requiring separate browser consent and explicit repositories. Phase 3 adds backend, metadata, consent, settings and client coverage for that independent resource. Endpoint placement does not widen old grants; management scopes remain on Reviews/Security only.
 
 Read operations do not trigger paid inference or rebuilds. An absent index returns readiness information. Initially, indexing controls stay in the authorized browser configuration/job workflow; add an external execution tool only for a later explicit use case.
 
@@ -158,7 +160,7 @@ Link authorized findings and their immutable occurrences where useful, while dis
 
 ## Implementation phases and completion gates
 
-**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is implemented locally** using the checkpoints below; Phase 2A/2B are implemented, 2C evaluation is complete and the provider-free 2D context correction is validated locally; the broader-rollout gate was not met. Phases 3–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
+**Phase 0 is complete** with the linked report, fixtures and measurements. **Phase 1 is implemented locally** using the checkpoints below; Phase 2A/2B are implemented, 2C evaluation is complete and the provider-free 2D context correction is validated locally; the broader-rollout gate was not met. Phase 3 is implemented and validated locally with the authorized external-client evidence below; Phases 4–5 are not started. Mark items complete only with linked evidence and update the handoff section after work.
 
 ### Phase 0: choose an extractor and establish feasibility
 
@@ -321,13 +323,26 @@ Gate: **all three required-context cases pass** against the real native prompt b
 
 ### Phase 3: add external MCP access
 
-- [ ] Implement the selected resource/scope design, explicit consent, default-off activation, repository selection, and tool discovery filtering without expanding existing grants.
-- [ ] Add the typed tools above using shared retrieval and existing authorization/audit patterns. Keep responses bounded, revision-specific, and untrusted-content labeled.
-- [ ] Test direct calls, cached results, old tool catalogs, cross-repository identities, excluded neighbors/counts, disabled settings/users/installations, expiry/revocation, and missing snapshots.
-- [ ] Test that code access does not confer review/security history or personal API token access.
-- [ ] Verify an authorized real external client: read index status, search, follow a relation, and inspect source at the expected commit. Record mocked transport checks separately.
+#### 3A. Separate read authorization and storage access
 
-Gate: current permissions hold across all result surfaces and a real client can navigate supported code without model execution or writes.
+- [x] Add the default-off `/mcp/code` resource and its only scope, `code:read`, to settings, discovery, OAuth consent and explicit repository selection. Existing grants and personal API tokens gain no code access; management scopes remain on Reviews/Security only.
+- [x] Reuse current graph authorization for reads, checking the requesting grant/user, current membership, GitHub identity, installation and repository opt-in before and after retrieval. Keep graph lifecycle writes browser-only.
+- [x] Give the trusted API read-only access to the existing retained-object volume in the current Compose files. Shared read locks coordinate with the graph worker's exclusive write/retention lock. Missing objects return unavailable; readers never fetch, index, execute repository content or substitute another revision.
+
+#### 3B. Bounded navigation and existing MCP interface
+
+- [x] Implement typed repository discovery, status, search, symbol, relation, source and change-impact tools through shared retrieval. Require exact revisions, bound traversal/source/pagination, expose provenance and unsupported relationships, and label returned repository content as untrusted.
+- [x] Apply current exclusions before traversal, pagination and counts; sanitize credentials and keep source out of audit/operation records. Recheck access for every call, including repeated calls and clients with cached catalogs.
+- [x] Extend the existing MCP settings, connection instructions, consent and grant labels using the existing design system. Explain separate code access and read-only behavior without adding an explorer or index-management controls.
+
+#### 3C. Verification and resumable handoff
+
+- [x] Cover direct transport calls, stale catalogs, cross-repository identities, exclusions/counts, disabled settings/users/installations, expiry/revocation, changed policies, missing snapshots and retained-object failures with the isolated DB and stubbed external adapters.
+- [x] Verify code grants cannot access review/security history, management, graph writes or personal-token routes; old grants cannot access code. Regenerate API types and complete backend/frontend checks and rendered UI verification.
+- [x] Safely reload affected local services, verify health and retained application records, and document operational boundaries and evidence. Refresh Graphify after final changes.
+- [x] Verify an authorized real external client: read index status, search, follow a relation, and inspect source at the expected commit. Require explicit user authorization and actual browser consent; record mocked transport checks separately from this result. The authorized SDK client completed navigation and revoked its temporary grant; see [client evidence](evidence/code-graph-phase3-client.json).
+
+Gate: **met locally**. Current permissions hold across result surfaces in isolated tests, and a real SDK client navigated supported code at the expected commit without model execution or graph/repository writes. See [Phase 3 report](code-graph-phase3.md).
 
 ### Phase 4: add the focused impact explorer
 
@@ -353,7 +368,7 @@ Gate: opt-in rollout is reviewable, recoverable, and supported by local, hosted,
 2. Do the selected admission, parser and retention limits fit the full stack under the 8 GB target, including database/storage growth and overlapping work?
 3. Does measured load justify parallel readers or incremental snapshots beyond the serialized full rebuilds implemented in 1C? Multi-host storage/locking and artifact sharing remain deferred.
 4. What exact OCR/API context integration is available in the pinned engine?
-5. How should the selected independent `/mcp/code` resource extend discovery, settings, domain types, consent and redaction without widening existing grants?
+5. Which additional external clients need real compatibility checks beyond the Phase 3 MCP Python SDK workflow?
 6. Which benchmark cases and quality/cost thresholds justify release? Establish these before claiming improvements.
 
 Embeddings, pgvector, and generated documentation are not open blockers for the initial feature. Reconsider them only after structural retrieval is evaluated.
@@ -371,22 +386,22 @@ Reviewed during the 2026-10-25/26 discussion. These describe vendor capabilities
 
 ## Handoff for the next session
 
-Completed locally: **Phase 0**, **Phase 1A–1E**, the dedicated graph worker, and **Phase 2A/2B implementation**. **Phase 2C evaluation is complete**, including all 18 results across six cases, 20 native invocations and 306,289 reported tokens. This includes two discarded attempts retried only after explicit budget increases (120,000 to 280,000 to 340,000 total). No additional target defects were confirmed; graph usage was only 0.29% below ordinary context and citation accuracy failed. Phase 2 implementation/evaluation is complete locally; its broader-rollout gate is not met. **Phase 2D is also complete locally:** the three provider-free context cases pass after prioritizing direct dependencies before incoming consumers and preserving retrieval order. The full backend suite passes 2,883 tests. Keep enrichment experimental and opt-in.
+Completed locally: **Phase 0**, **Phase 1A–1E**, the dedicated graph worker, and **Phase 2A/2B implementation**. **Phase 2C evaluation is complete**, including all 18 results across six cases, 20 native invocations and 306,289 reported tokens. This includes two discarded attempts retried only after explicit budget increases (120,000 to 280,000 to 340,000 total). No additional target defects were confirmed; graph usage was only 0.29% below ordinary context and citation accuracy failed. Phase 2 implementation/evaluation is complete locally; its broader-rollout gate is not met. **Phase 2D is also complete locally:** the three provider-free context cases pass after prioritizing direct dependencies before incoming consumers and preserving retrieval order. The Phase 2D backend suite passed 2,883 tests. Phase 3 completion and current validation are recorded below. Keep enrichment experimental and opt-in.
 
-Earlier commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, 1C `ee7bee4`, 1D/1E `0b9d166`, and dedicated worker `c036d91`. Phase 2 implementation is committed as `c4f0f6a`, and the frozen quality results as `4e4d599`. The Phase 2D correction is local and uncommitted. This follow-up performed no provider call, push or production deployment. Database schema remains `20261026_graph_readiness`; Phase 2 adds no migration or service. No embeddings or pgvector.
+Earlier commits: Phase 0 `0cd3d2f`, 1A `227b9bf`, 1B `3529c57`, Compose profile simplification `5694e30`, 1C `ee7bee4`, 1D/1E `0b9d166`, and dedicated worker `c036d91`. Phase 2 implementation is committed as `c4f0f6a`, and the frozen quality results as `4e4d599`. The Phase 2D correction is committed as `677d033`. Phase 3 is a local, uncommitted follow-up. This follow-up performed no provider call, push or production deployment. Database schema remains `20261026_graph_readiness`; Phase 3 adds no dependency, migration or service. No embeddings or pgvector.
 
-The user enabled `wilfredinni/code-mortis` after 1E. Its application records, graph activation and retained source volume are preserved. New native analysis can use bounded exact-head source; API/ChatGPT/Claude Code assessment and verification can use current-head path suggestions. Initial OCR analysis records `unsupported_adapter`. Existing PAT/MCP-origin runs and old configurations are excluded. Missing exact-head snapshots queue asynchronously; ready/partial snapshots remain immutable. Retrieval never substitutes another revision. Only the graph worker owns the retained Git volume.
+The user enabled `wilfredinni/code-mortis` after 1E. Its application records, graph activation and retained source volume are preserved. New native analysis can use bounded exact-head source; API/ChatGPT/Claude Code assessment and verification can use current-head path suggestions. Initial OCR analysis records `unsupported_adapter`. Existing PAT/MCP-origin runs and old configurations are excluded. Missing exact-head snapshots queue asynchronously; ready/partial snapshots remain immutable. Retrieval never substitutes another revision. Phase 3 gives the API a read-only mount of the retained Git volume; the graph worker remains its sole writer.
 
-Validation: **2,883 backend tests passed** with 637 warnings in 678.54 seconds after the Phase 2D correction; 50 focused graph/review checks and Ruff passed. The prior frontend build passed; no frontend changed in 2D. Review/verification workers were safely drained and restarted; all six workers, 14 services, API readiness and unchanged application counts were verified. Eight graph-settings browser checks passed; mobile-light and desktop-dark captures were inspected. The previous full frontend checkpoint had 1,392 passes and two skips; it was not rerun for this copy-only change. The 434-file resource experiment ran real Git/OCR/parser/Trivy/database work with stubbed GitHub/model replies, peaked at 2.49 GiB of sampled container memory under Docker's 4.87 GiB ceiling, and saw no OOM/restarts. Security remained partial because its vulnerability advisory database was stale. This does not establish real-provider overlap or general production capacity. See [Phase 2 report](code-graph-phase2.md) and [resource evidence](evidence/code-graph-phase2-overlap.json).
+Historical Phase 2D validation: **2,883 backend tests passed** with 637 warnings in 678.54 seconds after the Phase 2D correction; 50 focused graph/review checks and Ruff passed. The prior frontend build passed; no frontend changed in 2D. Review/verification workers were safely drained and restarted; all six workers, 14 services, API readiness and unchanged application counts were verified. Eight graph-settings browser checks passed; mobile-light and desktop-dark captures were inspected. The previous full frontend checkpoint had 1,392 passes and two skips; it was not rerun for this copy-only change. The 434-file resource experiment ran real Git/OCR/parser/Trivy/database work with stubbed GitHub/model replies, peaked at 2.49 GiB of sampled container memory under Docker's 4.87 GiB ceiling, and saw no OOM/restarts. Security remained partial because its vulnerability advisory database was stale. This does not establish real-provider overlap or general production capacity. See [Phase 2 report](code-graph-phase2.md) and [resource evidence](evidence/code-graph-phase2-overlap.json).
 
 Primary implementation: `reviews/graph_context.py`, `reviews/delegated.py`, `reviews/assessment.py`, `reviews/verification.py`, `reviews/context.py`, `code_graph/retrieval.py`, `code_graph/service.py`, and the `ocr.review` / `create_run` callers. Required evidence, output scope, citation validation, history identity, coverage and fix/publication rules remain authoritative.
 
-Next concrete step: use the Phase 2 decision as the boundary for subsequent work. There is no remaining model call in the approved experiment. Raw results and per-answer citation adjudication are in `docs/evidence/code-graph-phase2-quality*.json`; keep both failed attempts in consumption. `quality_run.py --resume` preserves known usage and completed results, but a new experiment still requires its own authorization. With the Phase 2D delivery checks passing, the next quality step is to version a new protocol before any model call: complete assigned source, production task contract, explicit line labels, suitable cross-file ground truth and measured bounded evidence expansion. Use the actual retrieval/prompt builder; do not reuse the old experiment's separate selector as if it represented the corrected implementation. Do not tune/relabel the frozen experiment after observing outputs. Phase 3 may be planned independently as revision-specific navigation; it must not imply measured review benefit or widen existing grants.
+Next concrete step: if requested, expand Phase 4 into a focused, accessible impact explorer using the delivered read service and existing design system. No Phase 4 implementation is included here. Continue to use the Phase 2 decision as the boundary for review-quality work. There is no remaining model call in the approved experiment. Raw results and per-answer citation adjudication are in `docs/evidence/code-graph-phase2-quality*.json`; keep both failed attempts in consumption. `quality_run.py --resume` preserves known usage and completed results, but a new experiment still requires its own authorization. With the Phase 2D delivery checks passing, the next quality step is to version a new protocol before any model call: complete assigned source, production task contract, explicit line labels, suitable cross-file ground truth and measured bounded evidence expansion. Use the actual retrieval/prompt builder; do not reuse the old experiment's separate selector as if it represented the corrected implementation. Do not tune/relabel the frozen experiment after observing outputs. Phase 3 is revision-specific navigation; it does not imply measured review benefit or widen existing grants.
 
-External graph MCP remains Phase 3 and requires independent resource/consent/scopes. Do not widen Reviews/Security grants. Noodle's earlier full tree failed the 1,000-entry admission cap; changing that cap needs its own tests. A visual explorer is later scope.
+Phase 3 implements seven read-only tools on independent `/mcp/code`, default-off settings, separate `code:read` consent and explicit opted-in repositories. The API reads retained Git objects through a read-only volume and shared locks; the graph worker remains the sole writer. Current local validation: 2,916 backend tests before the final CRLF refinement, 49 focused checks afterward, 1,396 frontend passes/two skips, build/types/Ruff, Impeccable ship and preserved state after a drained reload. The user authorized local Code MCP activation and a temporary SDK client for `wilfredinni/code-mortis`. The assistant completed the browser consent under that explicit authorization. Six read tools navigated the real retained revision successfully; all seven were discovered. The grant is revoked, Code MCP stays enabled, and existing Reviews/Security grants remain intact. See [Phase 3 report](code-graph-phase3.md) and its evidence. Do not widen Reviews/Security grants. Noodle's earlier full tree failed the 1,000-entry admission cap; changing that cap needs its own tests. A visual explorer is later scope.
 
 Suggested resume request:
 
-> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md and docs/code-graph-phase2.md. Phase 2 implementation and evaluation are complete locally; its broader-rollout gate failed, so preserve experimental opt-in. Plan the next explicitly requested phase using the recorded evidence; do not repeat model calls or claim token savings. Preserve opt-in, exact revisions, isolated parsing, existing budgets/evidence/coverage and independent code authorization. No commit, push or GitHub publication is implied.
+> Read AGENTS.md, PLAN.md, docs/code-graph-plan.md, docs/code-graph-phase2.md and docs/code-graph-phase3.md. Phase 3 implements independent external navigation. Phase 2 implementation and evaluation are complete locally; its broader-rollout gate failed, so preserve experimental opt-in. Plan the next explicitly requested phase using the recorded evidence; do not repeat model calls or claim token savings. Preserve opt-in, exact revisions, isolated parsing, existing budgets/evidence/coverage and independent code authorization. No commit, push or GitHub publication is implied.
 
 After each development session, update this section with actual evidence and the next concrete task. Keep unfinished checkboxes open. Never infer deployment, quality, token savings or broad capacity from implementation alone.

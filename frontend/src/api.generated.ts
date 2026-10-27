@@ -2808,6 +2808,11 @@ export interface components {
              */
             security_enabled: boolean;
             /**
+             * Code Enabled
+             * @default false
+             */
+            code_enabled: boolean;
+            /**
              * Management Enabled
              * @default false
              */
@@ -7320,7 +7325,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                domain: "reviews" | "security";
+                domain: "reviews" | "security" | "code";
             };
             cookie?: never;
         };

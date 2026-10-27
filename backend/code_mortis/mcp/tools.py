@@ -1318,6 +1318,13 @@ def register_tools(server: MCPServer, domain: str) -> None:
     ``domain`` is ``"reviews"`` or ``"security"``; management tools are
     reachable through either endpoint under their own scopes.
     """
+    if domain == "code":
+        from code_mortis.mcp.code_tools import TOOLS
+
+        for fn, description in TOOLS:
+            _register(server, fn, fn.__name__, "code:read", description, read_only=True)
+            _TOOL_DOMAINS[fn.__name__] = domain
+        return
     if domain == "reviews":
         catalog = REVIEW_TOOLS
     elif domain == "security":

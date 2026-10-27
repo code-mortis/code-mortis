@@ -167,3 +167,35 @@ def test_filtered_symbol_limit_does_not_count_hidden_rows(graph):
                                start_byte=0, end_byte=1, start_line=1, end_line=1))
     result = query(graph, limit=1)
     assert len(result["items"]) == 1 and result["items"][0]["name"] == "first" and not result["truncated"]
+
+
+def test_source_and_literal_pages_preserve_utf8_and_boundary_matches(graph):
+    root = graph["source"]
+    raw = ("#" + "á" * 32765 + "needle" + "á" * 100 + "\n").encode()
+    (root / "large.py").write_bytes(raw)
+    fixture_git(root, "add", ".")
+    fixture_git(root, "commit", "-qm", "page boundary")
+    graph["head"] = fixture_git(root, "rev-parse", "HEAD")
+    run(service.enqueue_snapshot(22))
+    first = query(graph, "source", paths=["large.py"])
+    second = query(graph, "source", paths=["large.py"], **first["next_cursor"])
+    assert (first["items"][0]["text"] + second["items"][0]["text"]).encode() == raw
+    matches = query(graph, "text", query="needle", paths=["large.py"])
+    assert len(matches["items"]) == 1
+    item = matches["items"][0]
+    assert raw[item["start_byte"]:item["end_byte"]] == b"needle"
+    assert not query(graph, "text", query="needle", paths=["large.py"], **matches["next_cursor"])["items"]
+    with pytest.raises(UnicodeDecodeError):
+        query(graph, "source", paths=["large.py"], end_byte=2)
+
+
+def test_read_only_missing_lock_and_busy_writer_keep_metadata_available(graph):
+    run(service.enqueue_snapshot(22))
+    with store.locked():
+        assert query(graph, "status")["status"] in service.USABLE
+        assert query(graph, "source", paths=["a.py"])["source_state"] == "unavailable"
+    from code_mortis.core.config import settings
+
+    (settings().code_graph_store_dir / ".lock").unlink()
+    assert query(graph, "source", paths=["a.py"])["source_state"] == "unavailable"
+    assert not (settings().code_graph_store_dir / ".lock").exists()

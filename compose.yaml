@@ -57,6 +57,8 @@ services:
     command: [alembic, upgrade, head]
   api:
     <<: *app
+    volumes:
+      - code-graph-data:/var/lib/code-mortis/code-graph:ro
     command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --no-access-log]
     ports: ["127.0.0.1:${CM_PORT:-8080}:8080"]
     networks: [default, runners]

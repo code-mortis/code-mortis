@@ -42,7 +42,16 @@ def browser_only():
 
 
 def local_access(db, repository_id, actor_id, *, enabled=True, initiator=True):
-    browser_only()
+    provenance = mcp.current_provenance()
+    if (initiator or pat.current_provenance() is not None or not provenance
+        or provenance.get("domain") != "code" or provenance.get("scope") != "code:read"):
+        browser_only()
+    else:
+        from code_mortis.mcp.auth import ensure_grant
+
+        user, _ = ensure_grant(db, provenance["grant_id"], "code", "code:read", repository_id)
+        if user.id != actor_id:
+            raise AccessLost("This grant does not authorize code access.")
     repo, actor = db.get(Repository, repository_id), db.get(User, actor_id) if actor_id else None
     installation = db.get(Installation, repo.installation_id) if repo else None
     config = db.get(CodeGraphRepository, repository_id)
@@ -156,8 +165,8 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
 
 
 def schedule_refresh(db, repository_id, *, retry=False, commit_sha=None):
+    browser_only()
     if commit_sha is not None:
-        browser_only()
         commit_sha = TypeAdapter(GitSha).validate_python(commit_sha)
     config = db.scalar(select(CodeGraphRepository).where(CodeGraphRepository.repository_id == repository_id).with_for_update())
     if not config or not config.enabled or config.paused:

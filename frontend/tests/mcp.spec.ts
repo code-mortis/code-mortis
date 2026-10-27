@@ -10,6 +10,7 @@ const repositories = [
 const settings = {
   reviews_enabled: true,
   security_enabled: false,
+  code_enabled: false,
   management_enabled: false,
   allowed_client_domains: ["agent.example.com"],
   public_url: "https://reviews.example.com",
@@ -63,6 +64,7 @@ async function mockMcp(page: Page, options: {
   failFirstSettings?: boolean;
   empty?: boolean;
   settingsOverride?: Record<string, unknown>;
+  codeConsent?: boolean;
 } = {}) {
   const writes: Writes = [];
   let currentClients = options.empty ? [] : structuredClone(clients);
@@ -114,7 +116,9 @@ async function mockMcp(page: Page, options: {
     }
     if (path === "/mcp/authorize" && method === "GET") {
       if (url.searchParams.get("request_id") !== "req-1") return route.fulfill({ status: 404, json: { detail: "Authorization request expired. Return to the agent and start again." } });
-      return route.fulfill({ json: authorizePreview });
+      return route.fulfill({ json: options.codeConsent ? { ...authorizePreview, domain: "code", scopes: [
+        { name: "code:read", label: "Read code", description: "Read indexed definitions, file dependencies and source at exact commits in selected repositories. No indexing, model runs or writes." },
+      ] } : authorizePreview });
     }
     if (path === "/mcp/authorize") {
       const body = request.postDataJSON() as { approve: boolean };
@@ -147,6 +151,7 @@ test("admin toggles domains, registers a client, and revokes a grant", async ({ 
   await expect(page.getByRole("heading", { name: "MCP access", exact: true })).toBeVisible();
   await expect(page.getByLabel("Security MCP", { exact: true })).not.toBeChecked();
   await expect(page.getByLabel("Reviews MCP", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Code MCP", { exact: true })).not.toBeChecked();
   await expect(page.getByRole("form", { name: "Register a client manually" })).not.toBeVisible();
   await expect(page.getByLabel("Reviews MCP endpoint")).toHaveCount(0);
   await expect(page.getByLabel("Security MCP endpoint")).toHaveCount(0);
@@ -163,12 +168,13 @@ test("admin toggles domains, registers a client, and revokes a grant", async ({ 
   expect((await registration.boundingBox())!.y).toBeGreaterThan((await connected.boundingBox())!.y);
 
   await page.getByLabel("Security MCP", { exact: true }).click();
+  await page.getByLabel("Code MCP", { exact: true }).click();
   await expect(page.getByText("Adds administration tools to Reviews and Security", { exact: false })).toBeVisible();
   await page.getByLabel("Allowed client domains").fill("agent.example.com\npartner.example.org");
   await page.getByRole("button", { name: "Save MCP settings", exact: true }).click();
   await expect(page.getByText("MCP settings saved.")).toBeVisible();
   expect(writes.find((w) => w.path === "/mcp/settings" && w.method === "PUT")?.body).toMatchObject({
-    reviews_enabled: true, security_enabled: true, allowed_client_domains: ["agent.example.com", "partner.example.org"],
+    reviews_enabled: true, security_enabled: true, code_enabled: true, allowed_client_domains: ["agent.example.com", "partner.example.org"],
   });
 
   const details = await openGrant(page, "My agent", "reviews");
@@ -329,12 +335,12 @@ test("compact grants open full access details at narrow widths", async ({ page }
   expect(writes).toEqual([]);
 });
 
-for (const domain of ["reviews", "security"] as const) {
+for (const domain of ["reviews", "security", "code"] as const) {
   test(`${domain} connection copies its configured endpoint and installation prompt`, async ({ page }, info) => {
     const origin = "https://code-mortis.my-company.example";
     const writes = await mockMcp(page, { settingsOverride: { public_url: `${origin}/` } });
     await page.goto("/settings?tab=mcp");
-    const label = domain === "reviews" ? "Reviews" : "Security";
+    const label = domain === "reviews" ? "Reviews" : domain === "security" ? "Security" : "Code";
     const endpoint = `${origin}/mcp/${domain}`;
     await expect(page.getByLabel(`${label} MCP endpoint`)).toHaveCount(0);
     await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: {
@@ -369,6 +375,10 @@ for (const domain of ["reviews", "security"] as const) {
     expect(prompt).toContain("Let me complete sign-in and choose repositories and permissions in the browser.");
     expect(prompt).not.toContain(`/mcp/${domain === "reviews" ? "security" : "reviews"}`);
     expect(prompt.includes("security:issues")).toBe(domain === "security");
+    if (domain === "code") {
+      expect(prompt).toContain("OAuth scopes: code:read\n");
+      expect(prompt).not.toMatch(/code:(write|run|manage)/);
+    }
     const copyPrompt = dialog.getByRole("button", { name: `Copy ${label} installation prompt`, exact: true });
     await expect(copyPrompt).toHaveAttribute("data-variant", "ghost");
     if (info.project.name === "desktop") {
@@ -389,6 +399,10 @@ for (const domain of ["reviews", "security"] as const) {
     await expect(dialog).toHaveCount(0);
     await expect(button).toBeFocused();
     await expect(text).toHaveCount(0);
+    if (domain === "code") {
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: `/private/tmp/mcp-code-settings-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+    }
   });
 }
 
@@ -439,6 +453,30 @@ test("consent selects a subset, approves, and denies exact scopes", async ({ pag
 
   await page.goto("/mcp/authorize");
   await expect(page.getByRole("alert")).toContainText("missing its request");
+});
+
+test("code consent explains separate source access and submits only selected repositories", async ({ page }, info) => {
+  const writes = await mockMcp(page, { codeConsent: true });
+  await page.goto("/mcp/authorize?request_id=req-1");
+  await expect(page.getByText("Only repositories with code graphs enabled", { exact: false })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Read code/ })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /Run reviews/ })).toHaveCount(0);
+  await page.getByRole("checkbox", { name: /acme\/billing/ }).click();
+  await page.getByRole("checkbox", { name: /Read code/ }).uncheck();
+  await expect(page.getByRole("button", { name: "Approve selected access", exact: true })).toBeDisabled();
+  await page.getByRole("checkbox", { name: /Read code/ }).check();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode`, exact: true });
+    if (await toggle.isVisible()) await toggle.click();
+    await noOverflow(page);
+    await page.screenshot({ path: `/private/tmp/mcp-code-consent-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
+  }
+  await page.getByRole("button", { name: "Approve selected access", exact: true }).click();
+  await expect(page).toHaveURL(/authorized=1/);
+  expect(writes.find((w) => w.path === "/mcp/authorize")?.body).toEqual({
+    request_id: "req-1", repository_ids: [22], scopes: ["code:read"], approve: true,
+  });
 });
 
 test("approval previews exact arguments and records approve or deny", async ({ page }, info) => {

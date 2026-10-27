@@ -1,4 +1,4 @@
-"""OAuth authorization and per-command authorization for the two MCP resources."""
+"""OAuth authorization and per-command authorization for independent MCP resources."""
 
 import hmac
 import http.client
@@ -44,6 +44,7 @@ from code_mortis.mcp.models import (
 )
 from code_mortis.models import (
     AppConfig,
+    CodeGraphRepository,
     Connection,
     Finding,
     Membership,
@@ -58,6 +59,9 @@ from code_mortis.security_scans import engine as security_engine
 
 router = APIRouter(tags=["MCP"])
 DOMAIN_SCOPES = {
+    "code": {
+        "code:read": ("Read code", "Read indexed definitions, file dependencies and source at exact commits in selected repositories. No indexing, model runs or writes."),
+    },
     "reviews": {
         "reviews:read": ("Read reviews", "Read pull requests, runs, findings, coverage and history."),
         "reviews:write": ("Update reviews", "Resolve or reopen findings, ignore pull requests and synchronize GitHub updates."),
@@ -75,13 +79,14 @@ MANAGEMENT_SCOPES = {
     "instance:manage": ("Manage this instance", "Manage members and GitHub installations with administrator access."),
     "connections:manage": ("Manage AI connections", "Manage permitted connections and your personal connection consent."),
 }
-DEFAULT_SETTINGS = {"reviews_enabled": False, "security_enabled": False, "management_enabled": False,
+DEFAULT_SETTINGS = {"reviews_enabled": False, "security_enabled": False, "code_enabled": False, "management_enabled": False,
                     "allowed_client_domains": []}
 
 
 class McpSettingsInput(StrictModel):
     reviews_enabled: bool = False
     security_enabled: bool = False
+    code_enabled: bool = False
     management_enabled: bool = False
     allowed_client_domains: list[str] = Field(default_factory=list, max_length=50)
 
@@ -578,16 +583,16 @@ def oauth_metadata():
 
 
 @router.get("/.well-known/oauth-protected-resource/mcp/{domain}")
-def resource_metadata(domain: Literal["reviews", "security"]):
+def resource_metadata(domain: Literal["reviews", "security", "code"]):
     return {"resource": resource_url(domain), "authorization_servers": [settings().public_url],
-        "scopes_supported": list(DOMAIN_SCOPES[domain]) + list(MANAGEMENT_SCOPES), "bearer_methods_supported": ["header"]}
+        "scopes_supported": list(DOMAIN_SCOPES[domain]) + ([] if domain == "code" else list(MANAGEMENT_SCOPES)), "bearer_methods_supported": ["header"]}
 
 
 @router.post("/oauth/register", status_code=201)
 def register_client(body: McpRegistrationInput, request: Request, db: DB):
     rate_limit("register", request.client.host if request.client else "unknown", 20)
     config = mcp_settings(db)
-    if not (config["reviews_enabled"] or config["security_enabled"]):
+    if not any(config[name + "_enabled"] for name in DOMAIN_SCOPES):
         raise HTTPException(403, "MCP access is disabled.")
     db.scalar(select(AppConfig).where(AppConfig.id == 1).with_for_update())
     if db.scalar(select(func.count()).select_from(McpClient)) >= 1000:
@@ -607,7 +612,7 @@ def authorize(request: Request, db: DB):
     if not domain or not mcp_settings(db)[domain + "_enabled"]:
         raise HTTPException(400, "Choose an enabled Code Mortis MCP resource.")
     data.setdefault("scope", domain + ":read")
-    allowed = set(DOMAIN_SCOPES[domain]) | set(MANAGEMENT_SCOPES)
+    allowed = set(DOMAIN_SCOPES[domain]) | (set() if domain == "code" else set(MANAGEMENT_SCOPES))
     if not data.get("scope") or not set(data["scope"].split()) <= allowed:
         raise HTTPException(400, "The requested scopes do not belong to this MCP resource.")
     client = resolve_client(db, data.get("client_id", ""))
@@ -655,9 +660,17 @@ def permitted_scopes(db, domain, user):
     scopes = dict(DOMAIN_SCOPES[domain])
     if user.role != "admin":
         scopes.pop("reviews:manage", None)
-    if mcp_settings(db)["management_enabled"]:
+    if domain != "code" and mcp_settings(db)["management_enabled"]:
         scopes.update({name: value for name, value in MANAGEMENT_SCOPES.items() if user.role == "admin" or name != "instance:manage"})
     return scopes
+
+
+def consent_repositories(db, user, domain):
+    repositories = github.visible_repositories(db, user)
+    if domain == "code":
+        enabled = set(db.scalars(select(CodeGraphRepository.repository_id).where(CodeGraphRepository.enabled.is_(True))))
+        repositories = [repo for repo in repositories if repo.id in enabled]
+    return repositories
 
 
 @router.get("/api/v1/mcp/authorize")
@@ -669,7 +682,7 @@ def consent_preview(request: Request, request_id: str, db: DB, user: USER):
         "redirect_uri": row.redirect_uri, "domain": row.domain, "expires_at": row.expires_at,
         "scopes": [{"name": scope, "label": available[scope][0], "description": available[scope][1]}
                    for scope in row.scopes if scope in available],
-        "repositories": [{"id": repo.id, "full_name": repo.full_name} for repo in github.visible_repositories(db, user)]}
+        "repositories": [{"id": repo.id, "full_name": repo.full_name} for repo in consent_repositories(db, user, row.domain)]}
 
 
 def oauth_redirect(row, **values):
@@ -688,7 +701,7 @@ def consent(body: McpConsentInput, request: Request, db: DB, user: USER):
     if (not scopes or not scopes <= set(row.scopes) or not scopes <= set(permitted_scopes(db, row.domain, user))):
         raise HTTPException(422, "Select only the permissions offered for this client.")
     selected = set(body.repository_ids)
-    available = {repo.id for repo in github.visible_repositories(db, user)}
+    available = {repo.id for repo in consent_repositories(db, user, row.domain)}
     if not selected or not selected <= available:
         raise HTTPException(403, "Select repositories you can currently access.")
     if db.scalar(select(func.count()).select_from(McpGrant).where(McpGrant.user_id == user.id,

@@ -93,7 +93,7 @@ def install_mcp(app):
     transports = []
     origin = settings().public_url
     host = urlsplit(origin).netloc
-    for domain in ("reviews", "security"):
+    for domain in ("reviews", "security", "code"):
         server = DomainServer(domain)
         register_tools(server, domain)
         def create_transport(server=server, domain=domain):

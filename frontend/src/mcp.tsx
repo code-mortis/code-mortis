@@ -11,9 +11,13 @@ import { Badge } from "./components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
 import { date, Empty, ErrorNotice, Field, Loading, Status } from "./components/common";
 
+const domainLabels = { reviews: "Reviews", security: "Security", code: "Code" } as const;
+type McpDomain = keyof typeof domainLabels;
+
 export type McpSettings = {
   reviews_enabled: boolean;
   security_enabled: boolean;
+  code_enabled: boolean;
   management_enabled: boolean;
   allowed_client_domains: string[];
   public_url: string;
@@ -30,7 +34,7 @@ export type McpGrant = {
   id: string;
   client_id: string;
   client_name: string;
-  domain: "reviews" | "security";
+  domain: McpDomain;
   scopes: string[];
   repository_ids: number[];
   created_at: string;
@@ -45,7 +49,7 @@ type McpAuthorizePreview = {
   client_id: string;
   redirect_uri: string;
   redirect_host?: string;
-  domain: "reviews" | "security";
+  domain: McpDomain;
   scopes: { name: string; label: string; description: string }[];
   repositories: { id: number; full_name: string }[];
   expires_at: string;
@@ -84,15 +88,18 @@ function ToggleRow({
 }
 
 function ConnectionInstructions({ domain, publicUrl, enabled }: {
-  domain: "reviews" | "security"; publicUrl: string; enabled: boolean;
+  domain: McpDomain; publicUrl: string; enabled: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState<"endpoint" | "prompt" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const label = domain === "reviews" ? "Reviews" : "Security";
+  const label = domainLabels[domain];
   const description = domain === "reviews"
     ? "Read findings, resolve or reopen them, and start or stop reviews."
-    : "Read and triage findings, manage GitHub issues, and run or stop scans.";
+    : domain === "security" ? "Read and triage findings, manage GitHub issues, and run or stop scans."
+    : "Read indexed definitions, file dependencies, and source at exact commits. Enable code graphs per repository in Project context first. Agents cannot index, run models, or write through this connection.";
+  const scopes = domain === "code" ? ["code:read"]
+    : [`${domain}:read`, `${domain}:write`, `${domain}:run`, ...(domain === "security" ? ["security:issues"] : [])];
   const endpoint = `${publicUrl.replace(/\/+$/, "")}/mcp/${domain}`;
   const name = `codemortis-${domain}`;
   const quotedEndpoint = `'${endpoint.replaceAll("'", "'\\''")}'`;
@@ -100,7 +107,7 @@ function ConnectionInstructions({ domain, publicUrl, enabled }: {
 
 Server URL: ${endpoint}
 Connection name: ${name}
-OAuth scopes: ${domain}:read, ${domain}:write, ${domain}:run${domain === "security" ? ", security:issues" : ""}
+OAuth scopes: ${scopes.join(", ")}
 
 Detect which client you are running in and configure this remote Streamable HTTP MCP server in its user settings. Preserve existing MCP servers and unrelated settings. Use OAuth with PKCE and dynamic client registration (DCR). If this client cannot use that setup, explain what it supports instead of claiming it is connected.
 
@@ -108,7 +115,7 @@ For Codex CLI, use:
 codex mcp add ${name} --url ${quotedEndpoint} --oauth-resource ${quotedEndpoint} --oauth-client-registration dcr
 
 If that Codex connection already exists, check its URL and use:
-codex mcp login ${name} --oauth-client-registration dcr --scopes ${domain}:read,${domain}:write,${domain}:run${domain === "security" ? ",security:issues" : ""}
+codex mcp login ${name} --oauth-client-registration dcr --scopes ${scopes.join(",")}
 
 Let me complete sign-in and choose repositories and permissions in the browser. Do not enter credentials or grant management permissions on my behalf. The ${label} MCP must be enabled in Code Mortis before authorization; local Codex using the command above does not need allowed client domains or manual client registration.
 
@@ -166,10 +173,12 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
   const action = useAction<McpSettings>();
   const [reviews, setReviews] = useState(settings.reviews_enabled);
   const [security, setSecurity] = useState(settings.security_enabled);
+  const [code, setCode] = useState(settings.code_enabled);
   const [management, setManagement] = useState(settings.management_enabled);
   const [domains, setDomains] = useState(settings.allowed_client_domains.join("\n"));
   const [error, setError] = useState<unknown>();
   const dirty = reviews !== settings.reviews_enabled || security !== settings.security_enabled
+    || code !== settings.code_enabled
     || management !== settings.management_enabled || domains !== settings.allowed_client_domains.join("\n");
   return (
     <form
@@ -185,6 +194,7 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
             body: {
               reviews_enabled: reviews,
               security_enabled: security,
+              code_enabled: code,
               management_enabled: management,
               allowed_client_domains: domains.split(/[\n,]/).map((d) => d.trim()).filter(Boolean),
             },
@@ -202,6 +212,9 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
         </ToggleRow>
         <ToggleRow id="mcp-security" label="Security MCP" checked={security} onChange={setSecurity}>
           <ConnectionInstructions domain="security" publicUrl={settings.public_url} enabled={settings.security_enabled} />
+        </ToggleRow>
+        <ToggleRow id="mcp-code" label="Code MCP" checked={code} onChange={setCode}>
+          <ConnectionInstructions domain="code" publicUrl={settings.public_url} enabled={settings.code_enabled} />
         </ToggleRow>
         <ToggleRow id="mcp-management" label="Allow management through MCP" hint="Adds administration tools to Reviews and Security, using the same two endpoints. Agents need separate permission to manage AI connections, members or GitHub installations." checked={management} onChange={setManagement} />
       </div>
@@ -366,7 +379,7 @@ function Grants() {
                   {grant.client_name}
                 </button>
               </h4>
-              <p className="mt-1 text-xs text-muted-foreground">{grant.domain === "reviews" ? "Reviews" : "Security"} MCP</p>
+              <p className="mt-1 text-xs text-muted-foreground">{domainLabels[grant.domain]} MCP</p>
             </div>
           </div>
           <div className="min-w-0 text-xs leading-relaxed">
@@ -417,7 +430,7 @@ function Grants() {
           {selected && <>
             <DialogHeader className="min-w-0 pr-6 text-left">
               <DialogTitle ref={detailsHeading} tabIndex={-1} className="break-words leading-snug">{selected.client_name}</DialogTitle>
-              <DialogDescription>{selected.domain === "reviews" ? "Reviews" : "Security"} MCP access</DialogDescription>
+              <DialogDescription>{domainLabels[selected.domain]} MCP access</DialogDescription>
             </DialogHeader>
             {selected.revoked_at && <div><Status value="revoked" label="Revoked" /></div>}
             <dl className="space-y-4 text-sm">
@@ -477,7 +490,7 @@ export function McpSettingsSection({ canAdminister }: { canAdminister: boolean }
       <div>
         <h2 id="mcp-heading" className="text-xl font-semibold tracking-tight">MCP access</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect an agent to reviews or security. Authorize each connection in your browser.
+          Connect an agent to reviews, security, or indexed code. Authorize each connection separately in your browser.
         </p>
       </div>
       <ErrorNotice error={settings.error} />
@@ -491,12 +504,13 @@ export function McpSettingsSection({ canAdminister }: { canAdminister: boolean }
             <>
             <p className="text-sm leading-relaxed text-muted-foreground">
               Reviews MCP {settings.data.reviews_enabled ? "is on" : "is off"}, security MCP {settings.data.security_enabled ? "is on" : "is off"}
+              {", code MCP "}{settings.data.code_enabled ? "is on" : "is off"}
               {settings.data.management_enabled ? ", management through MCP is on" : ""}. Only administrators change instance switches.
             </p>
             <div className="divide-y rounded-lg border bg-card">
-              {(["reviews", "security"] as const).map((domain) => (
+              {(["reviews", "security", "code"] as const).map((domain) => (
                 <div key={domain} className="space-y-4 p-5">
-                  <h3 className="text-sm font-medium">{domain === "reviews" ? "Reviews" : "Security"} MCP</h3>
+                  <h3 className="text-sm font-medium">{domainLabels[domain]} MCP</h3>
                   <ConnectionInstructions domain={domain} publicUrl={settings.data.public_url} enabled={settings.data[`${domain}_enabled`]} />
                 </div>
               ))}
@@ -587,6 +601,7 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
           </dl>
           <fieldset className="space-y-3">
             <legend className="text-base font-semibold">Repositories</legend>
+            {data.domain === "code" && <p className="text-xs leading-relaxed text-muted-foreground">Only repositories with code graphs enabled are offered. This grants the agent access to their indexed source, separately from reviews and security history.</p>}
             {data.repositories.length ? data.repositories.map((repo) => (
               <label key={repo.id} className="flex cursor-pointer items-center gap-3 rounded-lg border bg-card px-4 py-3 text-sm has-checked:border-primary">
                 <input
@@ -601,7 +616,9 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
           </fieldset>
           <fieldset className="space-y-3">
             <legend className="text-base font-semibold">Permissions</legend>
-            <p className="text-xs leading-relaxed text-muted-foreground">Read permissions start selected. Select any write, run, or management permission explicitly.</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">{data.domain === "code"
+              ? "Read code starts selected. This connection cannot change repositories, rebuild indexes, or run models."
+              : "Read permissions start selected. Select any write, run, or management permission explicitly."}</p>
             {data.scopes.map((scope) => (
               <label key={scope.name} className="flex cursor-pointer items-start gap-3 rounded-lg border bg-card px-4 py-3 text-sm has-checked:border-primary">
                 <input

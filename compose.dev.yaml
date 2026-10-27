@@ -55,6 +55,10 @@ services:
     command: [alembic, upgrade, head]
   api:
     <<: *app
+    volumes:
+      - ./backend/code_mortis:/app/backend/code_mortis:ro
+      - ./backend/migrations:/app/backend/migrations:ro
+      - code-graph-data:/var/lib/code-mortis/code-graph:ro
     command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --reload, --reload-dir, /app/backend/code_mortis, --no-access-log]
     networks: [default, runners]
     depends_on:

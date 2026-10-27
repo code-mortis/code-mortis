@@ -140,7 +140,7 @@ def ready():
 def frontend(path: str):
     root = settings().frontend_dir.resolve()
     asset = (root / path).resolve()
-    if path.startswith(("api/", "health/", "oauth/", ".well-known/", "mcp/reviews", "mcp/security")):
+    if path.startswith(("api/", "health/", "oauth/", ".well-known/", "mcp/reviews", "mcp/security", "mcp/code")):
         return JSONResponse({"detail": "This API endpoint does not exist. Check the URL and try again."}, status_code=404)
     if asset.is_relative_to(root) and asset.is_file():
         return FileResponse(asset)
