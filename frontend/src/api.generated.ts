@@ -413,6 +413,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/code-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Code Graph */
+        get: operations["pull_code_graph_api_v1_pulls__pr_id__code_graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/code-graph/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Query Pull Code Graph */
+        post: operations["query_pull_code_graph_api_v1_pulls__pr_id__code_graph_query_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/code-graph/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Index Pull Code Graph */
+        post: operations["index_pull_code_graph_api_v1_pulls__pr_id__code_graph_index_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls": {
         parameters: {
             query?: never;
@@ -2331,6 +2382,16 @@ export interface components {
              */
             page_size: number;
         };
+        /** ChangedGraphFile */
+        ChangedGraphFile: {
+            /** Path */
+            path: string;
+            /**
+             * Change
+             * @enum {string}
+             */
+            change: "added" | "modified" | "removed";
+        };
         /** CodeGraphStatus */
         CodeGraphStatus: {
             /**
@@ -2463,6 +2524,54 @@ export interface components {
             /** Paths */
             paths: string[];
         };
+        /** ExplorerQuery */
+        ExplorerQuery: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Revision
+             * @default head
+             * @enum {string}
+             */
+            revision: "head" | "base";
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "dependencies" | "symbols" | "source";
+            /** Path */
+            path: string;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Start Byte
+             * @default 0
+             */
+            start_byte: number;
+            /**
+             * End Byte
+             * @default 1048576
+             */
+            end_byte: number;
+        };
+        /** ExplorerRevision */
+        ExplorerRevision: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Revision
+             * @default head
+             * @enum {string}
+             */
+            revision: "head" | "base";
+        };
         /** FindingAction */
         FindingAction: {
             /**
@@ -2578,6 +2687,153 @@ export interface components {
              * @default false
              */
             automatic: boolean;
+        };
+        /** GraphCursor */
+        GraphCursor: {
+            /** Offset */
+            offset: number;
+            /** Start Byte */
+            start_byte: number;
+        };
+        /** GraphDefinition */
+        GraphDefinition: {
+            /** Path */
+            path: string;
+            /** Start Byte */
+            start_byte: number;
+            /** End Byte */
+            end_byte: number;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "symbol";
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Symbol Kind */
+            symbol_kind: string;
+        };
+        /** GraphExplorer */
+        GraphExplorer: {
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha?: string | null;
+            base?: components["schemas"]["GraphRead"] | null;
+            head?: components["schemas"]["GraphRead"] | null;
+            /** Files */
+            files?: components["schemas"]["ChangedGraphFile"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Page
+             * @default 1
+             */
+            page: number;
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
+            /**
+             * Comparison Truncated
+             * @default false
+             */
+            comparison_truncated: boolean;
+        };
+        /** GraphRead */
+        GraphRead: {
+            /** Repository Id */
+            repository_id: number;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Snapshot Id */
+            snapshot_id: string | null;
+            /** Status */
+            status: string;
+            /** Extractor Version */
+            extractor_version: string;
+            /** Policy Digest */
+            policy_digest: string | null;
+            /** Capabilities */
+            capabilities: {
+                [key: string]: string;
+            };
+            /** Definition Languages */
+            definition_languages: string[];
+            /** Gaps */
+            gaps: string[];
+            /** Truncated */
+            truncated: boolean;
+            /** Source State */
+            source_state: string;
+            /** Items */
+            items: (components["schemas"]["GraphDefinition"] | components["schemas"]["GraphRelation"] | components["schemas"]["GraphSource"])[];
+            next_cursor: components["schemas"]["GraphCursor"] | null;
+        };
+        /** GraphRelation */
+        GraphRelation: {
+            /** Path */
+            path: string;
+            /** Start Byte */
+            start_byte: number;
+            /** End Byte */
+            end_byte: number;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "dependency";
+            /** Target Path */
+            target_path: string;
+            /** Relationship */
+            relationship: string;
+            /** Provenance */
+            provenance: string;
+        };
+        /** GraphSource */
+        GraphSource: {
+            /** Path */
+            path: string;
+            /** Start Byte */
+            start_byte: number;
+            /** End Byte */
+            end_byte: number;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "source";
+            /** Blob Sha */
+            blob_sha: string;
+            /** Text */
+            text: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -4838,6 +5094,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalyticsSecurity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_code_graph_api_v1_pulls__pr_id__code_graph_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                q?: string;
+            };
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphExplorer"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    query_pull_code_graph_api_v1_pulls__pr_id__code_graph_query_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExplorerQuery"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    index_pull_code_graph_api_v1_pulls__pr_id__code_graph_index_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExplorerRevision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

@@ -31,7 +31,7 @@ from starlette.concurrency import run_in_threadpool
 from code_mortis.api.dependencies import ADMIN, DB, USER, current_user
 from code_mortis.core.config import settings
 from code_mortis.core.db import get_db, now, transaction, uid
-from code_mortis.core.security import clean_text, digest, unseal
+from code_mortis.core.security import digest, redact_saved_credentials
 from code_mortis.integrations import github
 from code_mortis.mcp.models import (
     McpApproval,
@@ -45,7 +45,6 @@ from code_mortis.mcp.models import (
 from code_mortis.models import (
     AppConfig,
     CodeGraphRepository,
-    Connection,
     Finding,
     Membership,
     PullRequest,
@@ -55,7 +54,6 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.schemas.common import StrictModel
-from code_mortis.security_scans import engine as security_engine
 
 router = APIRouter(tags=["MCP"])
 DOMAIN_SCOPES = {
@@ -285,15 +283,7 @@ def check_cached_repository_access(db, user, grant, arguments):
 
 
 def redact_tool_text(db, text, grant=None):
-    credentials = []
-    for connection in db.scalars(select(Connection)):
-        if connection.secret:
-            saved = json.loads(unseal(connection.secret))
-            credentials.extend([saved.get("api_key", ""), *saved.get("extra_headers", {}).values()])
-    query = select(SecurityFinding.evidence).where(SecurityFinding.kind == "secret")
-    if grant:
-        query = query.where(SecurityFinding.repository_id.in_(grant.repository_ids))
-    return clean_text(security_engine.redact_secrets(text, credentials, list(db.scalars(query))))
+    return redact_saved_credentials(db, text, grant.repository_ids if grant else None)
 
 
 def validate_public_arguments(db, grant, arguments):

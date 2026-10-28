@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import ipaddress
+import json
 import re
 import socket
 from urllib.parse import urlsplit
@@ -68,3 +69,20 @@ def safe_repo_name(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
         raise ValueError("Enter a GitHub repository in owner/repository format.")
     return value
+
+
+def redact_saved_credentials(db, text, repository_ids=None):
+    from sqlalchemy import select
+
+    from code_mortis.models import Connection, SecurityFinding
+    from code_mortis.security_scans import engine as security_engine
+
+    credentials = []
+    for connection in db.scalars(select(Connection)):
+        if connection.secret:
+            saved = json.loads(unseal(connection.secret))
+            credentials.extend([saved.get("api_key", ""), *saved.get("extra_headers", {}).values()])
+    query = select(SecurityFinding.evidence).where(SecurityFinding.kind == "secret")
+    if repository_ids is not None:
+        query = query.where(SecurityFinding.repository_id.in_(repository_ids))
+    return clean_text(security_engine.redact_secrets(text, credentials, list(db.scalars(query))))

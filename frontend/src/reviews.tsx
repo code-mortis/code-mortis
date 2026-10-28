@@ -94,6 +94,7 @@ import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, runFindingOutcomes } from "./lib/review-filters";
 import { runDuration } from "./lib/run-duration";
 import { ExecutionDuration } from "./components/execution-duration";
+import { CodeGraphExplorer } from "./components/code-graph-explorer";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -277,7 +278,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history"], "findings");
+  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "impact"], "findings");
   const resolved = tab === "resolved";
   const dismissed = tab === "dismissed";
   const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull");
@@ -417,7 +418,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
+        <TabsTrigger value="impact">Impact</TabsTrigger>
       </TabsList>
+      <TabsContent value="impact" className="min-w-0">{tab === "impact" && <CodeGraphExplorer prId={pr.id} repositoryId={repository.id} admin={admin} canWrite={can_write} />}</TabsContent>
       {["findings", "resolved", "dismissed"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">
           <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : dismissed ? "Search dismissed findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}

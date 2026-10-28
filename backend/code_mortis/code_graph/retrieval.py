@@ -202,6 +202,17 @@ def sources(row, request, files, response, source_check):
 def query(request: GraphQuery, actor_id: int, *, source_check=None):
     request = GraphQuery.model_validate(request.model_dump())
     service.authorize(request.repository_id, actor_id, initiator=False)
+    response = read_snapshot(request, actor_id, source_check=source_check)
+    # A disable/revocation during object reads must also prevent returning saved content.
+    current, _ = service.authorize(request.repository_id, actor_id, initiator=False)
+    if response["policy_digest"] and response["policy_digest"] != store.policy_digest(store.policy(current)):
+        raise service.AccessLost("Graph policy changed during retrieval.")
+    return response
+
+
+def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None):
+    """Local reader; callers must freshly authorize before reading and before returning content."""
+    request = GraphQuery.model_validate(request.model_dump())
     response = {"repository_id": request.repository_id, "commit_sha": request.commit_sha,
                 "extractor_version": EXTRACTOR_VERSION, "policy_digest": None, "snapshot_id": None,
                 "status": "unavailable", "capabilities": dict(CAPABILITIES), "gaps": list(GAPS),
@@ -238,8 +249,4 @@ def query(request: GraphQuery, actor_id: int, *, source_check=None):
                     response["gaps"].append("Retained objects are unavailable or busy; retry this exact revision later.")
             else:
                 response["relationship_state"] = "unsupported"
-    # A disable/revocation during object reads must also prevent returning saved content.
-    current, _ = service.authorize(request.repository_id, actor_id, initiator=False)
-    if response["policy_digest"] and response["policy_digest"] != store.policy_digest(store.policy(current)):
-        raise service.AccessLost("Graph policy changed during retrieval.")
     return response

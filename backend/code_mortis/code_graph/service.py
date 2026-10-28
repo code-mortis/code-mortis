@@ -30,6 +30,7 @@ from code_mortis.schemas.code_graph_status import CodeGraphStatus
 ACTIVE = {"queued", "running"}
 USABLE = {"ready", "partial"}
 LEASE_SECONDS = 600
+MAX_RECENT_SNAPSHOTS = 10
 
 
 class AccessLost(ValueError):
@@ -383,9 +384,11 @@ def cleanup_locked():
                                    .order_by(CodeGraphSnapshot.finished_at.desc().nulls_last(), CodeGraphSnapshot.id)
                                    .with_for_update()))
             default = next((r for r in rows if r.status in USABLE and config and r.commit_sha == config.default_sha), None)
-            other = next((r for r in rows if r.status in USABLE and r is not default
-                          and r.finished_at and r.finished_at > now() - timedelta(days=7)), None)
-            keep = {r.id for r in (default, other) if r}
+            recent = [r for r in rows if r.status in USABLE and r is not default
+                      and r.finished_at and r.finished_at > now() - timedelta(days=7)][:MAX_RECENT_SNAPSHOTS]
+            keep = {r.id for r in recent}
+            if default:
+                keep.add(default.id)
             for row in rows:
                 if row.status in ACTIVE:
                     job = db.get(Job, row.job_id) if row.job_id else None

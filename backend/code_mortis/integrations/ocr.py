@@ -97,7 +97,10 @@ def command(
                 if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                     raise ValueError("Review output exceeded the 20 MB safety limit.")
                 poll()
-                time.sleep(0.2)
+                try:
+                    process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
             output.seek(0)
             errors.seek(0)
             if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:

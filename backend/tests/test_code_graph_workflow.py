@@ -376,7 +376,7 @@ def test_pending_capacity_and_extractor_version_changes(graph, monkeypatch):
         service.enqueue_snapshot(22, graph["second"])
 
 
-def test_retention_keeps_only_latest_other_and_prunes_orphan_refs(graph):
+def test_retention_keeps_recent_revisions_and_prunes_orphan_refs(graph):
     default, _ = run(service.enqueue_snapshot(22))
     other, _ = run(service.enqueue_snapshot(22, graph["second"]))
     with transaction() as db:
@@ -384,13 +384,32 @@ def test_retention_keeps_only_latest_other_and_prunes_orphan_refs(graph):
     newest, _ = run(service.enqueue_snapshot(22, graph["second"]))
     with transaction() as db:
         assert db.get(CodeGraphSnapshot, default.id) is not None
-        assert db.get(CodeGraphSnapshot, other.id) is None
+        assert db.get(CodeGraphSnapshot, other.id) is not None
         assert db.get(CodeGraphSnapshot, newest.id) is not None
         db.delete(db.get(CodeGraphRepository, 22))
         for row in db.scalars(select(CodeGraphSnapshot)):
             db.delete(row)
     service.cleanup()
     assert not store.git(store.directory(22), "for-each-ref", "--format=%(refname)", "refs/code-mortis/").strip()
+
+
+def test_retention_caps_recent_revisions_without_evicting_default(graph):
+    root, commits = graph["source"], [graph["second"]]
+    for index in range(service.MAX_RECENT_SNAPSHOTS):
+        (root / "renamed.py").write_text(f"def second():\n    return {index + 4}\n")
+        fixture_git(root, "commit", "-qam", f"revision {index}")
+        commits.append(fixture_git(root, "rev-parse", "HEAD"))
+    default, _ = run(service.enqueue_snapshot(22))
+    revisions = [run(service.enqueue_snapshot(22, sha))[0] for sha in commits]
+    with transaction() as db:
+        assert db.get(CodeGraphSnapshot, revisions[0].id) is None
+        assert db.get(CodeGraphSnapshot, default.id) is not None
+        assert db.scalar(select(func.count()).select_from(CodeGraphSnapshot)) == service.MAX_RECENT_SNAPSHOTS + 1
+        assert all(db.get(CodeGraphSnapshot, row.id) is not None for row in revisions[1:])
+    assert service.source(revisions[1].id, 7, "renamed.py") == b"def second():\n    return 4\n"
+    refs = store.git(store.directory(22), "for-each-ref", "--format=%(refname)", "refs/code-mortis/").decode()
+    assert revisions[0].id not in refs and default.id in refs
+    assert all(row.id in refs for row in revisions[1:])
 
 
 def test_cancellation_while_publication_waits_for_row_lock(graph):
