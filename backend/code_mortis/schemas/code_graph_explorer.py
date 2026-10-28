@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from code_mortis.schemas.code_graph import MAX_FILE_BYTES, GitSha, RepositoryPath, StrictModel
+from code_mortis.schemas.code_graph_status import GraphCoverage
 
 
 class ExplorerRevision(StrictModel):
@@ -66,6 +67,7 @@ class GraphRead(BaseModel):
     source_state: str
     items: list[GraphDefinition | GraphRelation | GraphSource]
     next_cursor: GraphCursor | None
+    coverage: GraphCoverage | None = None
 
 
 class ChangedGraphFile(BaseModel):

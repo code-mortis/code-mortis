@@ -58,6 +58,7 @@ def test_browser_navigation_exact_revisions_and_no_implicit_jobs(indexed, client
     assert result["files"] == [{"path": "a.py", "change": "removed"}, {"path": "consumer.py", "change": "added"},
                                {"path": "renamed.py", "change": "added"}]
     assert result["total"] == 3 and "skip.py" not in response.text
+    assert result["head"]["coverage"]["parsed"] == 2 and result["head"]["coverage"]["complete"]
     edges = client.post(BASE + "/query", json=body(indexed)).json()["items"]
     assert [(edge["path"], edge["target_path"]) for edge in edges] == [("consumer.py", "renamed.py")]
     symbols = client.post(BASE + "/query", json=body(indexed, operation="symbols")).json()["items"]

@@ -2427,6 +2427,7 @@ export interface components {
             finished_at?: string | null;
             /** Error */
             error?: string | null;
+            coverage?: components["schemas"]["GraphCoverage"] | null;
         };
         /** ConnectionInput */
         ConnectionInput: {
@@ -2688,6 +2689,48 @@ export interface components {
              */
             automatic: boolean;
         };
+        /** GraphCoverage */
+        GraphCoverage: {
+            /**
+             * Parsed
+             * @default 0
+             */
+            parsed: number;
+            /**
+             * Partial
+             * @default 0
+             */
+            partial: number;
+            /**
+             * Unsupported
+             * @default 0
+             */
+            unsupported: number;
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Too Large
+             * @default 0
+             */
+            too_large: number;
+            /**
+             * Visible Files
+             * @default 0
+             */
+            visible_files: number;
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
+            /** Reasons */
+            reasons?: {
+                [key: string]: number;
+            };
+        };
         /** GraphCursor */
         GraphCursor: {
             /** Offset */
@@ -2788,6 +2831,7 @@ export interface components {
             /** Items */
             items: (components["schemas"]["GraphDefinition"] | components["schemas"]["GraphRelation"] | components["schemas"]["GraphSource"])[];
             next_cursor: components["schemas"]["GraphCursor"] | null;
+            coverage?: components["schemas"]["GraphCoverage"] | null;
         };
         /** GraphRelation */
         GraphRelation: {

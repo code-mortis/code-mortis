@@ -58,6 +58,38 @@ def test_exact_utf8_and_line_ranges(text):
     assert symbol.end_line == payload.files[0].source().count(b"\n") + (not text.endswith("\n"))
 
 
+@pytest.mark.parametrize("extension", ["jsx", "tsx"])
+@pytest.mark.parametrize("markup", ["<h2>Limits & rules</h2>", "<>café & té</>",
+                                   "<div>A & <b>B & C</b></div>", "<h2>&amp; &#38; &unknown; &</h2>"])
+def test_jsx_literal_ampersands_preserve_original_definition_ranges(extension, markup):
+    source = f"export function Section() {{\r\n  return {markup};\r\n}}\r\n"
+    payload = request({f"section.{extension}": source})
+    result = client.validate_result(payload, extract(payload))
+    assert result.files[0].status == "parsed" and result.files[0].reason is None
+    symbol = next(item for item in result.symbols if item.name == "Section")
+    assert source.encode()[symbol.start_byte:symbol.end_byte].decode() == source.removeprefix("export ").rstrip("\r\n")
+    assert result.files[0].blob_sha == blob_sha(source.encode())
+
+
+@pytest.mark.parametrize("source", [
+    "function Broken() { return <h2>{a & }</h2>; }",
+    "function Broken() { return <h2>Limits & rules{</h2>; }",
+    "function Section() { return <h2>Limits & rules</h2>; }\nconst broken = ;",
+    "function Broken() { return value & ; }",
+])
+def test_jsx_ampersand_recovery_keeps_real_syntax_errors_partial(source):
+    payload = request({"section.tsx": source})
+    result = client.validate_result(payload, extract(payload))
+    assert result.files[0].status == "partial" and result.files[0].reason == "syntax_error"
+    assert not any(item.name == "Broken" for item in result.symbols)
+
+
+def test_ambiguous_jsx_recovery_keeps_parser_warning():
+    payload = request({"section.tsx": "function Section() { return <>café & té\r\n& more</>; }"})
+    result = client.validate_result(payload, extract(payload))
+    assert result.files[0].status == "partial" and result.files[0].reason == "syntax_error"
+
+
 def test_exclusions_invalid_encoding_multi_imports_aliases_and_ambiguous_targets():
     payload = request({
         "a.py": "import one as first, two\nfrom .target import x as y\n",

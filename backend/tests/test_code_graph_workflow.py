@@ -433,16 +433,35 @@ def test_cancellation_while_publication_waits_for_row_lock(graph):
         assert db.scalar(select(func.count()).select_from(CodeGraphFile)) == 0
 
 
-def test_partial_snapshot_reports_unsupported_files(graph):
+def test_ready_snapshot_reports_unsupported_formats_without_claiming_complete_coverage(graph):
     root = graph["source"]
     (root / "README.txt").write_text("Unsupported syntax is still recorded honestly.")
     fixture_git(root, "add", ".")
     fixture_git(root, "commit", "-qm", "unsupported")
     graph["head"] = fixture_git(root, "rev-parse", "HEAD")
     row, job = run(service.enqueue_snapshot(22))
-    assert row.status == "partial" and job.status == "done"
+    assert row.status == "ready" and job.status == "done"
     with transaction() as db:
         assert db.get(CodeGraphFile, (row.id, "README.txt")).status == "unsupported"
+        coverage = service.coverage(db, row)
+        assert coverage.unsupported == 1 and not coverage.complete and coverage.visible_files == 2
+        assert coverage.reasons == {"unsupported_language": 1}
+
+
+@pytest.mark.parametrize("source,reason", [(b"def broken(\n", "syntax_error"), (b"\xff", "invalid_encoding"),
+                                          (b"x" * (1024 * 1024 + 1), "file_too_large")], ids=["syntax", "encoding", "size"])
+def test_eligible_file_gaps_produce_partial_snapshot_and_reason_counts(graph, source, reason):
+    root = graph["source"]
+    (root / "problem.py").write_bytes(source)
+    fixture_git(root, "add", ".")
+    fixture_git(root, "commit", "-qm", "warning")
+    graph["head"] = fixture_git(root, "rev-parse", "HEAD")
+    row, job = run(service.enqueue_snapshot(22))
+    assert row.status == "partial" and job.status == "done"
+    with transaction() as db:
+        coverage = service.coverage(db, row)
+        assert coverage.reasons == {reason: 1} and not coverage.complete
+        assert coverage.visible_files == 2 and coverage.parsed == 1
 
 
 def test_disk_monitor_tolerates_git_pack_rename_and_enforces_limit(tmp_path, monkeypatch):

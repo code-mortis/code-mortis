@@ -74,7 +74,8 @@ for (const mode of ["light", "dark"] as const) {
     const requests = await mock(page);
     await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, code_graph_enabled: true }] }));
     const status: Schema["CodeGraphStatus"] = { enabled: true, paused: false, state: "partial", refreshing: false,
-      commit_sha: "b".repeat(40), indexed_sha: "b".repeat(40), snapshot_id: "snapshot", checked_at: at, finished_at: at, error: null };
+      commit_sha: "b".repeat(40), indexed_sha: "b".repeat(40), snapshot_id: "snapshot", checked_at: at, finished_at: at, error: null,
+      coverage: { parsed: 239, partial: 1, unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false, reasons: { syntax_error: 1, unsupported_language: 72 } } };
     const actions: string[] = [];
     await page.route("**/api/v1/repositories/22/code-graph**", async (route) => {
       if (route.request().method() === "POST") {
@@ -87,7 +88,10 @@ for (const mode of ["light", "dark"] as const) {
       await route.fulfill({ json: status });
     });
     await page.goto("/repositories/22/settings?tab=context");
-    await expect(page.getByText("Some files or relationships could not be indexed.", { exact: false })).toBeVisible();
+    await expect(page.getByText("Indexed with warnings", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Index coverage")).toContainText("239 files fully parsed");
+    await expect(page.getByLabel("Index coverage")).toContainText("72 files use formats without structural support");
+    await expect(page.getByLabel("Index coverage")).toContainText("1 file could only be partly parsed");
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/code-graph-${info.project.name}-${mode}.png`, fullPage: true });
     status.state = "failed";

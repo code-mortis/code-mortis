@@ -227,10 +227,7 @@ def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None):
         if row and row.status in service.USABLE:
             files = visible_files(db, row)
             if request.operation == "status":
-                response["coverage"] = {state: sum(f.status == state for f in files.values())
-                                        for state in ("parsed", "partial", "unsupported")}
-                response["coverage"]["visible_files"] = len(files)
-                response["coverage"]["complete"] = row.status == "ready"
+                response["coverage"] = service.coverage(db, row).model_dump()
             elif request.operation in {"symbols", "defines"}:
                 symbols(db, row, request, files, response)
             elif request.operation in {"dependencies", "impact"}:

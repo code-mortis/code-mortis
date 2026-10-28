@@ -49,6 +49,7 @@ def test_activation_defaults_off_and_preserves_other_settings(graph, client):
     state = client.get(BASE).json()
     assert state["state"] == "ready" and state["commit_sha"] == graph["first"]
     assert state["indexed_sha"] == graph["first"]
+    assert state["coverage"]["parsed"] == 1 and state["coverage"]["complete"]
     assert save(client).json()["code_graph_enabled"] is True
     save(client, False)
     assert client.get(BASE).json()["state"] == "disabled"

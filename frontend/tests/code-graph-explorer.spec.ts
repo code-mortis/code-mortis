@@ -14,7 +14,10 @@ async function mockGraph(page: Page, admin = true) {
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
     snapshot_id: revision, status: revision === "head" ? state.status : state.baseStatus, extractor_version: "test",
     policy_digest: "test", capabilities: { defines: "supported", imports_file: "partial", callers: "unsupported", references: "unsupported" },
-    definition_languages: ["python", "typescript"], gaps: [], truncated: false, source_state: "not_requested", items: [], next_cursor: null });
+    definition_languages: ["python", "typescript"], gaps: [], truncated: false, source_state: "not_requested", items: [], next_cursor: null,
+    coverage: { parsed: 239, partial: (revision === "head" ? state.status : state.baseStatus) === "partial" ? 1 : 0,
+      unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false,
+      reasons: (revision === "head" ? state.status : state.baseStatus) === "partial" ? { syntax_error: 1, unsupported_language: 72 } : { unsupported_language: 72 } } });
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname.replace("/api/v1", "");
     const body = request.method() === "GET" ? null : request.postDataJSON();
@@ -83,6 +86,19 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   expect(new URL(page.url()).searchParams.has("resolved_severity")).toBe(false);
   expect(new URL(page.url()).searchParams.has("resolved_page")).toBe(false);
   expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
+});
+
+test("index completion separates parser warnings from unsupported formats", async ({ page }) => {
+  const { state } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=impact");
+  await expect(page.getByText("Indexed with warnings", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Index coverage")).toContainText("1 file could only be partly parsed");
+  state.status = "ready";
+  await page.getByRole("button", { name: "Refresh impact" }).click();
+  await expect(page.getByText("Indexed", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Index coverage")).toContainText("72 files use formats without structural support");
+  await expect(page.getByText("Indexed with warnings", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Index coverage")).not.toContainText("partly parsed");
 });
 
 test("filters and pagination preserve selection and use the merge base for removals", async ({ page }) => {

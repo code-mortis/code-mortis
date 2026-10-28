@@ -4,6 +4,7 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { api, ApiError, useAction, type Schema } from "../api";
 import { Code, Empty, ErrorNotice, Loading, Status } from "./common";
+import { CodeGraphCoverage } from "./code-graph-coverage";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
@@ -142,13 +143,14 @@ export function CodeGraphExplorer({ prId, repositoryId, admin, canWrite }: { prI
       <label className="space-y-1.5 text-sm"><span className="block font-medium">Revision</span><select className="h-9 rounded-md border bg-card px-3 text-sm" value={revision} onChange={(event) => change({ graph_revision: event.target.value })}>
         <option value="head">PR head · {data.head_sha.slice(0, 7)}</option><option value="base">Merge base · {data.merge_base_sha?.slice(0, 7)}</option>
       </select></label>
-      <div className="flex min-h-9 items-center gap-2 text-xs"><span>Index</span><Status value={snapshot?.status ?? "unavailable"} /></div>
+      <div className="flex min-h-9 items-center gap-2 text-xs"><span>Index</span><Status value={snapshot?.status === "ready" ? "completed" : snapshot?.status ?? "unavailable"} label={snapshot?.status === "ready" ? "Indexed" : snapshot?.status === "partial" ? "Indexed with warnings" : undefined} /></div>
       {!usable(snapshot?.status) && admin && canWrite && !data.paused && <Button variant="outline" size="sm" disabled={action.isPending || ["queued", "running"].includes(snapshot?.status ?? "")} onClick={() => action.mutate({ path: `/pulls/${prId}/code-graph/index`, body: pair })}>{action.isPending ? "Queuing index…" : "Index selected revision"}</Button>}
       <p className="w-full text-xs text-muted-foreground">Last synced PR revisions. {data.paused ? "Indexing is paused in repository configuration. " : ""}The latest default-branch revision and up to 10 recent revisions are retained; recent revisions expire after 7 days. Selecting a revision does not index it.</p>
     </div>
     <ErrorNotice error={action.error} />
     {data.comparison_truncated && <p role="status" className="text-sm text-muted-foreground">The comparison reached GitHub's 300-file limit. This list may be incomplete; filtering searches only the returned files.</p>}
-    {snapshot?.status === "partial" && <p role="status" className="text-xs text-muted-foreground">Partial index. Some files or language features could not be indexed.</p>}
+    {snapshot?.status === "partial" && <p role="status" className="text-xs text-muted-foreground">Indexing finished with warnings. Available results remain usable.</p>}
+    <CodeGraphCoverage coverage={snapshot?.coverage} />
     <p className="text-xs text-muted-foreground">Relative file imports are supported for Python and JavaScript/TypeScript. Callers and symbol references are not supported. Excluded paths are hidden.</p>
     <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
       <section aria-label="Changed files" className="min-w-0 space-y-3">

@@ -27,6 +27,21 @@ def location(path, node):
                 end_line=node.end_point.row + (node.end_point.column > 0))
 
 
+def syntax_tree(parser, source, language):
+    root = parser.parse(source).root_node
+    if not root.has_error or language not in {"javascript", "tsx"}:
+        return root
+    masked = bytearray(source)
+    for node in descendants(root):
+        if (node.type == "ERROR" and node.parent.type == "jsx_element" and b"&" in node.text
+            and not any(char in node.text for char in (b"<", b">", b"{", b"}"))):
+            # shortcut: recover only unambiguous JSX text until tree-sitter-typescript#371 ships.
+            masked[node.start_byte:node.end_byte] = node.text.replace(b"&", b" ")
+    # Equal-length ASCII replacements preserve original UTF-8 byte and line positions.
+    recovered = parser.parse(bytes(masked)).root_node if masked != source else root
+    return recovered if not recovered.has_error else root
+
+
 def extract(request: CodeGraphRequest) -> CodeGraphResult:
     parsers, files, symbols, imports = {}, [], [], []
     for item in request.files:
@@ -50,7 +65,7 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
             module = importlib.import_module("tree_sitter_" + package)
             factory = "language_" + language if language in {"typescript", "tsx", "php"} else "language"
             parsers[language] = Parser(Language(getattr(module, factory)()))
-        root = parsers[language].parse(source).root_node
+        root = syntax_tree(parsers[language], source, language)
         count = 0
         for node in descendants(root):
             if node.has_error:

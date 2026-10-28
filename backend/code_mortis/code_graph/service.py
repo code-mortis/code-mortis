@@ -1,6 +1,7 @@
 """Authorized graph lifecycle and repository indexing readiness."""
 
 import time
+from collections import Counter
 from datetime import timedelta
 from urllib.parse import quote
 
@@ -25,7 +26,7 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, GitSha
-from code_mortis.schemas.code_graph_status import CodeGraphStatus
+from code_mortis.schemas.code_graph_status import CodeGraphStatus, GraphCoverage
 
 ACTIVE = {"queued", "running"}
 USABLE = {"ready", "partial"}
@@ -257,7 +258,18 @@ def status(db, repo):
                            commit_sha=config.observed_sha, indexed_sha=latest.commit_sha if latest else None,
                            snapshot_id=current.id if current else None, checked_at=config.checked_at,
                            finished_at=current.finished_at if current else None,
-                           error=config.error or (current.error if current and state != "cancelled" else None))
+                           error=config.error or (current.error if current and state != "cancelled" else None),
+                           coverage=coverage(db, current) if current and current.status in USABLE else None)
+
+
+def coverage(db, row):
+    files = [file for file in db.scalars(select(CodeGraphFile).where(CodeGraphFile.snapshot_id == row.id))
+             if file.reason != "excluded" and not store.excluded(file.path, row.policy)]
+    counts = Counter(file.status for file in files)
+    reasons = Counter(file.reason for file in files if file.reason)
+    return GraphCoverage(**{state: counts[state] for state in ("parsed", "partial", "unsupported", "failed")},
+                         too_large=reasons["file_too_large"], visible_files=len(files),
+                         complete=counts["parsed"] == len(files), reasons=dict(reasons))
 
 
 def claimed(db, snapshot_id, job_id, attempt, *, lock=False):
@@ -355,7 +367,7 @@ def perform(snapshot_id, job_id, attempt):
                 ):
                     if values:
                         db.execute(insert(model), values)
-                current.status = "partial" if any(f.status in {"partial", "failed", "unsupported"}
+                current.status = "partial" if any(f.status in {"partial", "failed"}
                                                   or f.reason == "file_too_large" for f in result.files) else "ready"
                 current.finished_at, current.error = now(), None
                 if job.payload["default_branch"]:
