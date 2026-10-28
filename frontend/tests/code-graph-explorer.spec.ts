@@ -88,17 +88,48 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
 });
 
-test("index completion separates parser warnings from unsupported formats", async ({ page }) => {
+test("status tooltips explain coverage without pushing down the files", async ({ page, isMobile }) => {
   const { state } = await mockGraph(page);
   await page.goto("/pulls/pr?tab=impact");
-  await expect(page.getByText("Indexed with warnings", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Index coverage")).toContainText("1 file could only be partly parsed");
+  const impact = page.getByRole("region", { name: "Pull request impact" });
+  await expect(impact.locator("select")).toHaveCount(0);
+  await expect(impact.getByRole("heading", { name: "Explore change impact" })).toHaveCount(0);
+  await expect(impact.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  const badge = page.getByRole("button", { name: "Indexed with warnings", exact: true });
+  if (isMobile) await badge.tap(); else await badge.focus();
+  await expect(page.getByRole("tooltip")).toContainText("1 file could only be partly parsed");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
   state.status = "ready";
   await page.getByRole("button", { name: "Refresh impact" }).click();
-  await expect(page.getByText("Indexed", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Index coverage")).toContainText("72 files use formats without structural support");
-  await expect(page.getByText("Indexed with warnings", { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel("Index coverage")).not.toContainText("partly parsed");
+  await page.getByRole("button", { name: "Indexed", exact: true }).click();
+  await expect(page.getByRole("tooltip")).toContainText("72 files use formats without structural support");
+  await expect(page.getByRole("tooltip")).not.toContainText("partly parsed");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Limited comparison" }).click();
+  await expect(page.getByRole("tooltip")).toContainText("at most 300 changed files");
+});
+
+test("revision uses the shared combobox with mouse, keyboard and touch", async ({ page, isMobile }) => {
+  const { calls } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=impact");
+  const impact = page.getByRole("region", { name: "Pull request impact" });
+  const revision = impact.getByRole("combobox", { name: "Revision", exact: true });
+  const arrow = impact.getByRole("button", { name: "Show options", exact: true });
+  if (isMobile) await arrow.tap(); else await arrow.click();
+  await expect(page.getByRole("option")).toHaveCount(2);
+  await page.getByRole("option", { name: "Merge base · ccccccc" }).click();
+  await expect(revision).toHaveValue("Merge base · ccccccc");
+  await expect(page).toHaveURL(/graph_revision=base/);
+  await revision.fill("PR head");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(revision).toHaveValue("PR head · aaaaaaa");
+  await arrow.click();
+  await page.keyboard.press("Escape");
+  await expect(revision).toHaveAttribute("aria-expanded", "false");
+  expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
 });
 
 test("filters and pagination preserve selection and use the merge base for removals", async ({ page }) => {
@@ -106,21 +137,30 @@ test("filters and pagination preserve selection and use the merge base for remov
   await page.goto("/pulls/pr?tab=impact");
   await page.getByRole("button", { name: "Next changed files" }).click();
   await page.getByRole("button", { name: "src/old.ts Removed" }).click();
-  await expect(page.getByRole("combobox", { name: "Revision", exact: true })).toHaveValue("base");
+  await expect(page.getByRole("combobox", { name: "Revision", exact: true })).toHaveValue("Merge base · ccccccc");
   await expect.poll(() => calls.filter((call) => call.body?.revision === "base").length).toBeGreaterThan(0);
   await page.getByRole("textbox", { name: "Filter changed files" }).fill("service");
-  await page.getByRole("button", { name: "Filter", exact: true }).click();
   await expect(page).toHaveURL(/graph_q=service/);
   expect(new URL(page.url()).searchParams.has("graph_page")).toBe(false);
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Filter changed files" })).toHaveValue("service");
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Filter changed files" })).toHaveValue("");
 });
 
-test("explicit indexing, paused and disabled configuration do not admit hidden jobs", async ({ page }) => {
+test("explicit indexing, paused and disabled configuration do not admit hidden jobs", async ({ page, isMobile }, info) => {
   const { calls, state } = await mockGraph(page);
   state.status = "unavailable";
   await page.goto("/pulls/pr?tab=impact");
   await expect(page.getByText("This revision is not ready", { exact: true })).toBeVisible();
+  const empty = page.getByRole("heading", { name: "This revision is not ready" }).locator("..");
+  await expect(empty.getByRole("button", { name: "Index selected revision" })).toBeVisible();
+  if (!isMobile) {
+    const list = await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: "src/service.ts Modified" }).boundingBox();
+    const notice = await empty.boundingBox();
+    expect(Math.abs(notice!.y - list!.y)).toBeLessThanOrEqual(1);
+  }
+  await page.screenshot({ path: `../.impeccable/review/impact-unavailable-${info.project.name}.png`, fullPage: true });
   expect(calls.filter((call) => call.body)).toHaveLength(0);
   await page.getByRole("button", { name: "Index selected revision" }).click();
   await expect(page.getByRole("button", { name: "Index selected revision" })).toBeDisabled();
@@ -173,9 +213,22 @@ test("impact fits the app at both themes and required widths", async ({ page }, 
     await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
     await page.goto("/pulls/pr?tab=impact");
     await expect(page.getByRole("list", { name: "File dependencies" })).toBeVisible();
+    if (info.project.name === "desktop") {
+      const files = page.getByRole("region", { name: "Changed files", exact: true });
+      const file = page.getByRole("region", { name: "Selected file", exact: true });
+      const title = await files.getByRole("heading").boundingBox();
+      const path = await file.getByRole("heading").boundingBox();
+      expect(Math.abs(title!.y - path!.y)).toBeLessThanOrEqual(1);
+      const row = await files.getByRole("button", { name: "src/service.ts Modified" }).boundingBox();
+      const tabs = await file.getByRole("tablist", { name: "File information" }).boundingBox();
+      expect(Math.abs(row!.y - tabs!.y)).toBeLessThanOrEqual(1);
+    }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `../.impeccable/review/phase4-${info.project.name}-${theme}.png`, fullPage: true });
     if (info.project.name === "desktop" && theme === "dark") {
+      await page.setViewportSize({ width: 1024, height: 768 });
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: "../.impeccable/review/phase4-tablet-dark.png", fullPage: true });
       await page.setViewportSize({ width: 2544, height: 1034 });
       await page.screenshot({ path: "../.impeccable/review/phase4-user-2544.png", fullPage: true });
     }

@@ -8752,6 +8752,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
   await expect(list.getByRole("region")).toHaveCount(1);
+  await expect(list.getByRole("heading")).toHaveCount(0);
   await expect(list.getByRole("button")).toHaveCount(1);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
@@ -8769,6 +8770,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("Validate the response");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true }).getByRole("heading")).toHaveCount(0);
   await expect(list).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   for (const theme of ["light", "dark"]) {

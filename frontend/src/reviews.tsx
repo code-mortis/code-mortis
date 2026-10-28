@@ -436,7 +436,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
           {sections.map(({ group: status, items, page, total: groupTotal }) => {
             const error = findings.errors[status];
             return <section key={status} aria-label={`${label(status)} findings`}>
-              <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{label(status)}<span className="text-xs font-normal tabular-nums text-muted-foreground">{groupTotal}</span></h2>
               <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card">
                 {items.map((item) => <FindingCard key={item.id} evidence={item}
                   onClick={(event) => { findingTrigger.current = event.currentTarget; setFinding(item.id); }}

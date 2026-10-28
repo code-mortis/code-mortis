@@ -1,35 +1,37 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowRight, RefreshCw } from "lucide-react";
+import { FileCode2, RefreshCw } from "lucide-react";
 import { api, ApiError, useAction, type Schema } from "../api";
 import { Code, Empty, ErrorNotice, Loading, Status } from "./common";
 import { CodeGraphCoverage } from "./code-graph-coverage";
+import { FilterBar } from "./filter-bar";
+import { SearchSelect } from "./search-select";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Pagination } from "./pagination";
 
 type Revision = Schema["ExplorerRevision"];
-type Relation = Schema["GraphRelation"];
 const usable = (state?: string) => state === "ready" || state === "partial";
 const rowClass = "w-full min-w-0 px-4 py-3 text-left text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5";
+const indexDescriptions: Record<string, string> = {
+  ready: "Indexing finished for this revision. Supported files are ready to explore.",
+  partial: "Indexing finished with warnings. Some supported files could not be fully parsed; available results remain usable.",
+  queued: "This revision is waiting to be indexed. Its status updates automatically.",
+  running: "This revision is being indexed. Its status updates automatically.",
+  failed: "Indexing failed. An administrator can retry this revision.",
+  cancelled: "Indexing was cancelled. An administrator can index this revision again.",
+};
 
-function DependencyMap({ path, relations }: { path: string; relations: Relation[] }) {
-  const incoming = [...new Set(relations.filter((edge) => edge.target_path === path).map((edge) => edge.path))];
-  const outgoing = [...new Set(relations.filter((edge) => edge.path === path).map((edge) => edge.target_path))];
-  function nodes(paths: string[], name: string) {
-    return <div className="min-w-0 space-y-2"><p className="text-xs text-muted-foreground">{name}</p>
-      {paths.slice(0, 3).map((file) => <div key={file} className="truncate rounded-md border bg-card p-3 font-mono text-xs" title={file}>{file}</div>)}
-      {!paths.length && <p className="text-xs text-muted-foreground">None returned</p>}
-      {paths.length > 3 && <p className="text-xs text-muted-foreground">{paths.length - 3} more in the list</p>}
-    </div>;
-  }
-  return <div aria-hidden="true" className="grid min-w-0 items-center gap-3 rounded-lg bg-muted/30 p-4 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)]">
-    {nodes(incoming, "Imports this file")}<ArrowRight className="size-4 rotate-90 justify-self-center text-muted-foreground sm:rotate-0" />
-    <div className="min-w-0 rounded-md border border-primary bg-card p-3"><p className="mb-1 text-xs text-muted-foreground">Selected file</p><p className="break-words font-mono text-xs [overflow-wrap:anywhere]">{path}</p></div>
-    <ArrowRight className="size-4 rotate-90 justify-self-center text-muted-foreground sm:rotate-0" />{nodes(outgoing, "This file imports")}
-  </div>;
+function StatusHint({ value, label, children }: { value: string; label?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <Tooltip open={open} onOpenChange={setOpen}>
+    <TooltipTrigger asChild><button type="button" className="inline-flex min-h-11 items-center rounded-md outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-9" onClick={(event) => { event.preventDefault(); setOpen(true); }}>
+      <Status value={value} label={label} />
+    </button></TooltipTrigger>
+    <TooltipContent sideOffset={6} collisionPadding={16} className="max-w-xs space-y-2 leading-relaxed">{children}</TooltipContent>
+  </Tooltip>;
 }
 
 function FileDetails({ prId, path, revision, commit, onSelect, onRefresh }: {
@@ -56,9 +58,9 @@ function FileDetails({ prId, path, revision, commit, onSelect, onRefresh }: {
     for (const key of tab === "findings" ? ["severity", "category", "open_page"] : [`${tab}_severity`, `${tab}_category`, `${tab}_page`]) next.delete(key);
     return { pathname: location.pathname, search: next.toString() };
   }
-  return <section aria-label="Selected file" className="min-w-0 space-y-4">
-    <div><h3 className="break-words font-mono text-sm font-medium [overflow-wrap:anywhere]">{path}</h3>
-      <p className="mt-1 text-xs text-muted-foreground">Source revision <code title={commit}>{commit.slice(0, 7)}</code></p></div>
+  return <section aria-label="Selected file" className="min-w-0 space-y-3">
+    <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1"><h3 className="flex min-w-0 items-center gap-2 font-mono text-sm font-medium"><FileCode2 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="break-words [overflow-wrap:anywhere]">{path}</span></h3>
+      <code className="text-xs text-muted-foreground" title={`Source revision ${commit}`}>{commit.slice(0, 7)}</code></div>
     <Tabs value={view} onValueChange={(value) => { setView(value); setOffset(0); }}>
       <TabsList aria-label="File information" className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">
         <TabsTrigger value="dependencies">Dependencies</TabsTrigger><TabsTrigger value="definitions">Definitions</TabsTrigger><TabsTrigger value="source">Source</TabsTrigger>
@@ -69,11 +71,10 @@ function FileDetails({ prId, path, revision, commit, onSelect, onRefresh }: {
             : <>
               {query.data.truncated && <p role="status" className="text-xs text-muted-foreground">This result is bounded. More relationships or source may exist.</p>}
               <TabsContent value="dependencies" className="min-w-0 space-y-4">
-                <DependencyMap path={path} relations={relations} />
                 {relations.length ? <ul aria-label="File dependencies" className="divide-y overflow-hidden rounded-lg border bg-card">
                   {relations.map((edge) => { const target = edge.path === path ? edge.target_path : edge.path; return <li key={`${edge.path}:${edge.start_byte}`}>
                     <button className={rowClass} onClick={() => onSelect(target)}><span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{target}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">{edge.path === path ? "Imported by selected file" : "Imports selected file"} · {edge.path}:{edge.start_line} · Relative import</span></button>
+                      <span className="mt-1 block text-xs text-muted-foreground">{edge.path === path ? "Imported by this file" : "Imports this file"} · Line {edge.start_line}</span></button>
                   </li>; })}
                 </ul> : <Empty title="No supported dependencies returned">This does not prove the file is unused. Callers and symbol references are not supported.</Empty>}
               </TabsContent>
@@ -102,9 +103,9 @@ function FileDetails({ prId, path, revision, commit, onSelect, onRefresh }: {
             </>}
       </div>
     </Tabs>
-    <div className="space-y-2 border-t pt-4 text-xs text-muted-foreground"><p>Saved findings keep their original evidence and current resolution. They may describe a different commit.</p>
-      <div className="flex flex-wrap gap-4">{["findings", "resolved", "dismissed"].map((tab) => <Link key={tab} to={findingsLink(tab)} state={location.state} className="inline-flex min-h-8 items-center rounded-sm underline underline-offset-4">Search {tab === "findings" ? "open findings" : `${tab} findings`}</Link>)}</div>
-    </div>
+    <nav aria-label="Saved findings for this file" className="flex flex-wrap items-center gap-x-4 text-xs text-muted-foreground">
+      <span>Findings</span>{["findings", "resolved", "dismissed"].map((tab) => <Link key={tab} to={findingsLink(tab)} state={location.state} aria-label={`Search ${tab === "findings" ? "open" : tab} findings`} className="inline-flex min-h-11 items-center rounded-sm capitalize underline underline-offset-4 sm:min-h-8">{tab === "findings" ? "Open" : tab}</Link>)}
+    </nav>
   </section>;
 }
 
@@ -135,28 +136,24 @@ export function CodeGraphExplorer({ prId, repositoryId, admin, canWrite }: { prI
   const snapshot = data[revision];
   const path = params.get("graph_file") ?? files[0]?.path;
   const pair: Revision = { base_sha: data.base_sha, head_sha: data.head_sha, revision };
-  return <section aria-label="Pull request impact" className="min-w-0 space-y-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="text-base font-semibold">Explore change impact</h2>
-      <p className="mt-1 max-w-prose text-sm text-muted-foreground">Trace file imports from this PR to exact source. Dependencies suggest what to inspect; they do not prove a defect.</p></div>
-      <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className="size-4" />Refresh impact</Button></div>
-    <div className="flex flex-wrap items-end gap-4 border-y py-4">
-      <label className="space-y-1.5 text-sm"><span className="block font-medium">Revision</span><select className="h-9 rounded-md border bg-card px-3 text-sm" value={revision} onChange={(event) => change({ graph_revision: event.target.value })}>
-        <option value="head">PR head · {data.head_sha.slice(0, 7)}</option><option value="base">Merge base · {data.merge_base_sha?.slice(0, 7)}</option>
-      </select></label>
-      <div className="flex min-h-9 items-center gap-2 text-xs"><span>Index</span><Status value={snapshot?.status === "ready" ? "completed" : snapshot?.status ?? "unavailable"} label={snapshot?.status === "ready" ? "Indexed" : snapshot?.status === "partial" ? "Indexed with warnings" : undefined} /></div>
-      {!usable(snapshot?.status) && admin && canWrite && !data.paused && <Button variant="outline" size="sm" disabled={action.isPending || ["queued", "running"].includes(snapshot?.status ?? "")} onClick={() => action.mutate({ path: `/pulls/${prId}/code-graph/index`, body: pair })}>{action.isPending ? "Queuing index…" : "Index selected revision"}</Button>}
-      <p className="w-full text-xs text-muted-foreground">Last synced PR revisions. {data.paused ? "Indexing is paused in repository configuration. " : ""}The latest default-branch revision and up to 10 recent revisions are retained; recent revisions expire after 7 days. Selecting a revision does not index it.</p>
-    </div>
+  return <section aria-label="Pull request impact" className="min-w-0 space-y-4">
+    <FilterBar query={search} searchLabel="Filter changed files" searchPlaceholder="Search changed files…" filters={[]} onChange={() => {}} onSearch={(value) => change({ graph_q: value.trim(), graph_page: null, graph_file: null })}>
+      <SearchSelect aria-label="Revision" className="sm:w-64" value={revision} onChange={(value) => change({ graph_revision: value })} options={[
+        { value: "head", label: `PR head · ${data.head_sha.slice(0, 7)}` }, { value: "base", label: `Merge base · ${data.merge_base_sha?.slice(0, 7) ?? "unavailable"}` },
+      ]} />
+      <StatusHint key={`${revision}:${snapshot?.status}:${data.paused}`} value={snapshot?.status === "ready" ? "completed" : snapshot?.status ?? "unavailable"} label={snapshot?.status === "ready" ? "Indexed" : snapshot?.status === "partial" ? "Indexed with warnings" : undefined}>
+          <p>{indexDescriptions[snapshot?.status ?? ""] ?? "This revision has no usable index. It may be missing, expired, or affected by a policy change."}</p>
+          <div className="[&>div]:text-inherit"><CodeGraphCoverage coverage={snapshot?.coverage} /></div>
+          {data.paused && <p>Indexing is paused in repository configuration.</p>}
+      </StatusHint>
+      <Button variant="outline" className="ml-auto bg-card" aria-label="Refresh impact" disabled={query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className="size-4" />Refresh</Button>
+    </FilterBar>
     <ErrorNotice error={action.error} />
-    {data.comparison_truncated && <p role="status" className="text-sm text-muted-foreground">The comparison reached GitHub's 300-file limit. This list may be incomplete; filtering searches only the returned files.</p>}
-    {snapshot?.status === "partial" && <p role="status" className="text-xs text-muted-foreground">Indexing finished with warnings. Available results remain usable.</p>}
-    <CodeGraphCoverage coverage={snapshot?.coverage} />
-    <p className="text-xs text-muted-foreground">Relative file imports are supported for Python and JavaScript/TypeScript. Callers and symbol references are not supported. Excluded paths are hidden.</p>
-    <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
+    <div className="grid min-w-0 items-start gap-6 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
       <section aria-label="Changed files" className="min-w-0 space-y-3">
-        <form onSubmit={(event) => { event.preventDefault(); const value = new FormData(event.currentTarget).get("path") as string; change({ graph_q: value.trim(), graph_page: null, graph_file: null }); }} className="flex gap-2">
-          <Input key={search} name="path" defaultValue={search} maxLength={512} aria-label="Filter changed files" placeholder="Filter paths…" className="min-w-0" /><Button type="submit" variant="outline" size="sm" className="h-9">Filter</Button>
-        </form>
+        <div className="flex min-h-9 flex-wrap items-center gap-x-2"><h3 className="text-sm font-semibold">Changed files <span className="ml-1 font-normal tabular-nums text-muted-foreground">{data.total}</span></h3>
+          {data.comparison_truncated && <StatusHint value="partial" label="Limited comparison">GitHub returned at most 300 changed files. This list and its search may be incomplete.</StatusHint>}
+        </div>
         <div className="divide-y overflow-hidden rounded-lg border bg-card">
           {files.map((file) => <button key={file.path} aria-pressed={file.path === path} className={`${rowClass} block aria-pressed:bg-muted`} onClick={() => { change({ graph_file: file.path, graph_revision: file.change === "removed" ? "base" : "head" }); heading.current?.focus(); }}>
             <span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{file.path}</span><span className="mt-1 block text-xs capitalize text-muted-foreground">{file.change}</span>
@@ -166,7 +163,11 @@ export function CodeGraphExplorer({ prId, repositoryId, admin, canWrite }: { prI
         </div>
       </section>
       <div className="min-w-0 space-y-3"><h2 ref={heading} tabIndex={-1} className="sr-only">Selected file details</h2>
-        {!usable(snapshot?.status) ? <Empty title="This revision is not ready">{["queued", "running"].includes(snapshot?.status ?? "") ? "Indexing is in progress. Refresh impact to check its status." : "Its index is missing, expired, failed, or does not match the current policy. An administrator can index this revision."}</Empty>
+        {!usable(snapshot?.status) ? <div className="lg:pt-12"><Empty title="This revision is not ready">
+          <p>{data.paused ? "Indexing is paused in repository configuration." : ["queued", "running"].includes(snapshot?.status ?? "") ? "Indexing is in progress. Results will appear here when it finishes." : "Index this revision to explore its dependencies, definitions and source."}</p>
+          {admin && canWrite && !data.paused ? <Button className="mt-4" disabled={action.isPending || ["queued", "running"].includes(snapshot?.status ?? "")} onClick={() => action.mutate({ path: `/pulls/${prId}/code-graph/index`, body: pair })}>{action.isPending ? "Queuing index…" : "Index selected revision"}</Button>
+            : !data.paused && !["queued", "running"].includes(snapshot?.status ?? "") && <p className="mt-2">An administrator can start indexing.</p>}
+        </Empty></div>
           : path && snapshot ? <FileDetails key={`${snapshot.snapshot_id}:${revision}:${path}`} prId={prId} path={path} revision={pair} commit={snapshot.commit_sha} onSelect={(file) => { change({ graph_file: file }); heading.current?.focus(); }} onRefresh={() => { void query.refetch(); }} />
             : <Empty title="Select a file">Choose a changed file to inspect its dependencies and source.</Empty>}
       </div>

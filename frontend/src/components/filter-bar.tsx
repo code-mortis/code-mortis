@@ -83,7 +83,7 @@ export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, 
         <Input ref={searchInput} aria-label={searchLabel} placeholder={searchPlaceholder} className="h-9 bg-card pl-9 pr-9" value={draft.value} maxLength={INBOX_QUERY_MAX_LENGTH} onChange={(event) => setDraft({ query, searchResetKey, value: event.target.value })} />
         {draft.value && <Button variant="ghost" size="icon" className="absolute right-0 top-0" aria-label="Clear search" onClick={() => { setDraft({ query, searchResetKey, value: "" }); onSearch(""); searchInput.current?.focus(); }}><X className="size-3.5" /></Button>}
       </div>}
-      <DropdownMenu modal={false}>
+      {filters.length > 0 && <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild><Button ref={filtersButton} variant="outline" className="bg-card"><ListFilter className="text-muted-foreground" />Filters</Button></DropdownMenuTrigger>
         <DropdownMenuContent align="start" collisionPadding={16} className="w-56 max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => {
           if (!pendingFilter.current) return;
@@ -96,7 +96,7 @@ export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, 
           {available.map((filter) => <DropdownMenuItem key={filter.key} onSelect={() => { pendingFilter.current = filter.key; }}>{filter.label}</DropdownMenuItem>)}
           {available.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">All filters are in use.</p>}
         </DropdownMenuContent>
-      </DropdownMenu>
+      </DropdownMenu>}
       {filters.map((filter) => {
         const names = filter.values.map((value) => filter.choices.find((choice) => choice.value === value)?.name ?? value);
         const active = isActive(filter);

@@ -355,7 +355,7 @@ Gate: **met locally**. Current permissions hold across result surfaces in isolat
 #### 4B. Focused PR navigation in the existing app
 
 - [x] Add an Impact tab with URL-persisted path search, page, selected file and revision. Extend existing tabs, divided rows, native controls, status badges and source rendering. Preserve existing review actions, finding filters and return navigation.
-- [x] Show a bounded dependency diagram and an equivalent accessible list. A selected changed file leads to its incoming/outgoing file imports, indexed definitions and exact source. Support keyboard/touch, mobile, light/dark themes, loading/error/empty/partial/stale/excluded/unsupported states, and disappearance on access loss.
+- [x] Show bounded dependencies in an accessible list. A selected changed file leads to its incoming/outgoing file imports, indexed definitions and exact source. Support keyboard/touch, mobile, light/dark themes, loading/error/empty/partial/stale/excluded/unsupported states, and disappearance on access loss. The subsequent user-requested simplification removes the duplicate diagram, reuses shared search/combobox controls and moves state explanations into badge tooltips.
 - [x] Link relevant existing PR findings through their current authorization and existing evidence sheet, identifying current resolution and the original observed revision. Do not imply that dependencies prove a defect or that old findings describe the selected commit.
 
 #### 4C. Verification and handoff
