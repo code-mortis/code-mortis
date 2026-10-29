@@ -5,7 +5,7 @@ from typing import Any
 
 import sentry_sdk
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown, worker_shutdown
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, or_, select
@@ -43,6 +43,8 @@ from code_mortis.reviews.service import (
 )
 
 init_sentry("worker")
+worker_process_shutdown.connect(github.close_http_client)
+worker_shutdown.connect(github.close_http_client)
 
 
 @worker_process_init.connect

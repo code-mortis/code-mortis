@@ -124,7 +124,7 @@ def test_handled_job_failure_is_reported_and_persisted(events, monkeypatch, atte
 def test_github_failure_preserves_durable_job_recovery(events, monkeypatch, failure, delay, calls):
     request = Mock(side_effect=[failure] * calls + [httpx.Response(200, json={"number": 3})])
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
     monkeypatch.setattr(jobs, "execute", lambda *args: github.request(
         "GET", "/repos/team/project/pulls/3", "installation-token",

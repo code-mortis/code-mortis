@@ -210,7 +210,7 @@ def query(request: GraphQuery, actor_id: int, *, source_check=None):
     return response
 
 
-def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None):
+def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None, include_coverage=False):
     """Local reader; callers must freshly authorize before reading and before returning content."""
     request = GraphQuery.model_validate(request.model_dump())
     response = {"repository_id": request.repository_id, "commit_sha": request.commit_sha,
@@ -226,9 +226,9 @@ def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None):
             response.update(snapshot_id=row.id, policy_digest=row.policy_digest, status=row.status)
         if row and row.status in service.USABLE:
             files = visible_files(db, row)
-            if request.operation == "status":
+            if request.operation == "status" or include_coverage:
                 response["coverage"] = service.coverage(db, row).model_dump()
-            elif request.operation in {"symbols", "defines"}:
+            if request.operation in {"symbols", "defines"}:
                 symbols(db, row, request, files, response)
             elif request.operation in {"dependencies", "impact"}:
                 dependencies(db, row, request, files, response)
@@ -244,6 +244,6 @@ def read_snapshot(request: GraphQuery, actor_id: int, *, source_check=None):
                 except (OSError, store.RunnerBlocked):
                     response["source_state"] = "unavailable"
                     response["gaps"].append("Retained objects are unavailable or busy; retry this exact revision later.")
-            else:
+            elif request.operation != "status":
                 response["relationship_state"] = "unsupported"
     return response

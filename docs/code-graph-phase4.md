@@ -1,5 +1,7 @@
 # Code graph Phase 4: PR impact explorer
 
+Historical Phase 4 evidence is preserved below. The 2026-10-29 [PR Code delivery](pr-code.md) supersedes the browser entry point: **Code** defaults to independent diffs, saved groups and immutable findings; graph navigation is secondary. The earlier test totals remain historical, not validation of that follow-up.
+
 The existing PR detail now has an **Impact** tab. It connects changed paths to supported file imports, indexed definitions, original source and the PR's saved findings. It uses the existing design system and graph reader; no dependency, migration, service, embedding or model call was added. Review enrichment remains experimental under Phase 2's failed broader-rollout gate.
 
 ## Read and indexing contract

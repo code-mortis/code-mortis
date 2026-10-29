@@ -1,7 +1,6 @@
 """Browser PR navigation over immutable comparisons and the shared bounded reader."""
 
 import json
-from functools import lru_cache
 
 from fastapi import HTTPException
 from pydantic import TypeAdapter
@@ -10,16 +9,16 @@ from code_mortis.api.dependencies import pr_access
 from code_mortis.code_graph import retrieval, service, store
 from code_mortis.core.db import transaction
 from code_mortis.core.security import redact_saved_credentials, unseal
-from code_mortis.integrations import github
+from code_mortis.integrations import comparison as github_comparison
 from code_mortis.models import CodeGraphRepository, PullRequest
-from code_mortis.schemas.code_graph import GitSha, RepositoryPath
+from code_mortis.schemas.code_graph import GitSha
 
 
 def context(db, user, pr_id, expected=None, *, write=False):
     service.browser_only()
     pr, repo, _ = pr_access(db, user, pr_id, write=write)
     if expected and (pr.base_sha, pr.head_sha) != (expected.base_sha, expected.head_sha):
-        raise HTTPException(409, "The pull request revision changed. Refresh impact before continuing.")
+        raise HTTPException(409, "The pull request revision changed. Refresh Code before continuing.")
     service.authorize(repo.id, user.id, enabled=False, initiator=False)
     return pr, repo, db.get(CodeGraphRepository, repo.id)
 
@@ -31,29 +30,16 @@ def comparison(db, repo, pr):
     return merge_base, [{"path": path, "change": change} for path, change in paths if not store.excluded(path, rules)], truncated
 
 
-@lru_cache(maxsize=32)
 def comparison_metadata(repository_id, installation_id, full_name, base, head):
-    """Cache only validated immutable paths; each caller still authorizes and applies current exclusions."""
-    with transaction() as db:
-        token = github.repository_read_token(db, installation_id, repository_id)
-    data = github.request("GET", f"/repos/{full_name}/compare/{base}...{head}?per_page=1&page=1", token)
-    if (not isinstance(data, dict) or not isinstance(data.get("files"), list)
-        or len(data["files"]) > 300 or not isinstance(data.get("base_commit"), dict)
-        or not isinstance(data.get("merge_base_commit"), dict) or data["base_commit"].get("sha") != base):
-        raise ValueError("Invalid comparison")
-    merge_base = TypeAdapter(GitSha).validate_python(data.get("merge_base_commit", {}).get("sha"))
+    merge_base, files, truncated = github_comparison.load(repository_id, installation_id, full_name, base, head)
     paths = {}
-    for item in data["files"]:
-        if not isinstance(item, dict) or item.get("status") not in {"added", "modified", "removed", "renamed", "changed", "copied", "unchanged"}:
-            raise ValueError("Invalid file")
-        path = TypeAdapter(RepositoryPath).validate_python(item.get("filename"))
-        change = item["status"]
+    for info, _ in files:
+        path, change = info.path, info.change
         if change == "renamed":
-            previous = TypeAdapter(RepositoryPath).validate_python(item.get("previous_filename"))
-            paths[previous] = "removed"
+            paths[info.previous_path] = "removed"
         if change != "unchanged":
             paths[path] = "added" if change in {"added", "renamed", "copied"} else "removed" if change == "removed" else "modified"
-    return merge_base, tuple(sorted(paths.items())), len(data["files"]) == 300
+    return merge_base, tuple(sorted(paths.items())), truncated
 
 
 def check_source(db, user, repo, text):
@@ -67,10 +53,13 @@ def finish(pr, repo, user, result, *, enabled=True):
     with transaction() as db:
         latest = db.get(PullRequest, pr.id)
         if not latest or (latest.repository_id, latest.base_sha, latest.head_sha) != (repo.id, pr.base_sha, pr.head_sha):
-            raise HTTPException(409, "The pull request revision changed. Refresh impact before continuing.")
+            raise HTTPException(409, "The pull request revision changed. Refresh Code before continuing.")
         if store.policy(current) != store.policy(repo):
             raise service.AccessLost("Graph policy changed during navigation.")
-        for snapshot in (result, result.get("base", {}), result.get("head", {})):
+        config = db.get(CodeGraphRepository, repo.id)
+        if "graph_enabled" in result and result["graph_enabled"] != bool(config and config.enabled):
+            raise service.AccessLost("Graph availability changed during navigation.")
+        for snapshot in (result, result.get("base", {}), result.get("head", {}), result.get("graph") or {}):
             if snapshot.get("policy_digest") not in (None, store.policy_digest(store.policy(current))):
                 raise service.AccessLost("Graph policy changed during navigation.")
         check_source(db, user, current, json.dumps(result, ensure_ascii=False))
@@ -96,12 +85,17 @@ def overview(db, user, pr_id, page=1, query=""):
 def read(db, user, pr_id, request):
     pr, repo, config = context(db, user, pr_id, request)
     sha = comparison(db, repo, pr)[0] if request.revision == "base" else pr.head_sha
+    return finish(pr, repo, user, read_file(db, user, repo, sha, request))
+
+
+def read_file(db, user, repo, sha, request):
     query = retrieval.GraphQuery(repository_id=repo.id, commit_sha=sha, operation=request.operation,
                                  paths=[request.path], direction="both", depth=1, limit=100,
                                  offset=request.offset, start_byte=request.start_byte, end_byte=request.end_byte)
-    result = retrieval.read_snapshot(query, user.id, source_check=lambda text: check_source(db, user, repo, text))
+    result = retrieval.read_snapshot(query, user.id, source_check=lambda text: check_source(db, user, repo, text),
+                                     include_coverage=True)
     result.pop("unavailable_sources", None)
-    return finish(pr, repo, user, result)
+    return result
 
 
 def index(db, user, pr_id, request):

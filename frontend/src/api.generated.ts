@@ -413,6 +413,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Code */
+        get: operations["pull_code_api_v1_pulls__pr_id__code_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/code/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pull Code File */
+        post: operations["pull_code_file_api_v1_pulls__pr_id__code_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pulls/{pr_id}/code/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pull Code Workspace */
+        post: operations["pull_code_workspace_api_v1_pulls__pr_id__code_workspace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls/{pr_id}/code-graph": {
         parameters: {
             query?: never;
@@ -2392,6 +2443,82 @@ export interface components {
              */
             change: "added" | "modified" | "removed";
         };
+        /** CodeFile */
+        CodeFile: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha: string;
+            file: components["schemas"]["CodeFileInfo"];
+            /**
+             * Patch State
+             * @enum {string}
+             */
+            patch_state: "available" | "truncated" | "unavailable" | "too_large" | "withheld";
+            /** Lines */
+            lines: components["schemas"]["CodeLine"][];
+            /** Findings */
+            findings: components["schemas"]["CodeFinding"][];
+            /** Findings Truncated */
+            findings_truncated: boolean;
+            /** Github Url */
+            github_url: string;
+        };
+        /** CodeFileInfo */
+        CodeFileInfo: {
+            /** Path */
+            path: string;
+            /** Previous Path */
+            previous_path?: string | null;
+            /**
+             * Change
+             * @enum {string}
+             */
+            change: "added" | "modified" | "removed" | "renamed" | "changed" | "copied" | "unchanged";
+            /** Additions */
+            additions?: number | null;
+            /** Deletions */
+            deletions?: number | null;
+        };
+        /** CodeFileRequest */
+        CodeFileRequest: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha: string;
+            /** Path */
+            path: string;
+        };
+        /** CodeFinding */
+        CodeFinding: {
+            /** Occurrence Id */
+            occurrence_id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Source Sha */
+            source_sha?: string | null;
+            /** Current Status */
+            current_status: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Side */
+            side?: ("old" | "new") | null;
+            /** Line */
+            line?: number | null;
+            /**
+             * Placement
+             * @enum {string}
+             */
+            placement: "inline" | "outside_diff" | "historical" | "unknown";
+        };
         /** CodeGraphStatus */
         CodeGraphStatus: {
             /**
@@ -2428,6 +2555,160 @@ export interface components {
             /** Error */
             error?: string | null;
             coverage?: components["schemas"]["GraphCoverage"] | null;
+        };
+        /** CodeGroup */
+        CodeGroup: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Paths */
+            paths: string[];
+        };
+        /** CodeIdentity */
+        CodeIdentity: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha: string;
+        };
+        /** CodeLine */
+        CodeLine: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hunk" | "context" | "addition" | "deletion" | "notice";
+            /** Text */
+            text: string;
+            /** Old Line */
+            old_line?: number | null;
+            /** New Line */
+            new_line?: number | null;
+        };
+        /** CodeNavigation */
+        CodeNavigation: {
+            expected?: components["schemas"]["CodeIdentity"] | null;
+            /** Path */
+            path?: string | null;
+            /**
+             * View
+             * @default diff
+             * @enum {string}
+             */
+            view: "diff" | "dependencies" | "definitions" | "source";
+            /**
+             * Revision
+             * @default head
+             * @enum {string}
+             */
+            revision: "head" | "base";
+            /**
+             * Page
+             * @default 1
+             */
+            page: number;
+            /**
+             * Query
+             * @default
+             */
+            query: string;
+            /** Group */
+            group?: string | null;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Start Byte
+             * @default 0
+             */
+            start_byte: number;
+            /**
+             * End Byte
+             * @default 1048576
+             */
+            end_byte: number;
+        };
+        /** CodeOverview */
+        CodeOverview: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha: string;
+            /** Policy Digest */
+            policy_digest: string;
+            /** Files */
+            files: components["schemas"]["CodeFileInfo"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Comparison Truncated */
+            comparison_truncated: boolean;
+            /** Groups */
+            groups: components["schemas"]["CodeGroup"][];
+            /** Summary Run Id */
+            summary_run_id?: string | null;
+            /** Group */
+            group?: string | null;
+        };
+        /** CodeWorkspace */
+        CodeWorkspace: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Merge Base Sha */
+            merge_base_sha: string;
+            /** Policy Digest */
+            policy_digest: string;
+            /** Files */
+            files: components["schemas"]["CodeFileInfo"][];
+            /** Groups */
+            groups: components["schemas"]["CodeWorkspaceGroup"][];
+            /** Summary Run Id */
+            summary_run_id: string | null;
+            /** Comparison Truncated */
+            comparison_truncated: boolean;
+            /** Metadata Truncated */
+            metadata_truncated: boolean;
+            /** Path */
+            path: string | null;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "diff" | "dependencies" | "definitions" | "source";
+            /**
+             * Revision
+             * @enum {string}
+             */
+            revision: "head" | "base";
+            /** Graph Enabled */
+            graph_enabled: boolean;
+            /** Graph Paused */
+            graph_paused: boolean;
+            diff?: components["schemas"]["CodeFile"] | null;
+            graph?: components["schemas"]["GraphRead"] | null;
+        };
+        /** CodeWorkspaceGroup */
+        CodeWorkspaceGroup: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** File Indexes */
+            file_indexes: number[];
         };
         /** ConnectionInput */
         ConnectionInput: {
@@ -3210,6 +3491,10 @@ export interface components {
         };
         /** PRDetail */
         PRDetail: {
+            /** Finding Counts */
+            finding_counts?: {
+                [key: string]: number;
+            };
             pull_request: components["schemas"]["PullRequestOut"];
             repository: components["schemas"]["RepositoryOut"];
             /** Run Count */
@@ -5138,6 +5423,111 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalyticsSecurity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_code_api_v1_pulls__pr_id__code_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                q?: string;
+                group?: string | null;
+            };
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_code_file_api_v1_pulls__pr_id__code_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodeFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeFile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_code_workspace_api_v1_pulls__pr_id__code_workspace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodeNavigation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeWorkspace"];
                 };
             };
             /** @description Validation Error */

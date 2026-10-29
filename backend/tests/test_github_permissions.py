@@ -128,7 +128,7 @@ def test_failed_refresh_replaces_allow_and_is_shared(cache, remote, status):
 ])
 def test_rate_limit_cooldown_applies_to_reads_and_writes(cache, monkeypatch, headers):
     request = Mock(return_value=httpx.Response(403, headers=headers))
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     clock = Mock(return_value=1000)
     monkeypatch.setattr(github.time, "time", clock)
     with pytest.raises(github.GitHubError) as caught:

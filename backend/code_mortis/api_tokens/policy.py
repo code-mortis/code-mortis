@@ -82,6 +82,9 @@ PAT_ROUTE_SCOPES: dict[tuple[str, str], str] = {
 AUTH_TOKEN_ROUTE = ("GET", "/api/v1/auth/token")
 
 SESSION_ONLY_ROUTES: set[tuple[str, str]] = {
+    ("GET", "/api/v1/pulls/{pr_id}/code"),
+    ("POST", "/api/v1/pulls/{pr_id}/code/file"),
+    ("POST", "/api/v1/pulls/{pr_id}/code/workspace"),
     ("GET", "/api/v1/pulls/{pr_id}/code-graph"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/query"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/index"),

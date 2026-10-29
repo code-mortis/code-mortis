@@ -21,6 +21,9 @@ Added after the baseline: `GET /api/v1/analytics/security` uses `analytics:read`
 | POST | `/api/v1/auth/logout` | Browser session only |
 | GET | `/api/v1/repositories` | PAT: `repositories:read` |
 | PUT | `/api/v1/repositories/{repository_id}` | Browser session only |
+| GET | `/api/v1/pulls/{pr_id}/code` | Browser session only |
+| POST | `/api/v1/pulls/{pr_id}/code/file` | Browser session only |
+| POST | `/api/v1/pulls/{pr_id}/code/workspace` | Browser session only |
 | GET | `/api/v1/pulls/{pr_id}/code-graph` | Browser session only |
 | POST | `/api/v1/pulls/{pr_id}/code-graph/query` | Browser session only |
 | POST | `/api/v1/pulls/{pr_id}/code-graph/index` | Browser administrator session only |

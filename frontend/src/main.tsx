@@ -276,7 +276,7 @@ function App() {
                 path="/repositories/:repositoryId/settings"
                 element={<Repositories admin={session.data.role === "admin"} configure />}
               />
-              <Route path="/pulls/:id" element={<PullDetail admin={session.data.role === "admin"} />} />
+              <Route path="/pulls/:id" element={<PullDetail key={`${session.data.id}:${session.data.csrf}`} admin={session.data.role === "admin"} />} />
               <Route path="/runs/:id" element={<RunDetail user={session.data} />} />
               <Route
                 path="/settings"

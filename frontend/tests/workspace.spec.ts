@@ -280,9 +280,10 @@ async function mockRepositoryPulls(page: Page, repositoryId: number, items: () =
 
 type PullDetailFixture = { pull_request: typeof pr; runs: Run[]; findings: Schema["FindingOut"][]; [key: string]: unknown };
 
-function pullMetadata({ runs, findings: _findings, pull_request, ...metadata }: PullDetailFixture) {
+function pullMetadata({ runs, findings, pull_request, ...metadata }: PullDetailFixture) {
   return {
     ...metadata, pull_request: { ...pull_request, latest_run: runs[0] ?? null }, run_count: runs.length,
+    finding_counts: Object.fromEntries(["open", "resolved", "dismissed"].map((state) => [state, findings.filter((finding) => finding.status === state).length])),
     has_active_run: runs.some((run) => ["queued", "running"].includes(run.status)),
     latest_observed_run_id: runs.find((run) => ["completed", "partial"].includes(run.status))?.id ?? null,
   };
@@ -969,7 +970,7 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await expect(inbox).toHaveAttribute("title", "0 open pull requests");
   running = true;
   openPrs = 1;
-  await page.clock.fastForward(6000);
+  await page.clock.fastForward(61000);
   await expect(activity).toBeVisible();
   await expect(inbox).toHaveAccessibleDescription("1 open pull request");
   await expect(inbox).toHaveAttribute("title", "1 open pull request");

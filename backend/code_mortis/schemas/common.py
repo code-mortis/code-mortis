@@ -500,6 +500,7 @@ class FindingDetail(BaseModel):
 
 
 class PRDetail(BaseModel):
+    finding_counts: dict[str, int] = Field(default_factory=dict)
     pull_request: PullRequestOut
     repository: RepositoryOut
     run_count: int

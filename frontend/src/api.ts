@@ -67,12 +67,12 @@ export async function api<T>(
   }
   return data as T;
 }
-export function useApi<T>(path: string, poll = false, enabled = true) {
+export function useApi<T>(path: string, poll: boolean | ((data: T | undefined) => number | false) = false, enabled = true) {
   return useQuery<T, ApiError>({
     queryKey: [path],
     queryFn: () => api<T>(path),
     enabled,
-    refetchInterval: poll ? 5000 : false,
+    refetchInterval: typeof poll === "function" ? (query) => poll(query.state.data) : poll ? 5000 : false,
     retry: false,
   });
 }

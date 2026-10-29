@@ -94,7 +94,7 @@ import { FindingCard, FindingCategory } from "./components/finding-card";
 import { candidateOutcomes, findingSeverities, runFindingOutcomes } from "./lib/review-filters";
 import { runDuration } from "./lib/run-duration";
 import { ExecutionDuration } from "./components/execution-duration";
-import { CodeGraphExplorer } from "./components/code-graph-explorer";
+import { PRCode } from "./components/pr-code";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -270,7 +270,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const location = useLocation();
   const inboxReturn = getInboxReturn(location.state);
   const repositoryReturn = getRepositoryReturn(location.state);
-  const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, true);
+  const query = useApi<Schema["PRDetail"]>(`/pulls/${id}`, (data) => data?.has_active_run || data?.pull_request.state === "open" ? 5000 : 30000);
   const action = useAction<Run>();
   const ignoreAction = useAction();
   const [restoring, setRestoring] = useState(false);
@@ -278,7 +278,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const connections = useApi<Schema["ConnectionOut"][]>("/connections");
   const [connection, setConnection] = useState("");
-  const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "impact"], "findings");
+  const [urlTab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "code", "impact"], "findings");
+  const tab = urlTab === "impact" ? "code" : urlTab;
   const resolved = tab === "resolved";
   const dismissed = tab === "dismissed";
   const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull");
@@ -311,7 +312,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const findingsQuery = useQuery<GroupedData<Schema["FindingsOut"]>, ApiError>({
     queryKey: ["pull-findings", id, status, filters.canonical, pages],
     queryFn: ({ signal }) => fetchGroupedPages<Schema["FindingsOut"]>(`/pulls/${id}/findings`, findingFilters, pages, signal),
-    enabled: !!query.data && !(query.error && [401, 403].includes(query.error.status)),
+    enabled: ["findings", "resolved", "dismissed"].includes(tab) && !!query.data && !(query.error && [401, 403].includes(query.error.status)),
     staleTime: 0,
     refetchInterval: 5000,
     retry: false,
@@ -319,16 +320,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
   });
   const savedCounts = useRef<{ id: typeof id; counts: Record<string, number> } | null>(null);
   if (findingsQuery.data) savedCounts.current = { id, counts: findingsQuery.data.status_counts };
-  const counts = savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
+  const counts = ["code", "history"].includes(tab) ? query.data?.finding_counts : savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
   useEffect(() => {
-    if (!findingsQuery.data || findingsQuery.isPlaceholderData) return;
+    if (!["findings", "resolved", "dismissed"].includes(tab) || !findingsQuery.data || findingsQuery.isPlaceholderData) return;
     const next = new URLSearchParams(params);
     for (const group of findingsQuery.data.groups) {
       if (findingsQuery.data.errors[group.group] || pages[group.group] === group.page) continue;
       if (group.page > 1) next.set(`${group.group}_page`, String(group.page)); else next.delete(`${group.group}_page`);
     }
     if (next.toString() !== params.toString()) setParams(next, { replace: true, state: location.state });
-  }, [findingsQuery.data, findingsQuery.isPlaceholderData, pages, params, setParams, location.state]);
+  }, [tab, findingsQuery.data, findingsQuery.isPlaceholderData, pages, params, setParams, location.state]);
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   if (findingsQuery.error && [401, 403].includes(findingsQuery.error.status)) return <ErrorNotice error={findingsQuery.error} />;
@@ -418,9 +419,9 @@ export function PullDetail({ admin }: { admin: boolean }) {
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
-        <TabsTrigger value="impact">Impact</TabsTrigger>
+        <TabsTrigger value="code">Code</TabsTrigger>
       </TabsList>
-      <TabsContent value="impact" className="min-w-0">{tab === "impact" && <CodeGraphExplorer prId={pr.id} repositoryId={repository.id} admin={admin} canWrite={can_write} />}</TabsContent>
+      <TabsContent value="code" className="min-w-0">{tab === "code" && <PRCode key={`${pr.id}:${pr.base_sha}:${pr.head_sha}`} prId={pr.id} repositoryId={repository.id} admin={admin} canWrite={can_write} renderFinding={(item) => <FindingPanel key={item.occurrence_id} id={item.finding_id} canWrite={can_write} snapshot={item.snapshot} headSha={item.source_sha ?? undefined} />} />}</TabsContent>
       {["findings", "resolved", "dismissed"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">
           <FilterBar query={search} searchResetKey={filters.searchResetKey} ordering={{ value: filters.params.get("ordering"), defaultValue: "-severity", options: findingOrderings, onChange: (value) => filters.change("ordering", [value]) }} searchLabel={resolved ? "Search resolved findings" : dismissed ? "Search dismissed findings" : "Search findings"} searchPlaceholder="Search findings…" searchInputRef={searchInput} onSearch={filters.search}
@@ -531,7 +532,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
           <TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data ? activities.length : "…"}</span></TabsTrigger>
         </TabsList></div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="finding-scroll">
-          {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs text-muted-foreground">Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></p><FindingEvidence evidence={snapshot} /></TabsContent>}
+          {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs text-muted-foreground">{headSha ? <>Saved at <span className="font-mono">{headSha.slice(0, 7)}</span></> : "Source revision was not recorded."}</p><FindingEvidence evidence={snapshot} /></TabsContent>}
           <TabsContent value="evidence" className="space-y-6">{f ? <FindingEvidence evidence={f} /> : query.isPending ? <Loading /> : <p className="text-sm text-muted-foreground">Current evidence could not be loaded.</p>}</TabsContent>
           <TabsContent value="activity" className="space-y-6">
           {query.isPending && <Loading />}

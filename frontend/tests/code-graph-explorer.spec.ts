@@ -1,14 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 
 const head = "a".repeat(40), base = "b".repeat(40), mergeBase = "c".repeat(40);
 const selected = "src/service.ts", related = "src/consumer.ts";
 const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, end_line: 3 };
 
-async function mockGraph(page: Page, admin = true) {
+export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
-  const state = { enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, empty: false, missingSource: false, long: false, definitionsPage: false };
+  const state = { prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
+    fileError: 0, codeError: 0, patchState: "available", groups: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -18,43 +18,62 @@ async function mockGraph(page: Page, admin = true) {
     coverage: { parsed: 239, partial: (revision === "head" ? state.status : state.baseStatus) === "partial" ? 1 : 0,
       unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false,
       reasons: (revision === "head" ? state.status : state.baseStatus) === "partial" ? { syntax_error: 1, unsupported_language: 72 } : { unsupported_language: 72 } } });
+  const diff = (body: any) => ({ base_sha: base, head_sha: head, merge_base_sha: mergeBase,
+        file: { path: body.path, change: "modified", additions: 1, deletions: 1 }, patch_state: state.patchState,
+        lines: state.large && body.path === selected ? Array.from({ length: 2000 }, (_, i) => ({ kind: "addition", old_line: null, new_line: i + 1, text: "const line = " + i + ";" + "x".repeat(80) })) : state.patchState === "available" || state.patchState === "truncated" ? [
+          { kind: "hunk", text: "@@ -1 +1 @@", old_line: null, new_line: null },
+          { kind: "deletion", text: "return false;", old_line: 1, new_line: null },
+          { kind: "addition", text: body.path === selected ? "return true; // mañana 😀" : "export const added = true;", old_line: null, new_line: 1 } ] : [],
+        findings: state.groups ? [ { occurrence_id: "o1", finding_id: "f1", run_id: "run", source_sha: head, current_status: "open",
+          snapshot: { path: selected, content: "Validate the response status", severity: "high", category: "bug", start_line: 1, end_line: 1, existing_code: "return true;", suggestion: "" }, side: "new", line: 1, placement: "inline" },
+          { occurrence_id: "o2", finding_id: "f2", run_id: "old-run", source_sha: base, current_status: "resolved",
+          snapshot: { path: selected, content: "Earlier saved evidence", start_line: 20, end_line: 22 }, side: null, line: null, placement: "historical" } ] : [],
+        findings_truncated: false, github_url: "https://github.com/acme/project/compare/ccc...aaa" });
+  const graph = (body: any) => {
+    const result = read(body.revision);
+      if (body.operation === "dependencies") return { ...result, items: state.empty ? [] : [{ ...location, path: related, kind: "dependency", target_path: selected,
+        relationship: "imports_file", provenance: "relative_import" }] };
+      if (body.operation === "symbols") return { ...result, items: [{ ...location, path: body.path, kind: "symbol", key: "definition", name: body.offset ? "laterDefinition" : "validateResponse", symbol_kind: "function" }],
+        next_cursor: !body.offset && state.definitionsPage ? { offset: 100, start_byte: 0 } : null };
+      if (body.operation === "source") return { ...result, source_state: state.missingSource ? "unavailable" : "available",
+        truncated: body.start_byte === 0 && body.end_byte === 1048576, next_cursor: body.start_byte === 0 && body.end_byte === 1048576 ? { offset: 0, start_byte: 36 } : null,
+        items: state.missingSource ? [] : [{ ...location, path: body.path, start_byte: body.start_byte, end_byte: body.start_byte + 36, start_line: body.start_byte ? 4 : 1,
+          kind: "source", blob_sha: "d".repeat(40), text: (body.start_byte ? "export const next = true;" : "export function validateResponse() {\n  return true;\n}") + "x".repeat(state.padding) }] };
+  };
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname.replace("/api/v1", "");
     const body = request.method() === "GET" ? null : request.postDataJSON();
     calls.push({ path, body });
     let data: unknown = [];
     if (path === "/setup/status") data = { configured: true, public_url: url.origin };
-    else if (path === "/auth/me") data = { id: 7, login: "developer", role: admin ? "admin" : "member", csrf: "csrf", avatar_url: "" };
+    else if (path === "/auth/me") data = { id: state.userId, login: "developer", role: admin ? "admin" : "member", csrf: "csrf", avatar_url: "" };
     else if (path === "/repositories") data = [repo];
-    else if (path === "/pulls/pr") data = { repository: repo, can_write: admin, run_count: 0, has_active_run: false, cancellable_run_count: 0,
+    else if (path === "/pulls/pr") data = { repository: repo, can_write: admin, run_count: 0, finding_counts: {}, has_active_run: false, cancellable_run_count: 0,
       pull_request: { id: "pr", repository_id: 22, repository_name: repo.full_name, number: 42, title: "Validate provider responses",
-        author: "developer", state: "open", draft: false, fork: false, ignored: false, head_ref: "feature", head_sha: head, base_sha: base,
+        author: "developer", state: state.prState, draft: false, fork: false, ignored: false, head_ref: "feature", head_sha: head, base_sha: base,
         created_at: "2026-10-27T12:00:00Z", updated_at: "2026-10-27T12:00:00Z", open_findings: 0, url: "https://github.com/acme/project/pull/42",
         review_status: "not_reviewed", has_running_review: false, run_id: null, publication: null, publication_error: null, latest_run: null } };
     else if (path.endsWith("/findings")) data = { groups: [], total: 0, registered_total: 0, status_counts: {}, category_counts: {}, page_size: 10 };
-    else if (path === "/pulls/pr/code-graph") {
-      if (state.overviewError) return route.fulfill({ status: state.overviewError, json: { detail: "Code access is unavailable. Refresh impact." } });
-      const pageNumber = Number(url.searchParams.get("page") ?? 1);
-      const files = state.empty ? [] : pageNumber === 2 ? [{ path: "src/old.ts", change: "removed" }] : [
-        { path: selected, change: "modified" }, { path: "src/added.ts", change: "added" },
-        { path: "src/" + "long-directory-name/".repeat(6) + "parser.ts", change: "modified" }];
-      const visible = files.filter((file) => file.path.includes(url.searchParams.get("q") ?? ""));
-      data = { enabled: state.enabled, paused: state.paused, base_sha: base, head_sha: head, merge_base_sha: mergeBase,
-        base: read("base"), head: read(), files: visible, total: state.empty ? 0 : url.searchParams.get("q") ? visible.length : 11,
-        page: pageNumber, has_more: pageNumber === 1, comparison_truncated: true };
+    else if (path === "/pulls/pr/code/workspace") {
+      const error = state.overviewError || (body.view === "diff" ? state.codeError : state.fileError);
+      if (error) return route.fulfill({ status: error, json: { detail: "Code access is unavailable." } });
+      const files = state.empty ? [] : [
+        { path: selected, change: "modified", additions: 1, deletions: 1 }, { path: "src/added.ts", change: "added", additions: 1, deletions: 0 },
+        { path: "src/" + "long-directory-name/".repeat(6) + "parser.ts", change: "modified", additions: 1, deletions: 1 },
+        ...Array.from({ length: 7 }, (_, i) => ({ path: `src/file${i}.ts`, change: "modified", additions: 1, deletions: 1 })),
+        { path: "src/old.ts", change: "removed", additions: 0, deletions: 2 }];
+      const groups = state.groups ? [{ id: "run:0", title: "Response validation", description: "Rejects malformed responses.", file_indexes: [0] }] : [];
+      const visible = files.filter((file) => file.path.includes(body.query ?? "") && (!body.group || file.path === selected));
+      const selectedPath = body.path ?? visible[((body.page ?? 1) - 1) * 10]?.path ?? null;
+      const revision = body.view !== "diff" && selectedPath === "src/old.ts" ? "base" : body.revision ?? "head";
+      const normalized = { ...body, path: selectedPath, revision, operation: body.view === "definitions" ? "symbols" : body.view };
+      data = { base_sha: base, head_sha: head, merge_base_sha: mergeBase, policy_digest: state.policy, files, groups,
+        summary_run_id: state.groups ? "run" : null, comparison_truncated: true, metadata_truncated: false,
+        graph_enabled: state.enabled, graph_paused: state.paused, path: selectedPath, revision, view: body.view,
+        diff: selectedPath && body.view === "diff" ? diff(normalized) : null,
+        graph: selectedPath && body.view !== "diff" && state.enabled ? graph(normalized) : null };
     } else if (path === "/pulls/pr/code-graph/index") { state.status = "queued"; data = { job_id: "graph-job", commit_sha: head }; }
-    else if (path === "/pulls/pr/code-graph/query") {
-      if (state.fileError) return route.fulfill({ status: state.fileError, json: { detail: state.fileError === 409 ? "The pull request revision changed. Refresh impact before continuing." : "Code access is unavailable." } });
-      const result = read(body.revision);
-      if (body.operation === "dependencies") data = { ...result, items: state.empty ? [] : [{ ...location, path: related, kind: "dependency", target_path: selected,
-        relationship: "imports_file", provenance: "relative_import" }] };
-      if (body.operation === "symbols") data = { ...result, items: [{ ...location, path: body.path, kind: "symbol", key: "definition", name: body.offset ? "laterDefinition" : "validateResponse", symbol_kind: "function" }],
-        next_cursor: !body.offset && state.definitionsPage ? { offset: 100, start_byte: 0 } : null };
-      if (body.operation === "source") data = { ...result, source_state: state.missingSource ? "unavailable" : "available",
-        truncated: body.start_byte === 0 && body.end_byte === 1048576, next_cursor: body.start_byte === 0 && body.end_byte === 1048576 ? { offset: 0, start_byte: 36 } : null,
-        items: state.missingSource ? [] : [{ ...location, path: body.path, start_byte: body.start_byte, end_byte: body.start_byte + 36, start_line: body.start_byte ? 4 : 1,
-          kind: "source", blob_sha: "d".repeat(40), text: body.start_byte ? "export const next = true;" : "export function validateResponse() {\n  return true;\n}" }] };
-    }
+
     await route.fulfill({ json: data });
   });
   return { calls, state };
@@ -74,7 +93,7 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   await page.getByRole("button", { name: "Next definitions" }).click();
   await page.getByRole("button", { name: /laterDefinition/ }).click();
   await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("validateResponse");
-  expect(calls.filter((call) => call.body?.operation === "source").at(-1)?.body).toMatchObject({ path: related, base_sha: base, head_sha: head, revision: "head", offset: 0, start_byte: 0, end_byte: 36 });
+  expect(calls.filter((call) => call.body?.view === "source").at(-1)?.body).toMatchObject({ path: related, expected: { base_sha: base, head_sha: head, merge_base_sha: mergeBase }, revision: "head", offset: 0, start_byte: 0, end_byte: 36 });
   await page.getByRole("button", { name: "Read from start" }).click();
   await page.getByRole("button", { name: "Next source" }).click();
   await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("export const next");
@@ -91,7 +110,7 @@ test("impact links keyboard navigation, definitions, exact source and saved find
 test("status tooltips explain coverage without pushing down the files", async ({ page, isMobile }) => {
   const { state } = await mockGraph(page);
   await page.goto("/pulls/pr?tab=impact");
-  const impact = page.getByRole("region", { name: "Pull request impact" });
+  const impact = page.getByRole("region", { name: "Pull request code" });
   await expect(impact.locator("select")).toHaveCount(0);
   await expect(impact.getByRole("heading", { name: "Explore change impact" })).toHaveCount(0);
   await expect(impact.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
@@ -102,19 +121,19 @@ test("status tooltips explain coverage without pushing down the files", async ({
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toHaveCount(0);
   state.status = "ready";
-  await page.getByRole("button", { name: "Refresh impact" }).click();
+  await page.getByRole("button", { name: "Refresh Code" }).click();
   await page.getByRole("button", { name: "Indexed", exact: true }).click();
   await expect(page.getByRole("tooltip")).toContainText("72 files use formats without structural support");
   await expect(page.getByRole("tooltip")).not.toContainText("partly parsed");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Limited comparison" }).click();
-  await expect(page.getByRole("tooltip")).toContainText("at most 300 changed files");
+  await expect(page.getByRole("tooltip")).toContainText("at most 300 files");
 });
 
 test("revision uses the shared combobox with mouse, keyboard and touch", async ({ page, isMobile }) => {
   const { calls } = await mockGraph(page);
   await page.goto("/pulls/pr?tab=impact");
-  const impact = page.getByRole("region", { name: "Pull request impact" });
+  const impact = page.getByRole("region", { name: "Pull request code" });
   const revision = impact.getByRole("combobox", { name: "Revision", exact: true });
   const arrow = impact.getByRole("button", { name: "Show options", exact: true });
   if (isMobile) await arrow.tap(); else await arrow.click();
@@ -136,7 +155,7 @@ test("filters and pagination preserve selection and use the merge base for remov
   const { calls } = await mockGraph(page);
   await page.goto("/pulls/pr?tab=impact");
   await page.getByRole("button", { name: "Next changed files" }).click();
-  await page.getByRole("button", { name: "src/old.ts Removed" }).click();
+  await page.getByRole("button", { name: /src\/old.ts removed/i }).click();
   await expect(page.getByRole("combobox", { name: "Revision", exact: true })).toHaveValue("Merge base · ccccccc");
   await expect.poll(() => calls.filter((call) => call.body?.revision === "base").length).toBeGreaterThan(0);
   await page.getByRole("textbox", { name: "Filter changed files" }).fill("service");
@@ -156,21 +175,21 @@ test("explicit indexing, paused and disabled configuration do not admit hidden j
   const empty = page.getByRole("heading", { name: "This revision is not ready" }).locator("..");
   await expect(empty.getByRole("button", { name: "Index selected revision" })).toBeVisible();
   if (!isMobile) {
-    const list = await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: "src/service.ts Modified" }).boundingBox();
-    const notice = await empty.boundingBox();
+    const list = await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/service.ts modified/i }).boundingBox();
+    const notice = await page.getByRole("tablist", { name: "File information" }).boundingBox();
     expect(Math.abs(notice!.y - list!.y)).toBeLessThanOrEqual(1);
   }
-  await page.screenshot({ path: `../.impeccable/review/impact-unavailable-${info.project.name}.png`, fullPage: true });
-  expect(calls.filter((call) => call.body)).toHaveLength(0);
+  await page.screenshot({ path: `../.impeccable/review/pr-code-graph-unavailable-${info.project.name}.png`, fullPage: true });
+  expect(calls.filter((call) => call.body && !call.path.endsWith("/code/workspace"))).toHaveLength(0);
   await page.getByRole("button", { name: "Index selected revision" }).click();
   await expect(page.getByRole("button", { name: "Index selected revision" })).toBeDisabled();
   expect(calls.filter((call) => call.path.endsWith("/index"))).toHaveLength(1);
   state.paused = true;
-  await page.getByRole("button", { name: "Refresh impact" }).click();
+  await page.getByRole("button", { name: "Refresh Code" }).click();
   await expect(page.getByRole("button", { name: "Index selected revision" })).toHaveCount(0);
   state.enabled = false;
-  await page.getByRole("button", { name: "Refresh impact" }).click();
-  await expect(page.getByRole("link", { name: "Enable the code graph in Project context" })).toHaveAttribute("href", "/repositories/22/settings?tab=context");
+  await page.getByRole("button", { name: "Refresh Code" }).click();
+  await expect(page.getByRole("link", { name: "Enable it in Project context" })).toHaveAttribute("href", "/repositories/22/settings?tab=context");
 });
 
 test("members cannot index; empty and missing source remain explicit", async ({ page }) => {
@@ -180,7 +199,7 @@ test("members cannot index; empty and missing source remain explicit", async ({ 
   await expect(page.getByText("This revision is not ready", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Index selected revision" })).toHaveCount(0);
   state.status = "ready"; state.empty = true;
-  await page.getByRole("button", { name: "Refresh impact" }).click();
+  await page.getByRole("button", { name: "Refresh Code" }).click();
   await expect(page.getByText("No supported dependencies returned", { exact: true })).toBeVisible();
   state.missingSource = true;
   await page.getByRole("tab", { name: "Source", exact: true }).click();
@@ -199,11 +218,11 @@ for (const error of [403, 409]) test(`revoked or changed revision ${error} hides
   state.fileError = error;
   await page.clock.runFor(31000);
   await expect(page.getByLabel("Indexed source", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Refresh file" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry Code" })).toBeVisible();
   state.overviewError = error;
-  await page.getByRole("button", { name: "Refresh impact" }).click();
+  await page.getByRole("button", { name: "Retry Code" }).click();
   await expect(page.getByRole("region", { name: "Selected file", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Retry impact" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry Code" })).toBeVisible();
 });
 
 test("impact fits the app at both themes and required widths", async ({ page }, info) => {
@@ -216,21 +235,318 @@ test("impact fits the app at both themes and required widths", async ({ page }, 
     if (info.project.name === "desktop") {
       const files = page.getByRole("region", { name: "Changed files", exact: true });
       const file = page.getByRole("region", { name: "Selected file", exact: true });
-      const title = await files.getByRole("heading").boundingBox();
+      const title = await files.getByRole("heading").locator("..").boundingBox();
       const path = await file.getByRole("heading").boundingBox();
       expect(Math.abs(title!.y - path!.y)).toBeLessThanOrEqual(1);
-      const row = await files.getByRole("button", { name: "src/service.ts Modified" }).boundingBox();
+      const row = await files.getByRole("button", { name: /src\/service.ts modified/i }).boundingBox();
       const tabs = await file.getByRole("tablist", { name: "File information" }).boundingBox();
       expect(Math.abs(row!.y - tabs!.y)).toBeLessThanOrEqual(1);
     }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await page.screenshot({ path: `../.impeccable/review/phase4-${info.project.name}-${theme}.png`, fullPage: true });
+    await page.screenshot({ path: `../.impeccable/review/pr-code-related-${info.project.name}-${theme}.png`, fullPage: true });
     if (info.project.name === "desktop" && theme === "dark") {
       await page.setViewportSize({ width: 1024, height: 768 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await page.screenshot({ path: "../.impeccable/review/phase4-tablet-dark.png", fullPage: true });
+      await page.screenshot({ path: "../.impeccable/review/pr-code-related-tablet-dark.png", fullPage: true });
       await page.setViewportSize({ width: 2544, height: 1034 });
-      await page.screenshot({ path: "../.impeccable/review/phase4-user-2544.png", fullPage: true });
+      await page.screenshot({ path: "../.impeccable/review/pr-code-related-user-2544.png", fullPage: true });
     }
   }
+});
+
+test("Code opens a diff with graph disabled and no graph or inference requests", async ({ page }) => {
+  const { state, calls } = await mockGraph(page);
+  state.enabled = false;
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("tab", { name: "Code", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("mañana 😀");
+  await expect(page.getByRole("button", { name: /Index selected/ })).toHaveCount(0);
+  expect(calls.filter((call) => call.path.includes("code-graph"))).toHaveLength(0);
+  expect(calls.filter((call) => call.body && !call.path.endsWith("/code/workspace"))).toHaveLength(0);
+  await page.getByRole("tab", { name: "Dependencies", exact: true }).click();
+  await expect(page.getByText("Code graph is disabled", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+});
+
+test("saved groups filter files and findings open immutable evidence through reload", async ({ page, isMobile }) => {
+  const { state, calls } = await mockGraph(page);
+  state.groups = true;
+  await page.goto("/pulls/pr?tab=code");
+  const group = page.getByRole("combobox", { name: "Change group" });
+  const arrow = page.getByRole("region", { name: "Pull request code" }).getByRole("button", { name: "Show options" });
+  if (isMobile) await arrow.tap(); else await arrow.click();
+  await page.getByRole("option", { name: "Response validation", exact: true }).click();
+  await expect(page.getByText("Rejects malformed responses.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { pressed: true })).toHaveCount(1);
+  await page.getByRole("button", { name: /Validate the response status/ }).click();
+  await expect(page.getByRole("dialog")).toContainText("Validate the response status");
+  await expect(page.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.reload();
+  await expect(page.getByRole("dialog")).toContainText("Validate the response status");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("region", { name: "Other saved findings" })).toContainText("Earlier revision · bbbbbbb");
+  await group.fill("All changes"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");
+  await expect(page.getByText("Rejects malformed responses.", { exact: true })).toHaveCount(0);
+  expect(calls.filter((call) => /summary|index$|review$/.test(call.path))).toHaveLength(0);
+});
+
+test("legacy base links retain merge-base source; new file navigation supports back", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=impact&graph_revision=base&graph_file=src%2Fold.ts");
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  expect(calls.find((call) => call.body?.view === "source")?.body.revision).toBe("base");
+  await page.goto("/pulls/pr?tab=code");
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/added.ts/ }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("export const added");
+  await page.goBack();
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("mañana");
+});
+
+for (const stateName of ["unavailable", "too_large", "withheld", "truncated"]) test(`diff ${stateName} stays explicit and graph-independent`, async ({ page }) => {
+  const { state } = await mockGraph(page); state.patchState = stateName;
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("link", { name: "Open on GitHub", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "File diff" })).toHaveCount(stateName === "truncated" ? 1 : 0);
+});
+
+for (const error of [403, 409]) test(`diff refetch ${error} removes old content`, async ({ page }) => {
+  const { state } = await mockGraph(page); await page.clock.install();
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  state.codeError = error; await page.clock.runFor(31000);
+  await expect(page.getByRole("region", { name: "File diff" })).toHaveCount(0);
+  await expect(page.getByText("Code access is unavailable.", { exact: true })).toBeVisible();
+});
+
+test("new selection cancels delayed diff and does not display stale text", async ({ page }) => {
+  await mockGraph(page);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/pulls/pr/code/workspace", async (route) => {
+    if (route.request().postDataJSON().path === selected) await pending;
+    await route.fallback();
+  });
+  await page.goto("/pulls/pr?tab=code&graph_file=src%2Fadded.ts");
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/service.ts/ }).click();
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/added.ts/ }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("export const added");
+  release();
+  await expect(page.getByRole("region", { name: "File diff" })).not.toContainText("mañana");
+});
+
+test("Code diff alignment and contained overflow at desktop, intermediate and mobile widths", async ({ page, isMobile }, info) => {
+  const { state } = await mockGraph(page); state.groups = true;
+  await mkdir("../.impeccable/review", { recursive: true });
+  for (const theme of ["light", "dark"]) {
+    await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
+    await page.goto("/pulls/pr?tab=code");
+    await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+    for (const width of isMobile ? [390] : [1440, 1024]) {
+      await page.setViewportSize({ width, height: isMobile ? 844 : 1000 });
+      if (!isMobile) {
+        const left = page.getByRole("region", { name: "Changed files", exact: true });
+        const right = page.getByRole("region", { name: "Selected file", exact: true });
+        const header = await left.getByRole("heading").locator("..").boundingBox();
+        const title = await right.getByRole("heading", { name: "Selected file details" }).boundingBox();
+        expect(Math.abs(header!.y - title!.y)).toBeLessThanOrEqual(1);
+        const row = await left.getByRole("button", { name: /src\/service.ts/ }).boundingBox();
+        const tabs = await right.getByRole("tablist").boundingBox();
+        expect(Math.abs(row!.y - tabs!.y)).toBeLessThanOrEqual(1);
+      }
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `../.impeccable/review/pr-code-${info.project.name}-${width}-${theme}.png`, fullPage: true });
+    }
+  }
+});
+
+
+test("bounded large diff stays scrollable and responsive", async ({ page }, info) => {
+  const { state } = await mockGraph(page); state.large = true; state.patchState = "truncated";
+  const started = Date.now();
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff.locator("tbody tr")).toHaveCount(2000);
+  const firstLoadMs = Date.now() - started;
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const frameMs = await page.evaluate(() => new Promise<number>((resolve) => {
+    const start = performance.now(); requestAnimationFrame(() => resolve(performance.now() - start));
+  }));
+  const navigation = Date.now();
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/added.ts/ }).click();
+  await expect(diff).toContainText("export const added");
+  await mkdir("../.impeccable/review", { recursive: true });
+  await writeFile(`../.impeccable/review/pr-code-large-${info.project.name}.json`, JSON.stringify({ mocked: true, rows: 2000, firstLoadMs, navigationMs: Date.now() - navigation, frameMs }));
+});
+
+
+test("one bootstrap, cached file/view revisits and eviction on leaving Code", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  const reads = () => calls.filter((call) => call.path.endsWith("/code/workspace"));
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff).toContainText("mañana");
+  expect(reads()).toHaveLength(1);
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/added.ts/ }).click();
+  await expect(diff).toContainText("export const added");
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/service.ts/ }).click();
+  await expect(diff).toContainText("mañana");
+  expect(reads()).toHaveLength(2);
+  for (const name of ["Dependencies", "Definitions", "Source"]) {
+    await page.getByRole("tab", { name, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Indexed with warnings", exact: true })).toBeVisible();
+  }
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(diff).toContainText("mañana");
+  expect(reads()).toHaveLength(5);
+  expect(calls.some((call) => call.path === "/pulls/pr/code-graph" || call.path.endsWith("/code-graph/query"))).toBe(false);
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await page.getByRole("tab", { name: "Code", exact: true }).click();
+  await expect(diff).toContainText("mañana");
+  expect(reads()).toHaveLength(6);
+});
+
+test("inactive source expires from its fetch, not from cached revisits or other refreshes", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  await page.clock.install();
+  await page.goto("/pulls/pr?tab=code");
+  const reads = () => calls.filter((call) => call.path.endsWith("/code/workspace") && call.body.view === "diff");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff).toBeVisible();
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await page.clock.runFor(15000);
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(diff).toBeVisible();
+  expect(reads()).toHaveLength(1);
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await page.clock.runFor(17000);
+  const before = reads().length;
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(diff).toBeVisible();
+  expect(reads()).toHaveLength(before + 1);
+});
+
+test("idle Code does not poll hidden findings and keeps periodic calls bounded", async ({ page }) => {
+  const { calls, state } = await mockGraph(page);
+  state.prState = "merged";
+  await page.clock.install();
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  const start = calls.length;
+  await page.clock.runFor(61000);
+  const periodic = calls.slice(start);
+  expect(periodic.filter((call) => call.path.endsWith("/findings"))).toHaveLength(0);
+  expect(periodic.length).toBeLessThanOrEqual(6);
+});
+
+test("permission loss purges other cached views before retry", async ({ page }) => {
+  const { calls, state } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  state.fileError = 403;
+  await page.getByRole("button", { name: "Refresh Code" }).click();
+  await expect(page.getByRole("button", { name: "Retry Code" })).toBeVisible();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toHaveCount(0);
+  state.fileError = 0;
+  await page.getByRole("button", { name: "Retry Code" }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  const start = calls.filter((call) => call.path.endsWith("/code/workspace")).length;
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(start + 1);
+});
+
+
+test("policy changes invalidate cached diffs and graph views", async ({ page }) => {
+  const { calls, state } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  state.policy = "changed";
+  await page.getByRole("button", { name: "Refresh Code" }).click();
+  await expect.poll(() => calls.filter((call) => call.path.endsWith("/code/workspace")).length).toBe(3);
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(4);
+});
+
+test("content cache evicts beyond ten entries", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code");
+  const files = page.getByRole("region", { name: "Changed files", exact: true });
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  for (let i = 1; i < 10; i++) {
+    const rows = files.locator('button[aria-pressed]');
+    const path = await rows.nth(i).locator("span").first().textContent();
+    await rows.nth(i).click();
+    await expect(page.getByRole("heading", { name: "Selected file details" })).toHaveText(path!);
+    await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  }
+  await page.getByRole("button", { name: "Next changed files" }).click();
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toHaveText("src/old.ts");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  const before = calls.filter((call) => call.path.endsWith("/code/workspace") && call.body.path === selected).length;
+  await page.getByRole("button", { name: "Previous changed files" }).click();
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toHaveText(selected);
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace") && call.body.path === selected)).toHaveLength(before + 1);
+});
+
+test("byte budget evicts large source results while leaving them displayable", async ({ page }) => {
+  const { calls, state } = await mockGraph(page); state.padding = 1000000;
+  await page.goto("/pulls/pr?tab=code&code_view=source");
+  const source = page.getByLabel("Indexed source", { exact: true });
+  await expect(source).toBeVisible();
+  const rows = page.getByRole("region", { name: "Changed files", exact: true }).locator('button[aria-pressed]');
+  for (let i = 1; i < 6; i++) {
+    const path = await rows.nth(i).locator("span").first().textContent();
+    await rows.nth(i).click();
+    await expect(page.getByRole("heading", { name: "Selected file details" })).toHaveText(path!);
+    await expect(source).toBeVisible();
+  }
+  const before = calls.filter((call) => call.path.endsWith("/code/workspace")).length;
+  await rows.first().click();
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toHaveText(selected);
+  await expect(source).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(before + 1);
+});
+
+
+test("a changed browser account remounts and reauthorizes the Code workspace", async ({ page }) => {
+  const { calls, state } = await mockGraph(page);
+  await page.clock.install();
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await page.clock.runFor(16000);
+  state.userId = 8;
+  const before = calls.filter((call) => call.path.endsWith("/code/workspace")).length;
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => calls.filter((call) => call.path.endsWith("/code/workspace")).length).toBeGreaterThan(before);
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  const refreshed = calls.filter((call) => call.path.endsWith("/code/workspace")).length;
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(refreshed + 1);
+});
+
+
+test("going offline removes retained code and requires a fresh read after reconnecting", async ({ page, context }) => {
+  const { calls } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  await context.setOffline(true);
+  await expect(page.getByRole("region", { name: "File diff" })).toHaveCount(0);
+  await expect(page.getByText("You are offline. Connect to the internet, then retry Code.")).toBeVisible();
+  await context.setOffline(false);
+  const before = calls.filter((call) => call.path.endsWith("/code/workspace")).length;
+  await page.getByRole("button", { name: "Retry Code" }).click();
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(before + 1);
 });

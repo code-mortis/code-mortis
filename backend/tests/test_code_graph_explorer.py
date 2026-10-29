@@ -7,6 +7,7 @@ from test_code_graph_workflow import graph as graph
 
 from code_mortis.code_graph import explorer, retrieval, service, store
 from code_mortis.core.db import transaction
+from code_mortis.integrations import comparison as github_comparison
 from code_mortis.integrations import github
 from code_mortis.models import (
     CodeGraphRepository,
@@ -22,7 +23,7 @@ BASE = "/api/v1/pulls/pr/code-graph"
 
 @pytest.fixture
 def indexed(graph, monkeypatch):
-    explorer.comparison_metadata.cache_clear()
+    github_comparison.cached.cache_clear()
     root = graph["source"]
     (root / "consumer.py").write_text("from .renamed import second\n\ndef consume():\n    return second()\n")
     fixture_git(root, "add", ".")
@@ -40,7 +41,7 @@ def indexed(graph, monkeypatch):
     run(service.enqueue_snapshot(22, graph["first"]))
     run(service.enqueue_snapshot(22, graph["pr_head"]))
     yield graph
-    explorer.comparison_metadata.cache_clear()
+    github_comparison.cached.cache_clear()
 
 
 def body(indexed, **values):
@@ -229,3 +230,33 @@ def test_final_comparison_recheck(indexed, client, monkeypatch):
     monkeypatch.setattr(explorer.retrieval, "read_snapshot", changed)
     response = client.get(BASE)
     assert response.status_code == 409 and "consumer.py" not in response.text
+
+
+def test_workspace_shares_compare_and_graph_result_with_two_fresh_checks(indexed, client, monkeypatch):
+    assert client.get(BASE).status_code == 200
+    calls, auth = [], []
+    original_request, original_authorize = github.request, github.authorize_repo
+    monkeypatch.setattr(github, "request", lambda *a, **kw: calls.append(a) or original_request(*a, **kw))
+    monkeypatch.setattr(github, "authorize_repo", lambda *a, **kw: auth.append(kw.get("fresh")) or original_authorize(*a, **kw))
+    result = client.post("/api/v1/pulls/pr/code/workspace", json={"path": "renamed.py", "view": "dependencies"})
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["graph"]["items"][0]["path"] == "consumer.py"
+    assert data["graph"]["coverage"]["parsed"] == 2
+    assert auth.count(True) == 2 and not calls
+    old = client.post("/api/v1/pulls/pr/code/workspace", json={"path": "renamed.py", "view": "source", "revision": "base"}).json()
+    assert old["path"] == "a.py" and "def first" in old["graph"]["items"][0]["text"]
+
+
+def test_workspace_graph_disable_during_read_withholds_entire_response(indexed, client, monkeypatch):
+    original = explorer.read_file
+
+    def raced(*args):
+        result = original(*args)
+        with transaction() as db:
+            db.get(CodeGraphRepository, 22).enabled = False
+        return result
+
+    monkeypatch.setattr(explorer, "read_file", raced)
+    response = client.post("/api/v1/pulls/pr/code/workspace", json={"path": "renamed.py", "view": "source"})
+    assert response.status_code == 403 and "def second" not in response.text
