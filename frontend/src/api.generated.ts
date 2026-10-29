@@ -2493,6 +2493,15 @@ export interface components {
             /** Path */
             path: string;
         };
+        /** CodeFileState */
+        CodeFileState: {
+            /** Reviewed */
+            reviewed: boolean;
+            /** Open Count */
+            open_count: number;
+            /** Complete */
+            complete: boolean;
+        };
         /** CodeFinding */
         CodeFinding: {
             /** Occurrence Id */
@@ -2620,6 +2629,16 @@ export interface components {
             /** Group */
             group?: string | null;
             /**
+             * Unreviewed
+             * @default false
+             */
+            unreviewed: boolean;
+            /**
+             * With Findings
+             * @default false
+             */
+            with_findings: boolean;
+            /**
              * Offset
              * @default 0
              */
@@ -2672,6 +2691,8 @@ export interface components {
             policy_digest: string;
             /** Files */
             files: components["schemas"]["CodeFileInfo"][];
+            /** File States */
+            file_states: components["schemas"]["CodeFileState"][];
             /** Groups */
             groups: components["schemas"]["CodeWorkspaceGroup"][];
             /** Summary Run Id */

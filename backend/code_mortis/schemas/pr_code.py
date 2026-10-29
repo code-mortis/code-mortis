@@ -81,6 +81,8 @@ class CodeNavigation(StrictModel):
     page: int = Field(default=1, ge=1, le=100, strict=True)
     query: str = Field(default="", max_length=256)
     group: str | None = Field(default=None, max_length=64)
+    unreviewed: bool = False
+    with_findings: bool = False
     offset: int = Field(default=0, ge=0, le=100_000, strict=True)
     start_byte: int = Field(default=0, ge=0, le=MAX_FILE_BYTES, strict=True)
     end_byte: int = Field(default=MAX_FILE_BYTES, ge=0, le=MAX_FILE_BYTES, strict=True)
@@ -93,9 +95,16 @@ class CodeWorkspaceGroup(StrictModel):
     file_indexes: list[int]
 
 
+class CodeFileState(StrictModel):
+    reviewed: bool
+    open_count: int = Field(ge=0, le=1000)
+    complete: bool
+
+
 class CodeWorkspace(CodeIdentity):
     policy_digest: Digest
     files: list[CodeFileInfo]
+    file_states: list[CodeFileState]
     groups: list[CodeWorkspaceGroup]
     summary_run_id: str | None
     comparison_truncated: bool

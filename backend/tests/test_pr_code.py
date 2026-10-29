@@ -10,7 +10,15 @@ from code_mortis.code_graph import service
 from code_mortis.core.db import transaction
 from code_mortis.integrations import comparison as github_comparison
 from code_mortis.integrations import github
-from code_mortis.models import Finding, Job, Membership, Occurrence, PullRequest, Repository, ReviewRun
+from code_mortis.models import (
+        Finding,
+    Job,
+    Membership,
+    Occurrence,
+    PullRequest,
+    Repository,
+    ReviewRun,
+)
 from code_mortis.reviews import code
 from code_mortis.schemas.pr_code import CodeFileInfo, CodeNavigation
 
@@ -75,9 +83,10 @@ def test_graph_independent_diff_summary_and_immutable_findings(comparison, clien
     result = response.json()
     assert result["patch_state"] == "available" and result["lines"][2]["text"] == "mañana 😀"
     assert result["lines"][1]["old_line"] == 1 and result["lines"][1]["new_line"] is None
-    assert [f["placement"] for f in result["findings"]] == ["inline", "inline", "unknown", "historical", "outside_diff"]
-    assert result["findings"][0]["current_status"] == "resolved" and "Mutable text" not in response.text
-    assert result["findings"][1]["side"] == "old" and MERGE in result["github_url"]
+    evidence = {f["occurrence_id"]: f for f in result["findings"]}
+    assert [evidence[f"o{i}"]["placement"] for i in range(5)] == ["inline", "inline", "unknown", "historical", "outside_diff"]
+    assert evidence["o0"]["current_status"] == "resolved" and "Mutable text" not in response.text
+    assert evidence["o1"]["side"] == "old" and MERGE in result["github_url"]
     assert len(comparison[1]) == 1 and comparison[1][0][1]["max_response_bytes"] == code.MAX_RESPONSE_BYTES
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Job)) == jobs
@@ -358,3 +367,138 @@ def test_pull_detail_supplies_counts_without_hidden_finding_reads(comparison, cl
     response = client.get("/api/v1/pulls/pr")
     assert response.status_code == 200, response.text
     assert response.json()["finding_counts"] == {"open": 4, "resolved": 1}
+
+
+def test_finding_counts_deduplicate_use_immutable_sides_and_withhold_invalid(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        original = db.get(Occurrence, "o1")
+        db.add(ReviewRun(id="repeat", pr_id="pr", trigger="manual", dedup_key="repeat", status="completed", base_sha=BASE, head_sha=HEAD, config={}, report={}))
+        db.flush()
+        db.add(Occurrence(id="duplicate", run_id="repeat", finding_id="f1", snapshot=original.snapshot))
+        db.get(Occurrence, "o4").snapshot = {**db.get(Occurrence, "o4").snapshot, "path": "old.py", "source_sha": MERGE}
+    data = client.post(URL + "/workspace", json={"with_findings": True}).json()
+    assert [s["open_count"] for s in data["file_states"]] == [0, 1, 1]
+    assert all(s["complete"] for s in data["file_states"])
+    with transaction() as db:
+        db.get(Finding, "f1").status = "dismissed"
+        db.get(Occurrence, "o4").snapshot = {**db.get(Occurrence, "o4").snapshot, "content": "provider-secret"}
+    data = client.post(URL + "/workspace", json={"with_findings": True}).json()
+    assert data["path"] == "next.py"
+    assert data["file_states"][1] == {"reviewed": False, "open_count": 0, "complete": False}
+
+
+def test_bounded_counts_and_constant_database_queries(comparison, client, monkeypatch):
+    from time import perf_counter
+
+    from sqlalchemy import event
+
+    from code_mortis.core.db import engine
+    seed_summary_and_findings()
+    comparison[0]["files"] = [{"filename": "notes.md", "status": "modified"}] + [
+        {"filename": f"src/file{i}.py", "status": "modified"} for i in range(299)]
+    with transaction() as db:
+        snapshot = {"path": "notes.md", "source_sha": HEAD, "start_line": 1, "end_line": 1, "content": "x" * 31500}
+        db.add_all([Finding(id=f"bounded{i:04}", pr_id="pr", fingerprint=f"bounded{i:04}", path="notes.md", content="Saved", start_line=1, end_line=1, last_seen_run_id="run") for i in range(1001)])
+        db.flush()
+        db.add_all([Occurrence(id=f"bounded{i:04}", run_id="run", finding_id=f"bounded{i:04}", snapshot=snapshot) for i in range(1001)])
+        db.get(Occurrence, "o4").snapshot = {**snapshot, "content": "x" * 33000}
+    statements = []
+    def record(conn, cursor, statement, parameters, context, many):
+        statements.append(statement)
+    event.listen(engine(), "before_cursor_execute", record)
+    started = perf_counter()
+    try:
+        result = client.post(URL + "/workspace", json={"view": "dependencies"})
+    finally:
+        event.remove(engine(), "before_cursor_execute", record)
+    elapsed = perf_counter() - started
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert len(data["files"]) == 300 and data["file_states"][0]["open_count"] == 1000
+    assert all(not s["complete"] for s in data["file_states"])
+    assert len([q for q in statements if "JOIN review_runs" in q and "occurrences" in q]) == 1
+    assert len(statements) < 80
+    print(f"\n300 files / 1000 candidates: {elapsed:.3f}s, {len(statements)} SQL statements, {len(result.content)} response bytes")
+    monkeypatch.setattr(code, "MAX_METADATA_BYTES", 600)
+    limited = client.post(URL + "/workspace", json={"view": "dependencies"}).json()
+    assert limited["metadata_truncated"] and len(limited["files"]) == len(limited["file_states"]) < 300
+
+
+def test_oversized_evidence_count_is_unknown(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(Occurrence, "o1").snapshot = {**db.get(Occurrence, "o1").snapshot, "unused": "x" * 33000}
+    data = client.post(URL + "/workspace", json={}).json()
+    assert data["file_states"][2] == {"reviewed": False, "open_count": 1, "complete": False}
+
+
+
+def saved_coverage(completed=("notes.md",), failed=("next.py",), reused=()):
+    def entries(paths):
+        return [{"item_id": path, "path": path} for path in paths]
+    return {"selected": entries((*completed, *failed, *reused)), "completed": entries(completed),
+            "failed": entries(failed), "reused": entries(reused), "waived": []}
+
+
+def test_automatic_review_checks_use_validated_results_without_any_writes(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        run = db.get(ReviewRun, "run")
+        run.status = "partial"
+        run.report = {"manifest": {"coverage": saved_coverage(reused=("image.png",))}}
+        before = [(f.id, f.status) for f in db.scalars(select(Finding))]
+        jobs = db.scalar(select(func.count()).select_from(Job))
+    data = client.post(URL + "/workspace", json={"unreviewed": True}).json()
+    assert [state["reviewed"] for state in data["file_states"]] == [True, False, True]
+    assert data["path"] == "next.py"
+    assert client.post(URL + "/workspace", json={}).json()["file_states"] == data["file_states"]
+    with transaction() as db:
+        assert before == [(f.id, f.status) for f in db.scalars(select(Finding))]
+        assert jobs == db.scalar(select(func.count()).select_from(Job))
+    assert client.put(URL + "/progress", json=body(reviewed=True)).status_code in {404, 405}
+
+
+@pytest.mark.parametrize("change", ["head", "base", "missing_coverage", "missing_outcomes", "overlap", "wrong_path", "malformed", "partial_file", "oversized"])
+def test_review_check_never_infers_completion_from_status(comparison, client, change):
+    seed_summary_and_findings()
+    with transaction() as db:
+        run = db.get(ReviewRun, "run")
+        coverage = saved_coverage()
+        if change in {"head", "base"}:
+            setattr(run, change + "_sha", "e" * 40)
+        elif change == "missing_coverage":
+            coverage = None
+        elif change == "missing_outcomes":
+            coverage["completed"] = []
+        elif change == "overlap":
+            coverage["failed"] += coverage["completed"]
+        elif change == "wrong_path":
+            coverage["completed"][0] = {"item_id": "notes.md", "path": "image.png"}
+        elif change == "malformed":
+            coverage["completed"] = [None]
+        elif change == "partial_file":
+            item = {"item_id": "another-chunk", "path": "notes.md"}
+            coverage["selected"].append(item)
+            coverage["failed"].append(item)
+        else:
+            coverage["untrusted_extra"] = "x" * (code.MAX_METADATA_BYTES + 1)
+        run.report = {"manifest": {"coverage": coverage}}
+    data = client.post(URL + "/workspace", json={}).json()
+    assert not any(state["reviewed"] for state in data["file_states"])
+
+
+def test_review_checks_retain_saved_fact_but_never_expose_currently_excluded_files(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        run = db.get(ReviewRun, "run")
+        run.report = {"manifest": {"coverage": saved_coverage()}}
+        run.config = {}
+        db.get(Repository, 22).settings = {"exclusions": "image.png"}
+    data = client.post(URL + "/workspace", json={}).json()
+    assert data["file_states"][1]["reviewed"]
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"exclusions": "notes.md"}
+    data = client.post(URL + "/workspace", json={}).json()
+    assert "notes.md" not in [file["path"] for file in data["files"]]
+    assert not any(state["reviewed"] for state in data["file_states"])

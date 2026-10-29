@@ -60,6 +60,8 @@ To verify locally, run `python3 scripts/check_code_graph.py` from the repository
 
 The protocol, publication and retention requirements are documented in [checkpoint 1B and the handoff](code-graph-plan.md#phase-1-execution-checklist). These parser limits alone do not establish full-stack operation on an 8 GB server; the Phase 2 report records a bounded overlap workload and its limits.
 
+Code file rows automatically show a check when saved validated coverage confirms that file's selected review items completed or were reused at the current base/head. No checkbox, extra table, migration or environment flag is required. Missing/earlier/malformed coverage cannot establish a check. Current open-finding indicators show `3+` or `?` when bounded evidence cannot establish an exact count. Neither a reviewed check nor an absent finding indicator establishes a clean review. See [workflow acceptance](pr-code-review-workflow-plan.md).
+
 ## Upgrade an existing installation
 
 1. Back up the database, `.env` and native profiles. Let active reviews finish or cancel them in the app, then stop API, review-worker, sync-worker and scheduler. If the graph profile is enabled, also drain and stop code-graph-worker before backing up its volume or changing application code. Keep the database available for backup and migration.

@@ -1,0 +1,112 @@
+{
+  "production_frontend": true,
+  "cached_switches": [
+    {
+      "ms": 11.5,
+      "requests": 0
+    },
+    {
+      "ms": 11.300000004470348,
+      "requests": 0
+    },
+    {
+      "ms": 10.600000001490116,
+      "requests": 0
+    },
+    {
+      "ms": 12.399999998509884,
+      "requests": 0
+    },
+    {
+      "ms": 10.5,
+      "requests": 0
+    },
+    {
+      "ms": 20.30000000447035,
+      "requests": 0
+    },
+    {
+      "ms": 10.699999995529652,
+      "requests": 0
+    },
+    {
+      "ms": 13.399999998509884,
+      "requests": 0
+    },
+    {
+      "ms": 13.200000002980232,
+      "requests": 0
+    },
+    {
+      "ms": 16.80000000447035,
+      "requests": 0
+    },
+    {
+      "ms": 13.799999997019768,
+      "requests": 0
+    },
+    {
+      "ms": 19.5,
+      "requests": 0
+    },
+    {
+      "ms": 10.600000001490116,
+      "requests": 0
+    },
+    {
+      "ms": 15.600000001490116,
+      "requests": 0
+    },
+    {
+      "ms": 10,
+      "requests": 0
+    },
+    {
+      "ms": 13.400000005960464,
+      "requests": 0
+    },
+    {
+      "ms": 12.299999997019768,
+      "requests": 0
+    },
+    {
+      "ms": 17.600000001490116,
+      "requests": 0
+    },
+    {
+      "ms": 11.900000005960464,
+      "requests": 0
+    },
+    {
+      "ms": 14.299999997019768,
+      "requests": 0
+    }
+  ],
+  "idle_seconds": 60,
+  "idle_requests": [
+    {
+      "path": "/api/v1/pulls/7ea97137-67b6-4fcb-b132-b718c7899d40/code/workspace",
+      "ms": 870.1999999955297
+    },
+    {
+      "path": "/api/v1/pulls/7ea97137-67b6-4fcb-b132-b718c7899d40",
+      "ms": 48.29999999701977
+    },
+    {
+      "path": "/api/v1/pulls/7ea97137-67b6-4fcb-b132-b718c7899d40/code/workspace",
+      "ms": 1362.8999999985099
+    },
+    {
+      "path": "/api/v1/repositories",
+      "ms": 479.3999999985099
+    },
+    {
+      "path": "/api/v1/pulls/7ea97137-67b6-4fcb-b132-b718c7899d40",
+      "ms": 624.6000000014901
+    },
+    {
+      "path": "/api/v1/pulls/7ea97137-67b6-4fcb-b132-b718c7899d40/code/workspace",
+      "ms": 1309.6999999955297
+    }
+  ]
+}

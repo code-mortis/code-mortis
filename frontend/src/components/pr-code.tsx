@@ -1,6 +1,6 @@
-import { Fragment, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ExternalLink, FileCode2, RefreshCw } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ExternalLink, FileCode2, MessageSquare, RefreshCw } from "lucide-react";
 import { ApiError, useAction, type Schema } from "../api";
 import { usePRCode } from "../lib/use-pr-code";
 import { Empty, ErrorNotice, Loading, Status } from "./common";
@@ -9,6 +9,7 @@ import { CodeGraphCoverage } from "./code-graph-coverage";
 import { FilterBar } from "./filter-bar";
 import { SearchSelect } from "./search-select";
 import { Pagination } from "./pagination";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "./ui/sheet";
@@ -36,13 +37,17 @@ function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFindin
     const key = `${item.side}:${item.line}`;
     inline.set(key, [...inline.get(key) ?? [], item]);
   }
+  const diffRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (occurrenceId) diffRoot.current?.querySelector(`[data-occurrence="${CSS.escape(occurrenceId)}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [occurrenceId, data]);
   function findingButton(item: SavedFinding) {
-    return <button key={item.occurrence_id} className={`${rowClass} flex flex-wrap items-start gap-2`} onClick={(event) => openFinding(item, event.currentTarget)}>
+    return <button key={item.occurrence_id} data-occurrence={item.occurrence_id} className={`${rowClass} flex flex-wrap items-start gap-2`} onClick={(event) => openFinding(item, event.currentTarget)}>
       <Status value={item.current_status} /><span className="line-clamp-2 min-w-0 flex-1 break-words text-left text-sm [overflow-wrap:anywhere]">{String(item.snapshot.content)}</span>
       {item.placement !== "inline" && <span className="w-full text-xs text-muted-foreground">{item.placement === "historical" ? "Earlier revision" : item.placement === "unknown" ? "Unverified location" : "Outside this diff"}{item.source_sha ? ` · ${item.source_sha.slice(0, 7)}` : ""}</span>}
     </button>;
   }
-  return <div className="min-w-0 space-y-3">
+  return <div ref={diffRoot} className="min-w-0 space-y-3">
     {query.isPending ? <Loading /> : query.error ? <><ErrorNotice error={query.error} /><Button size="sm" variant="outline" onClick={() => { onRefresh(); }}>Refresh Code</Button></> : data && <>
       {data.file.previous_path && <p className="break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">Renamed from <code>{data.file.previous_path}</code></p>}
       {data.patch_state !== "available" && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-dashed p-4 text-sm text-muted-foreground" role="status">
@@ -76,21 +81,24 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const heading = useRef<HTMLHeadingElement>(null);
+  const navigationId = useRef(0);
   const trigger = useRef<HTMLButtonElement>(null);
   const action = useAction();
   const value = Number(params.get("graph_page") ?? 1), page = Number.isInteger(value) && value > 0 && value <= 100 ? value : 1;
   const search = (params.get("graph_q") ?? "").slice(0, 256), group = params.get("code_group") ?? "";
+  const unreviewed = params.get("code_unreviewed") === "1", withFindings = params.get("code_findings") === "1";
   const revision = params.get("graph_revision") === "base" ? "base" : "head";
   const requested = params.get("code_view");
   const view = requested && views.includes(requested) ? requested : params.get("tab") === "impact" ? revision === "base" ? "source" : "dependencies" : "diff";
   const positionKey = `${params.get("graph_file")}:${revision}`;
   const [position, setPosition] = useState({ key: positionKey, offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] });
   const positionValue = position.key === positionKey ? position : { offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] };
-  const workspace = usePRCode(prId, { page, query: search, group: group || null, path: params.get("graph_file"),
+  const workspace = usePRCode(prId, { page, unreviewed, with_findings: withFindings, query: search, group: group || null, path: params.get("graph_file"),
     view: view as Schema["CodeNavigation"]["view"], revision,
     offset: view === "definitions" ? positionValue.offset : 0,
     start_byte: view === "source" ? positionValue.start_byte : 0, end_byte: view === "source" ? positionValue.end_byte : 1048576 });
   function change(values: Record<string, string | null>) {
+    navigationId.current++;
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(values)) { if (value) next.set(key, value); else next.delete(key); }
     setParams(next, { state: location.state });
@@ -101,12 +109,49 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   if (!data) return <div className="space-y-3"><ErrorNotice error={workspace.error} /><Button variant="outline" onClick={refresh}>Retry Code</Button></div>;
   const path = workspace.path;
   const selectedGroup = workspace.group;
+  const selectedIndex = data.files.findIndex((file) => file.path === path || file.previous_path === path);
+  const selectedFile = data.files[selectedIndex];
+  const sequenceIndex = workspace.files.findIndex((file) => file.path === selectedFile?.path);
+  const reviewedCount = data.file_states.filter((state) => state.reviewed).length;
+  function selectFile(index: number) {
+    const file = workspace.files[index];
+    if (!file) return;
+    setPosition({ key: "", offset: 0, start_byte: 0, end_byte: 1048576, previous: [] });
+    change({ graph_file: view !== "diff" && revision === "base" ? file.previous_path ?? file.path : file.path,
+      graph_revision: view !== "diff" && file.change === "removed" ? "base" : revision,
+      graph_page: String(Math.floor(index / 10) + 1), code_occurrence: null });
+    requestAnimationFrame(() => heading.current?.focus());
+  }
+  async function openFirstFinding(file: Schema["CodeFileInfo"], element: HTMLButtonElement) {
+    trigger.current = element;
+    change({ graph_file: file.path, code_view: "diff", graph_revision: "head", code_occurrence: null });
+    const admitted = navigationId.current;
+    try {
+      const result = await workspace.loadFindings(file.path);
+      const next = new URLSearchParams(window.location.search);
+      if (admitted !== navigationId.current || next.get("graph_file") !== file.path || next.get("code_view") !== "diff") return;
+      const finding = result.diff?.findings.find((item) => item.current_status === "open" && ["inline", "outside_diff"].includes(item.placement));
+      next.set("code_occurrence", finding?.occurrence_id ?? "unavailable");
+      setParams(next, { state: location.state });
+    } catch { /* The workspace owns authorization and retry errors. */ }
+  }
   const pair = { base_sha: data.base_sha, head_sha: data.head_sha, revision: workspace.revision } as const;
   const snapshot = workspace.data?.graph, indexed = ["ready", "partial"].includes(snapshot?.status ?? "");
   const fileQuery = { error: workspace.error, isPending: workspace.loading, isFetching: workspace.fetching, refetch: refresh };
-  return <section aria-label="Pull request code" aria-busy={workspace.fetching} className="min-w-0 space-y-4">
-    <FilterBar query={search} searchLabel="Filter changed files" searchPlaceholder="Search changed files…" filters={[]} onChange={() => {}} onSearch={(value) => change({ graph_q: value.trim(), graph_page: null, graph_file: null, code_occurrence: null })}>
+  return <section aria-label="Pull request code" aria-busy={workspace.fetching} className="min-w-0 space-y-4" onKeyDown={(event) => {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing || (event.repeat && workspace.fetching)
+      || !(event.target instanceof HTMLElement) || event.target.closest("input, textarea, select, [contenteditable=true], [role=combobox]")
+      || document.querySelector('[role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="combobox"][aria-expanded="true"], [data-slot="popover-content"][data-state="open"]')) return;
+    const next = sequenceIndex + (event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0);
+    if (sequenceIndex < 0 || next === sequenceIndex || next < 0 || next >= workspace.files.length) return;
+    event.preventDefault(); selectFile(next);
+  }}>
+    <FilterBar query={search} searchLabel="Filter changed files" searchPlaceholder="Search changed files…" filters={[
+      { key: "code_unreviewed", label: "Review status", values: unreviewed ? ["1"] : [], choices: [{ value: "1", name: "Not reviewed" }] },
+      { key: "code_findings", label: "Findings", values: withFindings ? ["1"] : [], choices: [{ value: "1", name: "With open findings" }] },
+    ]} onChange={(key, values) => change({ [key]: values[0] ?? null, graph_page: null, graph_file: null, code_occurrence: null })} onSearch={(value) => change({ graph_q: value.trim(), graph_page: null, graph_file: null, code_occurrence: null })}>
       {!!data.groups.length && <SearchSelect aria-label="Change group" className="sm:w-72" value={selectedGroup?.id ?? "all"} options={[{ value: "all", label: "All changes" }, ...data.groups.map((item) => ({ value: item.id, label: item.title }))]} onChange={(value) => change({ code_group: value === "all" ? null : value, graph_page: null, graph_file: null, code_occurrence: null })} />}
+      <span role="status" className="text-xs tabular-nums text-muted-foreground">{reviewedCount} of {data.files.length}{data.comparison_truncated || data.metadata_truncated ? " shown files" : ""} reviewed</span>
       <code className="text-xs text-muted-foreground" title={`Merge base ${data.merge_base_sha} to PR head ${data.head_sha}`}>{data.merge_base_sha.slice(0, 7)}…{data.head_sha.slice(0, 7)}</code>
       <Button variant="outline" className="ml-auto bg-card" aria-label="Refresh Code" disabled={workspace.fetching} onClick={refresh}><RefreshCw className="size-4" aria-hidden="true" />Refresh</Button>
     </FilterBar>
@@ -115,15 +160,28 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
       <section aria-label="Changed files" className="min-w-0 space-y-3">
         <div className="flex min-h-9 flex-wrap items-center gap-x-2"><h3 className="text-sm font-semibold">Changed files <span className="ml-1 font-normal tabular-nums text-muted-foreground">{workspace.files.length}</span></h3>{(data.comparison_truncated || data.metadata_truncated) && <StatusHint value="partial" label="Limited comparison">{data.metadata_truncated ? "The file inventory reached its display limit. Search covers only returned files." : "GitHub returned at most 300 files. This list and its search may be incomplete."}</StatusHint>}</div>
         <div className="divide-y overflow-hidden rounded-lg border bg-card">
-          {workspace.files.slice((workspace.page - 1) * 10, workspace.page * 10).map((file) => <button key={file.path} onPointerEnter={() => workspace.prefetch({ path: file.path })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ path: file.path })} onBlur={() => workspace.prefetch()} aria-pressed={file.path === path || file.previous_path === path} className={`${rowClass} block aria-pressed:bg-muted disabled:opacity-50`} onClick={() => { change({ graph_file: view !== "diff" && revision === "base" ? file.previous_path ?? file.path : file.path, graph_revision: view !== "diff" && file.change === "removed" ? "base" : revision, code_occurrence: null }); heading.current?.focus(); }}>
-            <span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{file.path}</span><span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span className="capitalize">{file.change}</span>{file.additions != null && file.deletions != null && <span className="font-mono tabular-nums"><span className="text-[var(--code-added)]">+{file.additions}</span> <span className="text-[var(--code-removed)]">−{file.deletions}</span></span>}</span>
-          </button>)}
+          {workspace.files.slice((workspace.page - 1) * 10, workspace.page * 10).map((file) => {
+            const state = data.file_states[data.files.indexOf(file)], active = file.path === path || file.previous_path === path;
+            return <div key={file.path} className={`flex min-w-0 items-center ${active ? "bg-muted" : ""}`}>
+              <button onPointerEnter={() => workspace.prefetch({ path: file.path })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ path: file.path })} onBlur={() => workspace.prefetch()} aria-pressed={active} className={`${rowClass} min-w-0 flex-1`} onClick={() => selectFile(workspace.files.indexOf(file))}>
+                <span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{file.path}</span><span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span className="capitalize">{file.change}</span>{file.additions != null && file.deletions != null && <span className="font-mono tabular-nums"><span className="text-[var(--code-added)]">+{file.additions}</span> <span className="text-[var(--code-removed)]">−{file.deletions}</span></span>}{state.reviewed && <Tooltip><TooltipTrigger asChild><span role="img" aria-label="Reviewed by Code Mortis"><Check className="size-3.5" aria-hidden="true" /></span></TooltipTrigger><TooltipContent>Reviewed at this revision. This does not mean there are no findings.</TooltipContent></Tooltip>}</span>
+              </button>
+              {(state.open_count > 0 || !state.complete) && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="mr-1 min-h-11 min-w-11 shrink-0 gap-1 px-2 sm:min-h-9" aria-label={`Open findings for ${file.path}`} onClick={(event) => void openFirstFinding(file, event.currentTarget)}><MessageSquare className="size-3.5" aria-hidden="true" /><span className="text-xs tabular-nums">{state.open_count || "?"}{!state.complete && state.open_count > 0 ? "+" : ""}</span></Button></TooltipTrigger><TooltipContent>{state.complete ? `${state.open_count} open finding${state.open_count === 1 ? "" : "s"}` : "Open finding count is incomplete"}</TooltipContent></Tooltip>}
+            </div>;
+          })}
           {!workspace.files.length && <p className="p-4 text-sm text-muted-foreground">{search ? "No returned files match this filter." : "No visible changed files in this comparison."}</p>}
           <Pagination page={workspace.page} pageSize={10} total={workspace.files.length} loading={false} label="changed files" onPageChange={(value) => change({ graph_page: String(value), graph_file: null, code_occurrence: null })} />
         </div>
       </section>
       <section aria-label="Selected file" className="min-w-0 space-y-3">
-        <h3 ref={heading} tabIndex={-1} aria-label="Selected file details" className="flex min-h-9 min-w-0 items-center gap-2 font-mono text-sm font-medium"><FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="break-words [overflow-wrap:anywhere]">{path ?? "Select a file"}</span></h3>
+        <div className="flex min-h-9 min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <h3 ref={heading} tabIndex={-1} aria-label="Selected file details" className="flex min-h-9 min-w-0 flex-1 items-center gap-2 font-mono text-sm font-medium"><FileCode2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="min-w-0 break-words [overflow-wrap:anywhere]">{path ?? "Select a file"}</span></h3>
+          {sequenceIndex >= 0 && workspace.files.length > 1 && <nav aria-label="File navigation" className="flex shrink-0 items-center gap-1">
+            <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="min-h-11 min-w-11 sm:min-h-9 sm:min-w-9" aria-label="Previous file" disabled={sequenceIndex === 0} onClick={() => selectFile(sequenceIndex - 1)}><ChevronLeft /></Button></TooltipTrigger><TooltipContent>Previous file · Alt+↑</TooltipContent></Tooltip>
+            <span className="text-xs tabular-nums text-muted-foreground">{sequenceIndex + 1} of {workspace.files.length}</span>
+            <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="min-h-11 min-w-11 sm:min-h-9 sm:min-w-9" aria-label="Next file" disabled={sequenceIndex === workspace.files.length - 1} onClick={() => selectFile(sequenceIndex + 1)}><ChevronRight /></Button></TooltipTrigger><TooltipContent>Next file · Alt+↓</TooltipContent></Tooltip>
+          </nav>}
+        </div>
         {path && <Tabs value={view} onValueChange={(value) => change({ code_view: value, code_occurrence: null, graph_file: value === "diff" ? data.files.find((f) => f.previous_path === path)?.path ?? path : path })}>
           <TabsList aria-label="File information" className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">{views.map((value) => <TabsTrigger key={value} value={value} onPointerEnter={() => workspace.prefetch({ view: value as Schema["CodeNavigation"]["view"] })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ view: value as Schema["CodeNavigation"]["view"] })} onBlur={() => workspace.prefetch()}>{value[0].toUpperCase() + value.slice(1)}</TabsTrigger>)}</TabsList>
           <TabsContent value="diff" className="mt-4 min-w-0"><FileDiff key={`${path}:${data.head_sha}:${data.base_sha}:${data.policy_digest}`} query={{ ...fileQuery, data: workspace.data?.diff }} onRefresh={refresh} occurrenceId={params.get("code_occurrence")} openFinding={(item, element) => { trigger.current = element; change({ code_occurrence: item.occurrence_id, finding_tab: null }); }} closeFinding={() => { change({ code_occurrence: null, finding_tab: null }); requestAnimationFrame(() => (trigger.current?.isConnected ? trigger.current : heading.current)?.focus()); }} renderFinding={renderFinding} /></TabsContent>

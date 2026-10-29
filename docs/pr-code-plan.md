@@ -84,7 +84,7 @@ Contract limits: 8 MiB decoded GitHub JSON, 20-second elapsed stream budget chec
 ## Deferred work
 
 - Newly generated guided tours and explanation-to-hunk/line anchors. These need a separate schema, evidence validation, model budget and evaluation; existing summary groups are file-level only.
-- Per-user reviewed-file/step progress, new chat tools, third-party comment ingestion, general editor features, repository-wide tree browsing and an unbounded full-PR renderer.
+- Automatic reviewed-file indicators, file navigation and finding indicators are delivered in the [high-priority review workflow](pr-code-review-workflow-plan.md). The user replaced the originally proposed personal checklist with checks from validated saved review coverage. Step-level tour progress, new chat tools, third-party comment ingestion, general editor features, repository-wide tree browsing and an unbounded full-PR renderer remain deferred.
 - New parser capabilities, symbol call graphs, graph rebuilds, embeddings, MCP scope/tool changes, provider experiments, commits/pushes and production release work.
 
 ## Completion and next-session handoff

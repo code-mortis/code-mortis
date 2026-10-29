@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { hashKey, QueryClient, useQuery } from "@tanstack/react-query";
+import { hashKey, QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type Schema } from "../api";
 
 type Workspace = Schema["CodeWorkspace"];
@@ -16,7 +16,9 @@ function authority(data: Workspace) {
 }
 function selection(meta: Metadata | null, nav: Navigation) {
   const group = meta?.data.groups.find((item) => item.id === nav.group);
-  const files = meta?.data.files.filter((file, index) => (!group || group.file_indexes.includes(index)) && file.path.toLowerCase().includes((nav.query ?? "").toLowerCase())) ?? [];
+  const files = meta?.data.files.filter((file, index) => (!group || group.file_indexes.includes(index)) && file.path.toLowerCase().includes((nav.query ?? "").toLowerCase())
+    && (!nav.unreviewed || !meta.data.file_states[index].reviewed)
+    && (!nav.with_findings || meta.data.file_states[index].open_count > 0 || !meta.data.file_states[index].complete)) ?? [];
   const page = Math.min(nav.page ?? 1, Math.max(1, Math.ceil(files.length / 10)));
   let path = nav.path ?? files[(page - 1) * 10]?.path ?? null;
   let revision = nav.revision ?? "head";
@@ -30,7 +32,7 @@ function selection(meta: Metadata | null, nav: Navigation) {
 function requestFor(meta: Metadata | null, nav: Navigation): Navigation {
   const { path, revision } = selection(meta, nav);
   return { path, revision, view: nav.view, offset: nav.offset ?? 0, start_byte: nav.start_byte ?? 0, end_byte: nav.end_byte ?? 1048576,
-    ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group }) };
+    ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group, unreviewed: nav.unreviewed, with_findings: nav.with_findings }) };
 }
 function keyFor(meta: Metadata | null, request: Navigation) {
   return [meta ? "content" : "bootstrap", meta ? authority(meta.data) : null,
@@ -39,6 +41,7 @@ function keyFor(meta: Metadata | null, request: Navigation) {
 
 /** A query cache exists only while this Code workspace is mounted; mutations still use the app's client. */
 export function usePRCode(prId: string, navigation: Navigation) {
+  const applicationCache = useQueryClient();
   const [cache] = useState(() => new QueryClient());
   const [meta, setMeta] = useState<Metadata | null>(null);
   const [failure, setFailure] = useState<ApiError | null>(null);
@@ -125,6 +128,17 @@ export function usePRCode(prId: string, navigation: Navigation) {
     };
   }, [cache]);
 
+  useEffect(() => applicationCache.getQueryCache().subscribe((event) => {
+    if (event.type === "updated" && event.action.type === "invalidate" && event.query.queryKey[0] === `/pulls/${prId}`) {
+      void cache.cancelQueries().then(() => cache.invalidateQueries());
+    }
+  }), [applicationCache, cache, prId]);
+
+  async function loadFindings(path: string) {
+    const nav = requestFor(current.current, { view: "diff", path, revision: "head" });
+    return cache.fetchQuery({ queryKey: keyFor(current.current, nav), queryFn: ({ signal }) => fetchView(nav, signal), staleTime: 0, gcTime: AGE, retry: false });
+  }
+
   // Oversized results can be displayed, but must not survive navigation as reusable cache entries.
   useEffect(() => {
     for (const entry of cache.getQueryCache().findAll()) if (entry.getObserversCount() === 0 && entry.state.data
@@ -151,5 +165,5 @@ export function usePRCode(prId: string, navigation: Navigation) {
   }
   const expired = query.isStale && Date.now() - query.dataUpdatedAt >= AGE;
   return { ...selected, inventory: meta?.data, data: !failure && !expired ? query.data : undefined,
-    error: failure ?? query.error, loading: query.isPending || expired, fetching: query.isFetching, refresh, prefetch };
+    loadFindings, error: failure ?? query.error, loading: query.isPending || expired, fetching: query.isFetching, refresh, prefetch };
 }

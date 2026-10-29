@@ -8,7 +8,7 @@ from pydantic import TypeAdapter
 from code_mortis.api.dependencies import pr_access
 from code_mortis.code_graph import retrieval, service, store
 from code_mortis.core.db import transaction
-from code_mortis.core.security import redact_saved_credentials, unseal
+from code_mortis.core.security import saved_credential_redactor, unseal
 from code_mortis.integrations import comparison as github_comparison
 from code_mortis.models import CodeGraphRepository, PullRequest
 from code_mortis.schemas.code_graph import GitSha
@@ -43,9 +43,17 @@ def comparison_metadata(repository_id, installation_id, full_name, base, head):
 
 
 def check_source(db, user, repo, text):
-    if (redact_saved_credentials(db, text, [repo.id]) != text.replace("\r\n", "\n")
-        or any(value and unseal(value) in text for value in (user.access_token, user.refresh_token))):
-        raise HTTPException(422, "This content contains credential material and was withheld.")
+    source_checker(db, user, repo)(text)
+
+
+def source_checker(db, user, repo):
+    # Load credentials once for a bounded batch, never retain them between requests.
+    redact = saved_credential_redactor(db, [repo.id])
+    tokens = [unseal(value) for value in (user.access_token, user.refresh_token) if value]
+    def check(text):
+        if redact(text) != text.replace("\r\n", "\n") or any(token in text for token in tokens):
+            raise HTTPException(422, "This content contains credential material and was withheld.")
+    return check
 
 
 def finish(pr, repo, user, result, *, enabled=True):

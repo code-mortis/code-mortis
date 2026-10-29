@@ -72,6 +72,10 @@ def safe_repo_name(value: str) -> str:
 
 
 def redact_saved_credentials(db, text, repository_ids=None):
+    return saved_credential_redactor(db, repository_ids)(text)
+
+
+def saved_credential_redactor(db, repository_ids=None):
     from sqlalchemy import select
 
     from code_mortis.models import Connection, SecurityFinding
@@ -85,4 +89,5 @@ def redact_saved_credentials(db, text, repository_ids=None):
     query = select(SecurityFinding.evidence).where(SecurityFinding.kind == "secret")
     if repository_ids is not None:
         query = query.where(SecurityFinding.repository_id.in_(repository_ids))
-    return clean_text(security_engine.redact_secrets(text, credentials, list(db.scalars(query))))
+    evidence = list(db.scalars(query))
+    return lambda text: clean_text(security_engine.redact_secrets(text, credentials, evidence))

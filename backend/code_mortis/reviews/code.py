@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import Text, case, cast, func, select
 
 from code_mortis.code_graph import explorer, store
 from code_mortis.integrations.comparison import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
@@ -20,6 +20,7 @@ from code_mortis.schemas.common import SummaryResult
 MAX_PATCH_BYTES = 256 * 1024
 MAX_LINES = 2000
 MAX_FINDINGS = 100
+MAX_CANDIDATES = 1000
 PAGE_SIZE = 10
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
@@ -118,23 +119,114 @@ def parse_patch(patch, info):
     return ("truncated" if truncated else "available"), rows[:MAX_LINES]
 
 
+def evidence_snapshot(raw, check):
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid saved evidence")
+    snapshot = {key: raw[key] for key in ("path", "content", "severity", "category", "existing_code", "suggestion")
+                if isinstance(raw.get(key), str)}
+    snapshot.update({key: raw[key] for key in ("start_line", "end_line") if type(raw.get(key)) is int})
+    TypeAdapter(RepositoryPath).validate_python(snapshot.get("path"))
+    encoded = json.dumps(snapshot)
+    if not isinstance(snapshot.get("content"), str) or len(encoded.encode()) > 32768:
+        raise ValueError("Invalid saved evidence")
+    check(encoded)
+    return snapshot
+
+
+def reviewed_paths(db, pr):
+    """Only validated saved file outcomes can earn a review check; never the run's status alone."""
+    coverage = ReviewRun.report["manifest"]["coverage"]
+    bounded = case((func.octet_length(cast(coverage, Text)) <= MAX_METADATA_BYTES, coverage), else_=None)
+    row = db.execute(select(bounded)
+        .where(ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha, ReviewRun.head_sha == pr.head_sha,
+               ReviewRun.report["manifest"]["coverage"].is_not(None))
+        .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1)).first()
+    if not row:
+        return set()
+    coverage = row[0]
+    if not isinstance(coverage, dict):
+        return set()
+    selected, outcomes, completed = {}, set(), set()
+    try:
+        for kind in ("selected", "completed", "reused", "failed", "waived"):
+            entries = coverage.get(kind)
+            if not isinstance(entries, list):
+                return set()
+            for item in entries:
+                if not isinstance(item, dict) or not isinstance(item.get("item_id"), str) or not item["item_id"]:
+                    return set()
+                key, path = item["item_id"], TypeAdapter(RepositoryPath).validate_python(item.get("path"))
+                if kind == "selected":
+                    if key in selected:
+                        return set()
+                    selected[key] = path
+                else:
+                    if key in outcomes or selected.get(key) != path:
+                        return set()
+                    outcomes.add(key)
+                    if kind in {"completed", "reused"}:
+                        completed.add(key)
+    except (ValueError, TypeError):
+        return set()
+    if outcomes != set(selected):
+        return set()
+    unfinished = {path for key, path in selected.items() if key not in completed}
+    return set(selected.values()) - unfinished
+
+
+def file_states(db, user, repo, pr, identity, files):
+    reviewed = reviewed_paths(db, pr)
+    states, by_path = [], {}
+    for index, (info, _) in enumerate(files):
+        states.append({"reviewed": info.path in reviewed, "open_count": 0, "complete": True})
+        for path in {info.path, info.previous_path} - {None}:
+            by_path.setdefault(path, []).append(index)
+    # Bound raw JSON in SQL, before Python materializes candidate evidence.
+    bounded = case((func.octet_length(cast(Occurrence.snapshot, Text)) <= 32768, Occurrence.snapshot), else_=None)
+    records = db.execute(select(Occurrence.finding_id, Occurrence.snapshot["path"].as_string(), bounded)
+        .join(ReviewRun, ReviewRun.id == Occurrence.run_id).join(Finding, Finding.id == Occurrence.finding_id)
+        .where(ReviewRun.pr_id == pr.id, Finding.pr_id == pr.id, Finding.status == "open",
+               ReviewRun.base_sha == identity["base_sha"], ReviewRun.head_sha == identity["head_sha"],
+               Occurrence.snapshot["path"].as_string().in_(list(by_path)))
+        .order_by(ReviewRun.created_at.desc(), Occurrence.id).limit(MAX_CANDIDATES + 1)).all()
+    check, seen = explorer.source_checker(db, user, repo), set()
+    if len(records) > MAX_CANDIDATES:
+        for state in states:
+            state["complete"] = False
+    for finding_id, path, raw in records[:MAX_CANDIDATES]:
+        indexes = by_path[path]
+        try:
+            snapshot = evidence_snapshot(raw, check)
+        except (ValueError, TypeError, HTTPException):
+            for index in indexes:
+                states[index]["complete"] = False
+            continue
+        sha, start, end = raw.get("source_sha"), snapshot.get("start_line"), snapshot.get("end_line")
+        if type(start) is not int or type(end) is not int or not 0 < start <= end:
+            continue
+        for index in indexes:
+            info = files[index][0]
+            if ((sha == identity["head_sha"] and path == info.path)
+                or (sha == identity["merge_base_sha"] and path == (info.previous_path or info.path))):
+                if (index, finding_id) not in seen:
+                    states[index]["open_count"] += 1
+                    seen.add((index, finding_id))
+    return states
+
+
 def saved_findings(db, user, repo, pr, info, identity, lines):
     paths = [p for p in (info.path, info.previous_path) if p]
     records = db.execute(select(Occurrence, ReviewRun, Finding.status).join(ReviewRun, ReviewRun.id == Occurrence.run_id)
         .join(Finding, Finding.id == Occurrence.finding_id).where(ReviewRun.pr_id == pr.id, Finding.pr_id == pr.id,
-        Occurrence.snapshot["path"].as_string().in_(paths)).order_by(ReviewRun.created_at.desc(), Occurrence.id)
+        Occurrence.snapshot["path"].as_string().in_(paths)).order_by(((ReviewRun.base_sha == pr.base_sha) & (ReviewRun.head_sha == pr.head_sha)
+                   & (Finding.status == "open")).desc(), ReviewRun.created_at.desc(), Occurrence.id)
         .limit(MAX_FINDINGS + 1)).all()
     results = []
+    check = explorer.source_checker(db, user, repo)
     for occurrence, run, status in records[:MAX_FINDINGS]:
         raw = occurrence.snapshot
-        snapshot = {key: raw[key] for key in ("path", "content", "severity", "category", "existing_code", "suggestion")
-                    if isinstance(raw.get(key), str)}
-        snapshot.update({key: raw[key] for key in ("start_line", "end_line") if type(raw.get(key)) is int})
         try:
-            TypeAdapter(RepositoryPath).validate_python(snapshot.get("path"))
-            if not isinstance(snapshot.get("content"), str) or len(json.dumps(snapshot).encode()) > 32768:
-                continue
-            explorer.check_source(db, user, repo, json.dumps(snapshot, ensure_ascii=False))
+            snapshot = evidence_snapshot(raw, check)
         except (ValueError, TypeError, HTTPException):
             continue
         try:
@@ -190,7 +282,8 @@ def workspace(db, user, pr_id, request):
     indexes = {info.path: i for i, (info, _) in enumerate(files)}
     groups = [{"id": g["id"], "title": g["title"], "description": g["description"],
                "file_indexes": sorted({indexes[p] for p in g["paths"]})} for g in groups]
-    metadata = {"files": [info.model_dump() for info, _ in files], "groups": groups}
+    metadata = {"files": [info.model_dump() for info, _ in files], "groups": groups,
+                "file_states": file_states(db, user, repo, pr, identity, files)}
     metadata_truncated = False
     # Bound even adversarial long paths/group text before returning an inventory for local filtering.
     while len(json.dumps(metadata, ensure_ascii=False).encode()) > MAX_METADATA_BYTES:
@@ -199,10 +292,14 @@ def workspace(db, user, pr_id, request):
             metadata["groups"].pop()
         else:
             metadata["files"].pop()
+            metadata["file_states"].pop()
     files = files[:len(metadata["files"])]
     group = next((g for g in metadata["groups"] if g["id"] == request.group), None)
     visible = [info for i, (info, _) in enumerate(files) if request.query.casefold() in info.path.casefold()
-               and (not group or i in group["file_indexes"])]
+               and (not group or i in group["file_indexes"])
+               and (not request.unreviewed or not metadata["file_states"][i]["reviewed"])
+               and (not request.with_findings or metadata["file_states"][i]["open_count"] > 0
+                    or not metadata["file_states"][i]["complete"])]
     page = min(request.page, max(1, (len(visible) + PAGE_SIZE - 1) // PAGE_SIZE))
     path = request.path or (visible[(page - 1) * PAGE_SIZE].path if visible else None)
     selected = next(((info, patch) for info, patch in files if path is not None and path in (info.path, info.previous_path)), None)

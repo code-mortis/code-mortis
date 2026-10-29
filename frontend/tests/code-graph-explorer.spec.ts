@@ -7,7 +7,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
-  const state = { prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
+  const state = { reviewed: false, count: 0, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
     fileError: 0, codeError: 0, patchState: "available", groups: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
@@ -63,11 +63,13 @@ export async function mockGraph(page: Page, admin = true) {
         ...Array.from({ length: 7 }, (_, i) => ({ path: `src/file${i}.ts`, change: "modified", additions: 1, deletions: 1 })),
         { path: "src/old.ts", change: "removed", additions: 0, deletions: 2 }];
       const groups = state.groups ? [{ id: "run:0", title: "Response validation", description: "Rejects malformed responses.", file_indexes: [0] }] : [];
-      const visible = files.filter((file) => file.path.includes(body.query ?? "") && (!body.group || file.path === selected));
+      const file_states = files.map((file) => ({ reviewed: file.path === selected && state.reviewed, open_count: file.path === selected ? state.count : 0, complete: state.countComplete }));
+      const visible = files.filter((file, i) => file.path.includes(body.query ?? "") && (!body.group || file.path === selected)
+        && (!body.unreviewed || !file_states[i].reviewed) && (!body.with_findings || file_states[i].open_count > 0 || !file_states[i].complete));
       const selectedPath = body.path ?? visible[((body.page ?? 1) - 1) * 10]?.path ?? null;
       const revision = body.view !== "diff" && selectedPath === "src/old.ts" ? "base" : body.revision ?? "head";
       const normalized = { ...body, path: selectedPath, revision, operation: body.view === "definitions" ? "symbols" : body.view };
-      data = { base_sha: base, head_sha: head, merge_base_sha: mergeBase, policy_digest: state.policy, files, groups,
+      data = { base_sha: base, head_sha: head, merge_base_sha: mergeBase, policy_digest: state.policy, files, file_states, groups,
         summary_run_id: state.groups ? "run" : null, comparison_truncated: true, metadata_truncated: false,
         graph_enabled: state.enabled, graph_paused: state.paused, path: selectedPath, revision, view: body.view,
         diff: selectedPath && body.view === "diff" ? diff(normalized) : null,
@@ -131,7 +133,7 @@ test("status tooltips explain coverage without pushing down the files", async ({
   const impact = page.getByRole("region", { name: "Pull request code" });
   await expect(impact.locator("select")).toHaveCount(0);
   await expect(impact.getByRole("heading", { name: "Explore change impact" })).toHaveCount(0);
-  await expect(impact.getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
+  await expect(impact.getByRole("button", { name: "Filters", exact: true })).toHaveCount(1);
   await expect(page.getByRole("tooltip")).toHaveCount(0);
   const badge = page.getByRole("button", { name: "Indexed with warnings", exact: true });
   if (isMobile) await badge.tap(); else await badge.focus();
@@ -567,4 +569,119 @@ test("going offline removes retained code and requires a fresh read after reconn
   await page.getByRole("button", { name: "Retry Code" }).click();
   await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
   expect(calls.filter((call) => call.path.endsWith("/code/workspace"))).toHaveLength(before + 1);
+});
+
+
+test("file navigation crosses pages, preserves views and ignores editing and overlays", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code&graph_file=src%2Fservice.ts&code_view=source");
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Previous file", exact: true })).toBeDisabled();
+  const heading = page.getByRole("heading", { name: "Selected file details" });
+  await heading.focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(heading).toContainText("src/added.ts");
+  await expect(heading).toBeFocused();
+  await expect(page.getByRole("tab", { name: "Source", exact: true })).toHaveAttribute("aria-selected", "true");
+  const before = page.url();
+  await page.getByRole("textbox", { name: "Filter changed files" }).focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  expect(page.url()).toBe(before);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.keyboard.press("Alt+ArrowDown");
+  expect(page.url()).toBe(before);
+  await page.keyboard.press("Escape");
+  for (let i = 1; i < 10; i++) await page.getByRole("button", { name: "Next file", exact: true }).click();
+  await expect(heading).toContainText("src/old.ts");
+  await expect(page).toHaveURL(/graph_page=2/);
+  await expect(page.getByRole("button", { name: "Next file", exact: true })).toBeDisabled();
+  expect(calls.filter((c) => c.path.endsWith("/workspace")).at(-1)?.body.revision).toBe("base");
+  expect(calls.filter((c) => c.path.endsWith("/progress"))).toHaveLength(0);
+});
+
+test("reviewed files show an automatic check with no manual control", async ({ page }) => {
+  const { state, calls } = await mockGraph(page);
+  state.reviewed = true;
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("img", { name: "Reviewed by Code Mortis", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("checkbox", { name: "Reviewed", exact: true })).toHaveCount(0);
+  await expect(page.getByText("1 of 11 shown files reviewed", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("img", { name: "Reviewed by Code Mortis", exact: true })).toHaveCount(1);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Not reviewed", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText("src/added.ts");
+  await expect(page.getByRole("img", { name: "Reviewed by Code Mortis", exact: true })).toHaveCount(0);
+  expect(calls.filter((c) => c.path.endsWith("/progress"))).toHaveLength(0);
+});
+
+test("finding indicators filter locally and recheck current evidence before opening the sheet", async ({ page }) => {
+  const { state, calls } = await mockGraph(page);
+  state.count = 1; state.groups = true;
+  await page.goto("/pulls/pr?tab=code&code_view=source");
+  await page.getByRole("button", { name: `Open findings for ${selected}`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("Validate the response status");
+  await expect(page).toHaveURL(/code_view=diff/);
+  await page.keyboard.press("Escape");
+  const before = calls.filter((c) => c.path.endsWith("/workspace")).length;
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Findings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "With open findings", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { pressed: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Next file", exact: true })).toHaveCount(0);
+  expect(calls.filter((c) => c.path.endsWith("/workspace"))).toHaveLength(before);
+  state.groups = false; state.count = 0;
+  await page.getByRole("button", { name: `Open findings for ${selected}`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("Saved evidence unavailable");
+  await expect(page.getByText("Validate the response status", { exact: true })).toHaveCount(0);
+});
+
+test("incomplete finding counts remain filterable without claiming zero", async ({ page }) => {
+  const { state } = await mockGraph(page);
+  state.countComplete = false;
+  await page.goto("/pulls/pr?tab=code&code_findings=1");
+  await expect(page.getByRole("button", { name: `Open findings for ${selected}`, exact: true })).toHaveText("?");
+  await expect(page.getByRole("button", { name: "Next file", exact: true })).toBeVisible();
+});
+
+test("workflow controls fit populated and empty states at three widths and both themes", async ({ page }, testInfo) => {
+  const { state } = await mockGraph(page);
+  state.count = 3; state.countComplete = false; state.reviewed = true;
+  for (const width of [390, 1024, 1440]) for (const theme of ["light", "dark"]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
+    await page.goto("/pulls/pr?tab=code");
+    await expect(page.getByRole("button", { name: `Open findings for ${selected}`, exact: true })).toHaveText("3+");
+    await expect(page.getByRole("img", { name: "Reviewed by Code Mortis", exact: true })).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`workflow-${width}-${theme}.png`), fullPage: true });
+
+  }
+  state.empty = true;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText("Select a file");
+  await expect(page.getByRole("checkbox", { name: "Reviewed", exact: true })).toHaveCount(0);
+});
+
+test("existing finding actions refresh row counts without changing automatic review checks", async ({ page }) => {
+  const { state, calls } = await mockGraph(page);
+  state.groups = true; state.count = 1;
+  let status = "open";
+  await page.route("**/api/v1/findings/f1", async (route) => {
+    if (route.request().method() === "PATCH") {
+      status = route.request().postDataJSON().status; state.count = 0; state.groups = false;
+    }
+    await route.fulfill({ json: { finding: { id: "f1", path: selected, content: "Validate the response status", status, severity: "high", category: "bug", start_line: 1, end_line: 1 }, activities: [], verifications: [] } });
+  });
+  await page.goto("/pulls/pr?tab=code");
+  const badge = page.getByRole("button", { name: `Open findings for ${selected}`, exact: true });
+  await badge.click();
+  await page.getByRole("button", { name: "Resolve finding", exact: true }).click();
+  await expect(badge).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("0 of 11 shown files reviewed", { exact: true })).toBeVisible();
+  expect(calls.filter((c) => c.path.endsWith("/progress"))).toHaveLength(0);
 });
