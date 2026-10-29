@@ -8,14 +8,15 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Text, case, cast, func, select
+from sqlalchemy.dialects.postgresql import distinct_on
 
 from code_mortis.code_graph import explorer, store
 from code_mortis.integrations.comparison import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
 from code_mortis.integrations.comparison import load as comparison
-from code_mortis.models import Finding, Occurrence, ReviewRun
+from code_mortis.models import Finding, FindingVerification, Occurrence, ReviewRun
 from code_mortis.schemas.code_graph import GitSha, RepositoryPath
 from code_mortis.schemas.code_graph_explorer import ExplorerQuery
-from code_mortis.schemas.common import SummaryResult
+from code_mortis.schemas.common import SummaryResult, VerificationResult
 
 MAX_PATCH_BYTES = 256 * 1024
 MAX_LINES = 2000
@@ -23,6 +24,7 @@ MAX_FINDINGS = 100
 MAX_CANDIDATES = 1000
 PAGE_SIZE = 10
 MAX_METADATA_BYTES = 2 * 1024 * 1024
+MAX_VERIFICATION_BYTES = 128 * 1024
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
 
 
@@ -245,7 +247,63 @@ def saved_findings(db, user, repo, pr, info, identity, lines):
             "source_sha": sha, "current_status": status, "snapshot": snapshot, "side": side if inline else None,
             "line": end if inline else None, "placement": "inline" if inline else
             "unknown" if not sha or not valid_range else "outside_diff" if exact and side else "historical"})
+    place_verified_findings(db, pr, info, identity, lines, results)
     return results, len(records) > MAX_FINDINGS
+
+
+def place_verified_findings(db, pr, info, identity, lines, findings):
+    """Attach saved current-commit citations without rewriting the original review evidence."""
+    ids = {item["finding_id"] for item in findings if item["placement"] != "inline"}
+    visible = {line["new_line"]: line["text"] for line in lines if line.get("new_line") is not None}
+    if not ids or not visible:
+        return
+    bounded = case((func.octet_length(cast(FindingVerification.result, Text)) <= MAX_VERIFICATION_BYTES,
+                    FindingVerification.result), else_=None)
+    rows = db.execute(select(FindingVerification.finding_id, FindingVerification.id, FindingVerification.status,
+        FindingVerification.verdict, bounded)
+        .join(ReviewRun, ReviewRun.id == FindingVerification.run_id)
+        .join(Occurrence, Occurrence.id == FindingVerification.occurrence_id)
+        .where(FindingVerification.finding_id.in_(ids), FindingVerification.head_sha == identity["head_sha"],
+               ReviewRun.pr_id == pr.id, ReviewRun.head_sha == identity["head_sha"],
+               Occurrence.finding_id == FindingVerification.finding_id,
+               Occurrence.run_id.in_(select(ReviewRun.id).where(ReviewRun.pr_id == pr.id)))
+        .ext(distinct_on(FindingVerification.finding_id))
+        .order_by(FindingVerification.finding_id, FindingVerification.created_at.desc(), FindingVerification.id.desc())).all()
+    verified = {}
+    for finding_id, verification_id, status, verdict, raw in rows:
+        if status != "completed":
+            continue
+        try:
+            result = VerificationResult.model_validate(raw, strict=True)
+        except (ValueError, TypeError):
+            continue
+        if result.verdict != verdict:
+            continue
+        citations = []
+        for evidence in result.evidence:
+            if evidence.revision != "current" or evidence.path != info.path or not 0 < evidence.end_line - evidence.start_line + 1 <= MAX_LINES:
+                continue
+            quoted = evidence.quote.splitlines()
+            if len(quoted) != evidence.end_line - evidence.start_line + 1:
+                continue
+            matched = [n for n in range(evidence.start_line, evidence.end_line + 1) if n in visible]
+            # A citation may cross omitted context. Every displayed line must match its exact quoted line.
+            if not matched or any(visible[n] != quoted[n - evidence.start_line] for n in matched) or not any(visible[n].strip() for n in matched):
+                continue
+            citations.append({"id": verification_id, "verdict": verdict,
+                              "start_line": evidence.start_line, "end_line": evidence.end_line,
+                              "line": matched[-1]})
+        if citations:
+            verified[finding_id] = citations
+    for item in findings:
+        citations = verified.get(item["finding_id"])
+        if item["placement"] == "inline" or not citations:
+            continue
+        end = item["snapshot"].get("end_line", 0)
+        citation = min(citations, key=lambda c: (not c["start_line"] <= end <= c["end_line"],
+                                               c["end_line"] - c["start_line"], c["start_line"]))
+        item.update(placement="inline", side="new", line=citation["line"],
+                    verification={k: v for k, v in citation.items() if k != "line"})
 
 
 def read(db, user, pr_id, request):

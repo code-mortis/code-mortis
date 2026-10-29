@@ -52,6 +52,13 @@ class CodeLine(StrictModel):
     new_line: int | None = None
 
 
+class CodeFindingVerification(StrictModel):
+    id: str
+    verdict: Literal["fixed", "still_present", "uncertain"]
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
 class CodeFinding(StrictModel):
     occurrence_id: str
     finding_id: str
@@ -62,6 +69,7 @@ class CodeFinding(StrictModel):
     side: Literal["old", "new"] | None = None
     line: int | None = None
     placement: Literal["inline", "outside_diff", "historical", "unknown"]
+    verification: CodeFindingVerification | None = None
 
 
 class CodeFile(CodeIdentity):

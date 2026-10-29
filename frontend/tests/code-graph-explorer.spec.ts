@@ -8,7 +8,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { reviewed: false, count: 0, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", groups: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
+    fileError: 0, codeError: 0, patchState: "available", groups: false, moreFindings: false, verifiedHistory: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -27,7 +27,17 @@ export async function mockGraph(page: Page, admin = true) {
         findings: state.groups ? [ { occurrence_id: "o1", finding_id: "f1", run_id: "run", source_sha: head, current_status: "open",
           snapshot: { path: selected, content: "Validate the response status", severity: "high", category: "bug", start_line: 1, end_line: 1, existing_code: "return true;", suggestion: "" }, side: "new", line: 1, placement: "inline" },
           { occurrence_id: "o2", finding_id: "f2", run_id: "old-run", source_sha: base, current_status: "resolved",
-          snapshot: { path: selected, content: "Earlier saved evidence", start_line: 20, end_line: 22 }, side: null, line: null, placement: "historical" } ] : [],
+          snapshot: { path: selected, content: "Earlier saved evidence", start_line: 20, end_line: 22 }, side: state.verifiedHistory ? "new" : null, line: state.verifiedHistory ? 1 : null, placement: state.verifiedHistory ? "inline" : "historical",
+          verification: state.verifiedHistory ? { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } : null },
+          ...(state.verifiedHistory ? [{ occurrence_id: "o2-older", finding_id: "f2", run_id: "older-run", source_sha: "e".repeat(40), current_status: "resolved",
+            snapshot: { path: selected, content: "Earlier version of saved evidence", start_line: 30, end_line: 32 }, side: "new", line: 1, placement: "inline",
+            verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } }] : []),
+          ...(state.moreFindings ? [
+            { occurrence_id: "o3", finding_id: "f3", run_id: "run", source_sha: head, current_status: "resolved",
+              snapshot: { path: selected, content: "Preserve response headers", severity: "medium", category: "bug", start_line: 1, end_line: 1 }, side: "new", line: 1, placement: "inline" },
+            { occurrence_id: "o4", finding_id: "f4", run_id: "run", source_sha: mergeBase, current_status: "dismissed",
+              snapshot: { path: selected, content: "Original response handling", severity: "low", start_line: 1, end_line: 1 }, side: "old", line: 1, placement: "inline" },
+          ] : []) ] : [],
         findings_truncated: false, github_url: "https://github.com/acme/project/compare/ccc...aaa" });
   const graph = (body: any) => {
     const result = read(body.revision);
@@ -309,6 +319,75 @@ test("saved groups filter files and findings open immutable evidence through rel
   await group.fill("All changes"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");
   await expect(page.getByText("Rejects malformed responses.", { exact: true })).toHaveCount(0);
   expect(calls.filter((call) => /summary|index$|review$/.test(call.path))).toHaveLength(0);
+});
+
+test("diff finding markers preview saved evidence and open the sidebar by mouse, keyboard and touch", async ({ page, isMobile }, info) => {
+  const { state, calls } = await mockGraph(page); state.groups = true; state.moreFindings = true;
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  const marker = diff.getByRole("button", { name: "Open finding at new line 1: Validate the response status", exact: true });
+  await expect(diff.locator("tbody tr")).toHaveCount(3);
+  await expect(diff.locator("tbody tr").nth(1).getByRole("button")).toHaveCount(1);
+  await expect(diff.locator("tbody tr").nth(2).getByRole("button")).toHaveCount(2);
+  await expect(diff.getByText("Validate the response status", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Other saved findings" })).toContainText("Earlier saved evidence");
+  const reads = calls.length;
+  const preview = page.getByRole("tooltip");
+  if (!isMobile) {
+    await marker.hover();
+    await expect(preview).toContainText("Validate the response status");
+    await expect(preview).toContainText("high");
+    await expect(preview).toContainText("Bug");
+    await expect(preview).toContainText("open");
+    await expect(preview).toContainText("src/service.ts:1");
+    await page.mouse.move(0, 0, { steps: 5 });
+    await expect(preview).not.toBeVisible();
+  }
+  await marker.scrollIntoViewIfNeeded();
+  await marker.focus();
+  await expect(preview).toBeVisible();
+  const box = await preview.boundingBox();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.screenshot({ path: `../.impeccable/review/pr-code-finding-preview-${info.project.name}.png`, fullPage: false });
+  await page.keyboard.press("Escape");
+  await expect(preview).not.toBeVisible();
+  expect(calls.length).toBe(reads);
+  if (isMobile) await marker.tap(); else await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog")).toContainText("Validate the response status");
+  await expect(page.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(preview).not.toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(marker).toBeFocused();
+  const resolved = diff.getByRole("button", { name: "Open finding at new line 1: Preserve response headers", exact: true });
+  await resolved.focus();
+  await expect(page.getByRole("tooltip", { name: /Preserve response headers/ })).toContainText("resolved");
+  await resolved.click();
+  await expect(page.getByRole("dialog")).toContainText("Preserve response headers");
+});
+
+test("verified historical findings appear once in the diff and retain original evidence links", async ({ page, isMobile }) => {
+  const { state } = await mockGraph(page); state.groups = true; state.verifiedHistory = true;
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff.getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("region", { name: "Other saved findings" })).toHaveCount(0);
+  const marker = diff.getByRole("button", { name: "Open finding at new line 1: Earlier saved evidence", exact: true });
+  await marker.scrollIntoViewIfNeeded(); await marker.focus();
+  const preview = page.getByRole("tooltip");
+  await expect(preview).toContainText("resolved");
+  await expect(preview).toContainText("Verification at aaaaaaa: still present");
+  await expect(preview).toContainText("src/service.ts:1");
+  if (isMobile) await marker.tap(); else await marker.click();
+  await expect(page.getByRole("dialog")).toContainText("Earlier saved evidence");
+  await expect(page.getByRole("dialog")).toContainText("Saved at bbbbbbb");
+  await page.goto("/pulls/pr?tab=code&code_occurrence=o2-older");
+  await expect(page.getByRole("dialog")).toContainText("Earlier version of saved evidence");
+  await expect(page.getByRole("dialog")).toContainText("Saved at eeeeeee");
+  await page.keyboard.press("Escape");
+  await expect(diff.getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("region", { name: "Other saved findings" })).toHaveCount(0);
 });
 
 test("legacy base links retain merge-base source; new file navigation supports back", async ({ page }) => {

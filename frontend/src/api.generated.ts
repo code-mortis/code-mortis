@@ -2527,6 +2527,21 @@ export interface components {
              * @enum {string}
              */
             placement: "inline" | "outside_diff" | "historical" | "unknown";
+            verification?: components["schemas"]["CodeFindingVerification"] | null;
+        };
+        /** CodeFindingVerification */
+        CodeFindingVerification: {
+            /** Id */
+            id: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "fixed" | "still_present" | "uncertain";
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
         };
         /** CodeGraphStatus */
         CodeGraphStatus: {

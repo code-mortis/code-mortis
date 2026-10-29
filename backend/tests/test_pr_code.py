@@ -1,17 +1,19 @@
 import copy
 import json
 from contextlib import contextmanager
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import func, select
 
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import service
-from code_mortis.core.db import transaction
+from code_mortis.core.db import now, transaction
 from code_mortis.integrations import comparison as github_comparison
 from code_mortis.integrations import github
 from code_mortis.models import (
-        Finding,
+    Finding,
+    FindingVerification,
     Job,
     Membership,
     Occurrence,
@@ -90,6 +92,92 @@ def test_graph_independent_diff_summary_and_immutable_findings(comparison, clien
     assert len(comparison[1]) == 1 and comparison[1][0][1]["max_response_bytes"] == code.MAX_RESPONSE_BYTES
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Job)) == jobs
+
+
+def seed_current_verification(verdict="still_present"):
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(Finding, "f3").status = "resolved"
+        db.add(FindingVerification(id="verified", finding_id="f3", run_id="run", occurrence_id="o3",
+            head_sha=HEAD, finding_version=0, status="completed", verdict=verdict,
+            result={"verdict": verdict, "original_issue_present": True, "explanation": "Saved verification",
+                    "change_explanation": "Compared both revisions", "dismissal_recommended": False,
+                    "evidence": [{"revision": "current", "path": "notes.md", "start_line": 1, "end_line": 2,
+                                  "quote": "mañana 😀\ncontext\n"}]}))
+
+
+@pytest.mark.parametrize("verdict", ["fixed", "still_present", "uncertain"])
+def test_historical_findings_use_exact_current_verification_without_rewriting_evidence(comparison, client, verdict):
+    seed_current_verification(verdict)
+    with transaction() as db:
+        jobs = db.scalar(select(func.count()).select_from(Job))
+    response = client.post(URL + "/file", json=body())
+    assert response.status_code == 200, response.text
+    finding = next(item for item in response.json()["findings"] if item["finding_id"] == "f3")
+    assert (finding["placement"], finding["side"], finding["line"]) == ("inline", "new", 2)
+    assert finding["verification"] == {"id": "verified", "verdict": verdict, "start_line": 1, "end_line": 2}
+    assert finding["current_status"] == "resolved"
+    assert finding["source_sha"] == "d" * 40 and finding["snapshot"]["existing_code"] == "old"
+    assert finding["snapshot"]["start_line"] == finding["snapshot"]["end_line"] == 1
+    assert "Saved verification" not in response.text and len(comparison[1]) == 1
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(Job)) == jobs
+        assert db.get(Occurrence, "o3").snapshot["source_sha"] == "d" * 40
+
+
+@pytest.mark.parametrize("invalid", ["head", "run", "occurrence", "status", "verdict", "path", "quote", "range", "partial_quote", "oversized"])
+def test_verification_anchors_reject_mismatched_or_unavailable_evidence(comparison, client, invalid):
+    seed_current_verification()
+    with transaction() as db:
+        row = db.get(FindingVerification, "verified")
+        value = copy.deepcopy(row.result)
+        if invalid == "head":
+            row.head_sha = "e" * 40
+        elif invalid == "run":
+            db.get(ReviewRun, "run").head_sha = "e" * 40
+        elif invalid == "occurrence":
+            row.occurrence_id = "o0"
+        elif invalid == "status":
+            row.status = "failed"
+        elif invalid == "verdict":
+            row.verdict = "fixed"
+        elif invalid == "path":
+            value["evidence"][0]["path"] = "other.py"
+        elif invalid == "quote":
+            value["evidence"][0]["quote"] = "different\ncontext\n"
+        elif invalid == "range":
+            value["evidence"][0]["end_line"] = 9999999
+        elif invalid == "partial_quote":
+            value["evidence"][0]["quote"] = "context"
+        elif invalid == "oversized":
+            value["explanation"] = "x" * (code.MAX_VERIFICATION_BYTES + 1)
+        row.result = value
+    finding = next(item for item in client.post(URL + "/file", json=body()).json()["findings"] if item["finding_id"] == "f3")
+    assert finding["placement"] == "historical" and finding["verification"] is None
+
+
+def test_current_verification_can_span_omitted_context_but_every_visible_line_must_match(comparison, client):
+    seed_current_verification()
+    comparison[0]["files"][0].update(patch="@@ -1 +1 @@\n-old\n+mañana 😀\n@@ -5 +5 @@\n context")
+    with transaction() as db:
+        row = db.get(FindingVerification, "verified")
+        row.result = {**row.result, "evidence": [{"revision": "current", "path": "notes.md", "start_line": 1,
+                     "end_line": 5, "quote": "mañana 😀\nomitted\nomitted\nomitted\ncontext\n"}]}
+    finding = next(item for item in client.post(URL + "/file", json=body()).json()["findings"] if item["finding_id"] == "f3")
+    assert finding["line"] == 5 and finding["verification"]["end_line"] == 5
+
+
+def test_newer_failed_verification_does_not_fall_back_and_history_is_newest_first(comparison, client):
+    seed_current_verification()
+    with transaction() as db:
+        db.add(ReviewRun(id="later", pr_id="pr", trigger="manual", dedup_key="later", status="completed", base_sha=BASE, head_sha=HEAD, config={}, report={}))
+        db.flush()
+        db.add(FindingVerification(id="later-check", finding_id="f3", run_id="later", occurrence_id="o3",
+            head_sha=HEAD, finding_version=0, status="failed", created_at=now() + timedelta(seconds=1)))
+    finding = next(item for item in client.post(URL + "/file", json=body()).json()["findings"] if item["finding_id"] == "f3")
+    assert finding["placement"] == "historical" and finding["verification"] is None
+    detail = client.get("/api/v1/findings/f3").json()
+    assert [row["id"] for row in detail["verifications"]] == ["later-check", "verified"]
 
 
 @pytest.mark.parametrize("path,state", [("image.png", "unavailable"), ("next.py", "available")])
