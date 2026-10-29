@@ -8,7 +8,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", groups: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false };
+    fileError: 0, codeError: 0, patchState: "available", groups: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -36,7 +36,7 @@ export async function mockGraph(page: Page, admin = true) {
       if (body.operation === "symbols") return { ...result, items: [{ ...location, path: body.path, kind: "symbol", key: "definition", name: body.offset ? "laterDefinition" : "validateResponse", symbol_kind: "function" }],
         next_cursor: !body.offset && state.definitionsPage ? { offset: 100, start_byte: 0 } : null };
       if (body.operation === "source") return { ...result, source_state: state.missingSource ? "unavailable" : "available",
-        truncated: body.start_byte === 0 && body.end_byte === 1048576, next_cursor: body.start_byte === 0 && body.end_byte === 1048576 ? { offset: 0, start_byte: 36 } : null,
+        truncated: state.sourcePages && body.start_byte === 0 && body.end_byte === 1048576, next_cursor: state.sourcePages && body.start_byte === 0 && body.end_byte === 1048576 ? { offset: 0, start_byte: 36 } : null,
         items: state.missingSource ? [] : [{ ...location, path: body.path, start_byte: body.start_byte, end_byte: body.start_byte + 36, start_line: body.start_byte ? 4 : 1,
           kind: "source", blob_sha: "d".repeat(40), text: (body.start_byte ? "export const next = true;" : "export function validateResponse() {\n  return true;\n}") + "x".repeat(state.padding) }] };
   };
@@ -82,6 +82,7 @@ export async function mockGraph(page: Page, admin = true) {
 test("impact links keyboard navigation, definitions, exact source and saved findings", async ({ page }) => {
   const { calls, state } = await mockGraph(page);
   state.definitionsPage = true;
+  state.sourcePages = true;
   await page.goto("/pulls/pr?tab=impact&graph_file=src%2Fservice.ts&severity=high&resolved_severity=low&resolved_page=4");
   const dependencies = page.getByRole("list", { name: "File dependencies" });
   await expect(dependencies).toBeVisible();
@@ -95,8 +96,10 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("validateResponse");
   expect(calls.filter((call) => call.body?.view === "source").at(-1)?.body).toMatchObject({ path: related, expected: { base_sha: base, head_sha: head, merge_base_sha: mergeBase }, revision: "head", offset: 0, start_byte: 0, end_byte: 36 });
   await page.getByRole("button", { name: "Read from start" }).click();
+  await expect(page.getByRole("button", { name: "Previous source" })).toBeDisabled();
   await page.getByRole("button", { name: "Next source" }).click();
   await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("export const next");
+  await expect(page.getByRole("button", { name: "Next source" })).toBeDisabled();
   await page.getByRole("button", { name: "Previous source" }).click();
   await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("validateResponse");
   await page.getByRole("link", { name: "Search resolved findings" }).click();
@@ -105,6 +108,21 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   expect(new URL(page.url()).searchParams.has("resolved_severity")).toBe(false);
   expect(new URL(page.url()).searchParams.has("resolved_page")).toBe(false);
   expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
+});
+
+test("complete source hides pagination while definition ranges retain read from start", async ({ page }, info) => {
+  await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code&code_view=source&graph_file=src%2Fservice.ts");
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^(Previous|Next) source$/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Read from start" })).toHaveCount(0);
+  await page.screenshot({ path: `../.impeccable/review/complete-source-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Definitions", exact: true }).click();
+  await page.getByRole("button", { name: /validateResponse/ }).click();
+  await expect(page.getByRole("button", { name: /^(Previous|Next) source$/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Read from start" }).click();
+  await expect(page.getByRole("button", { name: "Read from start" })).toHaveCount(0);
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
 });
 
 test("status tooltips explain coverage without pushing down the files", async ({ page, isMobile }) => {

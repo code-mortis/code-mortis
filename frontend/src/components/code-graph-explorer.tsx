@@ -37,6 +37,8 @@ export function GraphFileDetails({ path, view, setView, onSelect, onRefresh, que
   const location = useLocation();
   const [params] = useSearchParams();
   const source = query.data?.items.find((item) => item.kind === "source");
+  const hasSourcePages = previous.length > 0 || !!query.data?.next_cursor;
+  const hasSourceRange = range.start_byte > 0 || range.end_byte < 1048576;
   const relations = query.data?.items.filter((item) => item.kind === "dependency") ?? [];
   function findingsLink(tab: string) {
     const next = new URLSearchParams(params);
@@ -74,11 +76,13 @@ export function GraphFileDetails({ path, view, setView, onSelect, onRefresh, que
                 {source ? <>
                   <p className="text-xs text-muted-foreground">Lines {source.start_line}–{source.end_line} · Bytes {source.start_byte}–{source.end_byte} · Blob <code title={source.blob_sha}>{source.blob_sha.slice(0, 7)}</code></p>
                   <Code path={source.path} startLine={source.start_line} label="Indexed source">{source.text}</Code>
-                  <div className="flex flex-wrap gap-2">
+                  {(hasSourcePages || hasSourceRange) && <div className="flex flex-wrap gap-2">
+                    {hasSourcePages && <>
                     <Button size="sm" variant="outline" disabled={!previous.length || query.isFetching} onClick={() => { setRange({ ...range, start_byte: previous.at(-1)! }); setPrevious(previous.slice(0, -1)); }}>Previous source</Button>
                     <Button size="sm" variant="outline" disabled={!query.data.next_cursor || query.isFetching} onClick={() => { setPrevious([...previous, range.start_byte]); setRange({ ...range, start_byte: query.data!.next_cursor!.start_byte }); }}>Next source</Button>
-                    {(range.start_byte > 0 || range.end_byte < 1048576) && <Button size="sm" variant="ghost" onClick={() => { setRange({ start_byte: 0, end_byte: 1048576 }); setPrevious([]); }}>Read from start</Button>}
-                  </div>
+                    </>}
+                    {hasSourceRange && <Button size="sm" variant="ghost" onClick={() => { setRange({ start_byte: 0, end_byte: 1048576 }); setPrevious([]); }}>Read from start</Button>}
+                  </div>}
                 </> : <><Empty title="Source unavailable">The file may be excluded, absent at this revision, or its retained objects may be busy or missing. Another revision is never substituted.</Empty><Button variant="outline" size="sm" onClick={() => { onRefresh(); }}>Refresh file</Button></>}
               </TabsContent>
             </>}
