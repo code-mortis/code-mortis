@@ -99,7 +99,7 @@ function FileReview({ view, query, occurrenceId, openFinding, renderFinding, clo
               <ol aria-label="Review entries" className="divide-y border-t">{entries.map((item) => <li key={item.occurrence_id}>{findingButton(item, true)}</li>)}</ol>
             </details>}
           </li>)}</ul>
-      </section> : <div className="p-4"><Empty title="No saved findings for this file" /></div>}
+      </section> : <p className="px-6 py-14 text-center text-lg font-medium">No saved findings for this file</p>}
       {data.findings_truncated && <p className="px-4 py-3 text-xs text-muted-foreground">Showing up to 100 saved occurrences. Run history keeps the remaining evidence.</p>}
     </>}
     <Sheet open={!!occurrenceId} onOpenChange={(open) => { if (!open) closeFinding(); }}>
