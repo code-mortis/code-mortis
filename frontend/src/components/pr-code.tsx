@@ -16,7 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "./ui/sheet";
 
 type SavedFinding = Schema["CodeFinding"];
-const views = ["diff", "dependencies", "definitions", "source"];
+const views = ["diff", "findings", "dependencies", "definitions", "source"] as const;
 const patchMessages: Record<string, string> = {
   unavailable: "GitHub did not supply a readable patch for this file.",
   too_large: "This file's patch exceeds the display limit.",
@@ -24,7 +24,8 @@ const patchMessages: Record<string, string> = {
   truncated: "Showing part of this diff. Open GitHub for the complete comparison.",
 };
 
-function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFinding, restoreFocus, onRefresh }: {
+function FileReview({ view, query, occurrenceId, openFinding, renderFinding, closeFinding, restoreFocus, onRefresh }: {
+  view: "diff" | "findings";
   query: { data?: Schema["CodeFile"] | null; error: ApiError | null; isPending: boolean };
   occurrenceId: string | null;
   openFinding: (item: SavedFinding, trigger: HTMLButtonElement) => void; closeFinding: () => void; restoreFocus: () => void;
@@ -32,9 +33,12 @@ function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFindin
 }) {
   const data = query.error ? undefined : query.data;
   const selectedFinding = data?.findings.find((item) => item.occurrence_id === occurrenceId);
+  const groups = new Map<string, SavedFinding[]>();
   const anchored = new Map<string, SavedFinding>();
-  for (const item of data?.findings ?? []) if (item.placement === "inline" && (!anchored.has(item.finding_id) || item.occurrence_id === occurrenceId)) anchored.set(item.finding_id, item);
-  const unanchored = data?.findings.filter((item) => !anchored.has(item.finding_id)) ?? [];
+  for (const item of data?.findings ?? []) {
+    groups.set(item.finding_id, [...groups.get(item.finding_id) ?? [], item]);
+    if (item.placement === "inline" && (!anchored.has(item.finding_id) || item.occurrence_id === occurrenceId)) anchored.set(item.finding_id, item);
+  }
   const inline = new Map<string, SavedFinding[]>();
   for (const item of anchored.values()) {
     const key = `${item.side}:${item.line}`;
@@ -44,18 +48,19 @@ function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFindin
   useEffect(() => {
     if (occurrenceId) diffRoot.current?.querySelector(`[data-occurrence="${CSS.escape(occurrenceId)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [occurrenceId, data]);
-  function findingButton(item: SavedFinding) {
-    return <button key={item.occurrence_id} data-occurrence={item.occurrence_id} className={`${rowClass} flex flex-wrap items-start gap-2`} onClick={(event) => openFinding(item, event.currentTarget)}>
-      <Status value={item.current_status} /><span className="line-clamp-2 min-w-0 flex-1 break-words text-left text-sm [overflow-wrap:anywhere]">{String(item.snapshot.content)}</span>
-      {item.placement !== "inline" && <span className="w-full text-xs text-muted-foreground">{item.placement === "historical" ? "Earlier revision" : item.placement === "unknown" ? "Unverified location" : "Outside this diff"}{item.source_sha ? ` · ${item.source_sha.slice(0, 7)}` : ""}</span>}
+  function findingButton(item: SavedFinding, history = false) {
+    return <button key={item.occurrence_id} aria-haspopup="dialog" className={`${rowClass} flex flex-wrap items-start gap-2`} onClick={(event) => openFinding(item, event.currentTarget)}>
+      <Status value={item.current_status} /><span className="line-clamp-2 min-w-0 flex-1 break-words text-left text-sm [overflow-wrap:anywhere]">{String(item.snapshot.content).replaceAll(/[*`#]/g, "")}</span>
+      {history ? <span className="w-full text-xs text-muted-foreground">{item.source_sha ? `Saved at ${item.source_sha.slice(0, 7)}` : "Source revision unavailable"}{item.snapshot.start_line != null && <> · Lines {String(item.snapshot.start_line)}{item.snapshot.end_line !== item.snapshot.start_line ? `–${item.snapshot.end_line}` : ""}</>}</span>
+        : item.placement !== "inline" && <span className="w-full text-xs text-muted-foreground">{item.placement === "historical" ? "Earlier revision" : item.placement === "unknown" ? "Unverified location" : "Outside this diff"}{item.source_sha ? ` · ${item.source_sha.slice(0, 7)}` : ""}</span>}
     </button>;
   }
   function findingMarker(item: SavedFinding) {
     const description = String(item.snapshot.content ?? "Finding evidence").replaceAll(/[*`#]/g, "");
     return <Tooltip key={item.occurrence_id} delayDuration={200}>
-      <TooltipTrigger asChild><Button variant="ghost" size="icon-xs" data-occurrence={item.occurrence_id} aria-haspopup="dialog"
-        aria-label={`Open finding at ${item.side} line ${item.line}: ${description}`} className="text-foreground"
-        onClick={(event) => openFinding(item, event.currentTarget)}><MessageSquare aria-hidden="true" /></Button></TooltipTrigger>
+      <TooltipTrigger asChild><Button variant="ghost" size="icon-xs" className="text-primary hover:text-primary" data-occurrence={item.occurrence_id} aria-haspopup="dialog"
+        aria-label={`Open finding at ${item.side} line ${item.line}: ${description}`}
+        onClick={(event) => openFinding(item, event.currentTarget)}><MessageSquare className="size-4" aria-hidden="true" /></Button></TooltipTrigger>
       <TooltipContent side="right" align="start" sideOffset={8} collisionPadding={16}
         className="w-80 max-w-[calc(100vw-2rem)] space-y-2 rounded-lg border bg-popover p-3 font-sans text-sm text-popover-foreground shadow-md [&_.rotate-45]:invisible">
         <div className="flex flex-wrap items-center gap-2"><Status value={item.current_status} />{item.snapshot.severity != null && <Status value={String(item.snapshot.severity)} />}{!!item.snapshot.category && <FindingCategory value={String(item.snapshot.category)} />}</div>
@@ -67,6 +72,7 @@ function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFindin
   }
   return <div ref={diffRoot} className="min-w-0">
     {query.isPending ? <div className="p-4"><Loading /></div> : query.error ? <div className="space-y-3 p-4"><ErrorNotice error={query.error} /><Button size="sm" variant="outline" onClick={() => { onRefresh(); }}>Refresh Code</Button></div> : data && <>
+      {view === "diff" ? <>
       {data.file.previous_path && <p className="break-words border-b px-4 py-3 text-xs text-muted-foreground [overflow-wrap:anywhere]">Renamed from <code>{data.file.previous_path}</code></p>}
       {data.patch_state !== "available" && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b p-4 text-sm text-muted-foreground" role="status">
         <span>{patchMessages[data.patch_state]}</span><a className="inline-flex min-h-9 items-center gap-1 underline underline-offset-4" href={data.github_url} target="_blank" rel="noreferrer">Open on GitHub<ExternalLink className="size-3" aria-hidden="true" /></a>
@@ -82,7 +88,18 @@ function FileDiff({ query, occurrenceId, openFinding, renderFinding, closeFindin
           )}
         </tbody></table>
       </div>}
-      {!!unanchored.length && <section aria-label="Other saved findings" className="space-y-2 border-t p-4"><h4 className="text-sm font-medium">Other saved findings</h4><div className="divide-y overflow-hidden rounded-lg border bg-card">{unanchored.map(findingButton)}</div></section>}
+      </> : groups.size ? <section aria-label="File findings">
+          <p className="flex flex-wrap items-baseline gap-x-1.5 px-4 py-3 text-sm sm:px-5"><span className="font-medium">{data.findings_truncated ? "Showing " : ""}{groups.size} {groups.size === 1 ? "finding" : "findings"}</span><span className="text-xs tabular-nums text-muted-foreground">· {data.findings.length} review {data.findings.length === 1 ? "entry" : "entries"}</span></p>
+          <ul aria-label="Findings for this file" className="divide-y border-t">{[...groups].map(([id, entries]) => <li key={id}>
+            {findingButton(entries[0])}
+            {entries.length > 1 && <details className="group/entries px-4 pb-3 sm:px-5">
+              <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="size-3.5 transition-transform group-open/entries:rotate-90" aria-hidden="true" />{entries.length} review entries
+              </summary>
+              <ol aria-label="Review entries" className="divide-y border-t">{entries.map((item) => <li key={item.occurrence_id}>{findingButton(item, true)}</li>)}</ol>
+            </details>}
+          </li>)}</ul>
+      </section> : <div className="p-4"><Empty title="No saved findings for this file" /></div>}
       {data.findings_truncated && <p className="px-4 py-3 text-xs text-muted-foreground">Showing up to 100 saved occurrences. Run history keeps the remaining evidence.</p>}
     </>}
     <Sheet open={!!occurrenceId} onOpenChange={(open) => { if (!open) closeFinding(); }}>
@@ -107,12 +124,13 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const unreviewed = params.get("code_unreviewed") === "1", withFindings = params.get("code_findings") === "1";
   const revision = params.get("graph_revision") === "base" ? "base" : "head";
   const requested = params.get("code_view");
-  const view = requested && views.includes(requested) ? requested : params.get("tab") === "impact" ? revision === "base" ? "source" : "dependencies" : "diff";
+  const view = views.find((value) => value === requested) ?? (params.get("tab") === "impact" ? revision === "base" ? "source" : "dependencies" : "diff");
+  const contentView = view === "findings" ? "diff" : view;
   const positionKey = `${params.get("graph_file")}:${revision}`;
   const [position, setPosition] = useState({ key: positionKey, offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] });
   const positionValue = position.key === positionKey ? position : { offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] };
   const workspace = usePRCode(prId, { page, unreviewed, with_findings: withFindings, query: search, group: group || null, path: params.get("graph_file"),
-    view: view as Schema["CodeNavigation"]["view"], revision,
+    view: contentView, revision,
     offset: view === "definitions" ? positionValue.offset : 0,
     start_byte: view === "source" ? positionValue.start_byte : 0, end_byte: view === "source" ? positionValue.end_byte : 1048576 });
   function change(values: Record<string, string | null>) {
@@ -135,8 +153,8 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
     const file = workspace.files[index];
     if (!file) return;
     setPosition({ key: "", offset: 0, start_byte: 0, end_byte: 1048576, previous: [] });
-    change({ graph_file: view !== "diff" && revision === "base" ? file.previous_path ?? file.path : file.path,
-      graph_revision: view !== "diff" && file.change === "removed" ? "base" : revision,
+    change({ graph_file: contentView !== "diff" && revision === "base" ? file.previous_path ?? file.path : file.path,
+      graph_revision: contentView !== "diff" && file.change === "removed" ? "base" : revision,
       graph_page: String(Math.floor(index / 10) + 1), code_occurrence: null });
     requestAnimationFrame(() => heading.current?.focus());
   }
@@ -200,10 +218,10 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
             <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="min-h-11 min-w-11 sm:min-h-9 sm:min-w-9" aria-label="Next file" disabled={sequenceIndex === workspace.files.length - 1} onClick={() => selectFile(sequenceIndex + 1)}><ChevronRight /></Button></TooltipTrigger><TooltipContent>Next file · Alt+↓</TooltipContent></Tooltip>
           </nav>}
         </div>
-        {path && <Tabs className="min-w-0 gap-0 overflow-hidden rounded-lg border bg-card" value={view} onValueChange={(value) => change({ code_view: value, code_occurrence: null, graph_file: value === "diff" ? data.files.find((f) => f.previous_path === path)?.path ?? path : path })}>
-          <TabsList aria-label="File information" variant="line" className="w-full max-w-full flex-wrap justify-start border-b bg-muted/50 p-1 group-data-[orientation=horizontal]/tabs:h-auto">{views.map((value) => <TabsTrigger key={value} value={value} className="h-9 flex-none group-data-[orientation=horizontal]/tabs:after:bottom-[-4px]" onPointerEnter={() => workspace.prefetch({ view: value as Schema["CodeNavigation"]["view"] })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ view: value as Schema["CodeNavigation"]["view"] })} onBlur={() => workspace.prefetch()}>{value[0].toUpperCase() + value.slice(1)}</TabsTrigger>)}</TabsList>
-          <TabsContent value="diff" className="min-w-0"><FileDiff key={`${path}:${data.head_sha}:${data.base_sha}:${data.policy_digest}`} query={{ ...fileQuery, data: workspace.data?.diff }} onRefresh={refresh} occurrenceId={params.get("code_occurrence")} openFinding={(item, element) => { trigger.current = element; change({ code_occurrence: item.occurrence_id, finding_tab: null }); }} closeFinding={() => change({ code_occurrence: null, finding_tab: null })} restoreFocus={() => (trigger.current?.isConnected ? trigger.current : heading.current)?.focus()} renderFinding={renderFinding} /></TabsContent>
-          {view !== "diff" && <div className="min-w-0 space-y-3 p-4">
+        {path && <Tabs className="min-w-0 gap-0 overflow-hidden rounded-lg border bg-card" value={view} onValueChange={(value) => change({ code_view: value, code_occurrence: null, graph_file: (value === "diff" || value === "findings") ? data.files.find((f) => f.previous_path === path)?.path ?? path : path })}>
+          <TabsList aria-label="File information" variant="line" className="w-full max-w-full flex-wrap justify-start border-b bg-muted/50 p-1 group-data-[orientation=horizontal]/tabs:h-auto">{views.map((value) => <TabsTrigger key={value} value={value} className="h-9 flex-none group-data-[orientation=horizontal]/tabs:after:bottom-[-4px]" onPointerEnter={() => workspace.prefetch({ view: value === "findings" ? "diff" : value })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ view: value === "findings" ? "diff" : value })} onBlur={() => workspace.prefetch()}>{value[0].toUpperCase() + value.slice(1)}</TabsTrigger>)}</TabsList>
+          {(["diff", "findings"] as const).map((value) => <TabsContent key={value} value={value} className="min-w-0"><FileReview view={value} key={`${path}:${data.head_sha}:${data.base_sha}:${data.policy_digest}`} query={{ ...fileQuery, data: workspace.data?.diff }} onRefresh={refresh} occurrenceId={params.get("code_occurrence")} openFinding={(item, element) => { trigger.current = element; change({ code_occurrence: item.occurrence_id, finding_tab: null }); }} closeFinding={() => change({ code_occurrence: null, finding_tab: null })} restoreFocus={() => (trigger.current?.isConnected ? trigger.current : heading.current)?.focus()} renderFinding={renderFinding} /></TabsContent>)}
+          {contentView !== "diff" && <div className="min-w-0 space-y-3 p-4">
             {workspace.loading ? <Loading /> : workspace.error ? <><ErrorNotice error={workspace.error} /><Button size="sm" variant="outline" onClick={refresh}>Refresh Code</Button></> : !data.graph_enabled ? <Empty title="Code graph is disabled">{admin ? <Link to={`/repositories/${repositoryId}/settings?tab=context`} className="underline">Enable it in Project context</Link> : "Ask an administrator to enable it in Project context."}</Empty> : <>
               <div className="flex flex-wrap items-center gap-2"><SearchSelect aria-label="Revision" className="sm:w-64" value={workspace.revision} options={[{ value: "head", label: `PR head · ${data.head_sha.slice(0, 7)}` }, { value: "base", label: `Merge base · ${data.merge_base_sha.slice(0, 7)}` }]} onChange={(value) => change({ graph_revision: value, code_view: view, graph_file: value === "base" ? data.files.find((f) => f.path === path)?.previous_path ?? path : data.files.find((f) => f.previous_path === path)?.path ?? path })} />
                 <StatusHint value={snapshot?.status === "ready" ? "completed" : snapshot?.status ?? "unavailable"} label={snapshot?.status === "ready" ? "Indexed" : snapshot?.status === "partial" ? "Indexed with warnings" : undefined}><p>{indexDescriptions[snapshot?.status ?? ""] ?? "This revision has no usable index."}</p><CodeGraphCoverage coverage={snapshot?.coverage} />{data.graph_paused && <p>Indexing is paused.</p>}</StatusHint>

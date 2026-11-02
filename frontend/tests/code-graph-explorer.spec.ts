@@ -31,7 +31,10 @@ export async function mockGraph(page: Page, admin = true) {
           verification: state.verifiedHistory ? { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } : null },
           ...(state.verifiedHistory ? [{ occurrence_id: "o2-older", finding_id: "f2", run_id: "older-run", source_sha: "e".repeat(40), current_status: "resolved",
             snapshot: { path: selected, content: "Earlier version of saved evidence", start_line: 30, end_line: 32 }, side: "new", line: 1, placement: "inline",
-            verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } }] : []),
+            verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } },
+            { occurrence_id: "o2-oldest", finding_id: "f2", run_id: "oldest-run", source_sha: "f".repeat(40), current_status: "resolved",
+              snapshot: { path: selected, content: "First saved review entry", start_line: 40, end_line: 42 }, side: "new", line: 1, placement: "inline",
+              verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } }] : []),
           ...(state.moreFindings ? [
             { occurrence_id: "o3", finding_id: "f3", run_id: "run", source_sha: head, current_status: "resolved",
               snapshot: { path: selected, content: "Preserve response headers", severity: "medium", category: "bug", start_line: 1, end_line: 1 }, side: "new", line: 1, placement: "inline" },
@@ -315,7 +318,8 @@ test("saved groups filter files and findings open immutable evidence through rel
   await page.reload();
   await expect(page.getByRole("dialog")).toContainText("Validate the response status");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("region", { name: "Other saved findings" })).toContainText("Earlier revision · bbbbbbb");
+  await page.getByRole("tablist", { name: "File information" }).getByRole("tab", { name: "Findings", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File findings" })).toContainText("Earlier revision · bbbbbbb");
   await group.fill("All changes"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");
   await expect(page.getByText("Rejects malformed responses.", { exact: true })).toHaveCount(0);
   expect(calls.filter((call) => /summary|index$|review$/.test(call.path))).toHaveLength(0);
@@ -330,7 +334,7 @@ test("diff finding markers preview saved evidence and open the sidebar by mouse,
   await expect(diff.locator("tbody tr").nth(1).getByRole("button")).toHaveCount(1);
   await expect(diff.locator("tbody tr").nth(2).getByRole("button")).toHaveCount(2);
   await expect(diff.getByText("Validate the response status", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Other saved findings" })).toContainText("Earlier saved evidence");
+  await expect(page.getByRole("region", { name: "File findings" })).toHaveCount(0);
   const reads = calls.length;
   const preview = page.getByRole("tooltip");
   if (!isMobile) {
@@ -372,7 +376,7 @@ test("verified historical findings appear once in the diff and retain original e
   await page.goto("/pulls/pr?tab=code");
   const diff = page.getByRole("region", { name: "File diff" });
   await expect(diff.getByRole("button")).toHaveCount(2);
-  await expect(page.getByRole("region", { name: "Other saved findings" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "File findings" })).toHaveCount(0);
   const marker = diff.getByRole("button", { name: "Open finding at new line 1: Earlier saved evidence", exact: true });
   await marker.scrollIntoViewIfNeeded(); await marker.focus();
   const preview = page.getByRole("tooltip");
@@ -387,7 +391,69 @@ test("verified historical findings appear once in the diff and retain original e
   await expect(page.getByRole("dialog")).toContainText("Saved at eeeeeee");
   await page.keyboard.press("Escape");
   await expect(diff.getByRole("button")).toHaveCount(2);
-  await expect(page.getByRole("region", { name: "Other saved findings" })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: "Findings for this file", exact: true })).toBeHidden();
+});
+
+test("Findings tab groups review entries and preserves each saved snapshot without another read", async ({ page, isMobile }, info) => {
+  const { state, calls } = await mockGraph(page); state.groups = true; state.verifiedHistory = true; state.enabled = false;
+  await page.goto("/pulls/pr?tab=code");
+  const tabs = page.getByRole("tablist", { name: "File information" });
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff.getByRole("button")).toHaveCount(2);
+  const reads = calls.length;
+  const findings = tabs.getByRole("tab", { name: "Findings", exact: true });
+  if (isMobile) await findings.tap(); else { await findings.focus(); await page.keyboard.press("Enter"); }
+  await expect(page).toHaveURL(/code_view=findings/);
+  const section = page.getByRole("region", { name: "File findings", exact: true });
+  await expect(section.locator(":scope > p")).toHaveText("2 findings· 4 review entries");
+  await expect(diff).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "Revision" })).toHaveCount(0);
+  const list = page.getByRole("list", { name: "Findings for this file", exact: true });
+  await expect(list.locator(":scope > li")).toHaveCount(2);
+  const group = list.locator(":scope > li").filter({ hasText: "Earlier saved evidence" });
+  await expect(group.getByRole("button")).toHaveCount(1);
+  const history = group.locator("summary");
+  await expect(history).toHaveText("3 review entries");
+  await expect(group.locator("details")).not.toHaveAttribute("open", "");
+  if (isMobile) await history.tap(); else { await history.focus(); await page.keyboard.press("Enter"); }
+  const entries = group.getByRole("list", { name: "Review entries", exact: true });
+  await expect(entries.getByRole("button")).toHaveCount(3);
+  expect(calls.length).toBe(reads);
+  await section.scrollIntoViewIfNeeded();
+  await mkdir("../.impeccable/review", { recursive: true });
+  await page.screenshot({ path: `../.impeccable/review/pr-code-finding-history-${info.project.name}.png` });
+  for (const [name, sha] of [["Earlier saved evidence", "bbbbbbb"], ["Earlier version of saved evidence", "eeeeeee"], ["First saved review entry", "fffffff"]]) {
+    const entry = entries.getByRole("button", { name: new RegExp(name) });
+    if (isMobile) await entry.tap(); else await entry.click();
+    await expect(page.getByRole("dialog")).toContainText(`Saved at ${sha}`);
+    await expect(page.getByRole("dialog")).toContainText(name);
+    await page.keyboard.press("Escape");
+    await expect(entry).toBeFocused();
+  }
+  await entries.getByRole("button", { name: /First saved review entry/ }).click();
+  await page.reload();
+  await expect(page.getByRole("dialog")).toContainText("Saved at fffffff");
+  await page.keyboard.press("Escape");
+  await expect(findings).toHaveAttribute("aria-selected", "true");
+  await expect(entries).toBeHidden();
+  await history.click();
+  await expect(entries).toBeVisible();
+  await tabs.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(diff.getByRole("button")).toHaveCount(2);
+  await expect(section).toHaveCount(0);
+  await findings.click();
+  await expect(entries).toBeHidden();
+});
+
+test("Findings tab has an empty state and keeps removed file navigation independent of the graph", async ({ page }) => {
+  const { state, calls } = await mockGraph(page); state.enabled = false;
+  await page.goto("/pulls/pr?tab=code&code_view=findings&graph_file=src%2Fold.ts&graph_page=2");
+  await expect(page.getByText("No saved findings for this file", { exact: true })).toBeVisible();
+  expect(calls.find((call) => call.path.endsWith("/code/workspace"))?.body).toMatchObject({ view: "diff", path: "src/old.ts" });
+  await page.getByRole("button", { name: "Previous file", exact: true }).click();
+  await expect(page.getByRole("tablist", { name: "File information" }).getByRole("tab", { name: "Findings", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("No saved findings for this file", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Revision" })).toHaveCount(0);
 });
 
 test("legacy base links retain merge-base source; new file navigation supports back", async ({ page }) => {
@@ -499,7 +565,7 @@ test("one bootstrap, cached file/view revisits and eviction on leaving Code", as
   await expect(diff).toContainText("mañana");
   expect(reads()).toHaveLength(5);
   expect(calls.some((call) => call.path === "/pulls/pr/code-graph" || call.path.endsWith("/code-graph/query"))).toBe(false);
-  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await page.getByRole("tab", { name: "Findings 0", exact: true }).click();
   await page.getByRole("tab", { name: "Code", exact: true }).click();
   await expect(diff).toContainText("mañana");
   expect(reads()).toHaveLength(6);
