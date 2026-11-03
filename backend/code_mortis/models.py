@@ -140,6 +140,7 @@ class CodeGraphRepository(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     default_sha: Mapped[str | None] = mapped_column(String(40))
+    default_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     observed_sha: Mapped[str | None] = mapped_column(String(40))
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)

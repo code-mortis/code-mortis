@@ -130,13 +130,9 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const requested = params.get("code_view");
   const view = views.find((value) => value === requested) ?? (params.get("tab") === "impact" ? revision === "base" ? "source" : "dependencies" : "diff");
   const contentView = view === "findings" ? "diff" : view;
-  const positionKey = `${params.get("graph_file")}:${revision}`;
-  const [position, setPosition] = useState({ key: positionKey, offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] });
-  const positionValue = position.key === positionKey ? position : { offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] };
   const workspace = usePRCode(prId, { page, reviewed: reviewed.map((value) => value === "1"), findings, query: search, group: group || null, path: params.get("graph_file"),
-    view: contentView, revision,
-    offset: view === "definitions" ? positionValue.offset : 0,
-    start_byte: view === "source" ? positionValue.start_byte : 0, end_byte: view === "source" ? positionValue.end_byte : 1048576 });
+    view: contentView, revision });
+  const { position: positionValue, setPosition } = workspace;
   function change(values: Record<string, string | string[] | null>) {
     navigationId.current++;
     const next = new URLSearchParams(params);
@@ -159,7 +155,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   function selectFile(index: number) {
     const file = workspace.files[index];
     if (!file) return;
-    setPosition({ key: "", offset: 0, start_byte: 0, end_byte: 1048576, previous: [] });
+    setPosition({ offset: 0, start_byte: 0, end_byte: 1048576, previous: [] });
     change({ graph_file: contentView !== "diff" && revision === "base" ? file.previous_path ?? file.path : file.path,
       graph_revision: contentView !== "diff" && file.change === "removed" ? "base" : revision,
       graph_page: String(Math.floor(index / 10) + 1), code_occurrence: null });
@@ -247,7 +243,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
             </div>}
             {workspace.loading ? <div className="px-4 sm:px-5"><Loading /></div> : workspace.error ? <div className="space-y-3 p-4"><ErrorNotice error={workspace.error} /><Button size="sm" variant="outline" onClick={refresh}>Refresh Code</Button></div> : !data.graph_enabled ? <Empty className="rounded-none border-0" title="Code graph is disabled">{admin ? <Link to={`/repositories/${repositoryId}/settings?tab=context`} className="underline">Enable it in Project context</Link> : "Ask an administrator to enable it in Project context."}</Empty> : <>
               {action.error && <div className="p-4"><ErrorNotice error={action.error} /></div>}
-              {indexed ? <GraphFileDetails key={`${path}:${revision}:${snapshot?.snapshot_id}`} path={path} query={{ ...fileQuery, data: snapshot }} offset={positionValue.offset} setOffset={(offset) => setPosition((current) => ({ ...(current.key === positionKey ? current : positionValue), key: positionKey, offset }))} previous={positionValue.previous} setPrevious={(previous) => setPosition((current) => ({ ...(current.key === positionKey ? current : positionValue), key: positionKey, previous }))} range={{ start_byte: positionValue.start_byte, end_byte: positionValue.end_byte }} setRange={(range) => setPosition((current) => ({ ...(current.key === positionKey ? current : positionValue), key: positionKey, ...range }))} view={view} setView={(value) => change({ code_view: value })} onSelect={(file) => { change({ graph_file: file }); heading.current?.focus(); }} onRefresh={refresh} /> : <Empty className="rounded-none border-0" title="This revision is not ready"><p>{data.graph_paused ? "Indexing is paused in Project context." : "Index this revision to explore related code."}</p>{admin && canWrite && !data.graph_paused && <Button className="mt-4" disabled={action.isPending || ["queued", "running"].includes(snapshot?.status ?? "")} onClick={() => action.mutate({ path: `/pulls/${prId}/code-graph/index`, body: pair }, { onSuccess: () => void refresh() })}>Index selected revision</Button>}</Empty>}
+              {indexed ? <GraphFileDetails key={`${path}:${revision}:${snapshot?.snapshot_id}`} path={path} query={{ ...fileQuery, data: snapshot }} offset={positionValue.offset} setOffset={(offset) => setPosition({ offset })} previous={positionValue.previous} setPrevious={(previous) => setPosition({ previous })} range={{ start_byte: positionValue.start_byte, end_byte: positionValue.end_byte }} setRange={setPosition} view={view} setView={(value) => change({ code_view: value })} onSelect={(file) => { change({ graph_file: file }); heading.current?.focus(); }} onRefresh={refresh} /> : <Empty className="rounded-none border-0" title="This revision is not ready"><p>{data.graph_paused ? "Indexing is paused in Project context." : "Index this revision to explore related code."}</p>{admin && canWrite && !data.graph_paused && <Button className="mt-4" disabled={action.isPending || ["queued", "running"].includes(snapshot?.status ?? "")} onClick={() => action.mutate({ path: `/pulls/${prId}/code-graph/index`, body: pair }, { onSuccess: () => void refresh() })}>Index selected revision</Button>}</Empty>}
             </>}
           </div>}
         </Tabs>}

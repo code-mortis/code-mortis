@@ -109,6 +109,22 @@ def test_exclusions_invalid_encoding_multi_imports_aliases_and_ambiguous_targets
     assert files["empty.py"].line_count == 0
 
 
+def test_grouped_go_and_empty_js_imports_preserve_other_facts():
+    modules = [f"example.com/company/project/packages/module{i}" for i in range(50)]
+    source = 'package example\nimport "fmt"\nimport (\n' + "".join(
+        f' p{i} "{module}"\n' for i, module in enumerate(modules)
+    ) + ')\nimport `os`\nfunc main() {}\n'
+    assert len(source) > 2000
+    payload = request({"main.go": source, "empty.js": 'import "";\nexport * from \'\';\n',
+                       "good.py": "def good():\n    pass\n"})
+    result = client.validate_result(payload, extract(payload))
+    assert all(file.status == "parsed" for file in result.files)
+    assert {symbol.name for symbol in result.symbols} == {"main", "good"}
+    assert [item.specifier for item in result.imports if item.file_path == "main.go"] == ["fmt", *modules, "os"]
+    assert [item.specifier for item in result.imports if item.file_path == "empty.js"] == ['""', "''"]
+    assert all(item.provenance == "unresolved" and item.target_path is None for item in result.imports)
+
+
 @pytest.mark.parametrize("change", [
     {"blob_sha": "0" * 40}, {"size_bytes": 4}, {"content_base64": "$$"},
     {"content_base64": None}, {"exclusion": "excluded"}, {"exclusion": "file_too_large", "content_base64": None},

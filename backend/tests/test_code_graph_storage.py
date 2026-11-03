@@ -6,13 +6,14 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from code_mortis.core.db import Base, engine, transaction
+from code_mortis.core.db import Base, engine, now, transaction
 from code_mortis.models import (
     CodeGraphFile,
     CodeGraphImport,
+    CodeGraphRepository,
     CodeGraphSnapshot,
     CodeGraphSymbol,
     Finding,
@@ -211,6 +212,29 @@ def test_database_enforces_import_provenance_and_ranges(seed, patch):
         db.add_all(CodeGraphFile(snapshot_id=identity, **file.model_dump()) for file in data.files)
     with pytest.raises(IntegrityError, match="ck_code_graph_import_"), transaction() as db:
         db.add(CodeGraphImport(snapshot_id=identity, **(data.imports[0].model_dump() | patch)))
+
+
+def test_default_order_upgrade_preserves_existing_graph_pin(seed):
+    checked = now()
+    with transaction() as db:
+        db.add(CodeGraphRepository(repository_id=22, enabled=True, actor_id=7,
+                                   default_sha="a" * 40, observed_sha="b" * 40, checked_at=checked))
+        identity = snapshot(db, status="ready")
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261026_graph_readiness")
+        with engine().connect() as connection:
+            before = connection.execute(text("SELECT * FROM code_graph_snapshots WHERE id = :id"),
+                                        {"id": identity}).mappings().one()
+    finally:
+        command.upgrade(config, "head")
+    with transaction() as db:
+        graph = db.get(CodeGraphRepository, 22)
+        assert graph.default_sha == "a" * 40 and graph.observed_sha == "b" * 40
+        assert graph.enabled and graph.actor_id == 7
+        assert graph.checked_at == graph.default_observed_at == checked
+        assert db.execute(text("SELECT * FROM code_graph_snapshots WHERE id = :id"),
+                          {"id": identity}).mappings().one() == before
 
 
 def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):

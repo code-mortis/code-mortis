@@ -189,6 +189,28 @@ def test_source_and_literal_pages_preserve_utf8_and_boundary_matches(graph):
         query(graph, "source", paths=["large.py"], end_byte=2)
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_literal_search_uses_source_newlines_and_preserves_cursors(graph, separator):
+    literal = f"café{separator}needle"
+    raw = f"{literal}\r\nnext needle\n".encode()
+    (graph["source"] / "text.txt").write_bytes(raw)
+    fixture_git(graph["source"], "add", ".")
+    fixture_git(graph["source"], "commit", "-qm", "unicode separators")
+    graph["head"] = fixture_git(graph["source"], "rev-parse", "HEAD")
+    run(service.enqueue_snapshot(22))
+    source = query(graph, "source", paths=["text.txt"])["items"][0]
+    first = query(graph, "text", paths=["text.txt"], query="needle", limit=1)
+    second = query(graph, "text", paths=["text.txt"], query="needle", limit=1, **first["next_cursor"])
+    assert source["start_line"] == first["items"][0]["start_line"] == 1
+    assert source["end_line"] == second["items"][0]["start_line"] == 2
+    assert second["next_cursor"] is None
+    for match in [*first["items"], *second["items"]]:
+        assert raw[match["start_byte"]:match["end_byte"]] == b"needle"
+    whole = query(graph, "text", paths=["text.txt"], query=literal)["items"]
+    assert len(whole) == 1 and whole[0]["start_line"] == 1
+    assert raw[whole[0]["start_byte"]:whole[0]["end_byte"]] == literal.encode()
+
+
 def test_read_only_missing_lock_and_busy_writer_keep_metadata_available(graph):
     run(service.enqueue_snapshot(22))
     with store.locked():

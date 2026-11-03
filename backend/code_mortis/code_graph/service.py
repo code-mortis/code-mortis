@@ -2,7 +2,7 @@
 
 import time
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from pydantic import TypeAdapter
@@ -148,7 +148,7 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     row = db.scalar(select(CodeGraphSnapshot).filter_by(**identity).with_for_update())
     if row and (row.status in ACTIVE | USABLE or not retry):
         if row.status in USABLE and sha == default_sha:
-            db.get(CodeGraphRepository, repo.id).default_sha = sha
+            config.default_sha, config.default_observed_at = sha, config.checked_at
         return row.id
     active = select(func.count()).select_from(CodeGraphSnapshot).where(CodeGraphSnapshot.status.in_(ACTIVE))
     if db.scalar(active) >= 16 or db.scalar(active.where(CodeGraphSnapshot.repository_id == repo.id)) >= 2:
@@ -157,7 +157,8 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
         row = CodeGraphSnapshot(id=uid(), **identity)
         db.add(row)
     job = Job(id=uid(), kind="code_graph", payload={"snapshot_id": row.id, "repository_id": repo.id,
-                                                    "default_branch": sha == default_sha})
+                                                    "default_branch": sha == default_sha,
+                                                    "observed_at": config.checked_at.isoformat()})
     db.add(job)
     db.flush()
     row.job_id, row.actor_id, row.policy = job.id, actor_id, rules
@@ -370,8 +371,15 @@ def perform(snapshot_id, job_id, attempt):
                 current.status = "partial" if any(f.status in {"partial", "failed"}
                                                   or f.reason == "file_too_large" for f in result.files) else "ready"
                 current.finished_at, current.error = now(), None
-                if job.payload["default_branch"]:
-                    config.default_sha = current.commit_sha
+                observed_at = None
+                if current.commit_sha == config.observed_sha:
+                    observed_at = config.checked_at
+                elif job.payload["default_branch"]:
+                    # Pre-upgrade jobs have only the snapshot's original admission time.
+                    observed_at = (datetime.fromisoformat(job.payload["observed_at"])
+                                   if "observed_at" in job.payload else current.created_at)
+                if observed_at and (config.default_observed_at is None or observed_at >= config.default_observed_at):
+                    config.default_sha, config.default_observed_at = current.commit_sha, observed_at
         except Exception as exc:
             with transaction() as db:
                 job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())

@@ -7,6 +7,7 @@ type Navigation = Partial<Schema["CodeNavigation"]> & Pick<Schema["CodeNavigatio
 type Metadata = { data: Workspace; graphs: Record<string, string> };
 const AGE = 30_000;
 const BYTES = 5 * 1024 * 1024;
+const initialPosition = { offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] };
 
 export function findingCount(state: Schema["CodeFileState"], filters: Schema["CodeNavigation"]["findings"] = []) {
   return (["open", "resolved", "dismissed"] as const).reduce((count, status) =>
@@ -38,9 +39,10 @@ function selection(meta: Metadata | null, nav: Navigation) {
   }
   return { files, page, group, path, revision };
 }
-function requestFor(meta: Metadata | null, nav: Navigation): Navigation {
+function requestFor(meta: Metadata | null, nav: Navigation, position: Pick<Navigation, "offset" | "start_byte" | "end_byte"> = nav): Navigation {
   const { path, revision } = selection(meta, nav);
-  return { path, revision, view: nav.view, offset: nav.offset ?? 0, start_byte: nav.start_byte ?? 0, end_byte: nav.end_byte ?? 1048576,
+  return { path, revision, view: nav.view, offset: nav.view === "definitions" ? position.offset ?? 0 : 0,
+    start_byte: nav.view === "source" ? position.start_byte ?? 0 : 0, end_byte: nav.view === "source" ? position.end_byte ?? 1048576 : 1048576,
     ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group, reviewed: nav.reviewed, findings: nav.findings, unreviewed: nav.unreviewed, with_findings: nav.with_findings }) };
 }
 function keyFor(meta: Metadata | null, request: Navigation) {
@@ -60,7 +62,11 @@ export function usePRCode(prId: string, navigation: Navigation) {
   const intent = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const prefetched = useRef<ReturnType<typeof keyFor> | null>(null);
   const selected = selection(meta, navigation);
-  const request = requestFor(meta, navigation);
+  const positionKey = JSON.stringify([selected.path, selected.revision]);
+  const [position, setPosition] = useState({ key: positionKey, ...initialPosition });
+  const positionValue = position.key === positionKey ? position : { key: positionKey, ...initialPosition };
+  if (position.key !== positionKey) setPosition(positionValue);
+  const request = requestFor(meta, navigation, positionValue);
   const key = keyFor(meta, request);
   active.current = JSON.stringify(key);
 
@@ -161,7 +167,9 @@ export function usePRCode(prId: string, navigation: Navigation) {
     if (!values || !current.current || failure) return;
     intent.current = setTimeout(() => {
       if (document.visibilityState !== "visible" || !navigator.onLine || cache.isFetching()) return;
-      const nav = requestFor(current.current, { ...navigation, ...values });
+      const target = selection(current.current, { ...navigation, ...values });
+      const nav = requestFor(current.current, { ...navigation, ...values },
+        target.path === selected.path && target.revision === selected.revision ? positionValue : initialPosition);
       if (!nav.path) return;
       prefetched.current = keyFor(current.current, nav);
       void cache.prefetchQuery({ queryKey: prefetched.current, queryFn: ({ signal }) => fetchView(nav, signal), staleTime: AGE, gcTime: AGE, retry: false });
@@ -174,5 +182,8 @@ export function usePRCode(prId: string, navigation: Navigation) {
   }
   const expired = query.isStale && Date.now() - query.dataUpdatedAt >= AGE;
   return { ...selected, inventory: meta?.data, data: !failure && !expired ? query.data : undefined,
+    position: positionValue, setPosition: (values: Partial<typeof initialPosition>) => setPosition((current) => ({
+      ...(current.key === positionKey ? current : positionValue), ...values, key: positionKey,
+    })),
     loadFindings, error: failure ?? query.error, loading: query.isPending || expired, fetching: query.isFetching, refresh, prefetch };
 }

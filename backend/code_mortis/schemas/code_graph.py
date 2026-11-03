@@ -15,7 +15,7 @@ MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_FACTS = 100_000
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 EXTRACTION_SECONDS = 120
-EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/2"
+EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/3"
 
 
 class StrictModel(BaseModel):

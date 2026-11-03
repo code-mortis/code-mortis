@@ -91,6 +91,8 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
                              for n in node.children_by_field_name("name")]
                 else:
                     sites = [(node, node.child_by_field_name("module_name"))]
+            elif language == "go":
+                sites = [(n, n.child_by_field_name("path")) for n in descendants(node) if n.type == "import_spec"]
             else:
                 specifier = node.child_by_field_name("source")
                 if node.type == "export_statement" and specifier is None:
@@ -98,8 +100,9 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
                 sites = [(node, specifier)]
             for site, specifier in sites:
                 text = (specifier or site).text.decode()
-                if language in {"javascript", "typescript", "tsx"} and specifier is not None:
-                    text = text[1:-1]
+                if language in {"javascript", "typescript", "tsx", "go"} and specifier is not None:
+                    # Keep the literal as unresolved evidence when its module name is empty.
+                    text = text[1:-1] or text
                 if len(imports) >= MAX_FACTS:
                     raise ValueError("Import count exceeds the result limit")
                 imports.append(CodeGraphImport(**location(item.path, site), specifier=text, provenance="unresolved"))

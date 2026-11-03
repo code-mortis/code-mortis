@@ -178,7 +178,7 @@ def sources(row, request, files, response, source_check):
         offset = start
         # Look ahead only far enough to find a literal crossing the page boundary.
         scan = raw[start:min(end, start + chunk_bytes + len(request.query.encode()))].decode("utf-8", errors="ignore")
-        for number, line in enumerate(scan.splitlines(keepends=True) if request.operation == "text" else [], first_line):
+        for number, line in enumerate(scan.split("\n") if request.operation == "text" else [], first_line):
             size = len(line.encode())
             if request.query in line:
                 match_start = offset + len(line[:line.index(request.query)].encode())
@@ -193,7 +193,7 @@ def sources(row, request, files, response, source_check):
                 response["items"].append({"kind": "text_match", "path": path, "blob_sha": file.blob_sha, "text": request.query,
                                           "start_byte": match_start, "end_byte": match_start + length,
                                           "start_line": number, "end_line": number})
-            offset += size
+            offset += size + 1
         if start + chunk_bytes < end:
             response["next_cursor"] = {"offset": request.offset + index, "start_byte": start + chunk_bytes}
             return

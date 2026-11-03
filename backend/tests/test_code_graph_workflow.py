@@ -393,6 +393,53 @@ def test_retention_keeps_recent_revisions_and_prunes_orphan_refs(graph):
     assert not store.git(store.directory(22), "for-each-ref", "--format=%(refname)", "refs/code-mortis/").strip()
 
 
+@pytest.mark.parametrize("old_first", [True, False])
+def test_default_retention_follows_observations_not_completion_order(graph, old_first):
+    old = service.enqueue_snapshot(22)
+    graph["head"] = graph["second"]
+    current = service.enqueue_snapshot(22)
+    order = [old, current] if old_first else [current, old]
+    assert run(order[0])[0].status == "ready"
+    with transaction() as db:
+        assert db.get(CodeGraphRepository, 22).default_sha == (graph["first"] if old_first else graph["second"])
+    assert run(order[1])[0].status == "ready"
+    with transaction() as db:
+        assert db.get(CodeGraphRepository, 22).default_sha == graph["second"]
+        for identity in order:
+            db.get(CodeGraphSnapshot, identity).finished_at = now() - timedelta(days=8)
+    service.cleanup()
+    with transaction() as db:
+        assert db.get(CodeGraphSnapshot, old) is None
+        assert db.get(CodeGraphSnapshot, current).status == "ready"
+
+
+def test_reused_default_pin_survives_old_completion_and_new_head_failure(graph, monkeypatch):
+    # This snapshot was first built for a PR, before it became the default branch.
+    current, _ = run(service.enqueue_snapshot(22, graph["second"]))
+    old = service.enqueue_snapshot(22)
+    graph["head"] = graph["second"]
+    assert service.enqueue_snapshot(22) == current.id
+    (graph["source"] / "renamed.py").write_text("def third():\n    pass\n")
+    fixture_git(graph["source"], "commit", "-qam", "third default")
+    graph["head"] = fixture_git(graph["source"], "rev-parse", "HEAD")
+    pending = service.enqueue_snapshot(22)
+    assert run(old)[0].status == "ready"
+    with transaction() as db:
+        assert db.get(CodeGraphRepository, 22).default_sha == graph["second"]
+    with monkeypatch.context() as patch:
+        def failed(*args, **kwargs):
+            raise ValueError("parser unavailable")
+        patch.setattr(client, "extract", failed)
+        assert run(pending)[0].status == "failed"
+    with transaction() as db:
+        assert db.get(CodeGraphRepository, 22).default_sha == graph["second"]
+    # An explicit rollback to an already indexed commit is a newer observation.
+    graph["head"] = graph["first"]
+    assert service.enqueue_snapshot(22) == old
+    with transaction() as db:
+        assert db.get(CodeGraphRepository, 22).default_sha == graph["first"]
+
+
 def test_retention_caps_recent_revisions_without_evicting_default(graph):
     root, commits = graph["source"], [graph["second"]]
     for index in range(service.MAX_RECENT_SNAPSHOTS):

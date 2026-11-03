@@ -132,6 +132,30 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
 });
 
+for (const view of ["source", "definitions", "definition range"] as const) test(`automatic file selection resets ${view} position`, async ({ page }) => {
+  const { state, calls } = await mockGraph(page);
+  state.sourcePages = true;
+  state.definitionsPage = true;
+  await page.goto(`/pulls/pr?tab=code&code_view=${view === "source" ? "source" : "definitions"}`);
+  if (view === "source") {
+    await page.getByRole("button", { name: "Next source" }).click();
+    await expect(page.getByLabel("Indexed source", { exact: true })).toContainText("export const next");
+  } else if (view === "definitions") {
+    await page.getByRole("button", { name: "Next definitions" }).click();
+    await expect(page.getByRole("button", { name: /laterDefinition/ })).toBeVisible();
+  } else {
+    await page.getByRole("button", { name: /validateResponse/ }).click();
+    await expect(page.getByRole("button", { name: "Read from start" })).toBeVisible();
+  }
+  await page.getByRole("textbox", { name: "Filter changed files" }).fill("added.ts");
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText("src/added.ts");
+  await expect.poll(() => calls.filter(call => call.body?.path === "src/added.ts").length).toBeGreaterThan(0);
+  for (const call of calls.filter(call => call.body?.path === "src/added.ts")) {
+    expect(call.body).toMatchObject({ offset: 0, start_byte: 0, end_byte: 1048576 });
+  }
+  if (view !== "definitions") await expect(page.getByRole("button", { name: "Previous source" })).toBeDisabled();
+});
+
 test("complete source hides pagination while definition ranges retain read from start", async ({ page }, info) => {
   await mockGraph(page);
   await page.goto("/pulls/pr?tab=code&code_view=source&graph_file=src%2Fservice.ts");
