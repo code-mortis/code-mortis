@@ -8,13 +8,13 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { reviewed: false, count: 0, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", groups: false, moreFindings: false, verifiedHistory: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
+    fileError: 0, codeError: 0, patchState: "available", groups: false, moreFindings: false, verifiedHistory: false, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
     snapshot_id: revision, status: revision === "head" ? state.status : state.baseStatus, extractor_version: "test",
     policy_digest: "test", capabilities: { defines: "supported", imports_file: "partial", callers: "unsupported", references: "unsupported" },
-    definition_languages: ["python", "typescript"], gaps: [], truncated: false, source_state: "not_requested", items: [], next_cursor: null,
+    definition_languages: ["python", "typescript"], gaps: [], truncated: state.graphTruncated, source_state: "not_requested", items: [], next_cursor: null,
     coverage: { parsed: 239, partial: (revision === "head" ? state.status : state.baseStatus) === "partial" ? 1 : 0,
       unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false,
       reasons: (revision === "head" ? state.status : state.baseStatus) === "partial" ? { syntax_error: 1, unsupported_language: 72 } : { unsupported_language: 72 } } });
@@ -40,7 +40,7 @@ export async function mockGraph(page: Page, admin = true) {
               snapshot: { path: selected, content: "Preserve response headers", severity: "medium", category: "bug", start_line: 1, end_line: 1 }, side: "new", line: 1, placement: "inline" },
             { occurrence_id: "o4", finding_id: "f4", run_id: "run", source_sha: mergeBase, current_status: "dismissed",
               snapshot: { path: selected, content: "Original response handling", severity: "low", start_line: 1, end_line: 1 }, side: "old", line: 1, placement: "inline" },
-          ] : []) ] : [],
+          ] : []) ].filter((item) => !state.historicalOnly || item.placement === "historical") : [],
         findings_truncated: false, github_url: "https://github.com/acme/project/compare/ccc...aaa" });
   const graph = (body: any) => {
     const result = read(body.revision);
@@ -200,6 +200,76 @@ test("filters and pagination preserve selection and use the merge base for remov
   await expect(page.getByRole("textbox", { name: "Filter changed files" })).toHaveValue("");
 });
 
+test("graph views share revision controls beside their bounded-result notice", async ({ page, isMobile }, info) => {
+  const { state, calls } = await mockGraph(page);
+  state.padding = 220; state.graphTruncated = true;
+  await page.goto("/pulls/pr?tab=code&code_view=dependencies");
+  const file = page.getByRole("region", { name: "Selected file", exact: true });
+  const header = file.getByRole("group", { name: "Code revision" });
+  const revision = header.getByRole("combobox", { name: "Revision" });
+  await expect(revision).toHaveCount(1);
+  const notice = header.getByText("This result is bounded. More relationships or source may exist.", { exact: true });
+  await expect(notice).toBeVisible();
+  const headerBox = await header.boundingBox(), noticeBox = await notice.boundingBox();
+  const controlBox = await header.locator('[data-slot="input-group"]').boundingBox();
+  expect(Math.abs(headerBox!.x + headerBox!.width - controlBox!.x - controlBox!.width - (isMobile ? 16 : 20))).toBeLessThanOrEqual(1);
+  if (!isMobile) expect(controlBox!.x).toBeGreaterThanOrEqual(noticeBox!.x + noticeBox!.width);
+  await revision.fill("Merge base");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  for (const [view, name] of [["Dependencies", "File dependencies"], ["Definitions", "Indexed definitions"], ["Source", "Indexed source"]]) {
+    await page.getByRole("tab", { name: view, exact: true }).click();
+    const content = view === "Source" ? page.getByRole("region", { name, exact: true }) : page.getByRole("list", { name, exact: true });
+    await expect(content).toBeVisible();
+    if (view === "Definitions") await expect(header).toContainText("Symbols defined in this file.");
+    if (view === "Source") await expect(header).toContainText("File contents at the selected revision.");
+    await expect(content).toHaveCSS("border-left-width", "0px");
+    await expect(content).toHaveCSS("border-radius", "0px");
+    const panel = await file.locator('[data-slot="tabs"]').boundingBox();
+    const body = await content.boundingBox();
+    expect(Math.abs(body!.x - panel!.x - 1)).toBeLessThanOrEqual(1);
+    await expect(revision).toHaveValue("Merge base · ccccccc");
+    expect(await revision.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(calls.filter((call) => call.body?.view === view.toLowerCase()).at(-1)?.body.revision).toBe("base");
+    if (view === "Source") {
+      expect(await content.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+      await content.focus();
+      await expect(content).toBeFocused();
+    }
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await file.screenshot({ path: `../.impeccable/review/pr-code-flat-${view.toLowerCase()}-${info.project.name}.png` });
+  }
+  state.graphTruncated = false;
+  await page.getByRole("button", { name: "Refresh Code", exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(header).toContainText("File contents at the selected revision.");
+  await page.getByRole("tab", { name: "Diff", exact: true }).click();
+  await expect(revision).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("return false;");
+  await page.getByRole("tab", { name: "Dependencies", exact: true }).click();
+  await expect(revision).toHaveValue("Merge base · ccccccc");
+  await page.reload();
+  await expect(revision).toHaveValue("Merge base · ccccccc");
+});
+
+test("Code filtering keeps refresh beside search with groups and active filters", async ({ page }, info) => {
+  const { state } = await mockGraph(page);
+  state.groups = true; state.count = 3; state.graphTruncated = true;
+  for (const width of [390, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/pulls/pr?tab=code&code_view=dependencies&code_unreviewed=1&code_findings=1");
+    await expect(page.getByRole("button", { name: "Remove Review status filter" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove Findings filter" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Change group" })).toHaveValue("All changes");
+    const search = await page.getByRole("textbox", { name: "Filter changed files" }).boundingBox();
+    const refresh = await page.getByRole("button", { name: "Refresh Code", exact: true }).boundingBox();
+    expect(Math.abs(search!.y - refresh!.y)).toBeLessThanOrEqual(1);
+    expect(refresh!.x).toBeGreaterThanOrEqual(search!.x + search!.width);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `../.impeccable/review/pr-code-toolbar-${width}-${info.project.name}.png`, fullPage: true });
+  }
+});
+
 test("explicit indexing, paused and disabled configuration do not admit hidden jobs", async ({ page, isMobile }, info) => {
   const { calls, state } = await mockGraph(page);
   state.status = "unavailable";
@@ -293,6 +363,11 @@ test("Code opens a diff with graph disabled and no graph or inference requests",
   await page.goto("/pulls/pr?tab=code");
   await expect(page.getByRole("tab", { name: "Code", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "File diff" })).toContainText("mañana 😀");
+  const diffTab = page.getByRole("tab", { name: "Diff", exact: true });
+  const comparison = `Changes from merge base ${mergeBase} to PR head ${head}.`;
+  await expect(diffTab).toHaveAttribute("title", comparison);
+  await expect(diffTab).toHaveAttribute("aria-description", comparison);
+  await expect(page.getByText("ccccccc…aaaaaaa", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Index selected/ })).toHaveCount(0);
   expect(calls.filter((call) => call.path.includes("code-graph"))).toHaveLength(0);
   expect(calls.filter((call) => call.body && !call.path.endsWith("/code/workspace"))).toHaveLength(0);
@@ -300,6 +375,30 @@ test("Code opens a diff with graph disabled and no graph or inference requests",
   await expect(page.getByText("Code graph is disabled", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Diff", exact: true }).click();
   await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+});
+
+test("diff reserves the findings column only when inline markers exist", async ({ page }, info) => {
+  const { state } = await mockGraph(page);
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff).toContainText("mañana 😀");
+  await expect(diff.getByRole("columnheader")).toHaveText(["Original line", "New line", "Change"]);
+  await expect(diff.locator("tbody tr").nth(1).getByRole("cell")).toHaveText(["1", "", "-return false;"]);
+  await expect(diff.locator("tbody tr").nth(2).getByRole("cell")).toHaveText(["", "1", "+return true; // mañana 😀"]);
+  await diff.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `../.impeccable/review/pr-code-no-markers-${info.project.name}.png` });
+  state.groups = true;
+  await page.getByRole("button", { name: "Refresh Code" }).click();
+  await expect(diff.getByRole("button")).toHaveCount(1);
+  await expect(diff.getByRole("columnheader")).toHaveText(["Findings", "Original line", "New line", "Change"]);
+  await expect.poll(() => diff.locator("tbody tr").evaluateAll((rows) => rows.map((row) => row.children.length))).toEqual([4, 4, 4]);
+  state.historicalOnly = true;
+  await page.getByRole("button", { name: "Refresh Code" }).click();
+  await expect(diff.getByRole("button")).toHaveCount(0);
+  await expect(diff.getByRole("columnheader")).toHaveText(["Original line", "New line", "Change"]);
+  await expect.poll(() => diff.locator("tbody tr").evaluateAll((rows) => rows.map((row) => row.children.length))).toEqual([3, 3, 3]);
+  await page.getByRole("tab", { name: "Findings", exact: true }).click();
+  await expect(page.getByRole("region", { name: "File findings" })).toContainText("Earlier saved evidence");
 });
 
 test("saved groups filter files and findings open immutable evidence through reload", async ({ page, isMobile }) => {
@@ -378,12 +477,14 @@ test("verified historical findings appear once in the diff and retain original e
   await expect(diff.getByRole("button")).toHaveCount(2);
   await expect(page.getByRole("region", { name: "File findings" })).toHaveCount(0);
   const marker = diff.getByRole("button", { name: "Open finding at new line 1: Earlier saved evidence", exact: true });
-  await marker.scrollIntoViewIfNeeded(); await marker.focus();
-  const preview = page.getByRole("tooltip");
-  await expect(preview).toContainText("resolved");
-  await expect(preview).toContainText("Verification at aaaaaaa: still present");
-  await expect(preview).toContainText("src/service.ts:1");
-  if (isMobile) await marker.tap(); else await marker.click();
+  if (isMobile) await marker.tap(); else {
+    await marker.hover();
+    const preview = page.getByRole("tooltip");
+    await expect(preview).toContainText("resolved");
+    await expect(preview).toContainText("Verification at aaaaaaa: still present");
+    await expect(preview).toContainText("src/service.ts:1");
+    await marker.click();
+  }
   await expect(page.getByRole("dialog")).toContainText("Earlier saved evidence");
   await expect(page.getByRole("dialog")).toContainText("Saved at bbbbbbb");
   await page.goto("/pulls/pr?tab=code&code_occurrence=o2-older");
@@ -445,10 +546,14 @@ test("Findings tab groups review entries and preserves each saved snapshot witho
   await expect(entries).toBeHidden();
 });
 
-test("Findings tab has an empty state and keeps removed file navigation independent of the graph", async ({ page }) => {
+test("Findings tab has an empty state and keeps removed file navigation independent of the graph", async ({ page }, info) => {
   const { state, calls } = await mockGraph(page); state.enabled = false;
   await page.goto("/pulls/pr?tab=code&code_view=findings&graph_file=src%2Fold.ts&graph_page=2");
-  await expect(page.getByText("No saved findings for this file", { exact: true })).toBeVisible();
+  const empty = page.getByRole("heading", { name: "No saved findings for this file", exact: true }).locator("..");
+  await expect(empty).toBeVisible();
+  await expect(empty).toHaveCSS("border-width", "0px");
+  await expect(empty).toContainText("Findings from completed reviews appear here, including earlier revisions.");
+  await page.getByRole("region", { name: "Selected file", exact: true }).screenshot({ path: `../.impeccable/review/pr-code-empty-findings-${info.project.name}.png` });
   expect(calls.find((call) => call.path.endsWith("/code/workspace"))?.body).toMatchObject({ view: "diff", path: "src/old.ts" });
   await page.getByRole("button", { name: "Previous file", exact: true }).click();
   await expect(page.getByRole("tablist", { name: "File information" }).getByRole("tab", { name: "Findings", exact: true })).toHaveAttribute("aria-selected", "true");

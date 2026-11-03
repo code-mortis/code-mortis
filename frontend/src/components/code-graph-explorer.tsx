@@ -47,47 +47,46 @@ export function GraphFileDetails({ path, view, setView, onSelect, onRefresh, que
     for (const key of tab === "findings" ? ["severity", "category", "open_page"] : [`${tab}_severity`, `${tab}_category`, `${tab}_page`]) next.delete(key);
     return { pathname: location.pathname, search: next.toString() };
   }
-  return <div className="min-w-0 space-y-3">
-      <div className="mt-4 min-w-0 space-y-4" aria-live="polite">
-        {query.isPending ? <Loading /> : query.error ? <><ErrorNotice error={query.error} /><Button variant="outline" size="sm" onClick={() => { onRefresh(); }}>Refresh file</Button></>
-          : !query.data || !usable(query.data.status) ? <Empty title="This revision is unavailable">Refresh Code to check indexing. An older snapshot will not replace this revision.</Empty>
+  return <div className="min-w-0">
+      <div className="min-w-0" aria-live="polite">
+        {query.isPending ? <div className="px-4 sm:px-5"><Loading /></div> : query.error ? <div className="space-y-3 p-4"><ErrorNotice error={query.error} /><Button variant="outline" size="sm" onClick={() => { onRefresh(); }}>Refresh file</Button></div>
+          : !query.data || !usable(query.data.status) ? <Empty className="rounded-none border-0" title="This revision is unavailable">Refresh Code to check indexing. An older snapshot will not replace this revision.</Empty>
             : <>
-              {query.data.truncated && <p role="status" className="text-xs text-muted-foreground">This result is bounded. More relationships or source may exist.</p>}
-              <TabsContent value="dependencies" className="min-w-0 space-y-4">
-                {relations.length ? <ul aria-label="File dependencies" className="divide-y overflow-hidden rounded-lg border bg-card">
+              <TabsContent value="dependencies" className="min-w-0">
+                {relations.length ? <ul aria-label="File dependencies" className="divide-y">
                   {relations.map((edge) => { const target = edge.path === path ? edge.target_path : edge.path; return <li key={`${edge.path}:${edge.start_byte}`}>
                     <button className={rowClass} onClick={() => onSelect(target)}><span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{target}</span>
                       <span className="mt-1 block text-xs text-muted-foreground">{edge.path === path ? "Imported by this file" : "Imports this file"} · Line {edge.start_line}</span></button>
                   </li>; })}
-                </ul> : <Empty title="No supported dependencies returned">This does not prove the file is unused. Callers and symbol references are not supported.</Empty>}
+                </ul> : <Empty className="rounded-none border-0" title="No supported dependencies returned">This does not prove the file is unused. Callers and symbol references are not supported.</Empty>}
               </TabsContent>
-              <TabsContent value="definitions" className="min-w-0 space-y-3">
-                {query.data.items.length ? <ul aria-label="Indexed definitions" className="divide-y overflow-hidden rounded-lg border bg-card">
+              <TabsContent value="definitions" className="min-w-0">
+                {query.data.items.length ? <ul aria-label="Indexed definitions" className="divide-y">
                   {query.data.items.filter((item) => item.kind === "symbol").map((item) => <li key={item.key}><button className={rowClass} onClick={() => {
                     setRange({ start_byte: item.start_byte, end_byte: item.end_byte }); setPrevious([]); setOffset(0); setView("source");
                   }}><span className="break-words font-mono text-xs [overflow-wrap:anywhere]">{item.name}</span><span className="ml-2 text-xs text-muted-foreground">{item.symbol_kind} · Lines {item.start_line}–{item.end_line}</span></button></li>)}
-                </ul> : <Empty title="No indexed definitions">The file may contain no definitions or use an unsupported language. Its source may still be available.</Empty>}
-                {(offset > 0 || query.data.next_cursor) && <nav aria-label="Definitions pagination" className="flex gap-2">
+                </ul> : <Empty className="rounded-none border-0" title="No indexed definitions">The file may contain no definitions or use an unsupported language. Its source may still be available.</Empty>}
+                {(offset > 0 || query.data.next_cursor) && <nav aria-label="Definitions pagination" className="flex flex-wrap gap-2 border-t px-4 py-3 sm:px-5">
                   <Button size="sm" variant="outline" disabled={!offset || query.isFetching} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous definitions</Button>
                   <Button size="sm" variant="outline" disabled={!query.data.next_cursor || query.isFetching} onClick={() => setOffset(query.data!.next_cursor!.offset)}>Next definitions</Button>
                 </nav>}
               </TabsContent>
-              <TabsContent value="source" className="min-w-0 space-y-3">
+              <TabsContent value="source" className="min-w-0">
                 {source ? <>
-                  <p className="text-xs text-muted-foreground">Lines {source.start_line}–{source.end_line} · Bytes {source.start_byte}–{source.end_byte} · Blob <code title={source.blob_sha}>{source.blob_sha.slice(0, 7)}</code></p>
-                  <Code path={source.path} startLine={source.start_line} label="Indexed source">{source.text}</Code>
-                  {(hasSourcePages || hasSourceRange) && <div className="flex flex-wrap gap-2">
+                  <p className="border-b px-4 py-3 text-xs text-muted-foreground sm:px-5">Lines {source.start_line}–{source.end_line} · Bytes {source.start_byte}–{source.end_byte} · Blob <code title={source.blob_sha}>{source.blob_sha.slice(0, 7)}</code></p>
+                  <Code className="rounded-none border-0 bg-card sm:px-5 focus-visible:-outline-offset-2" path={source.path} startLine={source.start_line} label="Indexed source">{source.text}</Code>
+                  {(hasSourcePages || hasSourceRange) && <div className="flex flex-wrap gap-2 border-t px-4 py-3 sm:px-5">
                     {hasSourcePages && <>
                     <Button size="sm" variant="outline" disabled={!previous.length || query.isFetching} onClick={() => { setRange({ ...range, start_byte: previous.at(-1)! }); setPrevious(previous.slice(0, -1)); }}>Previous source</Button>
                     <Button size="sm" variant="outline" disabled={!query.data.next_cursor || query.isFetching} onClick={() => { setPrevious([...previous, range.start_byte]); setRange({ ...range, start_byte: query.data!.next_cursor!.start_byte }); }}>Next source</Button>
                     </>}
                     {hasSourceRange && <Button size="sm" variant="ghost" onClick={() => { setRange({ start_byte: 0, end_byte: 1048576 }); setPrevious([]); }}>Read from start</Button>}
                   </div>}
-                </> : <><Empty title="Source unavailable">The file may be excluded, absent at this revision, or its retained objects may be busy or missing. Another revision is never substituted.</Empty><Button variant="outline" size="sm" onClick={() => { onRefresh(); }}>Refresh file</Button></>}
+                </> : <Empty className="rounded-none border-0" title="Source unavailable"><p>The file may be excluded, absent at this revision, or its retained objects may be busy or missing. Another revision is never substituted.</p><Button className="mt-4" variant="outline" size="sm" onClick={() => { onRefresh(); }}>Refresh file</Button></Empty>}
               </TabsContent>
             </>}
       </div>
-    <nav aria-label="Saved findings for this file" className="flex flex-wrap items-center gap-x-4 text-xs text-muted-foreground">
+    <nav aria-label="Saved findings for this file" className="flex flex-wrap items-center gap-x-4 border-t px-4 py-3 text-xs text-muted-foreground sm:px-5">
       <span>Findings</span>{["findings", "resolved", "dismissed"].map((tab) => <Link key={tab} to={findingsLink(tab)} state={location.state} aria-label={`Search ${tab === "findings" ? "open" : tab} findings`} className="inline-flex min-h-11 items-center rounded-sm capitalize underline underline-offset-4 sm:min-h-8">{tab === "findings" ? "Open" : tab}</Link>)}
     </nav>
   </div>;
