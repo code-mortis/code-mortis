@@ -2499,6 +2499,10 @@ export interface components {
             reviewed: boolean;
             /** Open Count */
             open_count: number;
+            /** Resolved Count */
+            resolved_count: number;
+            /** Dismissed Count */
+            dismissed_count: number;
             /** Complete */
             complete: boolean;
         };
@@ -2653,6 +2657,10 @@ export interface components {
              * @default false
              */
             with_findings: boolean;
+            /** Reviewed */
+            reviewed?: boolean | null;
+            /** Findings */
+            findings?: ("any" | "none" | "open" | "resolved" | "dismissed") | null;
             /**
              * Offset
              * @default 0

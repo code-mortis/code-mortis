@@ -466,14 +466,52 @@ def test_finding_counts_deduplicate_use_immutable_sides_and_withhold_invalid(com
         db.add(Occurrence(id="duplicate", run_id="repeat", finding_id="f1", snapshot=original.snapshot))
         db.get(Occurrence, "o4").snapshot = {**db.get(Occurrence, "o4").snapshot, "path": "old.py", "source_sha": MERGE}
     data = client.post(URL + "/workspace", json={"with_findings": True}).json()
-    assert [s["open_count"] for s in data["file_states"]] == [0, 1, 1]
+    assert [s["open_count"] for s in data["file_states"]] == [0, 1, 3]
+    assert data["file_states"][2]["resolved_count"] == 1
     assert all(s["complete"] for s in data["file_states"])
     with transaction() as db:
         db.get(Finding, "f1").status = "dismissed"
         db.get(Occurrence, "o4").snapshot = {**db.get(Occurrence, "o4").snapshot, "content": "provider-secret"}
     data = client.post(URL + "/workspace", json={"with_findings": True}).json()
     assert data["path"] == "next.py"
-    assert data["file_states"][1] == {"reviewed": False, "open_count": 0, "complete": False}
+    assert data["file_states"][1] == {"reviewed": False, "open_count": 0, "resolved_count": 0, "dismissed_count": 0, "complete": False}
+    assert data["file_states"][2]["dismissed_count"] == 1
+
+
+@pytest.mark.parametrize(("findings", "path"), [("any", "next.py"), ("none", "image.png"), ("open", "next.py"), ("resolved", "notes.md"), ("dismissed", "next.py")])
+def test_workspace_filters_saved_findings_across_revisions_and_renames(comparison, client, findings, path):
+    with transaction() as db:
+        for index in range(2):
+            db.add(ReviewRun(id=f"historical{index}", pr_id="pr", trigger="manual", dedup_key=f"historical{index}", status="completed",
+                             base_sha="e" * 40, head_sha="f" * 40, config={}, report={}))
+        db.flush()
+        for status, saved_path in [("resolved", "notes.md"), ("dismissed", "old.py"), ("open", "next.py")]:
+            db.add(Finding(id=status, pr_id="pr", fingerprint=status, path="mutable-path.py", content="Mutable", status=status, start_line=1, end_line=1, last_seen_run_id="historical1"))
+            db.flush()
+            for index in range(2):
+                db.add(Occurrence(id=f"{status}{index}", run_id=f"historical{index}", finding_id=status,
+                                  snapshot={"path": saved_path, "content": "Saved evidence", "source_sha": "f" * 40}))
+    result = client.post(URL + "/workspace", json={"findings": findings})
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["path"] == path
+    assert data["file_states"] == [
+        {"reviewed": False, "open_count": 0, "resolved_count": 0, "dismissed_count": 0, "complete": True},
+        {"reviewed": False, "open_count": 1, "resolved_count": 0, "dismissed_count": 1, "complete": True},
+        {"reviewed": False, "open_count": 0, "resolved_count": 1, "dismissed_count": 0, "complete": True},
+    ]
+    if findings != "none":
+        assert any(item["current_status"] == findings or findings == "any" for item in data["diff"]["findings"])
+    assert client.post(URL + "/workspace", json={"findings": findings, "query": "absent"}).json()["path"] is None
+
+
+def test_without_findings_never_treats_incomplete_counts_as_zero(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        for occurrence in db.scalars(select(Occurrence)):
+            occurrence.snapshot = {**occurrence.snapshot, "content": "provider-secret"}
+    assert client.post(URL + "/workspace", json={"findings": "any", "query": "notes"}).json()["path"] == "notes.md"
+    assert client.post(URL + "/workspace", json={"findings": "none", "query": "notes"}).json()["path"] is None
 
 
 def test_bounded_counts_and_constant_database_queries(comparison, client, monkeypatch):
@@ -518,7 +556,7 @@ def test_oversized_evidence_count_is_unknown(comparison, client):
     with transaction() as db:
         db.get(Occurrence, "o1").snapshot = {**db.get(Occurrence, "o1").snapshot, "unused": "x" * 33000}
     data = client.post(URL + "/workspace", json={}).json()
-    assert data["file_states"][2] == {"reviewed": False, "open_count": 1, "complete": False}
+    assert data["file_states"][2] == {"reviewed": False, "open_count": 3, "resolved_count": 1, "dismissed_count": 0, "complete": False}
 
 
 
@@ -540,6 +578,8 @@ def test_automatic_review_checks_use_validated_results_without_any_writes(compar
     data = client.post(URL + "/workspace", json={"unreviewed": True}).json()
     assert [state["reviewed"] for state in data["file_states"]] == [True, False, True]
     assert data["path"] == "next.py"
+    assert client.post(URL + "/workspace", json={"reviewed": True}).json()["path"] == "image.png"
+    assert client.post(URL + "/workspace", json={"reviewed": False}).json()["path"] == "next.py"
     assert client.post(URL + "/workspace", json={}).json()["file_states"] == data["file_states"]
     with transaction() as db:
         assert before == [(f.id, f.status) for f in db.scalars(select(Finding))]

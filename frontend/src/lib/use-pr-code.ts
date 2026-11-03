@@ -8,6 +8,11 @@ type Metadata = { data: Workspace; graphs: Record<string, string> };
 const AGE = 30_000;
 const BYTES = 5 * 1024 * 1024;
 
+export function findingCount(state: Schema["CodeFileState"], filter?: Schema["CodeNavigation"]["findings"]) {
+  return filter === "open" || filter === "resolved" || filter === "dismissed" ? state[`${filter}_count`]
+    : state.open_count + state.resolved_count + state.dismissed_count;
+}
+
 function identity(data: Workspace) {
   return { base_sha: data.base_sha, head_sha: data.head_sha, merge_base_sha: data.merge_base_sha };
 }
@@ -16,9 +21,12 @@ function authority(data: Workspace) {
 }
 function selection(meta: Metadata | null, nav: Navigation) {
   const group = meta?.data.groups.find((item) => item.id === nav.group);
+  const findings = nav.findings ?? (nav.with_findings ? "open" : null);
+  const reviewed = nav.reviewed ?? (nav.unreviewed ? false : null);
   const files = meta?.data.files.filter((file, index) => (!group || group.file_indexes.includes(index)) && file.path.toLowerCase().includes((nav.query ?? "").toLowerCase())
-    && (!nav.unreviewed || !meta.data.file_states[index].reviewed)
-    && (!nav.with_findings || meta.data.file_states[index].open_count > 0 || !meta.data.file_states[index].complete)) ?? [];
+    && (reviewed === null || meta.data.file_states[index].reviewed === reviewed)
+    && (!findings || (findings === "none" ? meta.data.file_states[index].complete && findingCount(meta.data.file_states[index]) === 0
+      : findingCount(meta.data.file_states[index], findings) > 0 || !meta.data.file_states[index].complete))) ?? [];
   const page = Math.min(nav.page ?? 1, Math.max(1, Math.ceil(files.length / 10)));
   let path = nav.path ?? files[(page - 1) * 10]?.path ?? null;
   let revision = nav.revision ?? "head";
@@ -32,7 +40,7 @@ function selection(meta: Metadata | null, nav: Navigation) {
 function requestFor(meta: Metadata | null, nav: Navigation): Navigation {
   const { path, revision } = selection(meta, nav);
   return { path, revision, view: nav.view, offset: nav.offset ?? 0, start_byte: nav.start_byte ?? 0, end_byte: nav.end_byte ?? 1048576,
-    ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group, unreviewed: nav.unreviewed, with_findings: nav.with_findings }) };
+    ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group, reviewed: nav.reviewed, findings: nav.findings, unreviewed: nav.unreviewed, with_findings: nav.with_findings }) };
 }
 function keyFor(meta: Metadata | null, request: Navigation) {
   return [meta ? "content" : "bootstrap", meta ? authority(meta.data) : null,

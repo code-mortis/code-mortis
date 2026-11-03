@@ -91,6 +91,8 @@ class CodeNavigation(StrictModel):
     group: str | None = Field(default=None, max_length=64)
     unreviewed: bool = False
     with_findings: bool = False
+    reviewed: bool | None = None
+    findings: Literal["any", "none", "open", "resolved", "dismissed"] | None = None
     offset: int = Field(default=0, ge=0, le=100_000, strict=True)
     start_byte: int = Field(default=0, ge=0, le=MAX_FILE_BYTES, strict=True)
     end_byte: int = Field(default=MAX_FILE_BYTES, ge=0, le=MAX_FILE_BYTES, strict=True)
@@ -106,6 +108,8 @@ class CodeWorkspaceGroup(StrictModel):
 class CodeFileState(StrictModel):
     reviewed: bool
     open_count: int = Field(ge=0, le=1000)
+    resolved_count: int = Field(ge=0, le=1000)
+    dismissed_count: int = Field(ge=0, le=1000)
     complete: bool
 
 

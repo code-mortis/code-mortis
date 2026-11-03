@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, ExternalLink, FileCode2, MessageSquare, RefreshCw } from "lucide-react";
 import { ApiError, useAction, type Schema } from "../api";
-import { usePRCode } from "../lib/use-pr-code";
+import { findingCount, usePRCode } from "../lib/use-pr-code";
+import { cn } from "../lib/utils";
 import { Empty, ErrorNotice, Loading, Status } from "./common";
 import { GraphFileDetails, indexDescriptions, rowClass, StatusHint } from "./code-graph-explorer";
 import { CodeGraphCoverage } from "./code-graph-coverage";
@@ -121,7 +122,10 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const action = useAction();
   const value = Number(params.get("graph_page") ?? 1), page = Number.isInteger(value) && value > 0 && value <= 100 ? value : 1;
   const search = (params.get("graph_q") ?? "").slice(0, 256), group = params.get("code_group") ?? "";
-  const unreviewed = params.get("code_unreviewed") === "1", withFindings = params.get("code_findings") === "1";
+  const reviewFilter = params.get("code_reviewed") ?? (params.get("code_unreviewed") === "1" ? "0" : null);
+  const reviewed = reviewFilter === "1" ? true : reviewFilter === "0" ? false : null;
+  const findingFilter = params.get("code_findings") === "1" ? "open" : params.get("code_findings");
+  const findings = (["any", "none", "open", "resolved", "dismissed"] as const).find((value) => value === findingFilter) ?? null;
   const revision = params.get("graph_revision") === "base" ? "base" : "head";
   const requested = params.get("code_view");
   const view = views.find((value) => value === requested) ?? (params.get("tab") === "impact" ? revision === "base" ? "source" : "dependencies" : "diff");
@@ -129,7 +133,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const positionKey = `${params.get("graph_file")}:${revision}`;
   const [position, setPosition] = useState({ key: positionKey, offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] });
   const positionValue = position.key === positionKey ? position : { offset: 0, start_byte: 0, end_byte: 1048576, previous: [] as number[] };
-  const workspace = usePRCode(prId, { page, unreviewed, with_findings: withFindings, query: search, group: group || null, path: params.get("graph_file"),
+  const workspace = usePRCode(prId, { page, reviewed, findings, query: search, group: group || null, path: params.get("graph_file"),
     view: contentView, revision,
     offset: view === "definitions" ? positionValue.offset : 0,
     start_byte: view === "source" ? positionValue.start_byte : 0, end_byte: view === "source" ? positionValue.end_byte : 1048576 });
@@ -166,7 +170,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
       const result = await workspace.loadFindings(file.path);
       const next = new URLSearchParams(window.location.search);
       if (admitted !== navigationId.current || next.get("graph_file") !== file.path || next.get("code_view") !== "diff") return;
-      const finding = result.diff?.findings.find((item) => item.current_status === "open" && ["inline", "outside_diff"].includes(item.placement));
+      const finding = result.diff?.findings.find((item) => !findings || findings === "any" || item.current_status === findings);
       next.set("code_occurrence", finding?.occurrence_id ?? "unavailable");
       setParams(next, { state: location.state });
     } catch { /* The workspace owns authorization and retry errors. */ }
@@ -186,9 +190,9 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
     <div className="space-y-2">
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
     <FilterBar query={search} searchLabel="Filter changed files" searchPlaceholder="Search changed files…" filters={[
-      { key: "code_unreviewed", label: "Review status", values: unreviewed ? ["1"] : [], choices: [{ value: "1", name: "Not reviewed" }] },
-      { key: "code_findings", label: "Findings", values: withFindings ? ["1"] : [], choices: [{ value: "1", name: "With open findings" }] },
-    ]} onChange={(key, values) => change({ [key]: values[0] ?? null, graph_page: null, graph_file: null, code_occurrence: null })} onSearch={(value) => change({ graph_q: value.trim(), graph_page: null, graph_file: null, code_occurrence: null })}>
+      { key: "code_reviewed", label: "Review status", single: true, values: reviewed === null ? [] : [reviewed ? "1" : "0"], choices: [{ value: "0", name: "Not reviewed" }, { value: "1", name: "Reviewed" }] },
+      { key: "code_findings", label: "Findings", single: true, values: findings ? [findings] : [], choices: [{ value: "any", name: "With findings" }, { value: "none", name: "Without findings" }, { value: "open", name: "With open findings" }, { value: "resolved", name: "With resolved findings" }, { value: "dismissed", name: "With dismissed findings" }], hint: "Saved findings from any revision. Incomplete counts remain included except in Without findings." },
+    ]} onChange={(key, values) => change({ [key]: values[0] ?? null, ...(key === "code_reviewed" ? { code_unreviewed: null } : {}), graph_page: null, graph_file: null, code_occurrence: null })} onSearch={(value) => change({ graph_q: value.trim(), graph_page: null, graph_file: null, code_occurrence: null })}>
       {!!data.groups.length && <SearchSelect aria-label="Change group" className="sm:w-72" value={selectedGroup?.id ?? "all"} options={[{ value: "all", label: "All changes" }, ...data.groups.map((item) => ({ value: item.id, label: item.title }))]} onChange={(value) => change({ code_group: value === "all" ? null : value, graph_page: null, graph_file: null, code_occurrence: null })} />}
     </FilterBar>
       <Tooltip><TooltipTrigger asChild><Button variant="outline" className="min-h-11 min-w-11 bg-card px-3 sm:min-h-9" aria-label="Refresh Code" disabled={workspace.fetching} onClick={refresh}><RefreshCw className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Refresh</span></Button></TooltipTrigger><TooltipContent>Refresh Code</TooltipContent></Tooltip>
@@ -202,14 +206,15 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
         <div className="divide-y overflow-hidden rounded-lg border bg-card">
           {workspace.files.slice((workspace.page - 1) * 10, workspace.page * 10).map((file) => {
             const state = data.file_states[data.files.indexOf(file)], active = file.path === path || file.previous_path === path;
-            return <div key={file.path} className={`flex min-w-0 items-center ${active ? "bg-muted" : ""}`}>
-              <button onPointerEnter={() => workspace.prefetch({ path: file.path })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ path: file.path })} onBlur={() => workspace.prefetch()} aria-pressed={active} className={`${rowClass} min-w-0 flex-1`} onClick={() => selectFile(workspace.files.indexOf(file))}>
+            const count = findingCount(state, findings), status = findings && !["any", "none"].includes(findings) ? findings : "saved";
+            return <div key={file.path} className={`flex min-w-0 items-center transition-colors ${active ? "bg-muted" : "hover:bg-muted/50"}`}>
+              <button onPointerEnter={() => workspace.prefetch({ path: file.path })} onPointerLeave={() => workspace.prefetch()} onFocus={() => workspace.prefetch({ path: file.path })} onBlur={() => workspace.prefetch()} aria-pressed={active} className={cn(rowClass, "flex-1 hover:bg-transparent")} onClick={() => selectFile(workspace.files.indexOf(file))}>
                 <span className="block break-words font-mono text-xs [overflow-wrap:anywhere]">{file.path}</span><span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span className="capitalize">{file.change}</span>{file.additions != null && file.deletions != null && <span className="font-mono tabular-nums"><span className="text-[var(--code-added)]">+{file.additions}</span> <span className="text-[var(--code-removed)]">−{file.deletions}</span></span>}{state.reviewed && <Tooltip><TooltipTrigger asChild><span role="img" aria-label="Reviewed by Code Mortis"><Check className="size-3.5" aria-hidden="true" /></span></TooltipTrigger><TooltipContent>Reviewed at this revision. This does not mean there are no findings.</TooltipContent></Tooltip>}</span>
               </button>
-              {(state.open_count > 0 || !state.complete) && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="mr-1 min-h-11 min-w-11 shrink-0 gap-1 px-2 sm:min-h-9" aria-label={`Open findings for ${file.path}`} onClick={(event) => void openFirstFinding(file, event.currentTarget)}><MessageSquare className="size-3.5" aria-hidden="true" /><span className="text-xs tabular-nums">{state.open_count || "?"}{!state.complete && state.open_count > 0 ? "+" : ""}</span></Button></TooltipTrigger><TooltipContent>{state.complete ? `${state.open_count} open finding${state.open_count === 1 ? "" : "s"}` : "Open finding count is incomplete"}</TooltipContent></Tooltip>}
+              {(count > 0 || !state.complete) && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="mr-1 min-h-11 min-w-11 shrink-0 gap-1 px-2 sm:min-h-9" aria-label={`Open findings for ${file.path}`} onClick={(event) => void openFirstFinding(file, event.currentTarget)}><MessageSquare className="size-3.5" aria-hidden="true" /><span className="text-xs tabular-nums">{count || "?"}{!state.complete && count > 0 ? "+" : ""}</span></Button></TooltipTrigger><TooltipContent>{state.complete ? `${count} ${status} finding${count === 1 ? "" : "s"}` : `${count ? `At least ${count} ${status} findings. ` : ""}Finding count is incomplete.`}</TooltipContent></Tooltip>}
             </div>;
           })}
-          {!workspace.files.length && <p className="p-4 text-sm text-muted-foreground">{search ? "No returned files match this filter." : "No visible changed files in this comparison."}</p>}
+          {!workspace.files.length && <div className="space-y-2 p-4 text-sm text-muted-foreground"><p>{search || findings || reviewed !== null || selectedGroup ? "No returned files match these filters." : "No visible changed files in this comparison."}</p>{(search || findings || reviewed !== null || selectedGroup) && <Button variant="outline" size="sm" onClick={() => change({ graph_q: null, code_findings: null, code_reviewed: null, code_unreviewed: null, code_group: null, graph_page: null, graph_file: null, code_occurrence: null })}>Clear filters</Button>}</div>}
           <Pagination page={workspace.page} pageSize={10} total={workspace.files.length} loading={false} label="changed files" onPageChange={(value) => change({ graph_page: String(value), graph_file: null, code_occurrence: null })} />
         </div>
       </section>
