@@ -8,9 +8,9 @@ type Metadata = { data: Workspace; graphs: Record<string, string> };
 const AGE = 30_000;
 const BYTES = 5 * 1024 * 1024;
 
-export function findingCount(state: Schema["CodeFileState"], filter?: Schema["CodeNavigation"]["findings"]) {
-  return filter === "open" || filter === "resolved" || filter === "dismissed" ? state[`${filter}_count`]
-    : state.open_count + state.resolved_count + state.dismissed_count;
+export function findingCount(state: Schema["CodeFileState"], filters: Schema["CodeNavigation"]["findings"] = []) {
+  return (["open", "resolved", "dismissed"] as const).reduce((count, status) =>
+    count + (!filters.length || filters.includes("any") || filters.includes(status) ? state[`${status}_count`] : 0), 0);
 }
 
 function identity(data: Workspace) {
@@ -21,12 +21,13 @@ function authority(data: Workspace) {
 }
 function selection(meta: Metadata | null, nav: Navigation) {
   const group = meta?.data.groups.find((item) => item.id === nav.group);
-  const findings = nav.findings ?? (nav.with_findings ? "open" : null);
-  const reviewed = nav.reviewed ?? (nav.unreviewed ? false : null);
+  const findings = nav.findings?.length ? nav.findings : nav.with_findings ? ["open"] as const : [];
+  const reviewed = nav.reviewed?.length ? nav.reviewed : nav.unreviewed ? [false] : [];
   const files = meta?.data.files.filter((file, index) => (!group || group.file_indexes.includes(index)) && file.path.toLowerCase().includes((nav.query ?? "").toLowerCase())
-    && (reviewed === null || meta.data.file_states[index].reviewed === reviewed)
-    && (!findings || (findings === "none" ? meta.data.file_states[index].complete && findingCount(meta.data.file_states[index]) === 0
-      : findingCount(meta.data.file_states[index], findings) > 0 || !meta.data.file_states[index].complete))) ?? [];
+    && (!reviewed.length || reviewed.includes(meta.data.file_states[index].reviewed))
+    && (!findings.length || findings.some((value) => value === "none"
+      ? meta.data.file_states[index].complete && findingCount(meta.data.file_states[index]) === 0
+      : findingCount(meta.data.file_states[index], [value]) > 0 || !meta.data.file_states[index].complete))) ?? [];
   const page = Math.min(nav.page ?? 1, Math.max(1, Math.ceil(files.length / 10)));
   let path = nav.path ?? files[(page - 1) * 10]?.path ?? null;
   let revision = nav.revision ?? "head";

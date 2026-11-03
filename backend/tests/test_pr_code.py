@@ -478,7 +478,11 @@ def test_finding_counts_deduplicate_use_immutable_sides_and_withhold_invalid(com
     assert data["file_states"][2]["dismissed_count"] == 1
 
 
-@pytest.mark.parametrize(("findings", "path"), [("any", "next.py"), ("none", "image.png"), ("open", "next.py"), ("resolved", "notes.md"), ("dismissed", "next.py")])
+@pytest.mark.parametrize(("findings", "path"), [
+    ("any", "next.py"), ("none", "image.png"), ("open", "next.py"), ("resolved", "notes.md"), ("dismissed", "next.py"),
+    (["open", "resolved"], "next.py"), (["resolved", "dismissed"], "next.py"),
+    (["none", "resolved"], "image.png"), (["any", "none"], "image.png"), (["resolved"], "notes.md"),
+])
 def test_workspace_filters_saved_findings_across_revisions_and_renames(comparison, client, findings, path):
     with transaction() as db:
         for index in range(2):
@@ -500,8 +504,11 @@ def test_workspace_filters_saved_findings_across_revisions_and_renames(compariso
         {"reviewed": False, "open_count": 1, "resolved_count": 0, "dismissed_count": 1, "complete": True},
         {"reviewed": False, "open_count": 0, "resolved_count": 1, "dismissed_count": 0, "complete": True},
     ]
-    if findings != "none":
-        assert any(item["current_status"] == findings or findings == "any" for item in data["diff"]["findings"])
+    filters = [findings] if isinstance(findings, str) else findings
+    if "none" not in filters:
+        assert any(item["current_status"] in filters or "any" in filters for item in data["diff"]["findings"])
+    if "resolved" in filters:
+        assert client.post(URL + "/workspace", json={"findings": findings, "query": "notes"}).json()["path"] == "notes.md"
     assert client.post(URL + "/workspace", json={"findings": findings, "query": "absent"}).json()["path"] is None
 
 
@@ -512,6 +519,12 @@ def test_without_findings_never_treats_incomplete_counts_as_zero(comparison, cli
             occurrence.snapshot = {**occurrence.snapshot, "content": "provider-secret"}
     assert client.post(URL + "/workspace", json={"findings": "any", "query": "notes"}).json()["path"] == "notes.md"
     assert client.post(URL + "/workspace", json={"findings": "none", "query": "notes"}).json()["path"] is None
+    assert client.post(URL + "/workspace", json={"findings": ["none", "resolved"], "query": "notes"}).json()["path"] == "notes.md"
+
+
+@pytest.mark.parametrize("filters", [{"findings": ["invalid"]}, {"findings": ["open"] * 6}, {"reviewed": [True] * 3}])
+def test_workspace_rejects_invalid_or_unbounded_filter_lists(comparison, client, filters):
+    assert client.post(URL + "/workspace", json=filters).status_code == 422
 
 
 def test_bounded_counts_and_constant_database_queries(comparison, client, monkeypatch):
@@ -580,6 +593,9 @@ def test_automatic_review_checks_use_validated_results_without_any_writes(compar
     assert data["path"] == "next.py"
     assert client.post(URL + "/workspace", json={"reviewed": True}).json()["path"] == "image.png"
     assert client.post(URL + "/workspace", json={"reviewed": False}).json()["path"] == "next.py"
+    assert client.post(URL + "/workspace", json={"reviewed": [True, False]}).json()["path"] == "image.png"
+    assert client.post(URL + "/workspace", json={"reviewed": [False], "findings": ["open", "resolved"]}).json()["path"] is None
+    assert client.post(URL + "/workspace", json={"reviewed": [True], "findings": ["open", "resolved"]}).json()["path"] == "notes.md"
     assert client.post(URL + "/workspace", json={}).json()["file_states"] == data["file_states"]
     with transaction() as db:
         assert before == [(f.id, f.status) for f in db.scalars(select(Finding))]

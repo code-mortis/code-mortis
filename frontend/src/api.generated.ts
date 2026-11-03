@@ -2658,9 +2658,9 @@ export interface components {
              */
             with_findings: boolean;
             /** Reviewed */
-            reviewed?: boolean | null;
+            reviewed?: boolean[];
             /** Findings */
-            findings?: ("any" | "none" | "open" | "resolved" | "dismissed") | null;
+            findings?: ("any" | "none" | "open" | "resolved" | "dismissed")[];
             /**
              * Offset
              * @default 0

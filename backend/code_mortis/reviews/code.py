@@ -347,12 +347,16 @@ def workspace(db, user, pr_id, request):
             metadata["file_states"].pop()
     files = files[:len(metadata["files"])]
     group = next((g for g in metadata["groups"] if g["id"] == request.group), None)
-    findings = request.findings or ("open" if request.with_findings else None)
-    reviewed = request.reviewed if request.reviewed is not None else False if request.unreviewed else None
+    findings = request.findings or (["open"] if request.with_findings else [])
+    reviewed = request.reviewed or ([False] if request.unreviewed else [])
     def matches(state):
-        count = state[f"{findings}_count"] if findings in {"open", "resolved", "dismissed"} else sum(state[f"{status}_count"] for status in ("open", "resolved", "dismissed"))
-        return (reviewed is None or state["reviewed"] == reviewed) and (not findings or (
-            state["complete"] and count == 0 if findings == "none" else count > 0 or not state["complete"]))
+        if reviewed and state["reviewed"] not in reviewed:
+            return False
+        total = sum(state[f"{status}_count"] for status in ("open", "resolved", "dismissed"))
+        return not findings or any(
+            state["complete"] and total == 0 if value == "none" else
+            not state["complete"] or (total if value == "any" else state[f"{value}_count"]) > 0
+            for value in findings)
     visible = [info for i, (info, _) in enumerate(files) if request.query.casefold() in info.path.casefold()
                and (not group or i in group["file_indexes"])
                and matches(metadata["file_states"][i])]

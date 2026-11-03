@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from code_mortis.schemas.code_graph import MAX_FILE_BYTES, Digest, GitSha, RepositoryPath
 from code_mortis.schemas.code_graph_explorer import GraphRead
@@ -91,11 +91,18 @@ class CodeNavigation(StrictModel):
     group: str | None = Field(default=None, max_length=64)
     unreviewed: bool = False
     with_findings: bool = False
-    reviewed: bool | None = None
-    findings: Literal["any", "none", "open", "resolved", "dismissed"] | None = None
+    reviewed: list[bool] = Field(default_factory=list, max_length=2)
+    findings: list[Literal["any", "none", "open", "resolved", "dismissed"]] = Field(default_factory=list, max_length=5)
     offset: int = Field(default=0, ge=0, le=100_000, strict=True)
     start_byte: int = Field(default=0, ge=0, le=MAX_FILE_BYTES, strict=True)
     end_byte: int = Field(default=MAX_FILE_BYTES, ge=0, le=MAX_FILE_BYTES, strict=True)
+
+    @field_validator("reviewed", "findings", mode="before")
+    @classmethod
+    def accept_single_filter(cls, value):
+        if value is None:
+            return []
+        return [value] if isinstance(value, (str, bool)) else value
 
 
 class CodeWorkspaceGroup(StrictModel):

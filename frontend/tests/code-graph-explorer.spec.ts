@@ -7,7 +7,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
-  const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
+  const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
     fileError: 0, codeError: 0, patchState: "available", groups: false, moreFindings: false, verifiedHistory: false, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
@@ -76,15 +76,16 @@ export async function mockGraph(page: Page, admin = true) {
         ...Array.from({ length: 7 }, (_, i) => ({ path: `src/file${i}.ts`, change: "modified", additions: 1, deletions: 1 })),
         { path: "src/old.ts", change: "removed", additions: 0, deletions: 2 }];
       const groups = state.groups ? [{ id: "run:0", title: "Response validation", description: "Rejects malformed responses.", file_indexes: [0] }] : [];
-      const file_states = files.map((file) => ({ reviewed: file.path === selected && state.reviewed, open_count: file.path === selected ? state.count : 0,
-        resolved_count: file.path === selected ? state.resolvedCount : 0, dismissed_count: file.path === selected ? state.dismissedCount : 0, complete: state.countComplete }));
-      const findings = body.findings ?? (body.with_findings ? "open" : null);
-      const reviewed = body.reviewed ?? (body.unreviewed ? false : null);
+      const file_states = files.map((file) => ({ reviewed: file.path === selected && state.reviewed, complete: state.countComplete,
+        ...(state.fileCounts[file.path] ?? { open_count: file.path === selected ? state.count : 0,
+          resolved_count: file.path === selected ? state.resolvedCount : 0, dismissed_count: file.path === selected ? state.dismissedCount : 0 }) }));
+      const findings: string[] = body.findings ?? (body.with_findings ? ["open"] : []);
+      const reviewed: boolean[] = body.reviewed ?? (body.unreviewed ? [false] : []);
       const visible = files.filter((file, i) => file.path.includes(body.query ?? "") && (!body.group || file.path === selected)
-        && (reviewed === null || file_states[i].reviewed === reviewed) && (!findings || (findings === "none"
+        && (!reviewed.length || reviewed.includes(file_states[i].reviewed)) && (!findings.length || findings.some((value) => value === "none"
           ? file_states[i].complete && file_states[i].open_count + file_states[i].resolved_count + file_states[i].dismissed_count === 0
-          : !file_states[i].complete || (findings === "any" ? file_states[i].open_count + file_states[i].resolved_count + file_states[i].dismissed_count
-            : file_states[i][`${findings}_count` as "open_count" | "resolved_count" | "dismissed_count"]) > 0)));
+          : !file_states[i].complete || (value === "any" ? file_states[i].open_count + file_states[i].resolved_count + file_states[i].dismissed_count
+            : file_states[i][`${value}_count` as "open_count" | "resolved_count" | "dismissed_count"]) > 0)));
       const selectedPath = body.path ?? visible[((body.page ?? 1) - 1) * 10]?.path ?? null;
       const revision = body.view !== "diff" && selectedPath === "src/old.ts" ? "base" : body.revision ?? "head";
       const normalized = { ...body, path: selectedPath, revision, operation: body.view === "definitions" ? "symbols" : body.view };
@@ -923,16 +924,18 @@ test("finding filters include resolved historical evidence and retain selections
   expect(calls.filter((call) => call.path.endsWith("/workspace"))).toHaveLength(before);
   await page.getByRole("button", { name: "Edit Findings: With findings", exact: true }).click();
   await page.getByRole("checkbox", { name: "With resolved findings", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "With findings", exact: true })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "With findings", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: "With findings", exact: true }).click();
   await page.keyboard.press("Escape");
   await page.reload();
   await expect(page.getByRole("button", { name: "Edit Findings: With resolved findings", exact: true })).toBeVisible();
-  expect(calls.filter((call) => call.path.endsWith("/workspace")).at(-1)?.body.findings).toBe("resolved");
+  expect(calls.filter((call) => call.path.endsWith("/workspace")).at(-1)?.body.findings).toEqual(["resolved"]);
   await indicator.click();
   await expect(page.getByRole("dialog")).toContainText("Earlier saved evidence");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Edit Findings: With resolved findings", exact: true }).click();
   await page.getByRole("checkbox", { name: "With open findings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "With resolved findings", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByText("No returned files match these filters.", { exact: true })).toBeVisible();
   await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: "Clear filters", exact: true }).click();
@@ -949,6 +952,7 @@ test("dismissed and without-findings filters match row counts and preserve unkno
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Edit Findings: With dismissed findings", exact: true }).click();
   await page.getByRole("checkbox", { name: "Without findings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "With dismissed findings", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText("src/added.ts");
   await expect(page.getByRole("button", { name: `Open findings for ${selected}`, exact: true })).toHaveCount(0);
@@ -965,14 +969,60 @@ test("review status supports reviewed files and restores legacy unreviewed links
   await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText("src/added.ts");
   await page.getByRole("button", { name: "Edit Review status: Not reviewed", exact: true }).click();
   await page.getByRole("checkbox", { name: "Reviewed", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Not reviewed", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Reviewed", exact: true })).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page).toHaveURL(/code_reviewed=1/);
   await expect(page).not.toHaveURL(/code_unreviewed=/);
+  expect(new URL(page.url()).searchParams.getAll("code_reviewed")).toEqual(["0", "1"]);
   await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText(selected);
   await page.reload();
   await expect(page.getByRole("img", { name: "Reviewed by Code Mortis", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Next file", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Remove Review status filter", exact: true }).click();
   await expect(page.getByRole("button", { name: "Next file", exact: true })).toBeVisible();
+});
+
+test("Code combines finding states with review status and restores multi-value navigation", async ({ page }, info) => {
+  const { state, calls } = await mockGraph(page);
+  state.count = 1; state.resolvedCount = 1; state.dismissedCount = 1; state.reviewed = true; state.groups = true;
+  state.fileCounts = {
+    "src/added.ts": { open_count: 0, resolved_count: 1, dismissed_count: 0 },
+    "src/file0.ts": { open_count: 0, resolved_count: 0, dismissed_count: 1 },
+  };
+  await page.goto("/pulls/pr?tab=code&code_findings=open");
+  const files = page.getByRole("region", { name: "Changed files", exact: true });
+  const rows = files.locator('button[aria-pressed]');
+  await expect(rows).toHaveCount(1);
+  const before = calls.filter((call) => call.path.endsWith("/workspace")).length;
+  await page.getByRole("button", { name: "Edit Findings: With open findings", exact: true }).click();
+  await page.getByRole("checkbox", { name: "With resolved findings", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "With open findings", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "With resolved findings", exact: true })).toBeChecked();
+  await page.screenshot({ path: `../.impeccable/review/pr-code-multiple-filters-${info.project.name}.png`, fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(rows).toHaveCount(2);
+  await expect(files.getByRole("button", { name: `Open findings for ${selected}`, exact: true })).toHaveText("2");
+  expect(calls.filter((call) => call.path.endsWith("/workspace"))).toHaveLength(before);
+  expect(new URL(page.url()).searchParams.getAll("code_findings")).toEqual(["open", "resolved"]);
+  await page.reload();
+  await expect(rows).toHaveCount(2);
+  expect(calls.filter((call) => call.path.endsWith("/workspace")).at(-1)?.body.findings).toEqual(["open", "resolved"]);
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Review status", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Not reviewed", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("src/added.ts");
+  await page.reload();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("src/added.ts");
+  await page.getByRole("button", { name: "Remove Review status filter", exact: true }).click();
+  await expect(rows).toHaveCount(2);
+  await page.goBack();
+  await expect(rows).toHaveCount(1);
+  await page.goForward();
+  await expect(rows).toHaveCount(2);
 });
 
 test("workflow controls fit populated and empty states at three widths and both themes", async ({ page }, testInfo) => {
