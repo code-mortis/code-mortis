@@ -111,6 +111,11 @@ def ready_to_sync(run):
 def enqueue_sync(db, pr):
     if pr.ignored:
         return
+    repo = db.get(Repository, pr.repository_id)
+    if not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
+        # Retain recovery intent without recreating failed jobs on every reconciliation.
+        pr.summary_error = pr.summary_error or "The PR overview cannot be updated because GitHub installation access was removed."
+        return
     if any(isinstance(item, Job) and item.kind == "sync_summary" and item.payload.get("pr_id") == pr.id
            for item in db.new):
         return
