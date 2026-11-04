@@ -15,6 +15,7 @@ from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
     Finding,
+    Installation,
     Job,
     Occurrence,
     PullRequest,
@@ -162,6 +163,60 @@ def test_concurrent_summary_jobs_create_once_without_holding_database(seed, over
         assert "Updated during publication" in stored[0]["body"]
     with transaction() as db:
         assert all(db.get(Job, job_id).status == "done" for job_id in (first, second))
+
+
+@pytest.mark.parametrize("model,field", [(Repository, "enabled"), (Repository, "active"), (Installation, "active")])
+@pytest.mark.parametrize("already_queued", [False, True])
+def test_summary_access_loss_stops_reconciliation_until_restored(seed, overview_api, monkeypatch, model, field, already_queued):
+    _, writes, _ = overview_api
+    reported = []
+    monkeypatch.setattr(jobs.sentry_sdk, "capture_exception", lambda error, **kwargs: reported.append(error))
+    target_id = 10 if model is Installation else 22
+    failed_job = None
+    identity = completed_run() if already_queued else ready_run()
+    if already_queued:
+        with transaction() as db:
+            failed_job = db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+    with transaction() as db:
+        setattr(db.get(model, target_id), field, False)
+    if already_queued:
+        jobs.execute_job(failed_job)
+        with transaction() as db:
+            assert db.get(Job, failed_job).status == "failed"
+    else:
+        with transaction() as db:
+            run = db.get(ReviewRun, identity)
+            run.status, run.summary = "completed", {"status": "completed", "result": RESULT}
+            run.publication = "no_new_comments"
+
+    for _ in range(2):
+        jobs.schedule_reconciliation()
+    # Review/finding changes use the same enqueue path as periodic recovery.
+    with transaction() as db:
+        db.get(ReviewRun, identity).publication = "published"
+    with transaction() as db:
+        overview_jobs = list(db.scalars(select(Job).where(Job.kind == "sync_summary")))
+        assert [job.id for job in overview_jobs] == ([failed_job] if already_queued else [])
+        assert "access was removed" in db.get(PullRequest, "pr").summary_error
+        assert db.get(ReviewRun, identity).summary["result"] == RESULT
+        setattr(db.get(model, target_id), field, True)
+    assert writes == [] and len(reported) == int(already_queued)
+
+    jobs.schedule_reconciliation()
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        pending = list(db.scalars(select(Job).where(Job.kind == "sync_summary", Job.status == "queued")))
+        assert len(pending) == 1
+        recovered_job = pending[0].id
+    jobs.execute_job(recovered_job)
+    with transaction() as db:
+        assert db.get(Job, recovered_job).status == "done"
+        assert db.get(PullRequest, "pr").summary_error is None
+        assert db.get(PullRequest, "pr").summary_comment_id is not None
+        if failed_job:
+            assert db.get(Job, failed_job).status == "failed"
+    assert [method for method, _ in writes] == ["POST"]
+    assert len(reported) == int(already_queued)
 
 
 @pytest.mark.parametrize("change", ["new_run", "revision", "disabled"])
