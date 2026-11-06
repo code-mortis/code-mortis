@@ -27,8 +27,9 @@ from code_mortis.schemas.security import SecurityScanInput
 from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans import service as security
 
-assert engine().url.database == 'mortis_test', 'This workload must never use an application database'
-ROOT = Path('/tmp/cm-graph-overlap')
+if engine().url.database != 'mortis_test':
+    raise SystemExit('This workload must never use an application database')
+ROOT = Path(__file__).resolve().parent
 REPO = ROOT / 'repo'
 ENV = ocr.child_environment()
 BASE, HEAD = json.loads((ROOT / 'revisions.json').read_text())

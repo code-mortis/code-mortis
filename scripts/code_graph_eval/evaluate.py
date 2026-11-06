@@ -92,6 +92,11 @@ def direct(root):
             factory = "language_" + language if language in ("typescript", "tsx", "php") else "language"
             parsers[language] = Parser(Language(getattr(module, factory)()))
         source = path.read_bytes()
+        try:
+            source.decode("utf-8")
+        except UnicodeDecodeError:
+            statuses[name] = "partial"
+            continue
         tree = parsers[language].parse(source)
         statuses[name] = "partial" if tree.root_node.has_error else "parsed"
         for node in descendants(tree.root_node):
@@ -123,7 +128,12 @@ def direct(root):
                 target = relative_target(Path(name), specifier, available) if language in ("javascript", "typescript", "tsx") else None
                 imports.append({"path": name, "line": node.start_point.row + 1, "specifier": specifier, "target": target})
         if language == "python" and statuses[name] == "parsed":
-            for node in ast.walk(ast.parse(source)):
+            try:
+                python_tree = ast.parse(source)
+            except (SyntaxError, ValueError):
+                statuses[name] = "partial"
+                continue
+            for node in ast.walk(python_tree):
                 if isinstance(node, (ast.ImportFrom, ast.Import)):
                     specifier = node.module or "" if isinstance(node, ast.ImportFrom) else node.names[0].name
                     level = node.level if isinstance(node, ast.ImportFrom) else 0

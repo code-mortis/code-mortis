@@ -65,7 +65,8 @@ def main():
     from code_mortis.reviews import context
     from code_mortis.reviews.service import authorize_connection, connection_snapshot
 
-    assert engine().url.database == 'mortis_dev', 'This experiment is restricted to local development'
+    if engine().url.database != 'mortis_dev':
+        parser.error('This experiment is restricted to local development')
     requests = json.loads(args.requests.read_text())
     assert len(requests) == 18 and len({r['id'] for r in requests}) == 18
     assert {r['arm'] for r in requests} == {'baseline', 'text_symbols', 'graph'}

@@ -27,7 +27,8 @@ parser.add_argument("--pr-id", required=True)
 parser.add_argument("--path", required=True)
 parser.add_argument("--samples", type=int, default=20)
 args = parser.parse_args()
-assert 1 <= args.samples <= 100
+if not 1 <= args.samples <= 100:
+    parser.error("--samples must be between 1 and 100")
 stages, samples = [], []
 sql = {"count": 0, "ms": 0}
 
@@ -67,7 +68,8 @@ for module, name in [(github, "request"), (github, "authorize_repo"), (explorer,
     measure(module, name)
 with transaction() as db:
     actor = db.scalar(select(User.id).where(User.login == args.login))
-    assert actor is not None, "User not found"
+    if actor is None:
+        parser.error("User not found")
     jobs_before = Counter(db.scalars(select(Job.kind)))
 
 for iteration in range(args.samples + 1):

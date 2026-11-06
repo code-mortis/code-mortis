@@ -12,17 +12,19 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ['docker', 'compose', '--env-file', '.env.dev', '-f', 'compose.dev.yaml']
+WORKLOAD_DIR = f'/tmp/cm-graph-overlap-{uuid4().hex}'
 TEST_ENV = {
     'CM_DATABASE_URL': 'postgresql+psycopg://mortis:mortis-test-only@host.docker.internal:55439/mortis_test',
     'CM_REDIS_URL': 'redis://host.docker.internal:56389/0',
     'CM_ENCRYPTION_KEY': 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=',
-    'CM_SENTRY_DSN': '', 'CM_WORK_DIR': '/tmp/cm-graph-overlap/work',
+    'CM_SENTRY_DSN': '', 'CM_WORK_DIR': WORKLOAD_DIR + '/work',
 }
 SERVICES = {'graph': 'code-graph-worker', 'review': 'review-worker', 'security': 'security-worker', 'database': 'api'}
-STOP = "import os,signal; from pathlib import Path; [(os.kill(int(p.parent.name),signal.SIGTERM)) for p in Path('/proc').glob('[0-9]*/cmdline') if b'/tmp/cm-graph-overlap/workload.py' in p.read_bytes().split(b'\\0')]"
+STOP = f"import os,signal; from pathlib import Path; [(os.kill(int(p.parent.name),signal.SIGTERM)) for p in Path('/proc').glob('[0-9]*/cmdline') if b'{WORKLOAD_DIR}/workload.py' in p.read_bytes().split(b'\\0')]"
 
 
 def command(args, **kwargs):
@@ -34,6 +36,10 @@ def inside(service, args):
 
 
 def summarize(samples):
+    if not samples:
+        return {'sample_count': 0, 'duration_seconds': None, 'peak_simultaneous_container_memory_bytes': None,
+                'peak_aggregate_cpu_percent': None, 'container_peaks': {}}
+
     def memory(value):
         amount, unit = re.fullmatch(r'([0-9.]+)([A-Za-z]+)', value.split(' / ')[0]).groups()
         return round(float(amount) * {'B': 1, 'KiB': 1024, 'MiB': 1024**2, 'GiB': 1024**3}[unit])
@@ -104,12 +110,12 @@ with tempfile.TemporaryDirectory(prefix='cm-graph-overlap-') as tmp:
     started, jobs, logs = [], {}, {}
     try:
         for service in SERVICES.values():
-            command(inside(service, ['mkdir', '/tmp/cm-graph-overlap']))
+            command(inside(service, ['mkdir', WORKLOAD_DIR]))
             started.append(service)
-            command(inside(service, ['tar', '-xf', '-', '-C', '/tmp/cm-graph-overlap']), input=payload)
+            command(inside(service, ['tar', '-xf', '-', '-C', WORKLOAD_DIR]), input=payload)
         for mode, service in SERVICES.items():
             logs[mode] = (root / (mode + '.log')).open('w+')
-            jobs[mode] = subprocess.Popen(inside(service, ['python', '/tmp/cm-graph-overlap/workload.py', mode]),
+            jobs[mode] = subprocess.Popen(inside(service, ['python', WORKLOAD_DIR + '/workload.py', mode]),
                                          cwd=ROOT, stdout=logs[mode], stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 900
         while any(job.poll() is None for job in jobs.values()):
@@ -139,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix='cm-graph-overlap-') as tmp:
         for handle in logs.values():
             handle.close()
         for service in started:
-            command(inside(service, ['rm', '-rf', '/tmp/cm-graph-overlap']))
+            command(inside(service, ['rm', '-rf', WORKLOAD_DIR]))
 result['resources'] = summarize(result.pop('samples'))
 output = ROOT / 'docs/evidence/code-graph-phase2-overlap.json'
 output.write_text(json.dumps(result, indent=2) + '\n')
