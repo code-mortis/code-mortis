@@ -87,6 +87,9 @@ export async function mockGraph(page: Page, admin = true) {
           : !file_states[i].complete || (value === "any" ? file_states[i].open_count + file_states[i].resolved_count + file_states[i].dismissed_count
             : file_states[i][`${value}_count` as "open_count" | "resolved_count" | "dismissed_count"]) > 0)));
       const selectedPath = body.path ?? visible[((body.page ?? 1) - 1) * 10]?.path ?? null;
+      if (selectedPath && body.view === "diff" && !files.some((file) => file.path === selectedPath)) {
+        return route.fulfill({ status: 404, json: { detail: "This file is not available in the current comparison." } });
+      }
       const revision = body.view !== "diff" && selectedPath === "src/old.ts" ? "base" : body.revision ?? "head";
       const normalized = { ...body, path: selectedPath, revision, operation: body.view === "definitions" ? "symbols" : body.view };
       data = { base_sha: base, head_sha: head, merge_base_sha: mergeBase, policy_digest: state.policy, files, file_states, groups,
@@ -130,6 +133,35 @@ test("impact links keyboard navigation, definitions, exact source and saved find
   expect(new URL(page.url()).searchParams.has("resolved_severity")).toBe(false);
   expect(new URL(page.url()).searchParams.has("resolved_page")).toBe(false);
   expect(calls.filter((call) => call.path.endsWith("/code-graph/index"))).toHaveLength(0);
+});
+
+test("graph-only files keep diff tabs unavailable without losing related navigation", async ({ page }) => {
+  const { calls } = await mockGraph(page);
+  await page.clock.install();
+  await page.goto("/pulls/pr?tab=code&code_view=dependencies");
+  await page.getByRole("list", { name: "File dependencies" }).getByRole("button").click();
+  await expect(page.getByRole("heading", { name: "Selected file details" })).toContainText(related);
+  await expect(page.getByRole("button", { name: "Indexed with warnings", exact: true })).toBeVisible();
+  const before = calls.filter((call) => call.path.endsWith("/workspace")).length;
+  for (const name of ["Diff", "Findings"]) {
+    const tab = page.getByRole("tab", { name, exact: true });
+    await expect(tab).toBeDisabled();
+    await tab.hover({ force: true });
+    await tab.focus();
+    await page.clock.runFor(300);
+    await expect(tab).not.toBeFocused();
+  }
+  expect(calls.filter((call) => call.path.endsWith("/workspace"))).toHaveLength(before);
+  await expect(page.getByRole("button", { name: "Retry Code" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await expect(page.getByLabel("Indexed source", { exact: true })).toBeVisible();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Dependencies", exact: true })).toBeFocused();
+  await expect(page.getByRole("list", { name: "File dependencies" })).toBeVisible();
+  expect(calls.some((call) => call.body?.view === "diff" && call.body?.path === related)).toBe(false);
+  await page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { name: /src\/service.ts/ }).click();
+  await expect(page.getByRole("tab", { name: "Diff", exact: true })).toBeEnabled();
+  await expect(page.getByRole("tab", { name: "Findings", exact: true })).toBeEnabled();
 });
 
 for (const view of ["source", "definitions", "definition range"] as const) test(`automatic file selection resets ${view} position`, async ({ page }) => {
@@ -739,6 +771,45 @@ test("idle Code does not poll hidden findings and keeps periodic calls bounded",
   const periodic = calls.slice(start);
   expect(periodic.filter((call) => call.path.endsWith("/findings"))).toHaveLength(0);
   expect(periodic.length).toBeLessThanOrEqual(6);
+});
+
+for (const initialFilter of [true, false]) test(`empty findings filter refreshes metadata and discovers new findings (${initialFilter ? "initial" : "local"} filter)`, async ({ page }) => {
+  const { calls, state } = await mockGraph(page);
+  state.prState = "merged";
+  await page.clock.install();
+  await page.goto(`/pulls/pr?tab=code${initialFilter ? "&code_findings=open" : ""}`);
+  if (!initialFilter) {
+    await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Findings", exact: true }).click();
+    await page.getByRole("checkbox", { name: "With open findings", exact: true }).click();
+    await page.keyboard.press("Escape");
+  }
+  const empty = page.getByText("No returned files match these filters.", { exact: true });
+  await expect(empty).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh Code", exact: true })).toBeEnabled();
+  const reads = () => calls.filter((call) => call.path.endsWith("/workspace"));
+  const before = reads().length;
+  for (const query of ["src", "src/service"]) {
+    await page.getByRole("textbox", { name: "Filter changed files" }).fill(query);
+    await page.clock.runFor(350);
+    await expect(page).toHaveURL(new RegExp(`graph_q=${encodeURIComponent(query)}`));
+    await expect(empty).toBeVisible();
+  }
+  expect(reads()).toHaveLength(before);
+  await page.clock.runFor(61000);
+  const refreshes = reads().slice(before);
+  expect(refreshes.length).toBeGreaterThan(0);
+  expect(refreshes.length).toBeLessThanOrEqual(3);
+  for (const call of refreshes) expect(call.body).toMatchObject({ path: null, query: "src/service", findings: ["open"],
+    expected: { base_sha: base, head_sha: head, merge_base_sha: mergeBase } });
+  await expect(empty).toBeVisible();
+  await expect(page.getByRole("region", { name: "File diff" })).toHaveCount(0);
+  state.count = 1; state.groups = true;
+  await page.clock.runFor(26000);
+  await expect(page.getByRole("button", { name: `Open findings for ${selected}`, exact: true })).toHaveText("1");
+  await expect(page.getByRole("region", { name: "File diff" })).toContainText("mañana");
+  await expect(page).toHaveURL(/code_findings=open/);
 });
 
 test("permission loss purges other cached views before retry", async ({ page }) => {

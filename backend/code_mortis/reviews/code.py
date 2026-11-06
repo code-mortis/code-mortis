@@ -212,15 +212,16 @@ def file_states(db, user, repo, pr, files):
 
 def saved_findings(db, user, repo, pr, info, identity, lines):
     paths = [p for p in (info.path, info.previous_path) if p]
-    records = db.execute(select(Occurrence, ReviewRun, Finding.status).join(ReviewRun, ReviewRun.id == Occurrence.run_id)
+    bounded = case((func.octet_length(cast(Occurrence.snapshot, Text)) <= 32768, Occurrence.snapshot), else_=None)
+    records = db.execute(select(Occurrence.id, Occurrence.finding_id, ReviewRun.id, ReviewRun.base_sha,
+        ReviewRun.head_sha, Finding.status, bounded).join(ReviewRun, ReviewRun.id == Occurrence.run_id)
         .join(Finding, Finding.id == Occurrence.finding_id).where(ReviewRun.pr_id == pr.id, Finding.pr_id == pr.id,
         Occurrence.snapshot["path"].as_string().in_(paths)).order_by(((ReviewRun.base_sha == pr.base_sha) & (ReviewRun.head_sha == pr.head_sha)
                    & (Finding.status == "open")).desc(), ReviewRun.created_at.desc(), Occurrence.id)
         .limit(MAX_FINDINGS + 1)).all()
     results = []
     check = explorer.source_checker(db, user, repo)
-    for occurrence, run, status in records[:MAX_FINDINGS]:
-        raw = occurrence.snapshot
+    for occurrence_id, finding_id, run_id, base_sha, head_sha, status, raw in records[:MAX_FINDINGS]:
         try:
             snapshot = evidence_snapshot(raw, check)
         except (ValueError, TypeError, HTTPException):
@@ -233,11 +234,11 @@ def saved_findings(db, user, repo, pr, info, identity, lines):
         valid_range = type(start) is int and type(end) is int and 0 < start <= end
         side = ("new" if sha == identity["head_sha"] and snapshot["path"] == info.path else
                 "old" if sha == identity["merge_base_sha"] and snapshot["path"] == (info.previous_path or info.path) else None)
-        exact = (run.base_sha, run.head_sha) == (pr.base_sha, pr.head_sha)
+        exact = (base_sha, head_sha) == (pr.base_sha, pr.head_sha)
         # The complete range must exist in the displayed hunk, not merely its last line.
         visible = {line.get(f"{side}_line") for line in lines} if side else set()
         inline = exact and side and valid_range and end - start < MAX_LINES and all(n in visible for n in range(start, end + 1))
-        results.append({"occurrence_id": occurrence.id, "finding_id": occurrence.finding_id, "run_id": run.id,
+        results.append({"occurrence_id": occurrence_id, "finding_id": finding_id, "run_id": run_id,
             "source_sha": sha, "current_status": status, "snapshot": snapshot, "side": side if inline else None,
             "line": end if inline else None, "placement": "inline" if inline else
             "unknown" if not sha or not valid_range else "outside_diff" if exact and side else "historical"})

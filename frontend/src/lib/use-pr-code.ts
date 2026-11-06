@@ -43,11 +43,13 @@ function requestFor(meta: Metadata | null, nav: Navigation, position: Pick<Navig
   const { path, revision } = selection(meta, nav);
   return { path, revision, view: nav.view, offset: nav.view === "definitions" ? position.offset ?? 0 : 0,
     start_byte: nav.view === "source" ? position.start_byte ?? 0 : 0, end_byte: nav.view === "source" ? position.end_byte ?? 1048576 : 1048576,
-    ...(meta ? { expected: identity(meta.data) } : { page: nav.page, query: nav.query, group: nav.group, reviewed: nav.reviewed, findings: nav.findings, unreviewed: nav.unreviewed, with_findings: nav.with_findings }) };
+    ...(meta ? { expected: identity(meta.data) } : {}),
+    ...(!meta || !path ? { page: nav.page, query: nav.query, group: nav.group, reviewed: nav.reviewed, findings: nav.findings, unreviewed: nav.unreviewed, with_findings: nav.with_findings } : {}) };
 }
 function keyFor(meta: Metadata | null, request: Navigation) {
   return [meta ? "content" : "bootstrap", meta ? authority(meta.data) : null,
-    request.view === "diff" ? null : meta?.graphs[request.revision ?? "head"] ?? null, request] as const;
+    request.view === "diff" ? null : meta?.graphs[request.revision ?? "head"] ?? null,
+    meta && !request.path ? { path: null, view: request.view, revision: request.revision } : request] as const;
 }
 
 /** A query cache exists only while this Code workspace is mounted; mutations still use the app's client. */
@@ -107,7 +109,7 @@ export function usePRCode(prId: string, navigation: Navigation) {
     }
   }
   const query = useQuery<Workspace, ApiError>({ queryKey: key, queryFn: ({ signal }) => fetchView(request, signal),
-    enabled: !failure && (!meta || !!request.path), staleTime: AGE, gcTime: AGE, retry: false,
+    enabled: !failure, staleTime: AGE, gcTime: AGE, retry: false,
     refetchInterval: (query) => Math.max(1000, Math.min(25_000, AGE - (Date.now() - query.state.dataUpdatedAt) - 5000)), refetchOnWindowFocus: true,
   }, cache);
 
@@ -170,7 +172,7 @@ export function usePRCode(prId: string, navigation: Navigation) {
       const target = selection(current.current, { ...navigation, ...values });
       const nav = requestFor(current.current, { ...navigation, ...values },
         target.path === selected.path && target.revision === selected.revision ? positionValue : initialPosition);
-      if (!nav.path) return;
+      if (!nav.path || (nav.view === "diff" && !current.current?.data.files.some((file) => file.path === nav.path))) return;
       prefetched.current = keyFor(current.current, nav);
       void cache.prefetchQuery({ queryKey: prefetched.current, queryFn: ({ signal }) => fetchView(nav, signal), staleTime: AGE, gcTime: AGE, retry: false });
     }, 200);

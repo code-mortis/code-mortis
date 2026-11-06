@@ -368,6 +368,37 @@ def test_occurrences_are_bounded_and_unmatched_ranges_are_not_anchored(compariso
     assert all(item["placement"] == "outside_diff" for item in result["findings"])
 
 
+@pytest.mark.parametrize("padding", ["x" * 33000, "😀" * 9000], ids=["ascii", "multibyte"])
+def test_diff_bounds_evidence_before_loading_and_omits_full_run_payloads(comparison, client, monkeypatch, padding):
+    from sqlalchemy import event
+
+    from code_mortis.core.db import engine
+
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(ReviewRun, "run").report = {"padding": "x" * (2 * 1024 * 1024)}
+        db.get(Occurrence, "o1").snapshot = {**db.get(Occurrence, "o1").snapshot, "unused": padding}
+    statements, snapshots = [], []
+    validate = code.evidence_snapshot
+    def check_snapshot(raw, check):
+        snapshots.append(raw)
+        return validate(raw, check)
+    def record(conn, cursor, statement, parameters, context, many):
+        statements.append(statement)
+    monkeypatch.setattr(code, "evidence_snapshot", check_snapshot)
+    event.listen(engine(), "before_cursor_execute", record)
+    try:
+        response = client.post(URL + "/file", json=body())
+    finally:
+        event.remove(engine(), "before_cursor_execute", record)
+    assert response.status_code == 200, response.text
+    assert {item["occurrence_id"] for item in response.json()["findings"]} == {"o0", "o2", "o3", "o4"}
+    assert len(snapshots) == 5 and snapshots.count(None) == 1
+    assert all(raw is None or len(json.dumps(raw).encode()) <= 32768 for raw in snapshots)
+    occurrence_query = next(q for q in statements if "FROM occurrences JOIN review_runs" in q)
+    assert all(f"review_runs.{column}" not in occurrence_query for column in ("report", "config", "summary"))
+
+
 def test_mcp_provenance_cannot_use_browser_reads(comparison, seed, monkeypatch):
     from code_mortis.mcp import provenance
     monkeypatch.setattr(provenance, "current_provenance", lambda: {"domain": "code", "scope": "code:read"})
