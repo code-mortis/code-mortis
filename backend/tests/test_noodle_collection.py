@@ -102,6 +102,9 @@ EXPECTED_PUBLIC = {
 # Session-only, browser-flow, bootstrap, webhook, and OAuth/MCP operations from
 # docs/api-token-route-policy.md. None may have runnable collection YAML.
 EXPECTED_SESSION_ONLY = {
+    ("GET", "/api/v1/pulls/{pr_id}/code"),
+    ("POST", "/api/v1/pulls/{pr_id}/code/file"),
+    ("POST", "/api/v1/pulls/{pr_id}/code/workspace"),
     ("GET", "/api/v1/pulls/{pr_id}/code-graph"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/query"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/index"),
