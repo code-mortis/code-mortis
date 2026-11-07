@@ -342,10 +342,14 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
+  const needsSharedConnection = !connection && repository.connection_requires_setup;
+  const engineUnavailable = repository.settings.analysis_engine === "mortis";
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
+    : engineUnavailable ? "Mortis execution is not available yet. An administrator can select Open Code Review in repository configuration."
+    : needsSharedConnection ? "The repository's connection is retired. Choose a shared API connection for this review, or update repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
     filters.clear();
@@ -401,8 +405,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
           </div>
           {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
-              options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name }))]} />
-            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} onClick={async () => {
+              options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
+            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection || engineUnavailable} onClick={async () => {
               const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
               if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
             }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
@@ -912,7 +916,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   </PopoverContent>;
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
-  const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : "Open Code Review";
+  const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : run.engine === "mortis" ? "Mortis" : run.engine === "ocr" ? "Open Code Review" : run.engine;
   return <>
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <header className="mb-6 min-w-0">

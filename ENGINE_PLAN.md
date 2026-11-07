@@ -4,7 +4,7 @@ Date: 2026-11-07
 
 Status: approved implementation roadmap; phase delivery and acceptance remain pending.
 
-M0 completion update (2026-11-07): all six preparation items are verified. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), and [frozen pilot and handoff](ENGINE_PILOT.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Live integration/effective resource checks remain M2/M5 gates; M1 has not started.
+M0 completion update (2026-11-07): all six preparation items are verified. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), and [frozen pilot and handoff](ENGINE_PILOT.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Live integration/effective resource checks remain M2/M5 gates. M1 is implemented and locally verified; see [the implementation and verification record](ENGINE_M1.md).
 
 Source baseline inspected: `9277e5f` (`feat(code-graph): support configurable indexing limits`). Recheck the owning source when starting each phase; this baseline is evidence of inspected behavior, not a promise that the checkout has remained unchanged.
 
@@ -302,22 +302,24 @@ Checklists record verified work only. Existing exclusions/graph functionality is
 
 Verification: 1,034 baseline tests and 278 final scope/PR Code tests passed (1,200 distinct cases; overlaps counted once), plus pinned OCR/local-provider and synthetic Trivy container checks and changed-test Ruff. The Trivy check explicitly had missing/stale vulnerability data; it verifies secret/misconfiguration/redaction/isolation and honest partial coverage, not complete dependency vulnerability detection. [Exact commands, limits and gaps](ENGINE_M0.md#1-baseline-and-executed-evidence).
 
-M1 handoff requirements are recorded in [M0 §8](ENGINE_M0.md#8-gaps-and-phase-gates). M0 preparation is complete; [pilot limitations and live prerequisites](ENGINE_PILOT.md) remain explicit. M1/runtime retirement has not started.
+M1 handoff requirements are recorded in [M0 §8](ENGINE_M0.md#8-gaps-and-phase-gates). M0 preparation is complete; [pilot limitations and live prerequisites](ENGINE_PILOT.md) remain explicit. M1 local shared-only admission and foundation implementation is recorded in [ENGINE_M1.md](ENGINE_M1.md); operational cutover has not been performed.
 
 Exit: no unmapped retained capability or ambiguous intentional removal; comparison cannot obtain an apparent speedup by analyzing less source.
 
 ### M1 — Shared execution foundation
 
-- [ ] Reject new subscription creation/execution and provide explicit shared-connection remediation for affected repositories.
-- [ ] Implement a safe drain/cancellation and stale-worker fence for existing subscription work.
-- [ ] Preserve historical reads and keep PAT/MCP features independent.
-- [ ] Move reusable OCR-owned source helpers to neutral modules without weakening validation.
-- [ ] Implement immutable plans, stable task identities, additive persistence, leases, and budget reservations.
-- [ ] Apply shared review/graph exclusions at all evidence boundaries while retaining the scanner's own policy.
-- [ ] Add engine selection and compatibility snapshots without changing existing jobs.
-- [ ] Verify upgrades containing old OCR/subscription history and old clients that omit graph settings.
+- [x] Reject new subscription creation/execution and provide explicit shared-connection remediation for affected repositories. Shared settings, manual overrides, scans and delayed jobs use exact API-kind admission; retired references remain readable.
+- [x] Implement a safe drain/cancellation and stale-worker fence for existing subscription work. New binaries reject delayed native inference; the idempotent retirement command preserves saved results, uncertain usage and publication. **Deployment still requires stopping old binaries and invalidating runner access**; see [cutover procedure](ENGINE_M1.md#3-subscription-cutover-procedure).
+- [x] Preserve historical reads and keep PAT/MCP features independent. New shared summary attempts retain original history and use independent authorization through overview synchronization.
+- [x] Move reusable OCR-owned source helpers to neutral modules without weakening validation. Process, Git, path, source and snapshot helpers now live in `core/`; graph/scanner helper paths no longer import OCR.
+- [x] Implement immutable plans, stable task identities, additive persistence, leases, and budget reservations. Independent stage caps, retained unknown usage, lock-wait expiry, cancellation and stale-attempt checks are covered. Connecting these primitives to inference remains M2–M4.
+- [x] Apply shared review/graph exclusions at all evidence boundaries while retaining the scanner's own policy. Original/destination rename checks cover required and optional evidence; OCR scope disagreements fail before inference.
+- [x] Add engine selection and compatibility snapshots without changing existing jobs. OCR remains available; Mortis is explicitly unavailable until implemented, with no fallback.
+- [x] Verify upgrades containing old OCR/subscription history and old clients that omit graph settings. Additive migration/immutable input tests preserve history; omitted engine and graph settings retain saved values.
 
-Exit: authorization, scope, budgets, restart/cancellation, and history preservation pass before new inference is enabled.
+Local verification is complete: [ENGINE_M1.md](ENGINE_M1.md#4-verification) records 3,078 passing backend cases plus the fresh 181-case final follow-up, passing browser evidence, isolated OCR/Trivy smokes and remaining gates. No new Mortis inference is enabled.
+
+Exit: authorization, scope, budgets, restart/cancellation, and history preservation pass before new inference is enabled. The local implementation does not establish a successful production cutover or live provider integration.
 
 ### M2 — Shared-provider transports
 
@@ -446,7 +448,7 @@ For each completed phase, append a dated record containing the source revision, 
 | Phase | State | Evidence |
 | --- | --- | --- |
 | M0 | Complete — 6/6 preparation items | [Source audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [20-case synthetic pilot, adjudication and owner-selected profile](ENGINE_PILOT.md). Offline fixture/export checks pass; live behavior and broader quality acceptance are pending. |
-| M1 | Not started | Pending |
+| M1 | Complete — local implementation and verification, 8/8 items | [Implementation, cutover procedure, verification and M2 gaps](ENGINE_M1.md). Mortis inference and operational cutover remain disabled/unperformed. |
 | M2 | Not started | Pending |
 | M3 | Not started | Pending |
 | M4 | Not started | Pending |
@@ -454,4 +456,4 @@ For each completed phase, append a dated record containing the source revision, 
 | M6 | Not started | Pending |
 | M7 | Not started | Pending |
 
-Start M1 using ENGINE_M0.md for verified foundations, concrete migration decisions and acceptance gaps, and ENGINE_PILOT.md for the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, satisfy the selected spending policy and M2/M5 runtime/account/resource preflight. Do not mark implementation or live integration complete from mocked evidence alone.
+Start M2 from ENGINE_M1.md for implementation evidence, operational cutover requirements and transport integration gaps; retain ENGINE_M0.md as the dated source/feature audit and ENGINE_PILOT.md as the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, satisfy the selected spending policy and M2/M5 runtime/account/resource preflight. Do not mark implementation or live integration complete from mocked evidence alone.

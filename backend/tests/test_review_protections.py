@@ -96,23 +96,17 @@ def test_unavailable_history_commit_does_not_abort_unrelated_current_assessment(
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-def test_native_transport_uses_selection_schema_and_returns_normalized_evidence(monkeypatch, kind):
+def test_retired_native_transport_rejects_evidence_before_any_request(monkeypatch, kind):
     from code_mortis.integrations import runner_client
 
     context = {"sources": {"current": {"app.py": "safe\n"}}, "diff": ""}
-    sent = []
-    def request(method, path, body=None, timeout=35):
-        if method == "POST":
-            sent.append(body)
-        return {"status": "completed", "usage": {"tokens": 7}, "result": {"evidence": [
-            {"source_id": review_context.source_id("current", "app.py"), "start_line": 1, "end_line": 1}]}}
-    monkeypatch.setattr(runner_client, "request", request)
-    result, usage = runner_client.review("connection", "attempt", {
-        "kind": kind, "_evidence_context": context, "_instructions": "Verify.",
-        "prompt": "old", "output_schema": verification.output_schema()}, lambda: False)
-    assert result["evidence"][0]["quote"] == "safe\n" and usage == {"tokens": 7}
-    assert "_evidence_context" not in sent[0] and "_instructions" not in sent[0]
-    assert review_context.source_id("current", "app.py") in sent[0]["prompt"]
+    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired transport sent a request"))
+    with pytest.raises(runner_client.RunnerBlocked) as caught:
+        runner_client.review("connection", "attempt", {
+            "kind": kind, "_evidence_context": context, "_instructions": "Verify.",
+            "prompt": "old", "output_schema": verification.output_schema()}, lambda: False)
+    assert caught.value.reason == "retired" and caught.value.usage == {"tokens": None}
+    assert context == {"sources": {"current": {"app.py": "safe\n"}}, "diff": ""}
 
 
 def test_older_pinned_ocr_build_cannot_silently_skip_context_guard(monkeypatch):

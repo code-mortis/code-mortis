@@ -94,6 +94,7 @@ class ConnectionConfig(StrictModel):
 
 
 class ConnectionInput(ConnectionConfig):
+    kind: Literal["api"] = "api"
     name: str = Field(min_length=1, max_length=100)
     model: str = Field(default="", max_length=150)
 
@@ -128,6 +129,7 @@ class RunLimits(StrictModel):
 
 
 class RepoSettings(RunLimits):
+    analysis_engine: Literal["ocr", "mortis"] = "ocr"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
     verification_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
     summary_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -327,6 +329,7 @@ class RepositoryOut(ORMModel):
     code_graph_enabled: bool = False
     code_graph_limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
     connection_id: str | None
+    connection_requires_setup: bool = False
     settings: RepoSettings
     open_prs: int = 0
     has_running_review: bool = False

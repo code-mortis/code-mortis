@@ -70,7 +70,7 @@ def test_notice_recovers_lost_response_without_analysis(seed, github_stub, monke
             "To bypass the file limit for one review of this revision, post:\n"
             "`@mortis-test[bot] review anyway`\n\n"
             "Requires an enabled Code Mortis member with repository write access. "
-            "Personal connections remain owner-only. Other review limits still apply.\n\n"
+            "Choose a shared API connection. Other review limits still apply.\n\n"
             f"[View run details](http://testserver/runs/{source})\n\n" + reviews.marker("run", f"{source}:0")
         )
         with transaction() as db:
@@ -300,10 +300,11 @@ def test_personal_connection_owner_can_override(seed, github_stub, monkeypatch, 
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id = kind, 7
-    deliver()
+    with pytest.raises(ValueError, match="retired"):
+        deliver()
     with transaction() as db:
-        run = db.scalar(select(ReviewRun).where(ReviewRun.id != source))
-        assert run.owner_id == 7 and run.engine == kind and run.config["settings"]["max_files"] is None
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+        assert db.get(ReviewRun, source).config["connection"]["kind"] == "api"
 
 
 @pytest.mark.parametrize("revocation", ["membership", "disabled", "no_write"])

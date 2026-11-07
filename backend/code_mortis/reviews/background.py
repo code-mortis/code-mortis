@@ -12,8 +12,10 @@ from urllib.parse import quote
 from sqlalchemy import select
 
 from code_mortis.core import file_policy
+from code_mortis.core.analysis import engine_snapshot, require_available_engine
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import clean_text, safe_repo_name, unseal
+from code_mortis.core.shared_execution import require_shared
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
@@ -73,6 +75,8 @@ def authorize(db, repo, actor, connection, *, check_repository=True):
 
 
 def enqueue(db, repo, actor, connection, model, limits=None):
+    require_shared(connection)
+    require_available_engine(repo.settings)
     snapshot = connection_snapshot(connection)
     snapshot["model"] = model.strip() or connection.model.strip()
     if not snapshot["model"]:
@@ -81,6 +85,7 @@ def enqueue(db, repo, actor, connection, model, limits=None):
                                                if key in RunLimits.model_fields})
     job = enqueue_job(db, "generate_background", {
         "repository_id": repo.id, "actor_id": actor.id, "connection_id": connection.id,
+        **engine_snapshot(repo.settings),
         "connection": snapshot, "limits": limits.model_dump(), "expires_at": now().timestamp() + 600,
     })
     db.flush()
@@ -336,6 +341,8 @@ def perform(job_id, attempt):
         if job.payload.get("inference_started"):
             raise ValueError(INTERRUPTED)
         payload = job.payload
+        require_shared(payload.get("connection", {}))
+        require_available_engine(payload)
         if now().timestamp() >= payload["expires_at"]:
             raise TimeoutError("Background generation expired. Generate again to retry.")
         from code_mortis.api_tokens import provenance as _pat

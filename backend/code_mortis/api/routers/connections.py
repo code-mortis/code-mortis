@@ -2,16 +2,16 @@ import json
 from importlib.resources import files
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from code_mortis.api.dependencies import DB, SESSION_ADMIN, SESSION_USER, USER, manage_connection, repo_access
 from code_mortis.api.presenters import connection_out
 from code_mortis.core.security import safe_endpoint, seal, unseal
-from code_mortis.integrations import model_discovery, runner_client
+from code_mortis.core.shared_execution import RETIRED_MESSAGE, require_shared
+from code_mortis.integrations import model_discovery
 from code_mortis.models import (
     Connection,
-    ConnectionGrant,
     Repository,
     ReviewRun,
 )
@@ -33,12 +33,9 @@ def providers(user: USER) -> list[dict]:
 
 @router.get("/connections", response_model=list[ConnectionOut])
 def connections(db: DB, user: USER, repository_id: int | None = None):
-    condition = or_(Connection.kind == "api", Connection.owner_id == user.id)
     if repository_id is not None:
         repo_access(db, user, repository_id)
-        granted = select(ConnectionGrant.connection_id).where(ConnectionGrant.repository_id == repository_id)
-        condition = or_(condition, Connection.id.in_(granted))
-    rows = list(db.scalars(select(Connection).where(condition).order_by(Connection.name)))
+    rows = list(db.scalars(select(Connection).where(Connection.kind == "api").order_by(Connection.name)))
     if getattr(user, "api_token_repository_ids", None) is not None:
         effective = _token_effective_ids(db, user)
         rows = [row for row in rows if _available_for_token(db, row, effective)]
@@ -59,11 +56,7 @@ def _available_for_token(db: Session, connection: Connection, effective: set[int
     if connection.kind == "api":
         return bool(db.scalar(select(Repository.id).where(
             Repository.id.in_(effective), Repository.connection_id == connection.id).limit(1)))
-    # Personal connections need a grant intersecting the effective selection,
-    # even when the requester owns the connection.
-    return bool(db.scalar(select(ConnectionGrant.connection_id).where(
-        ConnectionGrant.connection_id == connection.id,
-        ConnectionGrant.repository_id.in_(effective)).limit(1)))
+    return False
 
 
 @router.get("/connections/{connection_id}/models", response_model=ModelCatalog)
@@ -73,29 +66,19 @@ def connection_models(connection_id: str, db: DB, user: USER, repository_id: int
         raise HTTPException(404, "Connection not found.")
     if repository_id is not None:
         repo_access(db, user, repository_id)
-    if connection.kind != "api" and connection.owner_id != user.id:
-        if repository_id is None or not db.get(ConnectionGrant, (connection.id, repository_id)):
-            raise HTTPException(403, "This personal connection is not available to you.")
+    if connection.kind != "api":
+        raise HTTPException(410, RETIRED_MESSAGE)
     if getattr(user, "api_token_repository_ids", None) is not None:
         if not _available_for_token(db, connection, _token_effective_ids(db, user)):
             raise HTTPException(403, "This connection is not available for the selected repositories.")
-    if connection.kind == "api":
-        return model_discovery.api_models(connection, json.loads(unseal(connection.secret)))
-    if connection.auth_status == "revoked":
-        return ModelCatalog(source="client", status="disconnected", message="Sign in to this personal connection to load models.")
-    try:
-        return ModelCatalog.model_validate(runner_client.request(
-            "GET", f"/connections/{connection.id}/models?kind={connection.kind}", timeout=65,
-        ))
-    except (runner_client.RunnerBlocked, ValueError):
-        return ModelCatalog(source="client", status="unavailable", message="The official client could not load models. Check account status and retry, or enter a custom model ID.")
+    return model_discovery.api_models(connection, json.loads(unseal(connection.secret)))
 
 
 @router.post("/connections/models", response_model=ModelCatalog)
 def draft_models(body: ModelDiscoveryInput, db: DB, user: SESSION_ADMIN):
     connection = manage_connection(db, user, body.connection_id) if body.connection_id else None
     if connection and connection.kind != "api":
-        raise HTTPException(422, "Use the saved personal connection to load its models.")
+        raise HTTPException(410, RETIRED_MESSAGE)
     if body.protocol == "anthropic-bedrock":
         return model_discovery.api_models(body, {})
     credentials = model_discovery.credentials_for(body, connection)
@@ -103,6 +86,9 @@ def draft_models(body: ModelDiscoveryInput, db: DB, user: SESSION_ADMIN):
 
 
 def save_connection(db: Session, body: ConnectionInput, connection: Connection | None = None, owner_id=None):
+    require_shared(body)
+    if connection:
+        require_shared(connection)
     if connection and connection.kind != body.kind:
         raise HTTPException(422, "Create a new connection to change its type.")
     old = json.loads(unseal(connection.secret)) if connection else {}
@@ -145,9 +131,7 @@ def edit_connection(connection_id: str, body: ConnectionInput, db: DB, user: SES
 def test_connection(connection_id: str, db: DB, user: SESSION_USER) -> dict:
     connection = manage_connection(db, user, connection_id)
     if connection.kind != "api":
-        raise HTTPException(
-            422, "Check the official client's connection status, then start a manual review to test it."
-        )
+        raise HTTPException(410, RETIRED_MESSAGE)
     connection.last_test = "Testing connection…"
     job = enqueue(db, "test_connection", {"connection_id": connection.id})
     return {"job_id": job.id}

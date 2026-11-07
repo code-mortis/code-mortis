@@ -212,7 +212,7 @@ def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_pa
             fetches.append(args)
         else:
             assert "GIT_CONFIG_VALUE_0" not in env
-        return head if args[0] == "rev-parse" else base
+        return "" if args[0] == "diff" else head if args[0] == "rev-parse" else base
 
     def model_command(args, directory, env, **kwargs):
         assert "GIT_CONFIG_VALUE_0" not in env and "installation-secret" not in str(env)
@@ -225,7 +225,7 @@ def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_pa
     monkeypatch.setattr(ocr, "git", git)
     monkeypatch.setattr(ocr, "command", model_command)
     state, saved, _ = ocr.review(
-        "owner/repo", 1, base, head, {}, {},
+        "owner/repo", 1, base, head, {"kind": "api"}, {},
         {"effort": "low", "concurrency": 1, "token_budget": 1000, "timeout_seconds": 60},
         "installation-secret", lambda: False,
         graph_options={"version": "graph-native/v1"} if graph_enabled else None,

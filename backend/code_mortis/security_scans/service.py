@@ -14,9 +14,11 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from code_mortis.api_tokens.provenance import TransientAuthorizationError
+from code_mortis.core.analysis import engine_snapshot, require_available_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
+from code_mortis.core.shared_execution import RETIRED_MESSAGE, is_shared
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
@@ -81,6 +83,7 @@ def branch_head(full_name, token, remote=None):
 
 def create_scan(db, repo, actor, body, remote=None, parent=None):
     connection = db.get(Connection, body.connection_id)
+    require_available_engine(parent.config if parent else repo.settings)
     authorized = authorize(db, repo, actor, connection, fresh=remote is None)
     freshness = branch_head(repo.full_name, github.installation_token(db, repo.installation_id), remote or authorized)
     db.scalar(select(Repository).where(Repository.id == repo.id).with_for_update())
@@ -100,13 +103,14 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
                          "concurrency": body.concurrency if connection.kind == "api" else 1},
               "policy": security_engine.POLICY, "rating_policy": RATING_POLICY,
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
+    config.update(engine_snapshot(parent.config if parent else repo.settings))
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
     if not config["connection"]["model"]:
         raise ValueError("Choose a model before starting a security scan.")
     if parent:
         if "concurrency" not in body.model_fields_set:
             config["limits"]["concurrency"] = parent.config["limits"].get("concurrency", 1)
-        original = {**parent.config, "limits": {**parent.config["limits"],
+        original = {**parent.config, **engine_snapshot(parent.config), "limits": {**parent.config["limits"],
                     "concurrency": config["limits"]["concurrency"]}}
         if config != original:
             raise HTTPException(409, "Retry must use the original connection, model and limits. Start a new scan to change them.")
@@ -518,6 +522,10 @@ def perform(scan_id, claim):
         if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
             cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
             return
+        if not is_shared(scan.config.get("connection", {})):
+            cancel(db, scan, reason=RETIRED_MESSAGE)
+            return
+        require_available_engine(scan.config)
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
             if execution == claim:

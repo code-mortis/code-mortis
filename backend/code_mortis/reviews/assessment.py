@@ -9,8 +9,11 @@ from threading import Event
 from pydantic import Field, ValidationError
 from sqlalchemy import func, select
 
+from code_mortis.core import source as git_source
+from code_mortis.core.analysis import require_available_engine
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text, digest
+from code_mortis.core.shared_execution import require_shared
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Activity,
@@ -316,8 +319,14 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
                     f"{run.base_sha}...{head}", stopped=stopped).rstrip("\0").split("\0")
     selected = verification.filter_context(repo, env, dict.fromkeys(filter(None, paths), "# context\n"),
                                            run.config["settings"], stopped)
+    merge_base = ocr.git(repo, env, "merge-base", run.base_sha, head, stopped=stopped).strip()
+    selected &= git_source.review_paths(repo, env, merge_base, head, selected,
+                                    run.config["settings"], stopped, git=ocr.git)
     context["changed_paths"] = sorted(selected)
+    context["excluded_paths"] = sorted(set(context.get("excluded_paths", [])) | (set(filter(None, paths)) - selected))
     focused = {snapshot["path"], context["current_path"]} - {None}
+    if not focused <= git_source.review_paths(repo, env, merge_base, head, focused, run.config["settings"], stopped, git=ocr.git):
+        raise ValueError("The finding rename is excluded by repository policy.")
     if focused:
         context["diff"] = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--unified=5",
                                   f"{run.base_sha}...{head}", "--",
@@ -362,6 +371,7 @@ def expand_context(repo, env, run, context, paths, stopped):
             review_context.evidence_feedback(paths, "required_paths"))
     allowed = verification.filter_context(repo, env, dict.fromkeys(requested, "# context\n"),
                                           run.config["settings"], stopped)
+    allowed -= set(context.get("excluded_paths", []))
     excluded = requested - allowed
     if excluded:
         context["excluded_paths"] = sorted(set(context.get("excluded_paths", [])) | excluded)
@@ -499,6 +509,7 @@ def independent_batch(rows, keys, concurrency):
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *, stage=None):
+    require_shared(connection)
     from code_mortis.reviews import pipeline
     from code_mortis.reviews.service import (
         authorize_connection,
@@ -514,6 +525,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
+        require_available_engine(run.config)
         if not enabled(run):
             return
         retry = run.progress.get("assessment_retry")

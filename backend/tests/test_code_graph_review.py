@@ -8,6 +8,7 @@ from test_code_graph_workflow import graph as graph
 
 from code_mortis import jobs
 from code_mortis.code_graph import retrieval, service, store
+from code_mortis.core import source as git_source
 from code_mortis.core.db import transaction
 from code_mortis.integrations import ocr, runner_client
 from code_mortis.models import (
@@ -139,16 +140,20 @@ def test_source_must_match_regular_text_blob(related, monkeypatch, problem):
             return '\x00binary'
         return result
     monkeypatch.setattr(ocr, 'git', git)
+    monkeypatch.setattr(git_source, 'git', git)
     selection, context = prepare(related)
     assert not selection['files'] and context is None
 
 
-def test_native_eligibility_is_frozen_and_old_grants_do_not_opt_in(related, monkeypatch):
+def test_shared_eligibility_is_frozen_and_old_native_grants_cannot_start_work(related, monkeypatch):
     from code_mortis.models import PullRequest
     from code_mortis.reviews.service import create_run
     with transaction() as db:
         connection, repo, actor = db.get(Connection, 'connection'), db.get(Repository, 22), db.get(User, 7)
         connection.auth_status = 'connected'
+        with pytest.raises(ValueError, match='Subscription execution is retired'):
+            create_run(db, db.get(PullRequest, 'pr'), repo, 'manual', actor)
+        connection.kind = 'api'
         native = create_run(db, db.get(PullRequest, 'pr'), repo, 'manual', actor)
         assert native.config['code_graph'] == related['options']
         original = copy.deepcopy(native.config)

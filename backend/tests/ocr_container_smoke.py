@@ -200,6 +200,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     connection = {
+        "kind": "api",
         "protocol": "anthropic",
         "model": "test-model",
         "base_url": f"http://127.0.0.1:{server.server_port}",
@@ -305,72 +306,53 @@ def main():
             assert checks.check_payload(run, 0)["conclusion"] == "failure"
             print("Pinned OCR grace-round completion retained its budget warning and could not produce a successful GitHub check.")
             from code_mortis.integrations import runner_client
-            from code_mortis.reviews import delegated
             from code_mortis.schemas.common import RepoSettings
 
-            original = runner_client.review
-            runner_client.review = lambda *args: ({"comments": []}, {"tokens": 10})
+            # Retained scope/rule parsing is read-only; retired checkpoints cannot start native inference.
+            rules = root.parent / "rules.json"
+            rules.write_text(json.dumps(file_policy.review_rules(RepoSettings().model_dump())))
+            arguments = ["--repo", str(root), "--from", base, "--to", head, "--format", "json", "--rule", str(rules)]
+            code, preview, _ = ocr.command(["ocr", "delegate", "preview", *arguments], root, env)
+            preview = json.loads(preview)
+            assert code == 0 and preview["schema_version"] == "1"
+            assert ocr.preview_paths(preview["reviewable_files"], preview["reviewable_count"]) == ["main.py"]
+            code, grouped, _ = ocr.command(["ocr", "delegate", "rule", *arguments, "main.py"], root, env)
+            grouped = json.loads(grouped)
+            assert code == 0 and grouped["groups"]
+            assert all(group["files"] == ["main.py"] and isinstance(group["rule"], str) for group in grouped["groups"])
+            before = len(calls)
+            native = {"id": "connection", "kind": "chatgpt", "model": "test-model"}
             try:
-                events = []
-                native = {"id": "connection", "kind": "chatgpt", "model": "test-model"}
-                state, delegated_report, comments = delegated.review(
-                    root,
-                    env,
-                    base,
-                    head,
-                    base,
-                    native,
-                    RepoSettings().model_dump(),
-                    "run",
-                    lambda: False,
-                    events.append,
-                    {},
-                )
-                assert state == "completed" and comments == []
-                assert len(delegated_report["manifest"]["coverage"]["selected"]) == 1
-                assert events[-1]["completed"] == 1
-                checkpoint = events[-1]
-                runner_client.review = lambda *args: (_ for _ in ()).throw(
-                    AssertionError("Completed files must not be paid for twice")
-                )
-                assert (
-                    delegated.review(
-                        root,
-                        env,
-                        base,
-                        head,
-                        base,
-                        native,
-                        RepoSettings().model_dump(),
-                        "run",
-                        lambda: False,
-                        events.append,
-                        checkpoint,
-                    )[0]
-                    == "completed"
-                )
-                git("checkout", "--detach", head)
-                for index in range(40):
-                    (root / f"source{index}.py").write_text("value = 1\n")
-                git("add", ".")
-                git("commit", "-m", "oversized review")
-                large_head = git("rev-parse", "HEAD")
-                code, preview, _ = ocr.command([
-                    "ocr", "review", "--repo", str(root), "--from", base, "--to", large_head,
-                    "--format", "json", "--preview",
-                ], root, env)
-                preview = json.loads(preview)
-                assert code == 0
-                paths = ocr.preview_paths([item for item in preview["files"] if item["will_review"]], preview["reviewable_count"])
-                assert len(paths) == 41 and ocr.file_limit_result(paths, 40)[0] == "skipped"
-                before = len(calls)
-                result = delegated.review(root, env, base, large_head, base, native,
-                                          RepoSettings(max_files=40).model_dump(), "large", lambda: False, events.append, {})
-                assert result[0] == "skipped" and len(calls) == before
-                assert result[1]["message"] == "41 reviewable files exceeds the maximum of 40."
-                git("checkout", "--detach", base)
-            finally:
-                runner_client.review = original
+                runner_client.review("connection", "retired-smoke", {}, lambda: False)
+            except runner_client.RunnerBlocked as exc:
+                assert exc.reason == "retired"
+            else:
+                raise AssertionError("Retired runner accepted inference")
+            try:
+                ocr.review("team/project", 1, base, head, native, {}, RepoSettings().model_dump(),
+                    "synthetic-token", lambda: False, checkpoint={"items": {"main.py": {"status": "completed"}}})
+            except ValueError as exc:
+                assert "retired" in str(exc)
+            else:
+                raise AssertionError("Retired checkpoint resumed native execution")
+            assert len(calls) == before
+            git("checkout", "--detach", head)
+            for index in range(40):
+                (root / f"source{index}.py").write_text("value = 1\n")
+            git("add", ".")
+            git("commit", "-m", "oversized review")
+            large_head = git("rev-parse", "HEAD")
+            code, preview, _ = ocr.command([
+                "ocr", "review", "--repo", str(root), "--from", base, "--to", large_head,
+                "--format", "json", "--preview",
+            ], root, env)
+            preview = json.loads(preview)
+            assert code == 0
+            paths = ocr.preview_paths([item for item in preview["files"] if item["will_review"]], preview["reviewable_count"])
+            limited = ocr.file_limit_result(paths, 40)
+            assert len(paths) == 41 and limited[0] == "skipped" and len(calls) == before
+            assert limited[1]["message"] == "41 reviewable files exceeds the maximum of 40."
+            git("checkout", "--detach", base)
             options = RepoSettings().model_dump()
             for sources in ({"main.py": "count = 1\n"}, {"nested/main.py": "count = 2\n"}):
                 assert verification.filter_context(root, env, sources, options, lambda: False) == set(sources)
@@ -643,7 +625,7 @@ def main():
         assert not (Path.home() / ".opencodereview/config.json").exists()
         assert not (Path.home() / ".opencodereview/sessions").exists()
         print(
-            "Real OCR connection round trip, trusted-base diff review, coverage parsing, real delegation scope/rules, checkpoint recovery, explicit fix verification, failure diagnostics, exclusion filtering, and cleanup passed."
+            "Real OCR connection round trip, trusted-base diff review, coverage parsing, retained scope/rules, retired checkpoint rejection, explicit fix verification, failure diagnostics, exclusion filtering, and cleanup passed."
         )
     finally:
         server.shutdown()

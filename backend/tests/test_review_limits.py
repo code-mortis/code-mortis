@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
 from test_ocr import report
@@ -133,13 +134,15 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
              "include": ["src/**"], "exclude": ["generated/**"]}
 
     def git(root, env, *args, **kwargs):
+        if args[0] == "diff" and "--name-status" in args:
+            return "".join(f"M\0{path}\0" for path in paths)
         return head if args[0] == "rev-parse" else base if args[0] == "merge-base" else "value = 1\n"
 
     def command(args, root, env, **kwargs):
         assert "--exclude" in args and "--rule" in args
         assert json.loads(Path(args[args.index("--rule") + 1]).read_text()) == file_policy.review_rules(options)
         background = Path(args[args.index("--background-file") + 1]).read_text()
-        assert background == (review_policy.background(options) if kind == "api" else "Project context")
+        assert background == review_policy.background(options)
         if "--preview" in args or "preview" in args:
             previews.append(args)
             data = {"schema_version": "1", "reviewable_count": count,
@@ -157,19 +160,6 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
             data["comments"] = []
         return 0, json.dumps(data), ""
 
-    def native(connection, identity, payload, stopped):
-        assert payload["timeout"] is None and not stopped()
-        assert payload["prompt_token_ceiling"] == 200000
-        inference.append(payload)
-        assert payload["token_budget"] is None
-        prompt = json.loads(payload["prompt"])
-        assert prompt["background"] == "Project context" and prompt["rules"] == ["Review code"]
-        if sensitivity is None:
-            assert "review_policy" not in prompt
-        else:
-            assert prompt["review_policy"] == review_policy.instructions(options)
-        return {"comments": []}, {"tokens": 25}
-
     def after_review(result, repo, env, fetch_env):
         assert not configured, "Release OCR configuration before saving or verifying results"
         assert repo.is_dir(), "Keep the checkout available during completion"
@@ -177,7 +167,7 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
 
     monkeypatch.setattr(ocr, "git", git)
     monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(runner_client, "review", native)
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Subscription inference is retired"))
     options = RepoSettings(timeout_seconds=None, token_budget=None, max_files=maximum,
                            exclusions="*.lock", rules=rules, background="Project context").model_dump()
     if sensitivity is None:
@@ -185,6 +175,13 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
     else:
         options["review_sensitivity"] = sensitivity
     original = copy.deepcopy(options)
+    if kind != "api":
+        with pytest.raises(ValueError, match="retired"):
+            ocr.review("owner/repo", 1, base, head,
+                {"id": "connection", "kind": kind, "model": "model"}, {}, options, "token", lambda: False,
+                after_review=after_review)
+        assert options == original and not previews and not inference and not completed
+        return
     status, saved, comments = ocr.review("owner/repo", 1, base, head,
         {"id": "connection", "kind": kind, "model": "model", "options": {"prompt_token_ceiling": 200000}}, {}, options, "token", lambda: False,
         after_review=after_review)
@@ -198,7 +195,7 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
         coverage = saved["manifest"]["coverage"]
         assert not coverage["completed"] and len(coverage["selected"]) == len(coverage["waived"]) == count
     else:
-        assert status == "completed" and len(inference) == (1 if kind == "api" else count)
+        assert status == "completed" and len(inference) == 1
     assert len(previews) == 1
 
 
@@ -292,165 +289,70 @@ def test_long_reviews_renew_only_the_current_job_lease(seed, github_stub, monkey
         assert db.get(Job, job_id).lease_until == lease
 
 
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 @pytest.mark.parametrize("byte_budget", [4096, 800000, None])
-def test_native_prompt_limit_preserves_token_budget_and_ignores_legacy_byte_limit(tmp_path, monkeypatch, byte_budget):
-    from code_mortis.reviews import delegated
-    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
-    def command(args, *a, **kw):
-        data = ({"schema_version": "1", "reviewable_count": 2,
-                 "reviewable_files": [{"path": "a.py"}, {"path": "b.py"}]}
-                if "preview" in args else
-                {"schema_version": "1", "groups": [{"files": [args[-1]], "rule": "Review code"}]})
-        return 0, json.dumps(data), ""
-    monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(ocr, "git", lambda *a, **kw: "value = 1\n")
-    calls = []
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        assert payload["prompt_token_ceiling"] == 200000
-        assert payload["token_budget"] == 200000
-        if len(calls) == 1:
-            raise runner_client.RunnerBlocked("prompt_limit", {"tokens": 0})
-        return {"comments": []}, {"tokens": 25}
-    monkeypatch.setattr(runner_client, "review", native)
-    progress = []
-    used = 800000
-    status, report, comments = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
-        {"id": "connection", "kind": "chatgpt", "model": "model", "options": {"prompt_token_ceiling": 200000}},
-        RepoSettings(delegated_context_bytes=byte_budget, token_budget=200000).model_dump(), "run", lambda: False, progress.append,
-        {"context_bytes": used, "total_tokens": 0})
-    assert not comments and report["limits"]["token_budget"] == 200000
-    assert status == "partial" and len(calls) == 2
-    assert report["errors"] == [{"path": "a.py", "message": str(runner_client.RunnerBlocked("prompt_limit"))}]
-    assert report["summary"]["total_tokens"] == 25
-    assert report["limits"]["context_bytes"] == used + sum(len(call["prompt"].encode()) + 4096 for call in calls)
-    assert progress[-1]["completed"] == 1 and progress[-1]["failed"] == 1
+@pytest.mark.parametrize("token_budget", [1000, None])
+def test_retired_native_review_limits_never_reach_preflight_or_inference(tmp_path, monkeypatch, kind, byte_budget, token_budget):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Retired subscription work reached preflight or inference")
 
-
-@pytest.mark.parametrize("budget", [1000, None])
-@pytest.mark.parametrize("failure", [None, "unknown", "quota"])
-def test_subscription_token_budget_counts_failed_calls_and_survives_resume(tmp_path, monkeypatch, budget, failure):
-    from code_mortis.reviews import delegated
-    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
-    paths = ["a.py", "b.py", "c.py"]
-
-    def command(args, *a, **kw):
-        data = ({"schema_version": "1", "reviewable_count": len(paths),
-                 "reviewable_files": [{"path": path} for path in paths]}
-                if "preview" in args else
-                {"schema_version": "1", "groups": [{"files": [args[-1]], "rule": "Review code"}]})
-        return 0, json.dumps(data), ""
-
-    monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(ocr, "git", lambda *a, **kw: "value = 1\n")
-    calls, checkpoints = [], []
-
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        if len(calls) == 2:
-            if failure == "unknown":
-                raise runner_client.RunnerBlocked("failed")
-            if failure == "quota":
-                raise runner_client.RunnerBlocked("quota", {"tokens": 30})
-            if budget is not None:
-                raise runner_client.RunnerBlocked("token_limit", {"tokens": 300})
-        return {"comments": []}, {"tokens": 800 if len(calls) == 1 else 300 if len(calls) == 2 else 10}
-
-    monkeypatch.setattr(runner_client, "review", native)
-    args = (tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
-            {"id": "connection", "kind": "chatgpt", "model": "model"},
-            RepoSettings(token_budget=budget).model_dump(), "run", lambda: False, checkpoints.append)
-    if failure == "quota":
-        with pytest.raises(runner_client.RunnerBlocked):
-            delegated.review(*args, {})
-        assert checkpoints[-1]["total_tokens"] == 830
-        status, report, _ = delegated.review(*args, checkpoints[-1])
-        assert status == "completed" and len(calls) == 4
-        assert report["summary"]["total_tokens"] == 850
-        assert calls[2]["token_budget"] == (None if budget is None else 170)
-    else:
-        status, report, _ = delegated.review(*args, {})
-        assert status == ("completed" if failure is None and budget is None else "partial")
-        assert report["summary"]["total_tokens"] == (None if failure else 1100 if budget else 1110)
-        assert len(calls) == (2 if budget is not None else 3)
-        assert report["summary"]["budget_exceeded"] == (failure is None and budget is not None)
-        assert report["manifest"]["coverage"]["completed"][0]["path"] == "a.py"
-        if failure == "unknown" and budget is not None:
-            delegated.review(*args, checkpoints[-1])
-            assert len(calls) == 2, "Unknown consumption must not grant a fresh allowance"
-    assert calls[0]["token_budget"] == budget
-    assert calls[1]["token_budget"] == (None if budget is None else 200)
-
-
-@pytest.mark.parametrize("tokens", [None, True, -1])
-def test_subscription_legacy_or_invalid_usage_cannot_reset_finite_budget(tmp_path, monkeypatch, tokens):
-    from code_mortis.reviews import delegated
-    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
-    monkeypatch.setattr(ocr, "command", lambda *a, **kw: (0, json.dumps({
-        "schema_version": "1", "reviewable_count": 1, "reviewable_files": [{"path": "a.py"}],
-    }), ""))
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Unknown usage was treated as free"))
-    checkpoint = {"context_bytes": 800000}
-    if tokens is not None:
-        checkpoint["total_tokens"] = tokens
-    status, report, _ = delegated.review(tmp_path, {}, "a" * 40, "b" * 40, "a" * 40,
-        {"id": "connection", "kind": "chatgpt", "model": "model"}, RepoSettings(token_budget=200000).model_dump(),
-        "run", lambda: False, lambda *a: None, checkpoint)
-    assert status == "failed" and report["summary"]["total_tokens"] is None
-    assert "remaining budget cannot be verified" in report["errors"][0]["message"]
+    monkeypatch.setattr(ocr, "check_version", unexpected)
+    monkeypatch.setattr(ocr, "command", unexpected)
+    monkeypatch.setattr(ocr, "git", unexpected)
+    monkeypatch.setattr(runner_client, "review", unexpected)
+    options = RepoSettings(delegated_context_bytes=byte_budget, token_budget=token_budget).model_dump()
+    original = copy.deepcopy(options)
+    with pytest.raises(ValueError, match="retired"):
+        ocr.review("owner/repo", 1, "a" * 40, "b" * 40,
+            {"id": "connection", "kind": kind, "model": "model", "options": {"prompt_token_ceiling": 200000}},
+            {}, options, "token", lambda: False, before_analysis=unexpected, after_review=unexpected)
+    assert options == original
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-@pytest.mark.parametrize("task", ["review", "verification", "assessment", "background"])
-def test_native_prompt_limit_rejects_unicode_and_schema_before_auth(monkeypatch, kind, task):
-    monkeypatch.setattr(native_runner, "locks", {})
+@pytest.mark.parametrize("budget", [1000, None])
+@pytest.mark.parametrize("tokens", [None, True, -1, 830])
+def test_retired_subscription_checkpoint_cannot_resume_or_reset_usage(tmp_path, monkeypatch, kind, budget, tokens):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Retired checkpoint resumed work")
+
+    monkeypatch.setattr(ocr, "command", unexpected)
+    monkeypatch.setattr(ocr, "git", unexpected)
+    monkeypatch.setattr(runner_client, "review", unexpected)
+    checkpoint = {"context_bytes": 800000, "total_tokens": tokens,
+                  "tasks": {"a.py": {"status": "completed", "tokens": 800},
+                            "b.py": {"status": "failed", "reason": "quota", "tokens": None}}}
+    original = copy.deepcopy(checkpoint)
+    with pytest.raises(ValueError, match="retired"):
+        ocr.review("owner/repo", 1, "a" * 40, "b" * 40,
+            {"id": "connection", "kind": kind, "model": "model"}, {},
+            RepoSettings(token_budget=budget).model_dump(), "token", lambda: False,
+            run_id="run", checkpoint=checkpoint, progress=unexpected)
+    assert checkpoint == original
+
+
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
+@pytest.mark.parametrize("task", ["review", "verification", "assessment", "background", "summary", "security_analysis", "security_verification"])
+def test_retired_native_runner_rejects_all_prompt_sizes_before_auth(monkeypatch, kind, task):
     async def unexpected(*args):
-        pytest.fail("An oversized prompt must not authenticate or start inference")
+        pytest.fail("Retired prompt authenticated or started inference")
+
+    monkeypatch.setattr(native_runner, "locks", {})
     monkeypatch.setattr(native_runner, "auth_status", unexpected)
     monkeypatch.setattr(native_runner, "run_codex", unexpected)
     monkeypatch.setattr(native_runner, "run_claude", unexpected)
-    for prompt, schema in (("🙂" * 15000, {}), ("small", {"description": "x" * 60000})):
+    for prompt, schema, ceiling in (("small", {}, 4096), ("🙂" * 15000, {}, 58888),
+                                    ("small", {"description": "x" * 60000}, 200000)):
         body = native_runner.ReviewBody(kind=kind, task=task, model="model", effort="low",
-                                       prompt=prompt, output_schema=schema, timeout=None)
+                                       prompt=prompt, output_schema=schema, timeout=None, prompt_token_ceiling=ceiling)
         entry = {}
         asyncio.run(native_runner.execute("connection", body, entry))
-        assert entry == {"status": "failed", "reason": "prompt_limit", "usage": {"tokens": 0}}
+        assert entry == {"status": "failed", "reason": "retired", "usage": {"tokens": 0}}
+    assert native_runner.locks == {}
 
 
-@pytest.mark.parametrize("kind,runner", [("chatgpt", "run_codex"), ("claude_code", "run_claude")])
-def test_native_prompt_limit_boundary_includes_instructions_and_custom_ceiling(monkeypatch, kind, runner):
-    monkeypatch.setattr(native_runner, "locks", {})
-    calls = []
-    async def auth(*args):
-        calls.append("auth")
-        return {"status": "connected"}
-    async def inference(*args):
-        calls.append("inference")
-        args[3]["tokens"] = 25
-        return {"comments": []}
-    monkeypatch.setattr(native_runner, "auth_status", auth)
-    monkeypatch.setattr(native_runner, runner, inference)
-    body = native_runner.ReviewBody(kind=kind, model="model", effort="low", prompt="a", output_schema={},
-                                   timeout=None, prompt_token_ceiling=4096)
-    overhead = len(native_runner.task_instructions(body).encode()) + 2
-    body.prompt = "a" * (4096 * 4 // 5 - overhead)
-    entry = {}
-    asyncio.run(native_runner.execute("connection", body, entry))
-    assert entry == {"status": "completed", "result": {"comments": []}, "usage": {"tokens": 25}}
-    assert calls == ["auth", "inference"]
-    calls.clear()
-    body.prompt += "a"
-    entry = {}
-    asyncio.run(native_runner.execute("connection", body, entry))
-    assert entry["status"] == "failed" and entry["reason"] == "prompt_limit" and not calls
-    body.prompt_token_ceiling = 8192
-    entry = {}
-    asyncio.run(native_runner.execute("connection", body, entry))
-    assert entry["status"] == "completed" and calls == ["auth", "inference"]
-
-
-@pytest.mark.parametrize("kind,runner", [("chatgpt", "run_codex"), ("claude_code", "run_claude")])
-def test_unlimited_native_deadline_polling_and_orphan_cleanup(tmp_path, monkeypatch, kind, runner):
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
+def test_retired_runner_rejects_new_work_and_still_cleans_up_legacy_tasks(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(native_runner, "ROOT", tmp_path)
     monkeypatch.setattr(native_runner, "tasks", {})
     monkeypatch.setattr(native_runner, "locks", {})
@@ -458,29 +360,34 @@ def test_unlimited_native_deadline_polling_and_orphan_cleanup(tmp_path, monkeypa
     monkeypatch.setattr(native_runner.time, "monotonic", lambda: clock[0])
     identity = "00000000-0000-4000-8000-000000000001"
     body = native_runner.ReviewBody(kind=kind, model="model", effort="low", prompt="review",
-                                    output_schema={}, timeout=None)
+                                   output_schema={}, timeout=None)
 
     async def check():
         started, finished = asyncio.Event(), asyncio.Event()
-        async def auth(*args):
-            return {"status": "connected"}
-        async def inference(*args):
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                finished.set()
-        monkeypatch.setattr(native_runner, "auth_status", auth)
-        monkeypatch.setattr(native_runner, runner, inference)
-        await native_runner.review_start(identity, "run", body)
+        entry = {"status": "running", "usage": {"tokens": None}, "created": 0, "last_polled": 0}
+        lock = native_runner.locks.setdefault(identity, asyncio.Lock())
+
+        async def legacy_task():
+            async with lock:
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    entry.update(status="failed", reason="cancelled")
+                    raise
+                finally:
+                    finished.set()
+
+        # Existing task cleanup survives the cutover without admitting another model request.
+        entry["task"] = asyncio.create_task(legacy_task())
+        native_runner.tasks[identity, "run"] = entry
         await started.wait()
-        entry = native_runner.tasks[identity, "run"]
-        # Poll beyond the old two-hour lifetime, then lose the worker.
         clock[0] = 7300
         assert await native_runner.review_status(identity, "run") == {"status": "running", "usage": {"tokens": None}}
         assert entry["last_polled"] == 7300
         ticks = 0
         real_sleep = asyncio.sleep
+
         async def tick(seconds):
             nonlocal ticks
             assert seconds == 30
@@ -491,15 +398,18 @@ def test_unlimited_native_deadline_polling_and_orphan_cleanup(tmp_path, monkeypa
                 assert not entry["task"].done()
             if ticks == 3:
                 raise asyncio.CancelledError
+
         monkeypatch.setattr(native_runner.asyncio, "sleep", tick)
         with pytest.raises(asyncio.CancelledError):
             await native_runner.cancel_orphaned_reviews()
         await asyncio.gather(entry["task"], return_exceptions=True)
         assert finished.is_set() and entry["status"] == "failed" and entry["reason"] == "cancelled"
-        assert not native_runner.locks[identity].locked()
-        started.clear()
-        await native_runner.review_start(identity, "cancel", body)
-        await started.wait()
-        await native_runner.review_cancel(identity, "cancel")
-        assert (identity, "cancel") not in native_runner.tasks and not native_runner.locks[identity].locked()
+        assert entry["usage"] == {"tokens": None} and not lock.locked()
+        await native_runner.review_cancel(identity, "run")
+        assert (identity, "run") not in native_runner.tasks
+        with pytest.raises(HTTPException) as caught:
+            await native_runner.review_start(identity, "new", body)
+        assert caught.value.status_code == 410 and caught.value.detail == "retired"
+        assert not native_runner.tasks and not lock.locked()
+
     asyncio.run(check())

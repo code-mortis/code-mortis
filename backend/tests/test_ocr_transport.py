@@ -190,12 +190,17 @@ def test_semantic_validation_is_corrected_once_without_aborting_other_work(
         return transport.command(args, *a, **kwargs)
 
     monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(security_engine.runner_client, "review", lambda *a: (response(), {"tokens": 7}))
+    monkeypatch.setattr(security_engine.runner_client, "review", lambda *a: pytest.fail("Retired security inference ran"))
     item = security_engine.Snapshot(tmp_path, "a" * 40, {}, lambda: False)
     item.inventory = {"app.py": {}, "other.py": {}}
     context = {"assigned_path": "app.py", "history": [], **CONTEXT}
     args = (item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment" if failure == "confirmation" else "analysis",
             context, 1000, 60, lambda: False, "semantic-smoke")
+    if kind != "api":
+        with pytest.raises(ValueError, match="retired"):
+            security_engine.ask(*args)
+        assert not calls and not transport.calls
+        return
     if corrected:
         result, usage = security_engine.ask(*args)
         assert result["required_paths"] == [] and usage == {"tokens": 14}

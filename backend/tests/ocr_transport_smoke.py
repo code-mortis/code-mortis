@@ -125,7 +125,7 @@ def main():
                     continue  # Anthropic tool inputs are objects, not raw JSON argument strings.
                 server.mode, server.calls = mode, 0
                 diagnostic_mode = mode
-                connection = {"protocol": protocol, "model": "test-model", "options": {},
+                connection = {"kind": "api", "protocol": protocol, "model": "test-model", "options": {},
                               "base_url": f"http://127.0.0.1:{server.server_port}"}
                 managed = mode == "shared_strict"
                 configuration = ocr.configuration(connection, {"api_key": "fake-test-key"}, {},

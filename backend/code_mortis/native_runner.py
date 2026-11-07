@@ -6,27 +6,21 @@ Only the application API and review workers can reach this private endpoint.
 
 import asyncio
 import contextlib
-import fcntl
 import hmac
 import json
 import os
-import pty
-import re
 import signal
-import struct
-import tempfile
-import termios
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
 from pydantic import BaseModel, ConfigDict, Field
 
-from code_mortis.integrations.model_discovery import MAX_BYTES, MAX_MODELS, choices
+from code_mortis.integrations.model_discovery import MAX_BYTES, choices
 from code_mortis.schemas.common import NATIVE_REVIEW_INSTRUCTIONS as INSTRUCTIONS
-from code_mortis.schemas.common import ModelCatalog, native_prompt_size
+from code_mortis.schemas.common import ModelCatalog
 
 CODEX_VERSION = "0.160.1"
 CLAUDE_VERSION = "2.1.292"
@@ -330,56 +324,12 @@ async def health():
 
 @app.post("/connections/{connection_id}/auth")
 async def login(connection_id: str, body: AuthBody):
-    if locks.setdefault(connection_id, asyncio.Lock()).locked():
-        raise HTTPException(409, "busy")
-    if body.kind == "claude_code":
-        profile(connection_id)
-        return {"status": "console_required"}
-    client = await codex(connection_id)
-    if client.login and client.login["status"] == "pending":
-        await client.call("account/login/cancel", {"loginId": client.login["loginId"]})
-    result = await client.call("account/login/start", {"type": "chatgptDeviceCode"})
-    client.login = {key: result[key] for key in ("loginId", "verificationUrl", "userCode")}
-    client.login.update(status="pending", expires_at=time.time() + 900)
-    return client.login
+    raise HTTPException(410, "retired")
 
 
 @app.get("/connections/{connection_id}/auth")
 async def auth_status(connection_id: str, kind: str):
-    if kind == "chatgpt":
-        client = await codex(connection_id)
-        data = await client.call("account/read", {"refreshToken": True})
-        account = data.get("account") or {}
-        connected = account.get("type") == "chatgpt"
-        limits = None
-        if connected:
-            try:
-                limits = await client.call("account/rateLimits/read")
-            except NativeError:
-                pass
-        attempt = client.login
-        if attempt and attempt["status"] == "pending" and attempt["expires_at"] < time.time():
-            await client.call("account/login/cancel", {"loginId": attempt["loginId"]})
-            attempt["status"] = "expired"
-        return {
-            "status": "connected" if connected else "disconnected",
-            "attempt": attempt,
-            "account": {k: account[k] for k in ("email", "planType") if k in account},
-            "limits": limits,
-        }
-    if kind != "claude_code":
-        raise HTTPException(422, "invalid_kind")
-    code, output = await claude_command(profile(connection_id), "auth", "status", "--json")
-    try:
-        data = json.loads(output)
-    except ValueError:
-        data = {}
-    connected = code == 0 and data.get("loggedIn") and data.get("authMethod") == "claude.ai"
-    return {
-        "status": "connected" if connected else "disconnected",
-        "account": {k: data[k] for k in ("email", "subscriptionType") if k in data},
-        "limits": None,
-    }
+    raise HTTPException(410, "retired")
 
 
 async def claude_models(connection_id):
@@ -419,34 +369,7 @@ async def claude_models(connection_id):
 
 @app.get("/connections/{connection_id}/models", response_model=ModelCatalog)
 async def model_catalog(connection_id: str, kind: str):
-    if kind not in {"chatgpt", "claude_code"}:
-        raise HTTPException(422, "invalid_kind")
-    profile(connection_id)
-    lock = locks.setdefault(connection_id, asyncio.Lock())
-    if lock.locked():
-        return ModelCatalog(source="client", status="unavailable", message="This personal connection is busy. Retry loading models when it is idle.")
-    try:
-        async with asyncio.timeout(60), lock:
-            if (await auth_status(connection_id, kind))["status"] != "connected":
-                return ModelCatalog(source="client", status="disconnected", message="Sign in to this personal connection to load models.")
-            if kind == "claude_code":
-                return ModelCatalog(source="client", models=await claude_models(connection_id))
-            client = await codex(connection_id)
-            models, cursors, cursor = {}, set(), None
-            for _ in range(20):
-                page = await client.call("model/list", {"limit": 100, "includeHidden": False, "cursor": cursor})
-                models.update((model.id, model) for model in choices(page.get("data"), "model", "displayName"))
-                if len(models) > MAX_MODELS:
-                    raise ValueError("Too many models")
-                cursor = page.get("nextCursor")
-                if cursor is None:
-                    return ModelCatalog(source="client", models=list(models.values()))
-                if not isinstance(cursor, str) or not cursor or len(cursor) > 1000 or cursor in cursors:
-                    raise ValueError("Invalid model cursor")
-                cursors.add(cursor)
-    except (NativeError, OSError, ValueError, TimeoutError, AttributeError, TypeError):
-        pass
-    return ModelCatalog(source="client", status="unavailable", message="The official client could not load models. Retry or enter a custom model ID.")
+    raise HTTPException(410, "retired")
 
 
 @app.delete("/connections/{connection_id}/auth")
@@ -482,82 +405,7 @@ async def disconnect(connection_id: str, body: AuthBody):
 
 @app.websocket("/connections/{connection_id}/console")
 async def auth_console(websocket: WebSocket, connection_id: str):
-    authorize(websocket.headers.get("authorization", ""))
-    path = profile(connection_id)
-    lock = locks.setdefault(connection_id, asyncio.Lock())
-    if lock.locked():
-        await websocket.close(code=1008)
-        return
-    await websocket.accept()
-    async with lock:
-        consoles[connection_id] = asyncio.current_task()
-        master = slave = process = None
-        pumps = []
-        loop = asyncio.get_running_loop()
-        try:
-            master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 2000, 0, 0))
-            # Only this exact native command receives the terminal; no shell is created.
-            process = await asyncio.create_subprocess_exec(
-                "claude",
-                "auth",
-                "login",
-                cwd=path / "empty",
-                env=environment(path),
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                start_new_session=True,
-            )
-            os.close(slave)
-            slave = None
-            os.set_blocking(master, False)
-            chunks = asyncio.Queue(maxsize=32)
-
-            def read():
-                if chunks.full():
-                    return
-                try:
-                    chunk = os.read(master, 8192)
-                except BlockingIOError:
-                    return
-                except OSError:
-                    chunk = b""
-                if not chunk:
-                    loop.remove_reader(master)
-                chunks.put_nowait(chunk)
-
-            loop.add_reader(master, read)
-
-            async def output():
-                while chunk := await chunks.get():
-                    await websocket.send_text(chunk.decode("utf-8", "replace"))
-
-            async def input():
-                while True:
-                    value = await websocket.receive_text()
-                    if len(value.encode()) > 8192:
-                        raise ValueError("input too long")
-                    os.write(master, value.encode())
-
-            pumps = [asyncio.create_task(output()), asyncio.create_task(input())]
-            async with asyncio.timeout(900):
-                await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
-        except (TimeoutError, OSError, WebSocketDisconnect):
-            pass
-        finally:
-            for pump in pumps:
-                pump.cancel()
-            await asyncio.gather(*pumps, return_exceptions=True)
-            if master is not None:
-                loop.remove_reader(master)
-                os.close(master)
-            if slave is not None:
-                os.close(slave)
-            await stop(process)
-            consoles.pop(connection_id, None)
-            with contextlib.suppress(RuntimeError):
-                await websocket.close()
+    await websocket.close(code=1008)
 
 
 async def cancel_orphaned_reviews():
@@ -744,59 +592,12 @@ async def run_claude(connection_id, body, directory, usage):
 
 
 async def execute(connection_id, body, entry):
-    entry["usage"] = {"tokens": 0}
-    lock = locks.setdefault(connection_id, asyncio.Lock())
-    if lock.locked():
-        entry.update(status="failed", reason="busy")
-        return
-    async with lock:
-        try:
-            async with asyncio.timeout(body.timeout):
-                # shortcut: UTF-8 bytes bound text tokens conservatively; use native token counting when available.
-                token_upper_bound = native_prompt_size(body.prompt, body.output_schema, task_instructions(body))
-                if token_upper_bound > body.prompt_token_ceiling * 4 // 5:
-                    raise NativeError("prompt_limit")
-                state = await auth_status(connection_id, body.kind)
-                if state["status"] != "connected":
-                    raise NativeError("authentication")
-                # No PR files are loaded as configuration. The full assigned context is explicit input.
-                with tempfile.TemporaryDirectory(prefix="mortis-context-") as temporary:
-                    directory = Path(temporary)
-                    runner = run_codex if body.kind == "chatgpt" else run_claude
-                    entry["usage"]["tokens"] = None
-                    result = await runner(connection_id, body, directory, entry["usage"])
-                    tokens = entry["usage"]["tokens"]
-                    if type(tokens) is not int or tokens < 0:
-                        raise NativeError("usage_unknown")
-                    # shortcut: native usage arrives after model requests, so a call can overshoot its allowance.
-                    if body.token_budget is not None and tokens > body.token_budget:
-                        raise NativeError("token_limit")
-                    entry.update(status="completed", result=result)
-        except asyncio.CancelledError:
-            entry.update(status="failed", reason="cancelled")
-            raise
-        except (NativeError, OSError, ValueError, TimeoutError) as exc:
-            entry.update(status="failed", reason=exc.reason if isinstance(exc, NativeError) else "failed")
+    entry.update(status="failed", reason="retired", usage={"tokens": 0})
 
 
 @app.post("/connections/{connection_id}/reviews/{identity}")
 async def review_start(connection_id: str, identity: str, body: ReviewBody):
-    profile(connection_id)
-    if not re.fullmatch(r"[a-zA-Z0-9-]{1,100}", identity):
-        raise HTTPException(422, "invalid_identity")
-    key = (connection_id, identity)
-    # Results live only until acknowledged, with a bounded crash-recovery retention period.
-    for old_key, entry in list(tasks.items()):
-        if entry["task"].done() and entry["created"] < time.time() - 7200:
-            tasks.pop(old_key)
-    if key not in tasks:
-        if len(tasks) >= 500:
-            raise HTTPException(503, "busy")
-        entry = {"status": "running", "created": time.time(),
-                 "last_polled": time.monotonic() if body.timeout is None else None}
-        entry["task"] = asyncio.create_task(execute(connection_id, body, entry))
-        tasks[key] = entry
-    return {"status": tasks[key]["status"]}
+    raise HTTPException(410, "retired")
 
 
 @app.get("/connections/{connection_id}/reviews/{identity}")

@@ -7,14 +7,19 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from code_mortis.core.analysis import engine_snapshot, require_available_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import digest, unseal
+from code_mortis.core.shared_execution import (
+    cancel_retired_review,
+    is_shared,
+    require_shared,
+)
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Activity,
     Connection,
-    ConnectionGrant,
     Finding,
     FindingVerification,
     Installation,
@@ -67,8 +72,12 @@ def stop_review(db: Session, run: ReviewRun, status: str, reason: str, *, public
 
 def cancel_review(db: Session, run: ReviewRun):
     run.cancel_requested = True
+    ambiguous = run.publication in {"publishing", "uncertain"} and not run.review_ids
+    publication = "partially_published" if run.review_ids or run.publication in {"partially_published", "publishing", "uncertain"} else "not_applicable"
+    if ambiguous:
+        run.publication_error = "GitHub may have accepted a comment before cancellation. Reconcile the saved publication before sending any comments again."
     stop_review(db, run, "cancelled", "The run was cancelled.",
-                publication="partially_published" if run.review_ids else "not_applicable")
+                publication=publication)
 
 
 def cancel_pr_reviews(db: Session, pr: PullRequest) -> list[ReviewRun]:
@@ -128,11 +137,13 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.model_validate(repo.settings).model_dump()
+    require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None
     config = {"connection": connection_snapshot(connection), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2"}
+    config.update(engine_snapshot(options))
     if graph := graph_context.configuration(db, repo, connection, actor):
         config["code_graph"] = graph
     if options["model"]:
@@ -266,22 +277,7 @@ def review_anyway(db: Session, body: dict, delivery_id: str):
 
 
 def authorize_connection(db, connection, repo, trigger, actor=None, *, check_repository=True):
-    if connection.kind == "api":
-        return
-    owner = db.get(User, connection.owner_id)
-    if not owner or not owner.enabled or not db.get(Membership, owner.id):
-        raise ValueError("The subscription owner no longer has access to this instance.")
-    if trigger == "manual":
-        if not actor or actor.id != owner.id:
-            raise ValueError("Choose your own personal connection or a shared API connection.")
-    else:
-        grant = db.get(ConnectionGrant, (connection.id, repo.id))
-        if not grant or not grant.automatic:
-            raise ValueError(
-                "The subscription owner has not authorized automatic reviews for this repository."
-            )
-    if check_repository:
-        github.authorize_repo(db, owner, repo.full_name, write=True)
+    require_shared(connection)
 
 
 def execution_identity(run):
@@ -330,7 +326,7 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
 def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool:
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
-        if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
+        if not run or run.cancel_requested or run.status in {"cancelled", "superseded"} or not is_shared(run.config.get("connection", {})):
             return True
         from code_mortis.api_tokens import provenance as pat_provenance
         from code_mortis.mcp import provenance as mcp_provenance
@@ -379,6 +375,10 @@ def perform_review(run_id: str, claim: str | None = None):
         ):
             cancel_review(db, run)
             return
+        if not is_shared(run.config.get("connection", {})):
+            cancel_retired_review(db, run)
+            return
+        require_available_engine(run.config)
         prior_claim = run.progress.get("execution", "")
         if prior_claim and prior_claim != claim and ":" in prior_claim:
             job_id, attempt = prior_claim.rsplit(":", 1)
@@ -779,7 +779,7 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
                 "To bypass the file limit for one review of this revision, post:\n"
                 f"`@{github.app_config(db).github_slug}[bot] review anyway`\n\n"
                 "Requires an enabled Code Mortis member with repository write access. "
-                "Personal connections remain owner-only. Other review limits still apply.\n\n"
+                "Choose a shared API connection. Other review limits still apply.\n\n"
                 f"[View run details]({settings().public_url}/runs/{run.id})\n\n"
                 + marker("run", f"{run.id}:0")
             ),
@@ -1020,10 +1020,13 @@ def publish_run(run_id: str):
                         if not actor or not actor.enabled or not db.get(Membership, actor.id):
                             raise ValueError("The requesting user no longer has access to publish this review.")
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    connection = db.get(Connection, run.connection_id) if run.connection_id else None
-                    if not connection:
-                        raise ValueError("The selected connection is no longer available.")
-                    authorize_connection(db, connection, repo, trigger, actor)
+                    if not is_shared(run.config.get("connection", {})) and not run.owner_id:
+                        raise ValueError("The original review owner is no longer available to authorize publication.")
+                    if run.owner_id:
+                        owner = db.get(User, run.owner_id)
+                        if not owner or not owner.enabled or not db.get(Membership, owner.id):
+                            raise ValueError("The original review owner no longer has access to publish this review.")
+                        github.authorize_repo(db, owner, repo.full_name, write=True)
                     claimed = list(db.scalars(select(Finding).where(
                         Finding.publication_run_id == run.id, Finding.publication_batch == index,
                     ).with_for_update()))

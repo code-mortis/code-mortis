@@ -6,8 +6,10 @@ from copy import deepcopy
 from sqlalchemy.exc import SQLAlchemyError
 
 from code_mortis.code_graph import retrieval, service, store
+from code_mortis.core import source as git_source
 from code_mortis.core.db import transaction
-from code_mortis.integrations import github, ocr
+from code_mortis.core.errors import ReviewStopped
+from code_mortis.integrations import github
 from code_mortis.models import CodeGraphRepository
 from code_mortis.reviews import context, verification
 from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, blob_sha
@@ -79,12 +81,12 @@ def prepare(options, path, sha, repo, env, review_options, credentials, stopped,
                 selection["truncated"] = True
                 continue
             if stopped():
-                raise ocr.ReviewStopped()
+                raise ReviewStopped()
             target = file["path"]
             if store.excluded(target, store.policy(current)) or context.sanitize(target, credentials, stopped) != target:
                 continue
             try:
-                entry = ocr.git(repo, env, "ls-tree", "-z", "-l", sha, "--", target, stopped=stopped)
+                entry = git_source.git(repo, env, "ls-tree", "-z", "-l", sha, "--", target, stopped=stopped)
                 metadata, entry_path = entry.rstrip("\0").split("\t")
                 mode, kind, blob, length = metadata.split()
                 if (entry_path != target or mode not in {"100644", "100755"} or kind != "blob"

@@ -414,19 +414,15 @@ def test_api_prompt_ceiling_rejects_invalid_values(seed, client, ceiling):
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-def test_personal_connection_saves_prompt_ceiling_without_api_options(seed, client, kind):
+def test_retired_personal_connection_creation_is_rejected_without_changing_shared_options(seed, client, kind):
     response = client.post("/api/v1/connections", json={
         "name": "Personal", "kind": kind, "options": {"prompt_token_ceiling": 200000},
     })
-    assert response.status_code == 201
-    assert response.json()["options"] == {"prompt_token_ceiling": 200000}
-    identity = response.json()["id"]
-    for options in ({"prompt_token_ceiling": 4095}, {"prompt_token_ceiling": True}, {"timeout_sec": 30}):
-        assert client.put(f"/api/v1/connections/{identity}", json={
-            "name": "Personal", "kind": kind, "options": options,
-        }).status_code == 422
+    assert response.status_code == 422 and "api" in response.text
     with transaction() as db:
-        assert db.get(Connection, identity).options == {"prompt_token_ceiling": 200000}
+        assert db.scalar(select(func.count()).select_from(Connection)) == 1
+        assert db.get(Connection, "connection").kind == "api"
+        assert db.get(Connection, "connection").options == {}
 
 
 def test_signed_webhooks_are_durable_and_deduplicated(seed, client):

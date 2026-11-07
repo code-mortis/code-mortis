@@ -13,8 +13,11 @@ from pydantic import Field, ValidationError
 from sqlalchemy import or_, select
 
 from code_mortis.core import file_policy
+from code_mortis.core import source as git_source
+from code_mortis.core.analysis import require_available_engine
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text
+from code_mortis.core.shared_execution import require_shared
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Activity,
@@ -221,14 +224,9 @@ def validate_result(value, context):
 
 
 def read_source(repo, env, sha, path, stopped):
-    ocr.ReviewComment.relative_path(path)
-    entry = ocr.git(repo, env, "ls-tree", sha, "--", path, stopped=stopped)
-    if not re.match(r"^100(?:644|755) blob [0-9a-f]{40}\t", entry):
-        raise ValueError(f"The source file {path!r} is missing or is not a regular file in commit {sha}. Check the original and current code manually.")
-    source = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
-    if "\x00" in source or "\ufffd" in source:
-        raise ValueError("A file needed to verify this finding is binary or is not readable as text. Check it manually.")
-    return source
+    if file_policy.excluded(path):
+        raise ValueError("This source is excluded by repository policy.")
+    return git_source.read_source(repo, env, sha, path, stopped, git=ocr.git)
 
 
 def read_requested_source(repo, env, sha, path, options, stopped, *, revision, field):
@@ -328,12 +326,15 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
             current_path = None
     if current_path:
         paths.add(current_path)
+    inventory_paths = paths | original_paths
+    permitted = git_source.review_paths(repo, env, original_sha, head_sha, inventory_paths, options, stopped, git=ocr.git)
     if focused:
         paths, original_paths = ({current_path} if current_path else set()), {old_path}
     # Apply scope before loading optional changes. An excluded test must not block an unrelated fix
     # or leak into the diff sent to the provider.
     all_paths = paths | original_paths
     selected = filter_context(repo, env, dict.fromkeys(all_paths, "# scope preview\n"), options, stopped)
+    selected &= permitted
     if len(selected) > 100:
         raise ValueError("Fix verification needs more than 100 eligible source files, exceeding its evidence limit. Review the finding manually.")
     required = {old_path} | ({current_path} if current_path else set())
@@ -348,7 +349,7 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     context = {"finding": original, "original_sha": original_sha, "head_sha": head_sha,
                "current_path": current_path, "sources": sources, "diff": patch,
                "exclusions": options.get("exclusions", ""),
-               "excluded_paths": sorted(all_paths - selected), "diff_only_paths": sorted(selected - required)}
+               "excluded_paths": sorted((all_paths - selected) | (inventory_paths - permitted)), "diff_only_paths": sorted(selected - required)}
     check_context_size(context)
     return context
 
@@ -370,6 +371,7 @@ def expand_context(repo, env, context, requested, options, stopped):
     for path in paths:
         ocr.ReviewComment.relative_path(path)
     allowed = filter_context(repo, env, dict.fromkeys(paths, "# context\n"), options, stopped)
+    allowed -= set(context.get("excluded_paths", []))
     if len(allowed | set(context.get("diff_only_paths", []))
            | {path for sources in context["sources"].values() for path in sources}) > 100:
         raise ValueError("Fix verification exceeds its 100-source-file evidence limit.")
@@ -800,11 +802,13 @@ def limit_error(options, budget, remaining, usage_known):
 
 
 def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
+    require_shared(connection)
     from code_mortis.reviews import graph_context, pipeline
     from code_mortis.reviews.service import authorize_connection, review_stopped
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
+        require_available_engine(run.config)
         ids = list(db.scalars(select(FindingVerification.id).where(
             FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
         ).order_by(FindingVerification.created_at, FindingVerification.id)))

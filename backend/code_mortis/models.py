@@ -438,6 +438,65 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class AnalysisPlan(Base):
+    __tablename__ = "analysis_plans"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), unique=True)
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("review_runs.id", ondelete="CASCADE"))
+    scan_id: Mapped[str | None] = mapped_column(ForeignKey("security_scans.id", ondelete="CASCADE"))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AnalysisBudget(Base):
+    __tablename__ = "analysis_budgets"
+    __table_args__ = (CheckConstraint("charged_tokens >= 0 AND (token_limit IS NULL OR token_limit >= 0)",
+                                    name="ck_analysis_budget_tokens"),)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("analysis_plans.id", ondelete="CASCADE"), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(20), primary_key=True)
+    token_limit: Mapped[int | None] = mapped_column(BigInteger)
+    charged_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AnalysisTask(Base):
+    __tablename__ = "analysis_tasks"
+    __table_args__ = (UniqueConstraint("plan_id", "key", name="uq_analysis_task_key"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("analysis_plans.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(200))
+    stage: Mapped[str] = mapped_column(String(20))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    scope: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    dependencies: Mapped[list[str]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class AnalysisAttempt(Base):
+    __tablename__ = "analysis_attempts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "number", name="uq_analysis_attempt_number"),
+        CheckConstraint("reserved_tokens >= 0 AND (usage_tokens IS NULL OR usage_tokens >= 0)",
+                        name="ck_analysis_attempt_tokens"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("analysis_tasks.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    job_attempt: Mapped[int] = mapped_column(Integer)
+    lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    reserved_tokens: Mapped[int] = mapped_column(BigInteger)
+    usage_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    usage_state: Mapped[str] = mapped_column(String(20), default="reserved")
+    provider_request_id: Mapped[str | None] = mapped_column(String(250))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
 class SecurityScan(Base):
     __tablename__ = "security_scans"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

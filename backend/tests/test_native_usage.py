@@ -105,51 +105,34 @@ def test_claude_counts_input_output_and_cache_even_on_failure(tmp_path, monkeypa
 @pytest.mark.parametrize("budget,tokens,reason", [
     (None, 25, None), (25, 25, None), (24, 25, "token_limit"), (None, None, "usage_unknown"),
 ])
-def test_native_budget_uses_reported_tokens_and_supports_unlimited(monkeypatch, kind, runner, budget, tokens, reason):
-    async def auth(*args):
-        return {"status": "connected"}
-
-    async def inference(connection, body, directory, usage):
-        usage["tokens"] = tokens
-        return {"comments": []}
+def test_retired_native_execution_ignores_budget_and_never_reaches_auth_or_model(monkeypatch, kind, runner, budget, tokens, reason):
+    async def forbidden(*args):
+        pytest.fail("Retired native execution reached authentication or inference")
 
     monkeypatch.setattr(native_runner, "locks", {})
-    monkeypatch.setattr(native_runner, "auth_status", auth)
-    monkeypatch.setattr(native_runner, runner, inference)
+    monkeypatch.setattr(native_runner, "auth_status", forbidden)
+    monkeypatch.setattr(native_runner, runner, forbidden)
     body = native_runner.ReviewBody(kind=kind, model="model", effort="low", prompt="review", output_schema={},
                                    timeout=30, token_budget=budget)
     entry = {}
     asyncio.run(native_runner.execute("connection", body, entry))
-    assert entry["usage"] == {"tokens": tokens}
-    assert entry["status"] == ("failed" if reason else "completed")
-    if reason:
-        assert entry["reason"] == reason
+    assert entry == {"status": "failed", "reason": "retired", "usage": {"tokens": 0}}
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_runner_transport_returns_usage_for_success_and_failure(monkeypatch, failed):
-    methods = []
-
+def test_retired_runner_transport_cannot_dispatch_or_read_results(monkeypatch, failed):
     def request(method, *args):
-        methods.append(method)
-        return {"status": "failed" if failed else "completed", "reason": "token_limit",
-                "result": {"comments": []}, "usage": {"tokens": 25}}
+        pytest.fail("Retired runner transport attempted " + method)
 
     monkeypatch.setattr(runner_client, "request", request)
-    if failed:
-        with pytest.raises(runner_client.RunnerBlocked) as caught:
-            runner_client.review("connection", "run", {}, lambda: False)
-        assert caught.value.reason == "token_limit" and caught.value.usage == {"tokens": 25}
-    else:
-        assert runner_client.review("connection", "run", {}, lambda: False) == ({"comments": []}, {"tokens": 25})
-    assert methods == ["POST", "GET", "DELETE"]
+    with pytest.raises(runner_client.RunnerBlocked) as caught:
+        runner_client.review("connection", "run", {"historical_failed": failed}, lambda: False)
+    assert caught.value.reason == "retired"
 
 
 @pytest.mark.parametrize("tokens", [None, True, -1, "25"])
-def test_runner_transport_never_treats_invalid_usage_as_zero(monkeypatch, tokens):
-    monkeypatch.setattr(runner_client, "request", lambda *args: {
-        "status": "completed", "result": {"comments": []}, "usage": {"tokens": tokens},
-    })
+def test_retired_runner_does_not_read_or_trust_usage(monkeypatch, tokens):
+    monkeypatch.setattr(runner_client, "request", lambda *args: pytest.fail("Retired execution requested telemetry"))
     with pytest.raises(runner_client.RunnerBlocked) as caught:
-        runner_client.review("connection", "run", {}, lambda: False)
-    assert caught.value.reason == "usage_unknown" and caught.value.usage == {"tokens": None}
+        runner_client.review("connection", "run", {"usage": {"tokens": tokens}}, lambda: False)
+    assert caught.value.reason == "retired" and caught.value.usage == {"tokens": None}

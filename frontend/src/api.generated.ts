@@ -2780,9 +2780,9 @@ export interface components {
             /**
              * Kind
              * @default api
-             * @enum {string}
+             * @constant
              */
-            kind: "api" | "chatgpt" | "claude_code";
+            kind: "api";
             /**
              * Provider
              * @default
@@ -3664,6 +3664,12 @@ export interface components {
             timeout_seconds?: number | null;
             /** Token Budget */
             token_budget?: number | null;
+            /**
+             * Analysis Engine
+             * @default ocr
+             * @enum {string}
+             */
+            analysis_engine: "ocr" | "mortis";
             /** Assessment Token Budget */
             assessment_token_budget?: number | null;
             /** Verification Token Budget */
@@ -3776,6 +3782,11 @@ export interface components {
             code_graph_limits?: components["schemas"]["CodeGraphLimits"];
             /** Connection Id */
             connection_id: string | null;
+            /**
+             * Connection Requires Setup
+             * @default false
+             */
+            connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettings"];
             /**
              * Open Prs

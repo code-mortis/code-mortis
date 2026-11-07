@@ -13,15 +13,10 @@ from code_mortis.core.security import seal
 from code_mortis.integrations import model_discovery, runner_client
 from code_mortis.models import (
     Connection,
-    ConnectionGrant,
     Membership,
-    PullRequest,
-    Repository,
     ReviewRun,
-    User,
 )
-from code_mortis.reviews import service as reviews
-from code_mortis.schemas.common import ModelCatalog, ModelDiscoveryInput
+from code_mortis.schemas.common import ModelDiscoveryInput
 
 
 def provider(monkeypatch, handler):
@@ -228,35 +223,15 @@ def test_invalid_draft_endpoint_returns_validation_error(seed, client, monkeypat
 
 
 def test_model_visibility_drafts_and_revoked_auth(seed, client, github_stub, monkeypatch):
-    identity = client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"}).json()["id"]
-    calls = []
-    monkeypatch.setattr(
-        runner_client,
-        "request",
-        lambda *args, **kwargs: (
-            calls.append(args)
-            or ModelCatalog(source="client", models=[{"id": "native", "name": "Native"}]).model_dump()
-        ),
-    )
-    assert client.get(f"/api/v1/connections/{identity}/models").json()["models"][0]["id"] == "native"
     with transaction() as db:
-        db.add(User(id=8, login="other", role="member"))
-        db.get(Connection, identity).owner_id = 8
+        db.add(Connection(id="personal", name="Historical", kind="chatgpt", owner_id=7,
+                          provider="openai", protocol="native", model="", base_url="", secret=seal("{}")))
+    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired discovery"))
+    assert client.get("/api/v1/connections/personal/models").status_code == 410
+    assert client.get("/api/v1/connections/personal/models?repository_id=22").status_code == 410
+    with transaction() as db:
         db.get(Membership, 7).role = "member"
     assert client.post("/api/v1/connections/models", json=draft(api_key="secret")).status_code == 403
-    assert client.get(f"/api/v1/connections/{identity}/models").status_code == 403
-    assert client.get(f"/api/v1/connections/{identity}/models?repository_id=22").status_code == 403
-    assert len(calls) == 1
-    with transaction() as db:
-        db.add(ConnectionGrant(connection_id=identity, repository_id=22))
-    assert client.get(f"/api/v1/connections/{identity}/models?repository_id=22").status_code == 200
-    with transaction() as db:
-        db.get(Connection, identity).auth_status = "revoked"
-    assert (
-        client.get(f"/api/v1/connections/{identity}/models?repository_id=22").json()["status"]
-        == "disconnected"
-    )
-    assert len(calls) == 2
     assert client.get("/api/v1/connections/missing/models").status_code == 404
 
 
@@ -268,128 +243,40 @@ def test_personal_setup_requires_effective_model_and_keeps_run_snapshot(
     from code_mortis.integrations import github
 
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: remote())
-    result = client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"})
-    assert result.status_code == 201 and result.json()["model"] == ""
-    identity = result.json()["id"]
-    client.put(f"/api/v1/connections/{identity}/grants/22", json={"automatic": True})
-    assert (
-        client.put("/api/v1/repositories/22", json={"enabled": True, "connection_id": identity}).status_code
-        == 422
-    )
-    assert client.post("/api/v1/pulls/pr/runs", json={"connection_id": identity}).status_code == 422
+    assert client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"}).status_code == 422
     with transaction() as db:
-        repo = db.get(Repository, 22)
-        repo.connection_id = identity
-        with pytest.raises(ValueError, match="Choose a model"):
-            reviews.create_run(db, db.get(PullRequest, "pr"), repo, "automatic")
-        assert not db.scalars(select(ReviewRun)).all()
-    settings = {"enabled": True, "connection_id": identity, "settings": {"model": "override-model"}}
-    assert client.put("/api/v1/repositories/22", json=settings).status_code == 200
-    result = client.post("/api/v1/pulls/pr/runs", json={"connection_id": identity})
-    assert result.status_code == 202 and result.json()["config"]["connection"]["model"] == "override-model"
-    assert (
-        client.put(
-            f"/api/v1/connections/{identity}",
-            json={"name": "Personal", "kind": "chatgpt", "model": "chosen-model"},
-        ).status_code
-        == 200
-    )
+        db.add(Connection(id="personal", name="Historical", kind="chatgpt", owner_id=7,
+                          provider="openai", protocol="native", model="old-model", base_url="", secret=seal("{}")))
+    assert client.put("/api/v1/repositories/22", json={"enabled": True, "connection_id": "personal", "settings": {"model": "override"}}).status_code == 422
+    assert client.post("/api/v1/pulls/pr/runs", json={"connection_id": "personal"}).status_code == 422
     with transaction() as db:
-        assert db.get(ReviewRun, result.json()["id"]).config["connection"]["model"] == "override-model"
-    assert (
-        client.post("/api/v1/connections", json={"name": "API", **draft(), "api_key": "key"}).status_code
-        == 422
-    )
+        assert not list(db.scalars(select(ReviewRun)))
+    assert client.post("/api/v1/connections", json={"name": "API", **draft(), "api_key": "key"}).status_code == 422
 
 
 def test_native_catalogs_are_isolated_and_never_start_a_review(monkeypatch, tmp_path):
-    identity = "00000000-0000-4000-8000-000000000010"
-    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
-    monkeypatch.setattr(native_runner, "locks", {})
-    connected, calls = False, []
+    from fastapi import HTTPException
 
-    async def auth(connection_id, kind):
-        assert connection_id == identity
-        return {"status": "connected" if connected else "disconnected"}
-
-    class Client:
-        async def call(self, method, params):
-            assert method == "model/list" and params["includeHidden"] is False
-            calls.append(params)
-            return {
-                "data": [{"model": "b" if params["cursor"] else "a", "displayName": "Native model"}],
-                "nextCursor": None if params["cursor"] else "next",
-            }
-
-    async def codex(connection_id):
-        assert connection_id == identity
-        return Client()
-
-    async def claude(connection_id):
-        assert connection_id == identity
-        return model_discovery.choices([{"id": "claude", "name": "Claude"}])
-
-    monkeypatch.setattr(native_runner, "auth_status", auth)
-    monkeypatch.setattr(native_runner, "codex", codex)
-    monkeypatch.setattr(native_runner, "claude_models", claude)
-
-    async def check():
-        nonlocal connected
-        assert (await native_runner.model_catalog(identity, "chatgpt")).status == "disconnected"
-        assert not calls
-        connected = True
-        assert [row.id for row in (await native_runner.model_catalog(identity, "chatgpt")).models] == [
-            "a",
-            "b",
-        ]
-        assert (await native_runner.model_catalog(identity, "claude_code")).models[0].id == "claude"
-        async with native_runner.locks[identity]:
-            assert (await native_runner.model_catalog(identity, "chatgpt")).status == "unavailable"
-        assert len(calls) == 2
-
-    asyncio.run(check())
+    spawn = AsyncMock()
+    monkeypatch.setattr(native_runner, "codex", spawn)
+    monkeypatch.setattr(native_runner, "claude_models", spawn)
+    for kind in ("chatgpt", "claude_code", "unknown"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(native_runner.model_catalog("historical", kind))
+        assert exc.value.status_code == 410
+    spawn.assert_not_awaited()
 
 
 def test_native_catalog_timeout_includes_waiting_for_lock(monkeypatch, tmp_path):
-    identity = "00000000-0000-4000-8000-000000000010"
-    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
+    from fastapi import HTTPException
+
     monkeypatch.setattr(native_runner, "locks", {})
     auth = AsyncMock()
     monkeypatch.setattr(native_runner, "auth_status", auth)
-    timeout = asyncio.timeout
-
-    def expire_immediately(delay):
-        assert delay == 60
-        return timeout(0)
-
-    monkeypatch.setattr(native_runner.asyncio, "timeout", expire_immediately)
-
-    async def check():
-        lock = native_runner.locks[identity] = asyncio.Lock()
-        await lock.acquire()
-        release = asyncio.Event()
-
-        async def competing_operation():
-            async with lock:
-                await release.wait()
-
-        holder = asyncio.create_task(competing_operation())
-        await asyncio.sleep(0)
-        lock.release()
-        # A queued waiter takes priority even before it resumes and locks this again.
-        assert not lock.locked()
-        try:
-            async with timeout(1):
-                result = await native_runner.model_catalog(identity, "chatgpt")
-            assert result.status == "unavailable" and not result.models
-            assert lock.locked()
-            auth.assert_not_awaited()
-        finally:
-            release.set()
-            await holder
-        assert not lock.locked()
-
-    asyncio.run(check())
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(native_runner.model_catalog("historical", "chatgpt"))
+    assert exc.value.status_code == 410 and not native_runner.locks
+    auth.assert_not_awaited()
 
 
 @pytest.mark.parametrize("newline", [b"", b"\n"])
@@ -408,10 +295,10 @@ def test_oversized_claude_model_line_is_unavailable_and_stops_process(monkeypatc
         process = SimpleNamespace(stdout=stdout, stdin=SimpleNamespace(write=lambda data: None, drain=AsyncMock()))
         spawn = AsyncMock(return_value=process)
         monkeypatch.setattr(native_runner.asyncio, "create_subprocess_exec", spawn)
-        result = await native_runner.model_catalog(identity, "claude_code")
-        assert result.status == "unavailable" and not result.models
+        with pytest.raises(ValueError):
+            await native_runner.claude_models(identity)
         assert spawn.call_args.kwargs["limit"] == native_runner.MAX_BYTES
         stopped.assert_awaited_once_with(process)
-        assert not native_runner.locks[identity].locked()
+        assert not native_runner.locks
 
     asyncio.run(check())

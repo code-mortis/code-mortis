@@ -30,7 +30,7 @@ def suggestions(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize('kind', ['api', 'chatgpt', 'claude_code'])
+@pytest.mark.parametrize('kind', ['api'])
 def test_assessment_dispatch_and_persistence(pipeline, suggestions, monkeypatch, kind):
     with transaction() as db:
         connection = db.get(Connection, 'connection')
@@ -60,7 +60,7 @@ def test_assessment_dispatch_and_persistence(pipeline, suggestions, monkeypatch,
     assert suggestions[0][2] == 'a' * 40
 
 
-@pytest.mark.parametrize('kind', ['api', 'chatgpt', 'claude_code'])
+@pytest.mark.parametrize('kind', ['api'])
 def test_verification_dispatch_preserves_original_current_evidence_and_budget(scenario, suggestions, monkeypatch, kind):
     with transaction() as db:
         connection = db.get(Connection, 'connection')

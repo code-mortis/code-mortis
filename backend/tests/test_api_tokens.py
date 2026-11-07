@@ -474,15 +474,12 @@ def test_owned_personal_connection_needs_grant(pat_client, seed, monkeypatch):
         db.add(Connection(id="personal", name="Mine", provider="anthropic", protocol="native",
                           model="", base_url="", secret=seed["connection"].secret,
                           kind="claude_code", owner_id=7))
-    assert client.get("/api/v1/connections", headers=headers).json() == [
-        row for row in client.get("/api/v1/connections", headers=headers).json() if row["id"] != "personal"]
-    assert client.get("/api/v1/connections/personal/models", headers=headers).status_code == 403
-    with transaction() as db:
+        db.flush()
         db.add(ConnectionGrant(connection_id="personal", repository_id=22))
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: {"models": [], "source": "client"})
+    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Native model discovery"))
     listed = client.get("/api/v1/connections", headers=headers).json()
-    assert "personal" in {row["id"] for row in listed}
-    assert client.get("/api/v1/connections/personal/models", headers=headers).status_code == 200
+    assert "personal" not in {row["id"] for row in listed}
+    assert client.get("/api/v1/connections/personal/models", headers=headers).status_code == 410
 
 
 def test_connections_hidden_when_github_access_lost(pat_client, monkeypatch):

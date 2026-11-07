@@ -1,4 +1,3 @@
-import asyncio
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +39,7 @@ SCAN_CITATIONS = json.loads((Path(__file__).parent / "fixtures/security_citation
 DEPENDENCY_ADVISORY = json.loads((Path(__file__).parent / "fixtures/security_dependency_advisory.json").read_text())
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("credential", ["synthetic-雪-credential", "synthetic-first\nsecond-line"])
 def test_security_outgoing_history_is_redacted_without_mutating_saved_context(tmp_path, monkeypatch, kind, credential):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -307,7 +306,7 @@ def test_related_security_history_retains_transitive_renames_and_dismissals():
     assert security.assessment_history(proposal, history, item) == history[:2]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_security_context_limit_is_local_to_the_task(tmp_path, monkeypatch, kind):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {"app.py": {}}
@@ -403,13 +402,12 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
     histories = []
     real_ask = security_engine.ask
 
-    def native(connection, identity, payload, stopped):
-        if "history_1" in payload["prompt"]:
-            entry = {}
-            asyncio.run(native_runner.execute("audit-history", native_runner.ReviewBody(**payload), entry))
-            assert entry["reason"] == "prompt_limit"
-            raise security.runner_client.RunnerBlocked("prompt_limit", entry["usage"])
-        return {"verdict": "rejected", "finding_id": None, "explanation": "Guarded", "evidence": [], "required_paths": []}, {"tokens": 1}
+    def api(*args, **kwargs):
+        if args[4].get("history"):
+            raise security.verification.VerificationOutputError("Necessary context exceeds the prompt limit", {"tokens": 0},
+                feedback={"kind": "context_limit"})
+        result = {"verdict": "rejected", "finding_id": None, "explanation": "Guarded", "evidence": [], "required_paths": []}
+        return kwargs["validator"](result, args[4]), {"tokens": 1}
 
     def ask(item, connection, credentials, task, context, *args, **kwargs):
         if task == "analysis":
@@ -419,14 +417,14 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
                 "verification": "Test", "evidence": [{"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": "safe"}]}
             return {"findings": [proposal], "required_paths": []}, {"tokens": 1}
         histories.append((context["proposal"]["path"], len(context["history"])))
-        return real_ask(item, {**connection, "kind": "chatgpt"}, credentials, task, context, *args, **kwargs)
+        return real_ask(item, connection, credentials, task, context, *args, **kwargs)
 
     monkeypatch.setattr(native_runner, "auth_status", lambda *args: pytest.fail("Oversized history must be blocked before authentication"))
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
-    monkeypatch.setattr(security.runner_client, "review", native)
+    monkeypatch.setattr(security.verification, "api_verify", api)
     with transaction() as db:
         earlier = saved_scan(db, seed, status="completed")
         for index in range(60):
@@ -947,13 +945,14 @@ def test_personal_scans_require_owner_and_repository_grant(seed, security_github
         connection = db.get(type(seed["connection"]), "connection")
         connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
         body = SecurityScanInput(connection_id="connection", request_key=uid(), concurrency=8)
-        with pytest.raises(ValueError, match="Authorize this repository"):
+        with pytest.raises(ValueError, match="retired"):
             security.create_scan(db, seed["repo"], seed["user"], body)
         db.add(ConnectionGrant(connection_id="connection", repository_id=22, automatic=False))
         db.flush()
-        scan = security.create_scan(db, seed["repo"], seed["user"], body)
-        assert scan.config["connection"]["kind"] == "chatgpt"
-        assert scan.config["limits"]["concurrency"] == 1
+        with pytest.raises(ValueError, match="retired"):
+            security.create_scan(db, seed["repo"], seed["user"], body)
+        assert not list(db.scalars(select(SecurityScan)))
+
 
 
 @pytest.mark.parametrize(("complete", "current", "resolved"), [(True, True, True), (False, True, False), (True, False, False)])
@@ -1360,7 +1359,7 @@ def test_trivy_refuses_targets_outside_prepared_snapshot(tmp_path):
 
 
 def test_snapshot_never_follows_symlinks_or_executes_hooks(tmp_path):
-    item = security_engine.Snapshot(tmp_path, SHA, security_engine.ocr.child_environment(), lambda: False)
+    item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False)
     item.git.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=item.git, check=True)
     (item.git / "app.py").write_text("print('fixture')\n")
@@ -1382,7 +1381,7 @@ def test_snapshot_analyzes_astro_without_loading_protected_generated_or_document
              ".agents/skill/page.astro", "README.md", "src/content/docs/article.mdx", "public/index.html"]
     source = "<script>throw new Error('repository code must never execute')</script>\n"
     entries = "\0".join(f"100644 blob {'c' * 40} {len(source)}\t{path}" for path in paths)
-    monkeypatch.setattr(security_engine.ocr, "git", lambda *args, **kwargs: entries)
+    monkeypatch.setattr(security_engine.git_source, "git", lambda *args, **kwargs: entries)
     item.read = lambda path, sha=None: source
     item.populate()
     assert {path for path, value in item.inventory.items() if value["code"]} == set(paths[:3])
@@ -1491,7 +1490,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
+    monkeypatch.setattr(security.ocr, "configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
         {"findings": [], "required_paths": ["bad.py"]}, {"tokens": 12}))
@@ -1573,7 +1572,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", api)
     with transaction() as db:
@@ -1638,7 +1637,7 @@ def test_security_stage_status_only_reflects_its_own_results(
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {},
         "problems": ["Dependency scan incomplete"] if earlier_error == "trivy" else [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         finding = saved_finding(db, seed, saved_scan(db, seed, status="completed"))
@@ -1716,7 +1715,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", configuration)
+    monkeypatch.setattr(security.ocr, "configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
@@ -1810,7 +1809,7 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -1864,7 +1863,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     body = {"connection_id": "connection", "token_budget": budget, "concurrency": concurrency}
     with transaction() as db:
@@ -2012,7 +2011,7 @@ def test_legacy_citation_validation_rejects_changed_code_literals_comments_and_f
 
 
 @pytest.mark.parametrize("case", SCAN_CITATIONS, ids=lambda case: case["task"])
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 def test_security_source_selections_cover_recorded_failures_in_every_stage_and_transport(tmp_path, monkeypatch, case, kind, task):
     citation, calls = case["citation"], []
@@ -2083,7 +2082,7 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine.verification, "api_verify", api)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -2108,7 +2107,7 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
         assert rejected["status"] == "completed" and rejected["result"]["verdict"] == "rejected"
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("invalid", ["unknown", "zero", "reversed", "overflow", "string_line", "boolean_line",
     "quote", "path", "revision", "empty", "blank", "oversized"])
 def test_security_source_selection_cannot_forge_evidence(tmp_path, monkeypatch, kind, invalid):
@@ -2146,7 +2145,7 @@ def test_security_source_selection_cannot_forge_evidence(tmp_path, monkeypatch, 
         assert error.value.feedback["line_count"] == 2
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 def test_security_source_ids_stay_bound_when_evidence_expands(tmp_path, monkeypatch, kind, task):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -2371,7 +2370,7 @@ def test_issue_sync_does_not_infer_a_fix_from_human_closure(seed, security_githu
         assert finding.issue["closed_by_app"] is False
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("case", ["first", "second", "new", "empty", "corrected", "repeat", "uuid", "empty_invalid", "number", "expand"])
 def test_security_assessment_selects_history_references_and_server_assigns_uuid(tmp_path, monkeypatch, kind, case):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -2446,7 +2445,7 @@ def test_security_assessment_selects_history_references_and_server_assigns_uuid(
             assert feedback == {"kind": "history_selection", "field": "finding_id", "allowed_values": [*references, None]}
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_security_transports_validate_terminal_empty_result_and_evidence_expansion(tmp_path, monkeypatch, kind):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {"app.py": {}, "guard.py": {}}
@@ -2490,7 +2489,7 @@ def test_failed_expansion_keeps_already_consumed_tokens(tmp_path, monkeypatch):
     assert error.value.usage["tokens"] == 12
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("failure,reason", [
     ("missing", "not in the prepared snapshot"),
     ("excluded", "Generated directory"),
@@ -2541,7 +2540,7 @@ def test_unavailable_security_evidence_reports_path_reason_and_usage(tmp_path, m
     assert reason in error.value.feedback["reason"]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 @pytest.mark.parametrize("case", ["corrected", "mixed", "repeat", "uncertain", "after_schema_error"])
 def test_security_missing_evidence_can_use_real_inventory_before_failing(tmp_path, monkeypatch, kind, task, case):
@@ -2621,7 +2620,7 @@ def test_security_missing_evidence_can_use_real_inventory_before_failing(tmp_pat
     assert reads == expected_reads
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["assessment", "verification"])
 @pytest.mark.parametrize("case", ["excluded", "protected", "repeated"])
 def test_security_unavailable_evidence_preserves_uncertainty_and_scope(tmp_path, monkeypatch, kind, task, case):
@@ -2667,7 +2666,7 @@ def test_security_unavailable_evidence_preserves_uncertainty_and_scope(tmp_path,
         assert blocked in result["explanation"]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["assessment", "verification"])
 @pytest.mark.parametrize("redaction_failure", [False, True])
 def test_security_evidence_pass_limit_keeps_uncertainty_identity_and_usage(tmp_path, monkeypatch, kind, task, redaction_failure):
@@ -2714,7 +2713,7 @@ def test_security_evidence_pass_limit_keeps_uncertainty_identity_and_usage(tmp_p
                      for revision in ([None, OLD] if task == "verification" else [None])]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("limit", ["budget", "timeout", "cancel", "unknown_usage"])
 def test_security_missing_path_correction_respects_execution_limits(tmp_path, monkeypatch, kind, limit):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -2735,7 +2734,7 @@ def test_security_missing_path_correction_respects_execution_limits(tmp_path, mo
     def stopped():
         return bool(calls) and limit == "cancel"
 
-    error_type = security_engine.ocr.ReviewStopped if limit == "cancel" else security_engine.verification.VerificationOutputError
+    error_type = security_engine.ReviewStopped if limit == "cancel" else security_engine.verification.VerificationOutputError
     with pytest.raises(error_type) as error:
         security_engine.ask(item, connection, {}, "assessment", context, 7 if limit == "budget" else 100, 60, stopped, uid())
     assert calls == [1]
@@ -2743,7 +2742,7 @@ def test_security_missing_path_correction_respects_execution_limits(tmp_path, mo
         assert error.value.usage == {"tokens": None if limit == "unknown_usage" else 7}
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 @pytest.mark.parametrize("case", ["empty", "mixed", "repeat", "budget", "unknown_usage"])
 def test_security_repeated_evidence_gets_one_correction(tmp_path, monkeypatch, kind, task, case):
@@ -2808,7 +2807,7 @@ def test_security_repeated_evidence_gets_one_correction(tmp_path, monkeypatch, k
     assert reads == expected_reads
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 @pytest.mark.parametrize("corrected", [True, False])
 def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch, kind, task, corrected):
@@ -2847,9 +2846,9 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
         calls.append(payload["token_budget"])
         return response(), {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(security_engine.ocr, "command", command)
+    monkeypatch.setattr(security.ocr, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(security.ocr, "configuration", lambda *a, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "terminal_result", lambda *a: response())
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     monkeypatch.setattr(security_engine.runner_client, "review", native)
@@ -2904,9 +2903,9 @@ def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_
             "summary": {"files_reviewed": 1, "total_tokens": None if case == "unknown_usage" else 71300},
             "warnings": ["incomplete"] if case == "warning" else None}), ""
 
-    monkeypatch.setattr(security_engine.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security_engine.ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(security_engine.ocr, "command", command)
+    monkeypatch.setattr(security.ocr, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(security.ocr, "configuration", lambda *a, **kwargs: nullcontext())
+    monkeypatch.setattr(security.ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": ""}
     budget = 71300 if case == "budget" else 200000
@@ -2928,7 +2927,7 @@ def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_
         assert caught.value.feedback is None
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
 def test_security_corrects_invalid_source_selections_once_with_known_usage(tmp_path, monkeypatch, kind, task):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -3029,7 +3028,7 @@ def test_security_does_not_start_correction_after_cancellation_or_timeout(tmp_pa
             feedback={"field": "evidence[0]", "errors": [{"reason": "invalid source line range"}]})
 
     monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    error_type = security_engine.ocr.ReviewStopped if interruption == "cancel" else security_engine.verification.VerificationOutputError
+    error_type = security_engine.ReviewStopped if interruption == "cancel" else security_engine.verification.VerificationOutputError
     with pytest.raises(error_type) as error:
         security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, 100, 60,
             lambda: bool(calls) and interruption == "cancel", uid())
@@ -3082,7 +3081,7 @@ def test_scanner_database_freshness_and_trusted_options(tmp_path, monkeypatch, d
             return 0, json.dumps({"SchemaVersion": 2, "Results": []}), ""
         return 1, "", "unavailable"
 
-    monkeypatch.setattr(security_engine.ocr, "command", command)
+    monkeypatch.setattr(security_engine.process, "command", command)
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     result = security_engine.trivy(item, 30, lambda: False)
     assert result["metadata"]["database_fresh"] == (data_age == 1)
@@ -3717,3 +3716,16 @@ def test_security_repository_updated_order_accepts_nullable_scan_times(seed, sec
     response = client.get("/api/v1/security/repositories?ordering=-updated_at")
     assert response.status_code == 200, response.text
     assert response.json()["items"][0]["repository"]["id"] == 22
+
+
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code", "unknown"])
+@pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
+def test_retired_security_transports_stop_before_source_or_provider_dispatch(tmp_path, monkeypatch, kind, task):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}}
+    item.source = lambda *a, **k: pytest.fail("Retired security execution read source")
+    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *a, **k: pytest.fail("Silent shared fallback"))
+    monkeypatch.setattr(security_engine.runner_client, "review", lambda *a, **k: pytest.fail("Native security dispatch"))
+    with pytest.raises(ValueError, match="retired"):
+        security_engine.ask(item, {"id": "old", "kind": kind, "model": "old-model"}, {}, task,
+                            {"sources": {"current": {}}, "diff": ""}, 1000, 60, lambda: False, uid())

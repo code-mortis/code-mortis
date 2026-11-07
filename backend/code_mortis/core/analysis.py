@@ -1,0 +1,327 @@
+"""Durable task accounting for the future engine; these helpers never call a provider."""
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from sqlalchemy import select
+
+from code_mortis.core.db import now, transaction, uid
+from code_mortis.models import (
+    AnalysisAttempt,
+    AnalysisBudget,
+    AnalysisPlan,
+    AnalysisTask,
+    Connection,
+    Installation,
+    Job,
+    PullRequest,
+    Repository,
+    ReviewRun,
+    SecurityScan,
+)
+from code_mortis.schemas.analysis import PlanSpec
+
+
+def engine_snapshot(options):
+    if not isinstance(options, dict) or not isinstance(options.get("settings", {}), dict):
+        raise ValueError("The stored analysis engine settings are invalid.")
+    settings = options.get("settings", {})
+    selected = options.get("analysis_engine", settings.get("analysis_engine", "ocr"))
+    if not isinstance(selected, str) or selected not in {"ocr", "mortis"}:
+        raise ValueError("Choose a supported analysis engine: OCR or Mortis.")
+    if "analysis_engine" in settings and settings["analysis_engine"] != selected:
+        raise ValueError("The stored analysis engine snapshot does not match its settings.")
+    return {"analysis_engine": selected, "engine_contract": "analysis-engine/v1",
+            "planner_version": "m1-foundation/v1"}
+
+
+def require_available_engine(options):
+    if engine_snapshot(options)["analysis_engine"] != "ocr":
+        raise ValueError("Mortis analysis is not available yet. Select OCR for new work; no fallback was used.")
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
+    """Freeze one deterministic plan per existing durable Job, before any dispatch."""
+    specification = PlanSpec.model_validate(specification.model_dump(mode="json"))
+    job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    if not job:
+        raise ValueError("A durable job is required before planning")
+    snapshot = specification.model_dump(mode="json")
+    snapshot["tasks"] = sorted(snapshot["tasks"], key=lambda task: task["key"])
+    for task in snapshot["tasks"]:
+        task["dependencies"] = sorted(set(task["dependencies"]))
+    identity = fingerprint([job_id, snapshot])
+    existing = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
+    if existing:
+        if existing.id != identity or existing.snapshot != snapshot:
+            raise ValueError("An existing analysis plan is immutable; create a new job for changed inputs")
+        return existing
+    if specification.run_id and job.payload.get("run_id") != specification.run_id:
+        raise ValueError("The plan review does not match its durable job")
+    if specification.scan_id and job.payload.get("scan_id") != specification.scan_id:
+        raise ValueError("The plan security scan does not match its durable job")
+    if specification.run_id:
+        run = db.get(ReviewRun, specification.run_id)
+        pr = db.get(PullRequest, run.pr_id) if run else None
+        if (not pr or pr.repository_id != specification.repository_id
+                or specification.revisions.get("head") != run.head_sha
+                or specification.revisions.get("base") != run.base_sha):
+            raise ValueError("The plan must match its review repository and pinned revisions")
+        expected = (job.payload.get("config", {}) if job.kind == "generate_summary" else run.config).get("connection")
+        if specification.connection != expected:
+            raise ValueError("The plan connection must match the immutable execution snapshot")
+    if specification.scan_id:
+        scan = db.get(SecurityScan, specification.scan_id)
+        if (not scan or scan.repository_id != specification.repository_id
+                or specification.revisions.get("head") != scan.head_sha):
+            raise ValueError("The plan must match its security repository and pinned revision")
+        if specification.connection != scan.config.get("connection"):
+            raise ValueError("The plan connection must match the immutable execution snapshot")
+    plan = AnalysisPlan(id=identity, job_id=job_id, repository_id=specification.repository_id,
+                        run_id=specification.run_id, scan_id=specification.scan_id, snapshot=snapshot)
+    db.add(plan)
+    db.flush()
+    task_ids = {task["key"]: fingerprint([identity, task["key"]]) for task in snapshot["tasks"]}
+    for task in snapshot["tasks"]:
+        db.add(AnalysisTask(id=task_ids[task["key"]], plan_id=identity, key=task["key"], stage=task["stage"],
+                            input_hash=task["input_hash"], scope=task["scope"],
+                            dependencies=[task_ids[key] for key in task["dependencies"]]))
+    for stage, limit in specification.budgets.items():
+        db.add(AnalysisBudget(plan_id=identity, stage=stage, token_limit=limit,
+                              deadline_at=specification.deadlines.get(stage)))
+    db.flush()
+    return plan
+
+
+@dataclass(frozen=True)
+class TaskLease:
+    task_id: str
+    attempt_id: str
+    number: int
+    job_id: str
+    job_attempt: int
+    lease_until: datetime
+
+
+def job_live(job, attempt, timestamp):
+    return bool(job and job.status == "running" and job.attempts == attempt
+                and job.lease_until and job.lease_until > timestamp)
+
+
+def owner_live(db, plan):
+    repo = db.get(Repository, plan.repository_id)
+    installation = db.get(Installation, repo.installation_id) if repo else None
+    connection = db.get(Connection, plan.snapshot["connection"]["id"])
+    if (not repo or not repo.active or not installation or not installation.active
+            or installation.uninstalled or installation.archived or not connection or connection.kind != "api"):
+        return False
+    if plan.run_id:
+        run = db.scalar(select(ReviewRun).where(ReviewRun.id == plan.run_id).with_for_update())
+        pr = db.get(PullRequest, run.pr_id) if run else None
+        job = db.get(Job, plan.job_id)
+        summary_attempt = bool(job and job.kind == "generate_summary" and run
+                               and job.payload.get("run_id") == run.id
+                               and run.progress.get("summary_retry") == job.id)
+        if job and job.kind == "generate_summary":
+            permitted_status = summary_attempt and run.status in {"completed", "partial", "failed", "skipped"}
+        else:
+            permitted_status = run and run.status in {"queued", "running", "blocked"}
+        return bool(run and pr and repo.enabled and pr.repository_id == repo.id and not pr.ignored and pr.state == "open"
+                    and pr.head_sha == run.head_sha and pr.base_sha == run.base_sha
+                    and not run.cancel_requested and permitted_status)
+    if plan.scan_id:
+        scan = db.scalar(select(SecurityScan).where(SecurityScan.id == plan.scan_id).with_for_update())
+        return bool(scan and scan.repository_id == repo.id and not scan.cancel_requested
+                    and scan.status in {"queued", "running", "blocked"})
+    return True
+
+
+def mark_uncertain(task, attempt, timestamp):
+    # A lost response may have consumed tokens; expiry never releases its reservation.
+    task.status = "uncertain"
+    attempt.status, attempt.usage_state = "uncertain", "unknown"
+    attempt.finished_at = timestamp
+
+
+def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int,
+               output_tokens: int, lease_seconds: int = 60) -> TaskLease | None:
+    """Reserve a whole request atomically. Revalidate external authorization before calling."""
+    if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
+        raise ValueError("Input and output reservations must be nonnegative whole tokens")
+    if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
+        raise ValueError("Task leases must last between 1 and 3600 seconds")
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == task_id).with_for_update())
+        plan = db.get(AnalysisPlan, task.plan_id) if task else None
+        if not plan or plan.job_id != job_id or not owner_live(db, plan):
+            return None
+        timestamp = now()
+        if not job_live(job, job_attempt, timestamp):
+            return None
+        if task.status == "running":
+            prior = db.scalar(select(AnalysisAttempt).where(
+                AnalysisAttempt.task_id == task.id, AnalysisAttempt.number == task.attempts))
+            if prior and (prior.lease_until <= timestamp or prior.job_attempt != job_attempt):
+                mark_uncertain(task, prior, timestamp)
+            return None
+        if task.status != "pending":
+            return None
+        if task.dependencies:
+            completed = set(db.scalars(select(AnalysisTask.id).where(
+                AnalysisTask.id.in_(task.dependencies), AnalysisTask.status == "completed")))
+            if completed != set(task.dependencies):
+                return None
+        budget = db.scalar(select(AnalysisBudget).where(
+            AnalysisBudget.plan_id == plan.id, AnalysisBudget.stage == task.stage).with_for_update())
+        unknown = db.scalar(select(AnalysisAttempt.id).join(AnalysisTask).where(
+            AnalysisTask.plan_id == plan.id, AnalysisTask.stage == task.stage,
+            AnalysisAttempt.usage_state == "unknown").limit(1))
+        timestamp = now()
+        reservation = input_tokens + output_tokens
+        if (not job_live(job, job_attempt, timestamp) or unknown or budget.deadline_at and budget.deadline_at <= timestamp
+                or budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit):
+            return None
+        budget.charged_tokens += reservation
+        task.status, task.attempts = "running", task.attempts + 1
+        expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
+                      budget.deadline_at or job.lease_until)
+        attempt = AnalysisAttempt(id=uid(), task_id=task.id, number=task.attempts, job_attempt=job_attempt,
+                                  lease_until=expires, reserved_tokens=reservation)
+        db.add(attempt)
+        return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires)
+
+
+def owned_attempt(db, lease):
+    job = db.scalar(select(Job).where(Job.id == lease.job_id).with_for_update())
+    task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == lease.task_id).with_for_update())
+    attempt = db.get(AnalysisAttempt, lease.attempt_id)
+    if not task or not attempt or attempt.task_id != task.id or attempt.number != lease.number:
+        return None
+    plan = db.get(AnalysisPlan, task.plan_id)
+    live_owner = owner_live(db, plan)
+    timestamp = now()
+    if (plan.job_id != lease.job_id or not job_live(job, lease.job_attempt, timestamp)
+            or not live_owner or task.attempts != lease.number or task.status != "running"
+            or attempt.status != "running" or attempt.job_attempt != lease.job_attempt
+            or attempt.lease_until <= timestamp):
+        return None
+    return task, attempt
+
+
+def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | None = None,
+                error_code: str | None = None, provider_request_id: str | None = None) -> bool:
+    """Accept only a caller-validated result; unknown consumption blocks automatic retry."""
+    if usage_tokens is not None and (type(usage_tokens) is not int or usage_tokens < 0):
+        raise ValueError("Reported usage must be nonnegative whole tokens or unknown")
+    if error_code is not None and not re.fullmatch(r"[a-z0-9_]{1,80}", error_code):
+        raise ValueError("Use a sanitized diagnostic code, never a provider response")
+    if provider_request_id is not None and (len(provider_request_id) > 250 or not provider_request_id.isprintable()):
+        raise ValueError("Provider request identity is invalid")
+    if result is not None and (not isinstance(result, dict) or error_code is not None):
+        raise ValueError("A validated result cannot be combined with a failure")
+    with transaction() as db:
+        owned = owned_attempt(db, lease)
+        if not owned:
+            return False
+        task, attempt = owned
+        budget = db.scalar(select(AnalysisBudget).where(
+            AnalysisBudget.plan_id == task.plan_id, AnalysisBudget.stage == task.stage).with_for_update())
+        timestamp = now()
+        if not job_live(db.get(Job, lease.job_id), lease.job_attempt, timestamp) or attempt.lease_until <= timestamp:
+            return False
+        if usage_tokens is not None:
+            budget.charged_tokens += usage_tokens - attempt.reserved_tokens
+        attempt.usage_tokens, attempt.usage_state = usage_tokens, "known" if usage_tokens is not None else "unknown"
+        attempt.finished_at, attempt.error_code = timestamp, error_code
+        attempt.provider_request_id = provider_request_id
+        task.result = result
+        task.status = "completed" if result is not None else "failed" if usage_tokens is not None else "uncertain"
+        attempt.status = task.status
+        return True
+
+
+def renew_task(lease: TaskLease, *, lease_seconds: int = 60) -> bool:
+    if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
+        raise ValueError("Task leases must last between 1 and 3600 seconds")
+    with transaction() as db:
+        owned = owned_attempt(db, lease)
+        if not owned:
+            return False
+        task, attempt = owned
+        budget = db.get(AnalysisBudget, (task.plan_id, task.stage))
+        job = db.get(Job, lease.job_id)
+        timestamp = now()
+        if (not job_live(job, lease.job_attempt, timestamp) or attempt.lease_until <= timestamp
+                or budget.deadline_at and budget.deadline_at <= timestamp):
+            return False
+        attempt.lease_until = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
+                                  budget.deadline_at or job.lease_until)
+        return True
+
+
+def retry_task(task_id: str, job_id: str, job_attempt: int, *, acknowledge_unknown: bool = False) -> bool:
+    """An explicit recovery decision; it preserves every earlier attempt and charge."""
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == task_id).with_for_update())
+        plan = db.get(AnalysisPlan, task.plan_id) if task else None
+        if not plan or plan.job_id != job_id or not owner_live(db, plan):
+            return False
+        timestamp = now()
+        if not job_live(job, job_attempt, timestamp):
+            return False
+        attempt = db.scalar(select(AnalysisAttempt).where(
+            AnalysisAttempt.task_id == task.id, AnalysisAttempt.number == task.attempts))
+        if task.status == "running" and attempt and (attempt.lease_until <= timestamp or attempt.job_attempt != job_attempt):
+            mark_uncertain(task, attempt, timestamp)
+        if task.status not in {"failed", "uncertain"} or task.status == "uncertain" and not acknowledge_unknown:
+            return False
+        if acknowledge_unknown:
+            acknowledge_task_usage(db, task)
+        task.status = "pending"
+        return True
+
+
+def acknowledge_task_usage(db, task):
+    for attempt in db.scalars(select(AnalysisAttempt).where(
+            AnalysisAttempt.task_id == task.id, AnalysisAttempt.usage_state == "unknown")):
+        attempt.usage_state = "unknown_acknowledged"
+
+
+def acknowledge_unknown_usage(task_id: str, job_id: str, job_attempt: int) -> bool:
+    """Explicitly accept retained uncertain charges, including a completed task's response."""
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == task_id).with_for_update())
+        plan = db.get(AnalysisPlan, task.plan_id) if task else None
+        if not plan or plan.job_id != job_id or not owner_live(db, plan) or not job_live(job, job_attempt, now()):
+            return False
+        acknowledge_task_usage(db, task)
+        return True
+
+
+def cancel_tasks(job_id: str) -> None:
+    """Stop future claims while retaining validated results and uncertain consumption."""
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if not job:
+            return
+        plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
+        if not plan:
+            return
+        for task in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id).with_for_update()):
+            if task.status == "running":
+                attempt = db.scalar(select(AnalysisAttempt).where(
+                    AnalysisAttempt.task_id == task.id, AnalysisAttempt.number == task.attempts))
+                mark_uncertain(task, attempt, now())
+            if task.status != "completed":
+                task.status = "cancelled"

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from threading import Event
@@ -157,6 +158,8 @@ def test_markdown_evidence_expansion_keeps_git_and_size_checks(tmp_path, monkeyp
 
 @pytest.fixture
 def scenario(seed, github_stub, monkeypatch):
+    monkeypatch.setattr(pipeline.git_source, "review_snapshot",
+        lambda *a, **k: nullcontext((Path("/tmp/repo"), {}, {}, "b" * 40)))
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     monkeypatch.setattr(ocr, "review", lambda *a, **k: ("completed", {"summary": {"total_tokens": 100}}, [copy.deepcopy(COMMENT)]))
     first = new_run()
@@ -231,7 +234,7 @@ def perform(scenario):
 
 
 @pytest.mark.parametrize("automatic", [False, True])
-@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_manual_reviews_verify_and_resolve_without_automatic_review_grant(scenario, monkeypatch, automatic, kind):
     with transaction() as db:
         repo, run = db.get(Repository, 22), db.get(ReviewRun, scenario["run"])
@@ -431,7 +434,7 @@ def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
     assert all("source_lines" not in error for error in errors)
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request", "excluded_request", "excluded_uncertain"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
@@ -984,34 +987,29 @@ def test_file_limit_skips_verification_and_queues_notice(scenario, monkeypatch):
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 @pytest.mark.parametrize("unlimited", [False, True])
-def test_native_verification_uses_same_connection_and_schema(scenario, monkeypatch, kind, unlimited):
+def test_retired_native_verification_never_starts(scenario, monkeypatch, kind, unlimited):
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
         db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
-        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7,
-                                                  "options": {"prompt_token_ceiling": 200000}}}
+        run.owner_id, run.engine = 7, kind
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
         if unlimited:
-            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None,
-                                                   "token_budget": None}}
+            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None, "token_budget": None}}
             run.started_at = now() - timedelta(seconds=7300)
             run.report = {"summary": {"total_tokens": 200000}, "limits": {"context_bytes": 800000}}
             run.progress = {"analysis_saved": True, "analysis_status": "completed"}
-    calls = []
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        assert connection == "connection" and identity.startswith("verify-") and not stopped()
-        assert payload["timeout"] is None if unlimited else payload["timeout"] > 0
-        assert payload["token_budget"] == (None if unlimited else 199900)
-        return RESULT, {"tokens": 50}
-    monkeypatch.setattr(runner_client, "review", native)
-    row, _, _ = perform(scenario)
-    assert row.verdict == "fixed" and len(calls) == 1
-    assert calls[0]["task"] == "verification" and calls[0]["output_schema"]["additionalProperties"] is False
-    assert calls[0]["prompt_token_ceiling"] == 200000
-    assert row.usage == {"tokens": 50}
+        before = copy.deepcopy((run.config, run.report))
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Retired verification executed"))
+    reviews.perform_review(scenario["run"])
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        assert run.status == "cancelled" and "retired" in run.error
+        assert (run.config, run.report) == before
+        assert not db.scalar(select(FindingVerification))
+        assert db.get(Finding, scenario["finding"]).status == "open"
+    assert scenario["calls"] == [] and scenario["mutations"] == []
 
 
 def test_migration_preserves_findings_occurrences_and_defaults(scenario):
@@ -1142,20 +1140,20 @@ def test_false_positive_retains_dismissal_workflow(scenario, monkeypatch, client
     assert "context" not in detail["verifications"][0]  # Only cited evidence is exposed in history.
 
 
-def test_native_consent_revocation_during_verification_stops_resolution(scenario, monkeypatch):
+def test_retired_native_verification_cannot_start_without_grants(scenario, monkeypatch):
     with transaction() as db:
-        c = db.get(Connection, "connection")
-        c.kind, c.owner_id, c.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id=c.id, repository_id=22, automatic=True))
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
+        run.owner_id, run.engine = 7, "chatgpt"
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
-    monkeypatch.setattr(runner_client, "review", lambda *args: (RESULT, {"tokens": 50}))
-    _, finding, _ = perform(scenario)
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Retired verification executed"))
+    reviews.perform_review(scenario["run"])
     with transaction() as db:
-        db.delete(db.get(ConnectionGrant, ("connection", 22)))
-    reviews.synchronize_finding(finding.sync_intent)
-    assert saved()[1].status == "open" and not scenario["mutations"]
+        assert db.get(ReviewRun, scenario["run"]).status == "cancelled"
+        assert db.get(Finding, scenario["finding"]).status == "open"
+        assert not db.scalar(select(FindingVerification))
+    assert scenario["calls"] == [] and not scenario["mutations"]
 
 
 def test_manual_reopen_racing_remote_write_is_restored(scenario, monkeypatch):
@@ -1401,21 +1399,24 @@ def test_reconciliation_fetches_before_locking_and_refreshes_manual_intent(scena
         assert finding.status == "open" and finding.desired_status == "open"
 
 
-def test_subscription_verification_does_not_reset_token_allowance(scenario, monkeypatch):
+def test_retired_subscription_verification_preserves_saved_consumption(scenario, monkeypatch):
     with transaction() as db:
-        c = db.get(Connection, "connection")
-        c.kind, c.owner_id, c.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id=c.id, repository_id=22, automatic=True))
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
+        run.owner_id, run.engine = 7, "chatgpt"
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
-        run.report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Token allowance was reset"))
-    row, _, run = perform(scenario)
-    limit = run.config["settings"]["token_budget"]
-    assert row.status == "skipped"
-    assert row.error == f"Token budget exhausted: {limit:,} / {limit:,} tokens used or reserved. Fix verification skipped."
+        report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
+        run.report = report
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Retired token allowance was reset"))
+    reviews.perform_review(scenario["run"])
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        assert run.status == "cancelled" and "retired" in run.error
+        assert run.report == report
+        assert not db.scalar(select(FindingVerification))
+    assert scenario["calls"] == [] and not scenario["mutations"]
 
 
 def test_interrupted_primary_api_review_gets_no_new_allowance(scenario, monkeypatch):
@@ -1506,7 +1507,7 @@ def test_resolution_setting_changes_do_not_repeat_same_commit_analysis(seed, cha
         assert pushed.id != first.id and pushed.config["settings"]["auto_resolve"] == (change == "enable")
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, monkeypatch, kind):
     with transaction() as db:
         finding = db.get(Finding, scenario["finding"])
@@ -1545,7 +1546,7 @@ def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, mo
 
 
 @pytest.mark.parametrize("known_usage", [True, False])
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenario, monkeypatch, known_usage, kind):
     if kind != "api":
         with transaction() as db:
@@ -1892,7 +1893,7 @@ def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario,
     assert scenario["mutations"] == []
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_fix_verification_validates_against_redacted_request_context(scenario, monkeypatch, kind):
     from code_mortis.core.security import seal
 

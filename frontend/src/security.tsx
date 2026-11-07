@@ -212,7 +212,7 @@ function SecurityRepositoryActions({ repository, summary, admin, onRun }: {
   </DropdownMenu>;
 }
 
-function ScanDialog({ repositoryId, user, onClose, retry, returnTo }: { repositoryId: number; user: User; onClose: () => void; retry?: Scan; returnTo?: HTMLElement | null }) {
+function ScanDialog({ repositoryId, onClose, retry, returnTo }: { repositoryId: number; user: User; onClose: () => void; retry?: Scan; returnTo?: HTMLElement | null }) {
   const focus = useReturnFocus(returnTo);
   const repo = useApi<SecurityRepo>(`/security/repositories/${repositoryId}`);
   const connections = useApi<Connection[]>(`/connections?repository_id=${repositoryId}`);
@@ -220,7 +220,7 @@ function ScanDialog({ repositoryId, user, onClose, retry, returnTo }: { reposito
     <DialogHeader><DialogTitle>{retry ? "Retry security scan" : "Run security scan"}</DialogTitle><DialogDescription>Scan the full default branch with OCR and Trivy. This uses the selected AI connection and its quota.</DialogDescription></DialogHeader>
     <ErrorNotice error={repo.error || connections.error} />
     {repo.isPending || connections.isPending ? <Loading /> : repo.data && connections.data && !repo.error && !connections.error &&
-      <ScanForm repository={repo.data} connections={connections.data.filter((connection) => connection.kind === "api" || connection.owner_id === user.id)} onClose={onClose} retry={retry} />}
+      <ScanForm repository={repo.data} connections={connections.data.filter((connection) => connection.kind === "api")} onClose={onClose} retry={retry} />}
   </DialogContent></Dialog>;
 }
 
@@ -246,7 +246,7 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
     action.mutate({ path: retry ? `/security/scans/${retry.id}/retry` : `/security/repositories/${repository.repository.id}/scans`, body: {
       connection_id: connectionId, model, token_budget: unlimitedTokens ? null : Number(tokens),
       timeout_seconds: unlimitedTimeout ? null : Number(timeout), request_key: requestKey.current,
-      concurrency: selected?.kind === "api" ? Number(concurrency) : 1,
+      concurrency: Number(concurrency),
     } }, { onSuccess: (scan) => { onClose(); navigate(`/security/scans/${scan.id}`); } });
   }
   return <form onSubmit={submit} className="space-y-5">
@@ -257,10 +257,11 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited token budget" checked={unlimitedTokens} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTokens(checked === true); if (!tokens) setTokens("200000"); }} />Unlimited</label></div>
       <div className="space-y-2"><Field label="Timeout (seconds)">{(id) => <Input id={id} type="number" min={60} max={3600} value={timeout} placeholder="Unlimited" required={!unlimitedTimeout} disabled={action.isPending || !!retry || unlimitedTimeout} onChange={(event) => setTimeout(event.target.value)} />}</Field>
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited timeout" checked={unlimitedTimeout} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTimeout(checked === true); if (!timeout) setTimeout("900"); }} />Unlimited</label></div></div>
-    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={selected?.kind === "api" ? concurrency : "1"} required disabled={action.isPending || selected?.kind !== "api"} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
-      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{selected?.kind === "api" ? "Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order." : "Personal connections run one task at a time."}{retry ? " Completed work is reused when its inputs match; the saved model and limits stay the same." : selected?.kind === "api" ? " Defaults to the repository concurrency setting." : ""}</p></div>
+    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={concurrency} required disabled={action.isPending || !selected} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
+      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{"Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order."}{retry ? " Completed work is reused when its inputs match; the saved model and limits stay the same." : " Defaults to the repository concurrency setting."}</p></div>
     <p className="text-xs leading-relaxed text-muted-foreground">Concurrent tasks share the remaining token budget. Budgets stop further work between requests; they are not a guaranteed billing cap. Finished reports grade confirmed findings; incomplete coverage remains visible.</p>
-    {selected?.kind !== "api" && selected && <p className="text-xs leading-relaxed text-muted-foreground">Authorize this repository on your personal connection in <Link className="underline" to="/settings" onClick={onClose}>AI connection settings</Link> before scanning.</p>}
+    {retry && !selected && <p role="status" className="text-sm text-muted-foreground">This scan's connection is unavailable or retired. Start a new scan with an explicitly selected shared API connection. The saved scan remains unchanged.</p>}
+    {!retry && repository.repository.connection_requires_setup && <p role="status" className="text-sm text-muted-foreground">The repository's subscription connection is retired. Choose a shared API connection for this new scan.</p>}
     <ErrorNotice error={action.error} />
     {repository.can_write === false && <p className="text-sm text-muted-foreground">Repository write access is required to run security scans.</p>}
     <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !selected || !model.trim() || repository.can_write === false}><Play aria-hidden="true" className="size-4" />{action.isPending ? "Queuing scan…" : retry ? "Retry scan" : "Run scan"}</Button></DialogFooter>

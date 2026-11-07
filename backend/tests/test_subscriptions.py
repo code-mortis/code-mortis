@@ -4,7 +4,6 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from sqlalchemy import select
 
-from code_mortis import jobs
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import seal
 from code_mortis.integrations import github, runner_client
@@ -13,7 +12,6 @@ from code_mortis.models import (
     ConnectionGrant,
     ConsoleTicket,
     Installation,
-    Job,
     Membership,
     OAuthState,
     Repository,
@@ -26,11 +24,13 @@ from code_mortis.reviews.delegated import validate_result
 
 
 def personal(client, kind="chatgpt"):
-    response = client.post(
-        "/api/v1/connections", json={"name": "Personal account", "kind": kind, "model": "review-model"}
-    )
-    assert response.status_code == 201
-    return response.json()["id"]
+    with transaction() as db:
+        connection = Connection(name="Historical personal account", kind=kind, owner_id=7,
+                                provider="openai", protocol="native", model="review-model",
+                                base_url="", secret=seal("{}"))
+        db.add(connection)
+        db.flush()
+        return connection.id
 
 
 def test_two_login_tabs_pkce_replay_expiration_and_browser_binding(seed, client, monkeypatch):
@@ -104,17 +104,10 @@ def test_installation_flow_checks_current_access_and_external_login(seed, client
 def test_member_can_own_subscription_but_cannot_edit_shared_api(seed, client):
     with transaction() as db:
         db.get(Membership, 7).role = "member"
-    identity = personal(client)
-    row = client.get("/api/v1/connections").json()
-    assert next(item for item in row if item["id"] == identity)["owner_id"] == 7
+    assert client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"}).status_code == 422
     assert client.post("/api/v1/connections/connection/test").status_code == 403
-    assert (
-        client.post(
-            "/api/v1/connections",
-            json={"name": "bad", "kind": "chatgpt", "model": "model", "api_key": "secret"},
-        ).status_code
-        == 422
-    )
+    identity = personal(client)
+    assert all(row["id"] != identity for row in client.get("/api/v1/connections").json())
 
 
 def test_other_users_cannot_authenticate_or_consume_personal_connection(seed, client, monkeypatch):
@@ -133,36 +126,21 @@ def test_other_users_cannot_authenticate_or_consume_personal_connection(seed, cl
 
 
 def test_owner_consent_automation_and_revocation(seed, client, github_stub, monkeypatch):
+    from code_mortis.models import PullRequest
+
     identity = personal(client)
-    assert (
-        client.put("/api/v1/repositories/22", json={"enabled": True, "connection_id": identity}).status_code
-        == 403
-    )
-    assert (
-        client.put(f"/api/v1/connections/{identity}/grants/22", json={"automatic": True}).status_code == 200
-    )
+    assert client.put("/api/v1/repositories/22", json={"enabled": True, "connection_id": identity}).status_code == 422
+    assert client.put(f"/api/v1/connections/{identity}/grants/22", json={"automatic": True}).status_code == 410
     with transaction() as db:
+        db.add(ConnectionGrant(connection_id=identity, repository_id=22, automatic=True))
         repo = db.get(Repository, 22)
         repo.connection_id = identity
-        connection = db.get(Connection, identity)
-        connection.auth_status = "connected"
-        from code_mortis.models import PullRequest
-
-        run = reviews.create_run(db, db.get(PullRequest, "pr"), repo, "automatic")
-        db.flush()
-        run_id = run.id
-        assert run.owner_id == 7 and run.actor_id is None and run.engine == "chatgpt"
+        with pytest.raises(ValueError, match="retired"):
+            reviews.create_run(db, db.get(PullRequest, "pr"), repo, "automatic")
     assert client.delete(f"/api/v1/connections/{identity}/grants/22").status_code == 200
     with transaction() as db:
-        run = db.get(ReviewRun, run_id)
-        assert run.cancel_requested and run.status == "cancelled"
         assert db.get(ConnectionGrant, (identity, 22)) is None
-    monkeypatch.setattr(jobs, "create_run", lambda *a: pytest.fail("Revoked consent cannot create a run"))
-    monkeypatch.setattr(jobs, "reconcile_threads", lambda *a: None)
-    from test_review_flow import remote
-
-    monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    jobs.sync_pr(22, 3)
+        assert not list(db.scalars(select(ReviewRun)))
 
 
 def test_runner_outage_revokes_access_without_silent_reconnection(seed, client, monkeypatch):
@@ -173,7 +151,7 @@ def test_runner_outage_revokes_access_without_silent_reconnection(seed, client, 
         lambda *a, **k: (_ for _ in ()).throw(runner_client.RunnerBlocked("unavailable")),
     )
     assert client.post(f"/api/v1/connections/{identity}/disconnect").status_code == 200
-    assert client.get(f"/api/v1/connections/{identity}/auth").json()["status"] == "disconnected"
+    assert client.get(f"/api/v1/connections/{identity}/auth").status_code == 410
     with transaction() as db:
         assert db.get(Connection, identity).auth_status == "revoked"
 
@@ -182,23 +160,12 @@ def test_native_quota_blocks_review_without_replacing_connection(seed, client, g
     from code_mortis.models import PullRequest
 
     identity = personal(client)
+    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Retired connection dispatched"))
     with transaction() as db:
-        connection = db.get(Connection, identity)
-        connection.auth_status = "connected"
-        run = reviews.create_run(
-            db, db.get(PullRequest, "pr"), db.get(Repository, 22), "manual", db.get(User, 7), identity
-        )
-        db.flush()
-        run_id = run.id
-        job_id = db.scalar(select(Job.id).where(Job.kind == "review"))
-    monkeypatch.setattr(
-        jobs, "execute", lambda *a: (_ for _ in ()).throw(runner_client.RunnerBlocked("quota"))
-    )
-    jobs.execute_job(job_id)
-    with transaction() as db:
-        run = db.get(ReviewRun, run_id)
-        assert run.status == "blocked" and run.blocked_reason == "quota"
-        assert run.connection_id == identity and run.report is None
+        with pytest.raises(ValueError, match="retired"):
+            reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "manual", db.get(User, 7), identity)
+        assert db.get(Repository, 22).connection_id == "connection"
+        assert not list(db.scalars(select(ReviewRun)))
 
 
 def test_delegated_findings_cannot_escape_the_assigned_context():
@@ -224,38 +191,14 @@ def test_native_profiles_and_environment_are_isolated(tmp_path, monkeypatch):
 
 
 def test_native_console_rejects_origin_and_replay(seed, client, monkeypatch):
-    from contextlib import asynccontextmanager
-
     from starlette.websockets import WebSocketDisconnect
 
-    from code_mortis.api.routers import subscriptions
-
     identity = personal(client, "claude_code")
-    ticket = client.post(f"/api/v1/connections/{identity}/console-ticket").json()["ticket"]
-    calls = []
-
-    @asynccontextmanager
-    async def offline(*args, **kwargs):
-        calls.append(True)
-        raise OSError("runner offline")
-        yield
-
-    monkeypatch.setattr(subscriptions, "connect", offline)
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(
-            f"/api/v1/connections/{identity}/console", headers={"origin": "https://untrusted.example"}
-        ):
-            pass
-    with transaction() as db:
-        assert db.scalar(select(ConsoleTicket)) is not None
-    for _ in range(2):
-        with client.websocket_connect(
-            f"/api/v1/connections/{identity}/console", headers={"origin": "http://testserver"}
-        ) as socket:
-            socket.send_json({"ticket": ticket})
-            with pytest.raises(WebSocketDisconnect):
-                socket.receive_text()
-    assert len(calls) == 1
+    assert client.post(f"/api/v1/connections/{identity}/console-ticket").status_code == 410
+    for origin in ("https://untrusted.example", "http://testserver"):
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(f"/api/v1/connections/{identity}/console", headers={"origin": origin}):
+                pass
     with transaction() as db:
         assert db.scalar(select(ConsoleTicket)) is None
 

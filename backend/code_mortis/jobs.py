@@ -17,7 +17,6 @@ from code_mortis.core.telemetry import init_sentry
 from code_mortis.integrations import github, installations, ocr, runner_client
 from code_mortis.models import (
     Connection,
-    ConnectionGrant,
     Finding,
     Installation,
     Job,
@@ -162,11 +161,15 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
             and (data["user"].get("type") == "User" or (bot and include_bots))
             and (sender_type != "Bot" or bot)
         ):
-            connection = db.get(Connection, repo.connection_id)
-            if connection and connection.kind != "api":
-                grant = db.get(ConnectionGrant, (connection.id, repo.id))
-                if not grant or not grant.automatic or connection.auth_status == "revoked":
-                    return
+            from code_mortis.core.analysis import require_available_engine
+            from code_mortis.core.shared_execution import is_shared
+
+            if not is_shared(db.get(Connection, repo.connection_id)):
+                return  # Repository setup exposes the retired selection; keep synchronized PR history.
+            try:
+                require_available_engine(repo.settings)
+            except ValueError:
+                return  # Preserve the selected engine without substituting OCR during synchronization.
             create_run(db, pr, repo, "automatic", actor=actor)
 
 
@@ -338,6 +341,9 @@ def execute(kind: str, payload: dict):
             connection = db.get(Connection, payload["connection_id"])
             if not connection:
                 return
+            from code_mortis.core.shared_execution import require_shared
+
+            require_shared(connection)
             snapshot, credentials = connection_snapshot(connection), json.loads(unseal(connection.secret))
         result = ocr.test_connection(snapshot, credentials)
         with transaction() as db:
@@ -353,6 +359,11 @@ def execute_job(job_id: str):
     with transaction() as db:
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
+            return
+        from code_mortis.core.shared_execution import retired_job, settle_job
+
+        if retired_job(db, job):
+            settle_job(db, job)
             return
         delivered_queue = (execute_job.request.delivery_info or {}).get("routing_key")
         graph_delivery = job.kind in CODE_GRAPH_KINDS or delivered_queue == "code-graph"
@@ -389,6 +400,8 @@ def execute_job(job_id: str):
                     job.available_at = now()
                     _mcp.cancel_origin(db, job)
                     _pat.cancel_origin(db, job)
+                    if job.kind == "generate_summary":
+                        pr_summary.fail_retry(db, job, job.error)
                 return
         if job.kind in {"security_issue_publish", "security_issue_sync"}:
             db.scalar(select(SecurityFinding).where(SecurityFinding.id == job.payload["finding_id"]).with_for_update())
@@ -589,6 +602,11 @@ def dispatch():
             .where(Job.status == "running", Job.lease_until < now())
             .with_for_update(skip_locked=True)
         ):
+            from code_mortis.core.shared_execution import retired_job, settle_job
+
+            if retired_job(db, job):
+                settle_job(db, job)
+                continue
             if job.kind == "security_scan":
                 from code_mortis.security_scans.service import interrupt_work, report_data
 

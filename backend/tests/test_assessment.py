@@ -22,7 +22,6 @@ from code_mortis.core.security import seal
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
     Connection,
-    ConnectionGrant,
     Finding,
     Job,
     Membership,
@@ -34,6 +33,7 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.reviews import assessment, checks, verification
+from code_mortis.reviews import pipeline as review_pipeline
 from code_mortis.reviews import policy as review_policy
 from code_mortis.reviews import service as reviews
 from code_mortis.schemas.common import RepoSettings
@@ -58,6 +58,8 @@ def verdict(context, **changes):
 
 @pytest.fixture
 def pipeline(seed, github_stub, monkeypatch):
+    monkeypatch.setattr(review_pipeline.git_source, "review_snapshot",
+        lambda *a, **k: nullcontext((Path("/tmp/repo"), {}, {}, "b" * 40)))
     state = {"comments": [copy.deepcopy(COMMENT)], "calls": 0, "reviews": [], "head": "a" * 40,
              "allowances": [], "native_sizes": [], "native_ids": [], "analysis_calls": 0, "instructions": []}
     calls_lock = Lock()
@@ -148,7 +150,7 @@ def run_and_publish():
     return identity
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("sensitivity", [None, "low_noise", "balanced", "broad"])
 def test_assessment_uses_saved_sensitivity_on_retry(pipeline, client, kind, sensitivity):
     with transaction() as db:
@@ -210,7 +212,7 @@ def test_sensitivity_change_reassesses_confirmations_without_resolving_findings(
 
 
 @pytest.mark.parametrize("merged", [False, True])
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipeline, client, kind, merged):
     if kind != "api":
         with transaction() as db:
@@ -638,40 +640,32 @@ def test_assessment_attempt_migration_preserves_existing_candidates(pipeline):
         assert candidate.attempts == []
 
 
-def test_manual_assessment_retry_can_resume_an_automatic_run_without_an_automatic_grant(pipeline, client):
+def test_manual_assessment_retry_cannot_resume_a_retired_automatic_run(pipeline, client):
     with transaction() as db:
-        connection = db.get(Connection, "connection")
-        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
-        connection.secret = seal("{}")
-        db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
-        db.flush()
         run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
         run.config = {key: value for key, value in run.config.items() if key != "pipeline_version"}
         run.stages = {}
         db.flush()
         identity = run.id
-    pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
-        "start_line": 7, "end_line": 7, "quote": "invented"}]}
+    pipeline["failure"] = verification.VerificationOutputError("Previous assessment failure", {"tokens": 25})
     reviews.perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
-        candidate_id = db.scalar(select(ReviewCandidate.id))
-        db.delete(db.get(ConnectionGrant, ("connection", 22)))
-        db.get(Connection, "connection").auth_status = "disconnected"
-    assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
+        candidate = db.scalar(select(ReviewCandidate))
+        candidate_id, before = candidate.id, copy.deepcopy((candidate.snapshot, candidate.usage, candidate.attempts))
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "disconnected"
+        run = db.get(ReviewRun, identity)
+        run.engine, run.owner_id = "chatgpt", 7
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
+    calls = pipeline["calls"]
+    response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
+    assert response.status_code == 410 and "retired" in response.json()["detail"]
     with transaction() as db:
-        job_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.payload["run_id"].as_string() == identity)
-                           .order_by(Job.available_at.desc()).limit(1))
-    jobs.execute_job(job_id)
-    with transaction() as db:
-        assert db.get(ReviewRun, identity).status == "blocked"
-        db.get(Connection, "connection").auth_status = "connected"
-    assert client.post(f"/api/v1/runs/{identity}/retry").status_code == 202
-    pipeline["decision"] = {}
-    reviews.perform_review(identity)
-    with transaction() as db:
-        assert db.get(ReviewCandidate, candidate_id).status == "completed"
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert (candidate.snapshot, candidate.usage, candidate.attempts) == before
         assert db.get(ReviewRun, identity).trigger == "automatic"
+    assert pipeline["calls"] == calls and not pipeline["native_ids"]
 
 
 @pytest.mark.parametrize("merged", [False, True])
@@ -957,57 +951,46 @@ def test_concurrent_history_change_invalidates_new_identity(pipeline):
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 @pytest.mark.parametrize("budget", [200000, None])
 @pytest.mark.parametrize("used", [0, 200000])
-def test_native_clients_use_the_same_gate(pipeline, monkeypatch, kind, budget, used):
+def test_retired_native_clients_cannot_start_assessment(pipeline, monkeypatch, kind, budget, used):
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
         db.get(Repository, 22).settings = {"token_budget": budget}
     pipeline["tokens"] = used
-    calls = []
-
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        assert payload["task"] == "assessment"
-        assert payload["prompt_token_ceiling"] == 58888
-        assert verification.evidence_bundle(payload["_evidence_context"]) in payload["prompt"]
-        assert payload["token_budget"] == (None if budget is None else budget - used)
-        return verdict(pipeline["context"]), {"tokens": 25}
-    monkeypatch.setattr(runner_client, "review", native)
-    identity = run_and_publish()
-    allowed = budget is None or used < budget
-    assert len(pipeline["reviews"]) == len(calls) == int(allowed)
-    assert pipeline["calls"] == 0
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Retired native assessment executed"))
+    with pytest.raises(ValueError, match="retired"):
+        new_run(assessed=True)
+    assert pipeline["calls"] == pipeline["analysis_calls"] == 0
+    assert not pipeline["reviews"]
     with transaction() as db:
-        candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
-        assert candidate.status == ("completed" if allowed else "failed")
-        assert candidate.usage == {"tokens": 25 if allowed else 0}
+        assert not db.scalar(select(ReviewRun))
+        assert not db.scalar(select(ReviewCandidate))
 
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 @pytest.mark.parametrize("known", [False, True])
-def test_native_assessment_failure_keeps_usage_and_cannot_reset_allowance(pipeline, monkeypatch, kind, known):
+def test_retired_native_assessment_retry_preserves_usage_and_history(pipeline, monkeypatch, client, kind, known):
+    pipeline["failure"] = verification.VerificationOutputError("Historical assessment failure", {"tokens": 25 if known else None})
+    identity = run_and_publish()
     with transaction() as db:
+        candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
+        candidate_id = candidate.id
+        candidate.usage = {"tokens": 25 if known else None}
+        before = copy.deepcopy((candidate.snapshot, candidate.status, candidate.usage, candidate.attempts))
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
-        db.get(Repository, 22).settings = {"token_budget": 1000}
-    pipeline["comments"].append({**COMMENT, "path": "src/other.py"})
-    allowances = []
-
-    def native(connection, identity, payload, stopped):
-        allowances.append(payload["token_budget"])
-        if len(allowances) == 1:
-            raise runner_client.RunnerBlocked("failed", {"tokens": 25 if known else None})
-        return verdict(pipeline["context"]), {"tokens": 25}
-
-    monkeypatch.setattr(runner_client, "review", native)
-    identity = run_and_publish()
-    assert allowances == ([900, 875] if known else [900])
+        run = db.get(ReviewRun, identity)
+        run.engine, run.owner_id = kind, 7
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
+    calls = pipeline["calls"]
+    monkeypatch.setattr(runner_client, "review", lambda *a, **k: pytest.fail("Retired native assessment executed"))
+    response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
+    assert response.status_code == 410 and "retired" in response.json()["detail"]
     with transaction() as db:
-        candidates = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
-                                    .order_by(ReviewCandidate.position)))
-        assert candidates[0].usage == {"tokens": 25 if known else None}
-        assert candidates[1].status == ("completed" if known else "failed")
-        assert assessment.remaining_budget(db, db.get(ReviewRun, identity)) == ((850, True) if known else (0, False))
+        candidate = db.get(ReviewCandidate, candidate_id)
+        assert (candidate.snapshot, candidate.status, candidate.usage, candidate.attempts) == before
+        assert candidate.usage == {"tokens": 25 if known else None}
+    assert pipeline["calls"] == calls and not pipeline["native_ids"]
 
 
 def test_prior_candidates_are_not_finding_identities(pipeline):
@@ -1074,7 +1057,7 @@ def test_invalid_later_citation_is_identified_before_response_truncation():
     assert "evidence[1]" in str(caught.value) and COMMENT["path"] in str(caught.value)
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("failure", ["identity", "citation", "citation_format"])
 @pytest.mark.parametrize("repeat", [False, True])
 def test_one_correction_uses_same_evidence_and_accounts_for_both_attempts(pipeline, kind, failure, repeat):
@@ -1122,7 +1105,7 @@ def test_one_correction_uses_same_evidence_and_accounts_for_both_attempts(pipeli
     assert pipeline["reviews"] == []
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("sequence", ["expand_correct", "correct_expand_fail", "expand_expand_fail"])
 def test_correction_and_expansion_share_three_pass_limit(pipeline, monkeypatch, kind, sequence):
     if kind != "api":
@@ -1154,7 +1137,7 @@ def test_correction_and_expansion_share_three_pass_limit(pipeline, monkeypatch, 
     assert pipeline["reviews"] == []
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("stop", ["cancel", "commit", "permission", "provider", "budget"])
 def test_correction_never_bypasses_execution_guards(pipeline, kind, stop):
     with transaction() as db:
@@ -1207,7 +1190,7 @@ def test_unknown_api_usage_cannot_trigger_correction(pipeline, monkeypatch, budg
     assert pipeline["reviews"] == []
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_correction_does_not_reset_the_deadline(pipeline, monkeypatch, kind):
     if kind != "api":
         with transaction() as db:
@@ -1360,7 +1343,7 @@ def test_context_tracks_renames_and_preserves_literal_case(tmp_path, monkeypatch
         assessment.build_context(repo, {}, {}, run, {**COMMENT, "path": "new.py", "source_sha": head}, previous, lambda: False)
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pipeline, monkeypatch, kind):
     if kind != "api":
         with transaction() as db:
@@ -1403,7 +1386,7 @@ def test_assessment_requests_only_needed_context_and_accounts_for_every_pass(pip
         assert len(set(identities)) == 2
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("outcome", ["corrected", "unavailable", "repeated"])
 @pytest.mark.parametrize("parallel", [False, True])
 def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline, monkeypatch, kind, outcome, parallel):
@@ -1453,7 +1436,7 @@ def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline
     assert not pipeline["reviews"]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("outcome", ["uncertain", "rejected", "repeated"])
 @pytest.mark.parametrize("request_pass", [1, 2])
 def test_excluded_requested_evidence_is_feedback_not_an_execution_failure(pipeline, monkeypatch, kind, outcome, request_pass):
@@ -1653,6 +1636,20 @@ def test_publication_rechecks_permissions_after_assessment(pipeline, monkeypatch
     assert not pipeline["reviews"]
 
 
+def test_saved_native_publication_needs_github_access_without_runner_or_connection(pipeline, monkeypatch):
+    identity = new_run(assessed=True)
+    reviews.perform_review(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.connection_id, run.engine, run.owner_id = None, "chatgpt", 7
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
+    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Publication accessed runner"))
+    reviews.publish_run(identity)
+    assert len(pipeline["reviews"]) == 1
+    with transaction() as db:
+        assert db.get(ReviewRun, identity).publication == "published"
+
+
 def test_additive_migration_keeps_legacy_identity_occurrences_and_frozen_plan(pipeline):
     identity = new_run()
     reviews.perform_review(identity)
@@ -1697,7 +1694,7 @@ def independent_comments(count):
 
 @pytest.mark.parametrize("concurrency,budget,kind,expected", [
     (1, None, "api", 1), (2, None, "api", 2), (4, None, "api", 4),
-    (4, 1000, "api", 1), (4, None, "chatgpt", 1), (4, None, "claude_code", 1),
+    (4, 1000, "api", 1),
     (None, None, "api", 1),
 ])
 def test_assessment_concurrency_uses_saved_limits_and_preserves_model(pipeline, monkeypatch, concurrency, budget, kind, expected):
@@ -2082,7 +2079,7 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
         assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("repeat", [False, True])
 def test_repeated_supplied_evidence_gets_one_correction_without_resetting_usage(pipeline, kind, repeat):
     if kind != "api":
@@ -2114,7 +2111,7 @@ def test_context_limit_is_not_a_correctable_assessment_failure(pipeline):
     assert pipeline["calls"] == 1 and not pipeline["reviews"]
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_assessment_validates_against_redacted_request_context(pipeline, monkeypatch, kind):
     credential = "synthetic-credential"
     with transaction() as db:

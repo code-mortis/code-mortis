@@ -4,6 +4,7 @@ import json
 
 from sqlalchemy import select
 
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import unseal
 from code_mortis.integrations import github, ocr, runner_client
@@ -138,7 +139,13 @@ def defer_assessment(db, run):
 
 
 def perform(payload):
-    from code_mortis.reviews.service import authorize_connection, execution_identity, review_stopped
+    from code_mortis.core.analysis import require_available_engine
+    from code_mortis.core.shared_execution import cancel_retired_review, is_shared
+    from code_mortis.reviews.service import (
+        authorize_connection,
+        execution_identity,
+        review_stopped,
+    )
 
     run_id, claim = payload["run_id"], payload["_claim"]
     with transaction() as db:
@@ -149,6 +156,10 @@ def perform(payload):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded", "completed", "partial", "failed", "skipped"} or run.stages.get(stage, {}).get("status") in TERMINAL:
             return
+        if not is_shared(run.config.get("connection", {})):
+            cancel_retired_review(db, run)
+            return
+        require_available_engine(run.config)
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
@@ -218,8 +229,9 @@ def perform(payload):
         else:
             pr_summary.generate(run_id, repo_path, env, snapshot, credentials, claim, stage="summary")
 
-    ocr.review(full_name, number, run.base_sha, run.head_sha, snapshot, credentials, options, token,
-               stopped, saved_review=("completed", {}, []), after_review=after_checkout)
+    with git_source.review_snapshot(full_name, number, run.base_sha, run.head_sha, token, stopped,
+                                timeout_seconds=options["timeout_seconds"]) as (repo_path, env, fetch_env, _):
+        after_checkout(("completed", {}, []), repo_path, env, fetch_env)
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not owns(run, stage, claim) or run.cancel_requested or run.status in {"cancelled", "superseded"}:

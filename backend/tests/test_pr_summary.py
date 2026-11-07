@@ -1,6 +1,7 @@
 import copy
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 
 import pytest
@@ -9,7 +10,7 @@ from alembic.config import Config
 from sqlalchemy import event, select, text
 from test_review_flow import COMMENT, new_run, remote
 
-from code_mortis import jobs, native_runner
+from code_mortis import jobs
 from code_mortis.core.db import engine, now, transaction
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import (
@@ -22,6 +23,7 @@ from code_mortis.models import (
     Repository,
     ReviewCandidate,
     ReviewRun,
+    User,
 )
 from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import service as reviews
@@ -442,17 +444,16 @@ def test_retry_summary_uses_current_settings_without_repeating_review(seed, over
     assert response.status_code == 202, response.text
     job_id = response.json()["job_id"]
     assert client.post(f"/api/v1/runs/{identity}/summary/retry").json()["job_id"] == job_id
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "src/retry.py\0excluded.py\0" if "diff" in a else "b" * 40)
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0M\0excluded.py\0" if "--name-status" in a else "src/retry.py\0excluded.py\0" if "diff" in a else "b" * 40)
     def scope(_repo, _env, paths, options, _stopped):
         assert set(paths) == {"src/retry.py", "excluded.py"}
         assert options["exclusions"] == "excluded.py"
         return {"src/retry.py"}
     monkeypatch.setattr(verification, "filter_context", scope)
     def checkout(*args, **kwargs):
-        assert kwargs["saved_review"][0] == "completed"
-        assert args[6]["timeout_seconds"] is None
-        kwargs["after_review"](kwargs["saved_review"], tmp_path, {}, {})
-    monkeypatch.setattr(ocr, "review", checkout)
+        assert kwargs["timeout_seconds"] is None
+        return nullcontext((tmp_path, {}, {}, "b" * 40))
+    monkeypatch.setattr(pr_summary.git_source, "review_snapshot", checkout)
     for module in (assessment, verification):
         monkeypatch.setattr(module, "perform", lambda *a: pytest.fail("Detailed review must not run"))
     jobs.execute_job(job_id)
@@ -614,6 +615,10 @@ def test_legacy_summary_settings_keep_default_limits(seed, generation, monkeypat
     monkeypatch.setattr(runner_client, "review", review)
     if native:
         monkeypatch.setattr(reviews, "authorize_connection", lambda *a: None)
+    if native:
+        with pytest.raises(ValueError, match="retired"):
+            generate(identity)
+        return
     generate(identity)
     if not native:
         assert generation[0][0][5] == 60000 and 0 < generation[0][0][6] <= 180
@@ -662,7 +667,7 @@ def test_context_is_bounded_and_paths_are_literal(seed, monkeypatch):
 
     def git(repo, env, *args, **kwargs):
         calls.append(args)
-        return "b" * 40 if args[0] == "merge-base" else "x" * 80000
+        return "" if "--name-status" in args else "b" * 40 if args[0] == "merge-base" else "x" * 80000
 
     monkeypatch.setattr(ocr, "git", git)
     with transaction() as db:
@@ -904,34 +909,14 @@ def test_summary_transport_has_summary_specific_terminal_instructions():
 
 
 def test_personal_summary_uses_selected_model_and_preserves_serialization(seed, generation, monkeypatch):
-    with transaction() as db:
-        connection = db.get(Connection, "connection")
-        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
-        db.get(Repository, 22).settings = {"language": "Spanish"}
     identity = ready_run()
-    monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-
-    def infer(connection_id, run_id, payload, stopped):
-        body = native_runner.ReviewBody.model_validate(payload)
-        assert body.task == "summary" and body.model == "test-model" and body.token_budget is None
-        assert "supplied changes" in native_runner.task_instructions(body)
-        assert connection_id == "connection" and run_id == identity + "-summary"
-        with transaction() as db:
-            assert db.get(ReviewRun, identity).status == "running"
-        return RESULT, {"tokens": 321}
-
-    monkeypatch.setattr(runner_client, "review", infer)
-    generate(identity)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
+    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Retired summary dispatched"))
+    with pytest.raises(ValueError, match="retired"):
+        generate(identity)
     assert generation == []
-    with transaction() as db:
-        assert db.get(ReviewRun, identity).summary["tokens"] == 321
-        db.get(Repository, 22).settings = {"language": "Spanish", "summary_token_budget": 90000}
-    second = new_run(assessed=True, overview=True)
-    with pytest.raises(runner_client.RunnerBlocked, match="in use"):
-        reviews.perform_review(second)
-    with transaction() as db:
-        assert db.get(ReviewRun, second).config["settings"]["summary_token_budget"] == 90000
-        assert db.get(ReviewRun, identity).config["settings"]["summary_token_budget"] is None
 
 
 def test_worker_recovery_does_not_repeat_interrupted_summary(seed, generation, monkeypatch, tmp_path):
@@ -997,6 +982,10 @@ def test_summary_correction_preserves_allowance_and_never_retries_limits(seed, g
         return outcome(payload["token_budget"])
     monkeypatch.setattr(verification, "api_verify", api)
     monkeypatch.setattr(runner_client, "review", native)
+    if kind != "api":
+        with pytest.raises(ValueError, match="retired"):
+            generate(identity)
+        return
     generate(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -1024,8 +1013,101 @@ def test_summary_fractional_remaining_time_keeps_a_positive_timeout(seed, genera
         return copy.deepcopy(RESULT), {"tokens": 7}
     monkeypatch.setattr(verification, "api_verify", lambda *args, **kwargs: response(args[6]))
     monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped: response(payload["timeout"]))
+    if kind != "api":
+        with pytest.raises(ValueError, match="retired"):
+            generate(identity)
+        return
     generate(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.summary["status"] == "completed" and run.summary["tokens"] == 7
     assert timeouts == [1]
+
+
+def test_new_shared_summary_of_native_history_publishes_with_its_own_authority(
+    seed, overview_api, generation, client, monkeypatch, tmp_path,
+):
+    identity = completed_run()
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        run.engine, run.summary = "chatgpt", {"status": "failed", "tokens": None}
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt"}}
+        run.progress = {**run.progress, "pat": {"token_id": "deleted-original-token", "user_id": 7, "scope": "reviews:run"},
+                        "mcp": {"grant_id": "deleted-original-grant", "domain": "reviews", "scope": "reviews:run"}}
+        original = copy.deepcopy((run.config, run.progress["pat"], run.progress["mcp"]))
+    response = client.post(f"/api/v1/runs/{identity}/summary/retry")
+    assert response.status_code == 202, response.text
+    attempt_id = response.json()["job_id"]
+    monkeypatch.setattr(pr_summary.git_source, "review_snapshot", lambda *a, **k: nullcontext((tmp_path, {}, {}, "b" * 40)))
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
+    monkeypatch.setattr(verification, "filter_context", lambda *a, **k: {"src/retry.py"})
+    jobs.execute_job(attempt_id)
+    with transaction() as db:
+        attempt = db.get(Job, attempt_id)
+        assert attempt.payload["summary_attempt_result"]["status"] == "completed"
+        sync_job = db.scalar(select(Job).where(Job.kind == "sync_summary", Job.status == "queued",
+                             Job.payload["summary_attempt_id"].as_string() == attempt_id))
+        assert sync_job is not None
+        sync_id = sync_job.id
+    jobs.execute_job(sync_id)
+    stored, writes, _ = overview_api
+    assert len(generation) == 1 and len(stored) == 1 and writes[-1][0] == "POST"
+    assert pr_summary.text(RESULT["narrative"]) in stored[0]["body"]
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert (run.config, run.progress["pat"], run.progress["mcp"]) == original
+        assert run.engine == "chatgpt" and db.get(Job, sync_id).status == "done"
+        assert db.get(PullRequest, "pr").summary_error is None
+    # New attempt authority remains revocable independently of the original review.
+    with transaction() as db:
+        db.get(User, 7).enabled = False
+    before = len(writes)
+    pr_summary.sync("pr")
+    assert len(writes) == before
+
+
+def test_summary_retry_rechecks_fresh_claim_before_final_result_save(
+    seed, overview_api, generation, client, monkeypatch, tmp_path,
+):
+    identity = completed_run()
+    with transaction() as db:
+        db.get(ReviewRun, identity).summary = {"status": "failed", "tokens": 0}
+    attempt_id = client.post(f"/api/v1/runs/{identity}/summary/retry").json()["job_id"]
+    monkeypatch.setattr(pr_summary.git_source, "review_snapshot", lambda *a, **k: nullcontext((tmp_path, {}, {}, "b" * 40)))
+    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
+    monkeypatch.setattr(verification, "filter_context", lambda *a, **k: {"src/retry.py"})
+    real_transaction, infer = pr_summary.transaction, verification.api_verify
+    state = {"inferred": False, "expired": False}
+
+    def response(*args, **kwargs):
+        result = infer(*args, **kwargs)
+        state["inferred"] = True
+        return result
+
+    @contextmanager
+    def expire_before_save():
+        with real_transaction() as db:
+            class Session:
+                def __getattr__(self, name):
+                    return getattr(db, name)
+
+                def scalar(self, statement, *args, **kwargs):
+                    if state["inferred"] and not state["expired"] and statement._for_update_arg is not None:
+                        # Cache the live claim, then change durable ownership before the final locks.
+                        db.get(Job, attempt_id)
+                        with real_transaction() as other:
+                            other.get(Job, attempt_id).lease_until = now() - timedelta(seconds=1)
+                        state["expired"] = True
+                    return db.scalar(statement, *args, **kwargs)
+
+            yield Session()
+
+    monkeypatch.setattr(verification, "api_verify", response)
+    monkeypatch.setattr(pr_summary, "transaction", expire_before_save)
+    jobs.execute_job(attempt_id)
+    assert state["expired"] and len(generation) == 1
+    with transaction() as db:
+        run, job = db.get(ReviewRun, identity), db.get(Job, attempt_id)
+        assert job.status == "failed" and "execution claim" in job.error
+        assert run.summary["status"] == "failed" and not run.summary.get("result")
+        assert run.summary["tokens"] is None

@@ -14,10 +14,14 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
+from code_mortis.core import process
+from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import clean_text, digest, safe_repo_name
-from code_mortis.integrations import ocr, runner_client
+from code_mortis.core.shared_execution import require_shared
+from code_mortis.integrations import runner_client
 from code_mortis.reviews import verification
 from code_mortis.schemas.common import ReviewComment
 from code_mortis.schemas.security import (
@@ -107,7 +111,7 @@ def redact_secrets(text, values, rules=(), stopped=None):
         prefix = hmac.new(settings().encryption_key.encode(), (POLICY + "\0" + name + "\0").encode(), hashlib.sha256)
         for offset in range(len(data) - size + 1):
             if offset % 4096 == 0 and stopped and stopped():
-                raise ocr.ReviewStopped("Security redaction cancelled.")
+                raise ReviewStopped("Security redaction cancelled.")
             candidate = prefix.copy()
             candidate.update(data[offset:offset + size])
             if candidate.hexdigest() in identities:
@@ -155,7 +159,7 @@ class Snapshot:
         self.renames = {}
 
     def read(self, path, sha=None):
-        return verification.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
+        return git_source.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
 
     def redact(self, text):
         return redact_secrets(text, self.secret_values, self.secret_rules, self.stopped)
@@ -171,7 +175,7 @@ class Snapshot:
         return "\n".join(lines)
 
     def populate(self):
-        entries = ocr.git(self.git, self.env, "ls-tree", "-r", "-l", "-z", self.sha, stopped=self.stopped)
+        entries = git_source.git(self.git, self.env, "ls-tree", "-r", "-l", "-z", self.sha, stopped=self.stopped)
         total = 0
         for entry in entries.split("\0"):
             if not entry:
@@ -212,14 +216,14 @@ class Snapshot:
                 self.excluded.append({"path": path, "reason": "No AI analysis for this file type or protected instruction path; Trivy may inspect it as data"})
 
     def diff(self, original):
-        return self.redact(ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
+        return self.redact(git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
                                    original, self.sha, stopped=self.stopped))
 
     def renamed(self, original, path):
         if original in self.renames:
             return self.renames[original].get(path, path)
         try:
-            names = ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+            names = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
                             "--find-renames", original, self.sha, stopped=self.stopped).split("\0")
         except ValueError:
             self.renames[original] = {}
@@ -243,16 +247,16 @@ def snapshot(full_name, sha, previous_shas, token, stopped):
     if any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in [sha, *previous_shas]):
         raise ValueError("Security scan commit references are invalid.")
     with tempfile.TemporaryDirectory(prefix="mortis-security-", dir=settings().work_dir) as temp:
-        item = Snapshot(Path(temp), sha, ocr.child_environment(), stopped)
+        item = Snapshot(Path(temp), sha, process.child_environment(), stopped)
         item.git.mkdir()
-        ocr.git(item.git, item.env, "init", "--quiet", stopped=stopped)
+        git_source.git(item.git, item.env, "init", "--quiet", stopped=stopped)
         authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         fetch_env = {**item.env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
                      "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}"}
-        ocr.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
+        git_source.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
         for old in set(previous_shas) - {sha}:
             try:
-                ocr.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", old, stopped=stopped)
+                git_source.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", old, stopped=stopped)
             except ValueError:
                 pass  # Unavailable original evidence prevents resolution, not the new scan.
         item.populate()
@@ -260,7 +264,7 @@ def snapshot(full_name, sha, previous_shas, token, stopped):
 
 
 def scanner_environment(root):
-    return {key: value for key, value in {**ocr.child_environment(), "HOME": str(root),
+    return {key: value for key, value in {**process.child_environment(), "HOME": str(root),
             "TRIVY_DISABLE_TELEMETRY": "true", "TRIVY_SKIP_VERSION_CHECK": "true"}.items()
             if key in {"PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "HOME",
                        "TRIVY_DISABLE_TELEMETRY", "TRIVY_SKIP_VERSION_CHECK"}}
@@ -282,7 +286,7 @@ def trivy(item, timeout, stopped):
             target.write_text(inert)
             item.inventory[path]["scanner_hash"] = digest(inert)
             policy_overrides.append(path)
-    code, version, _ = ocr.command([config.trivy_binary, "--version"], item.root, env, timeout=10, stopped=stopped)
+    code, version, _ = process.command([config.trivy_binary, "--version"], item.root, env, timeout=10, stopped=stopped)
     if code or not re.search(rf"\b{re.escape(config.trivy_version)}\b", version):
         raise ValueError(f"Security scanning requires Trivy {config.trivy_version}. Rebuild the security worker.")
     trusted = item.root / "trivy-config.yaml"
@@ -293,7 +297,7 @@ def trivy(item, timeout, stopped):
     secret_config.write_text("skip-patterns: []\n")
     args = [config.trivy_binary, "fs", "--cache-dir", str(cache), "--config", str(trusted),
             "--disable-telemetry", "--skip-version-check", "--ignorefile", str(ignores), "--secret-config", str(secret_config)]
-    update_code, _, _ = ocr.command([*args, "--download-db-only"], item.root, env,
+    update_code, _, _ = process.command([*args, "--download-db-only"], item.root, env,
                                     timeout=min(timeout or 300, 300), stopped=stopped)
     metadata = {}
     try:
@@ -306,9 +310,9 @@ def trivy(item, timeout, stopped):
     scanners = "vuln,misconfig,secret" if fresh else "misconfig,secret"
     empty = item.root / "check-update"
     empty.mkdir()
-    ocr.command([*args, "--scanners", "misconfig", "--skip-db-update", "--offline-scan", str(empty)],
+    process.command([*args, "--scanners", "misconfig", "--skip-db-update", "--offline-scan", str(empty)],
                 item.root, env, timeout=min(timeout or 300, 300), stopped=stopped)
-    code, output, errors = ocr.command([sys.executable, "-m", "code_mortis.security_scans.scanner", *args,
+    code, output, errors = process.command([sys.executable, "-m", "code_mortis.security_scans.scanner", *args,
                                   "--scanners", scanners, "--format", "json", "--offline-scan", "--skip-check-update",
                                   "--skip-db-update", "--skip-java-db-update", "--list-all-pkgs", "--include-dev-deps", "--include-non-failures",
                                   "--parallel", "2", str(item.files)],
@@ -572,6 +576,7 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, configuration_managed=False):
+    require_shared(connection)
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
         and PurePosixPath(path).name not in INSTRUCTION_FILES and redacted_context(item, path) == path)})
@@ -659,7 +664,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
     deadline = time.monotonic() + timeout if timeout is not None else None
     for attempt in range(4):
         if stopped():
-            raise ocr.ReviewStopped("Security scan cancelled.")
+            raise ReviewStopped("Security scan cancelled.")
         remaining = None if budget is None else budget - used
         if remaining is not None and remaining <= 0:
             raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": used}, "skipped")

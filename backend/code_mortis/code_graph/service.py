@@ -12,7 +12,8 @@ from sqlalchemy import func, insert, select, text
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import client, errors, store
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.integrations import github, ocr
+from code_mortis.core.errors import ReviewStopped
+from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
     CodeGraphFile,
@@ -341,7 +342,7 @@ def settle(db, job, *, expired=False):
 def diagnostic_for(exc, stage, reference):
     if isinstance(exc, AccessLost) or isinstance(exc, github.GitHubError) and exc.status in {401, 403, 404}:
         exc = errors.failure("git_access_denied", stage)
-    elif isinstance(exc, (client.ExtractionCancelled, ocr.ReviewStopped)):
+    elif isinstance(exc, (client.ExtractionCancelled, ReviewStopped)):
         exc = errors.failure("cancelled", stage)
     elif stage == "result_validation" and isinstance(exc, ValueError):
         exc = errors.failure("parser_invalid_result", stage)
@@ -426,7 +427,7 @@ def perform(snapshot_id, job_id, attempt):
                 job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 current = db.scalar(select(CodeGraphSnapshot).where(CodeGraphSnapshot.id == snapshot_id).with_for_update())
                 if job and current and current.job_id == job_id and job.attempts == attempt and job.status == "running" and current.status in ACTIVE:
-                    current.status = "cancelled" if isinstance(exc, (AccessLost, client.ExtractionCancelled, ocr.ReviewStopped)) else "failed"
+                    current.status = "cancelled" if isinstance(exc, (AccessLost, client.ExtractionCancelled, ReviewStopped)) else "failed"
                     current.finished_at = now()
                     current.error = diagnostic.message + " " + diagnostic.recovery
                     current.failure = diagnostic.model_dump()

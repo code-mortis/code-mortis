@@ -1,11 +1,8 @@
-import base64
 import fcntl
 import json
 import os
 import re
 import shutil
-import signal
-import subprocess
 import tempfile
 import time
 from collections.abc import Callable
@@ -16,132 +13,26 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from code_mortis.core import file_policy
+from code_mortis.core import file_policy, process
+from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
-from code_mortis.core.security import clean_text, digest, safe_endpoint, safe_repo_name
+from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.security import clean_text, digest, safe_endpoint
 from code_mortis.reviews import policy as review_policy
 from code_mortis.schemas.common import ReviewComment
 
 MAX_OUTPUT = 20_000_000
 
 
-class ReviewStopped(Exception):
-    pass
+# Compatibility exports for legacy adapters and historical tests.
+child_environment = process.child_environment
+git = git_source.git
 
 
-def child_environment() -> dict[str, str]:
-    # Only the selected provider is configured below; application and GitHub secrets stay out.
-    allowed = {
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "AWS_REGION",
-        "AWS_DEFAULT_REGION",
-        "AWS_PROFILE",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AWS_SHARED_CREDENTIALS_FILE",
-        "AWS_CONFIG_FILE",
-        "AWS_WEB_IDENTITY_TOKEN_FILE",
-        "AWS_ROLE_ARN",
-        "AWS_ROLE_SESSION_NAME",
-    }
-    env = {key: value for key, value in os.environ.items() if key in allowed}
-    # Preserve the actual service account home. Never redirect or modify the operator's home.
-    for key in ("HOME", "USERPROFILE"):
-        if key in os.environ:
-            env[key] = os.environ[key]
-    env.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_LFS_SKIP_SMUDGE": "1",
-            "NO_COLOR": "1",
-        }
-    )
-    return env
-
-
-def command(
-    args: list[str],
-    directory: Path,
-    env: dict,
-    timeout: int | None = 60,
-    stopped: Callable[[], bool] = lambda: False,
-    poll: Callable[[], None] = lambda: None,
-    *,
-    binary: bool = False,
-) -> tuple[int, str | bytes, str | bytes]:
+def command(args, directory, env, timeout=60, stopped=lambda: False, poll=lambda: None, *, binary=False):
     if args and args[0] == settings().ocr_binary and any(part in {"review", "scan"} for part in args[1:2]):
         env = {**env, "CM_OCR_REDACTION_FILE": str(Path.home() / ".opencodereview" / "redaction.json")}
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(
-            args,
-            cwd=directory,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=errors,
-            start_new_session=True,
-        )
-        deadline = time.monotonic() + timeout if timeout is not None else None
-        try:
-            while process.poll() is None:
-                if stopped():
-                    raise ReviewStopped("The review was cancelled or replaced by a newer commit. Open the pull request to check its latest review.")
-                if deadline is not None and time.monotonic() > deadline:
-                    raise TimeoutError("The operation exceeded its configured time limit.")
-                if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
-                    raise ValueError("Review output exceeded the 20 MB safety limit.")
-                poll()
-                try:
-                    process.wait(timeout=0.2)
-                except subprocess.TimeoutExpired:
-                    pass
-            output.seek(0)
-            errors.seek(0)
-            if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
-                raise ValueError("Review output exceeded the 20 MB safety limit.")
-            stdout, stderr = output.read(MAX_OUTPUT), errors.read(MAX_OUTPUT)
-            return (process.returncode, stdout, stderr) if binary else (
-                process.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"),
-            )
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-
-
-def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
-    code, output, _ = command(
-        [
-            "git",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "protocol.file.allow=never",
-            "-c",
-            "credential.helper=",
-            *args,
-        ],
-        directory,
-        env,
-        timeout=180,
-        stopped=stopped,
-    )
-    if code:
-        raise ValueError(
-            "Git could not fetch or inspect the requested PR commits. Check installation access and retry."
-        )
-    return output
+    return process.command(args, directory, env, timeout, stopped, poll, binary=binary, max_output=MAX_OUTPUT)
 
 
 @contextmanager
@@ -485,6 +376,10 @@ def review(
     before_analysis: Callable | None = None,
     graph_options: dict | None = None,
 ) -> tuple[str, dict, list[dict]]:
+    from code_mortis.core.shared_execution import require_shared
+
+    if saved_review is None:
+        require_shared(connection)
     deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
     cancelled = stopped
 
@@ -495,50 +390,15 @@ def review(
             raise TimeoutError("The review reached its time limit. Increase Timeout or reduce the review scope, then start a new review.")
         return False
 
-    safe_repo_name(full_name)
-    if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base_sha, head_sha)):
-        raise ValueError("The review has an invalid Git commit reference. Refresh the pull request and start a new review.")
-    root = settings().work_dir
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with tempfile.TemporaryDirectory(prefix="review-", dir=root) as temporary:
-        directory = Path(temporary)
-        repo = directory / "repo"
-        repo.mkdir()
-        env = child_environment()
-        # Fetch credentials stay in this process environment, scoped to GitHub.
-        # Temporary workspaces are noexec; no credential helper is written there.
-        authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        fetch_env = {
-            **env,
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
-            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}",
-        }
-        git(repo, env, "init", "--quiet")
-        git(repo, env, "remote", "add", "origin", f"https://github.com/{full_name}.git")
-        fetch_refs = [f"{base_sha}:refs/mortis/base", f"refs/pull/{number}/head:refs/mortis/head"]
-        git(repo, fetch_env, "fetch", "--no-tags", "--depth=500", "origin", *fetch_refs, stopped=stopped)
-        fetched_head = git(repo, env, "rev-parse", "refs/mortis/head").strip()
-        if fetched_head != head_sha:
-            raise ReviewStopped("The pull request changed before its commits could be fetched.")
-        # Checkout only the trusted base revision. OCR reads proposed changes through git objects.
-        git(repo, env, "checkout", "--detach", "--quiet", base_sha, stopped=stopped)
-        try:
-            merge_base = git(repo, env, "merge-base", base_sha, head_sha).strip()
-        except ValueError:
-            git(repo, fetch_env, "fetch", "--unshallow", "--no-tags", "origin", *fetch_refs, stopped=stopped)
-            merge_base = git(repo, env, "merge-base", base_sha, head_sha).strip()
-        # Check that trusted rules cannot lead the resolver outside the checkout through symlinks.
-        for path in (repo / ".opencodereview", repo / ".opencodereview" / "rule.json"):
-            if path.exists() and not path.resolve().is_relative_to(repo.resolve()):
-                raise ValueError("Repository review rules point outside the checkout.")
+    with git_source.review_snapshot(full_name, number, base_sha, head_sha, token, stopped,
+                                git=git, environment=child_environment) as (repo, env, fetch_env, merge_base):
+        directory = repo.parent
         def complete(result):
             if after_review:
                 after_review(result, repo, env, fetch_env)
             return result
 
         if saved_review is not None:
-            check_version(directory, env)
             return complete(saved_review)
         if connection.get("kind", "api") != "api":
             from code_mortis.reviews.delegated import review as delegated_review
@@ -609,7 +469,9 @@ def review(
             if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
                 raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
             paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
-            paths = [path for path in paths if not file_policy.excluded(path, file_policy.policy(review_settings))]
+            permitted = git_source.review_paths(repo, env, merge_base, head_sha, paths, review_settings, stopped, git=git)
+            if set(paths) != permitted:
+                raise ValueError("The review engine selected files outside the permitted review scope.")
             limited = file_limit_result(paths, review_settings.get("max_files"))
             if limited and isinstance(preview.get("excluded_files"), list):
                 limited[1]["excluded_files"] = preview["excluded_files"]
@@ -649,7 +511,7 @@ def review(
             else set()
         )
         for comment in comments:
-            if file_policy.excluded(comment["path"], file_policy.policy(review_settings)):
+            if comment["path"] not in paths:
                 raise ValueError("OCR returned a finding outside the permitted review scope.")
             ref = merge_base if comment["path"] in deleted else head_sha
             source = git(repo, env, "show", f"{ref}:{comment['path']}", stopped=stopped)

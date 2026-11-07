@@ -44,6 +44,12 @@ from code_mortis.schemas.common import RepoSettings, StageState
 DIAGRAM = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
 
 
+@pytest.fixture(autouse=True)
+def neutral_stage_checkout(monkeypatch):
+    monkeypatch.setattr(pipeline.git_source, "review_snapshot",
+        lambda *args, **kwargs: nullcontext((Path("/tmp/repo"), {}, {}, "b" * 40)))
+
+
 def enable_parallel(identity):
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -532,8 +538,9 @@ def test_queue_routing_and_personal_connection_wait(verification_scenario):  # n
         job_id = summary_job.id
     jobs.execute_job(job_id)
     with transaction() as db:
-        assert db.get(Job, job_id).status == "queued"
-        assert db.get(ReviewRun, identity).stages["summary"]["status"] == "waiting"
+        assert db.get(Job, job_id).status == "failed"
+        assert db.get(ReviewRun, identity).status == "cancelled"
+        assert db.get(ReviewRun, identity).stages["summary"]["status"] == "cancelled"
     assert jobs.job_queue("verify_fixes") == "verification"
     assert jobs.job_queue("assess_candidates") == "reviews"
     assert jobs.job_queue("summarize_review") == jobs.job_queue("generate_summary") == "summaries"
@@ -658,6 +665,11 @@ def test_summary_uses_one_call_for_optional_diagram(seed, github_stub, monkeypat
             **run.config["settings"], "summary_diagram_enabled": diagram != "off",
         }}
         snapshot = run.config["connection"]
+    if native:
+        with pytest.raises(ValueError, match="retired"):
+            pr_summary.generate(identity, None, {}, snapshot, {}, "claim")
+        assert not calls
+        return
     for _ in range(2):
         pr_summary.generate(identity, None, {}, snapshot, {}, "claim")
     assert len(calls) == 1

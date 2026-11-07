@@ -7,6 +7,7 @@ from code_mortis.api.dependencies import DB, USER, pr_access, review_pr_access
 from code_mortis.api.presenters import pr_out, repo_out
 from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core.ordering import RunFindingOrdering, list_order
+from code_mortis.core.shared_execution import RETIRED_MESSAGE
 from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
@@ -143,6 +144,8 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     pr, repo, _ = review_pr_access(db, user, run.pr_id)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                     .execution_options(populate_existing=True))
+    if run.config.get("connection", {}).get("kind") != "api":
+        raise HTTPException(410, RETIRED_MESSAGE)
     candidate = db.get(ReviewCandidate, candidate_id)
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")

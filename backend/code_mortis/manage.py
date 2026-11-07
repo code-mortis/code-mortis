@@ -24,8 +24,16 @@ def main():
     upgrade.add_argument("--file", default=".env")
     export = sub.add_parser("export-openapi")
     export.add_argument("--output", default="../frontend/node_modules/.cache/code-mortis-openapi.json")
+    sub.add_parser("retire-subscriptions", help="Cancel retired inference durably after stopping old workers and fencing their runner endpoint")
     args = parser.parse_args()
-    if args.command == "upgrade-env":
+    if args.command == "retire-subscriptions":
+        from code_mortis.core.db import transaction
+        from code_mortis.core.shared_execution import retire_subscriptions
+
+        with transaction() as db:
+            result = retire_subscriptions(db)
+        print(json.dumps(result, sort_keys=True))
+    elif args.command == "upgrade-env":
         path = Path(args.file)
         if not path.is_file():
             parser.error(f"{args.file} does not exist; use init-env for a new instance")

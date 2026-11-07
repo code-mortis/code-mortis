@@ -586,6 +586,7 @@ def test_tool_errors_and_results_do_not_expose_saved_credentials(enabled, client
 
 def test_approved_disconnect_commits_revocation_and_replays_without_native_logout(enabled, client, monkeypatch):
     from code_mortis.integrations import runner_client
+    from code_mortis.mcp.models import McpApproval
     from code_mortis.models import Connection
 
     with transaction() as db:
@@ -593,24 +594,26 @@ def test_approved_disconnect_commits_revocation_and_replays_without_native_logou
         config.mcp_settings = {**config.mcp_settings, "management_enabled": True}
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "ready"
-    calls = []
-    monkeypatch.setattr(runner_client, "request", lambda *args, **kwargs: calls.append(args) or {})
+    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired management reached runner"))
     tokens = credentials(client, scopes=["connections:manage"])
-    args = {"name": "management_disconnect_connection", "arguments": {"params": {
-        "connection_id": "connection", "request_key": "approved-disconnect-key"}}}
-    preview = rpc(client, tokens["access_token"], method="tools/call", arguments=args)
-    pending = preview.json()["result"]["structuredContent"]
-    assert pending["status"] == "approval_required", preview.text
-    assert not calls
-    assert client.post("/api/v1/mcp/approvals/" + pending["approval_id"], json={"approve": True}).status_code == 200
-    args["arguments"]["params"]["approval_id"] = pending["approval_id"]
-    first = rpc(client, tokens["access_token"], method="tools/call", arguments=args)
-    assert first.json()["result"].get("isError") is not True, first.text
-    replay = rpc(client, tokens["access_token"], method="tools/call", arguments=args)
-    assert replay.json()["result"]["structuredContent"] == first.json()["result"]["structuredContent"]
-    assert len(calls) == 1
     with transaction() as db:
-        assert db.get(Connection, "connection").auth_status == "revoked"
+        grant_id = db.get(McpToken, digest(tokens["access_token"])).grant_id
+        db.add(McpApproval(id="old-approved-native-action", grant_id=grant_id,
+                          tool="management_grant_repository_access", arguments_hash="a" * 64,
+                          arguments={"connection_id": "connection", "repository_id": 22},
+                          approved_at=now(), expires_at=now() + timedelta(hours=1)))
+    listed = rpc(client, tokens["access_token"], method="tools/list")
+    names = {item["name"] for item in listed.json()["result"]["tools"]}
+    assert "management_create_connection" in names and "management_test_connection" in names
+    assert "management_disconnect_connection" not in names and "management_grant_repository_access" not in names
+    for name in ("management_disconnect_connection", "management_grant_repository_access"):
+        response = rpc(client, tokens["access_token"], method="tools/call", arguments={"name": name, "arguments": {"params": {
+            "connection_id": "connection", "request_key": "old-approved-native-key", "approval_id": "old-approved-native-action"}}})
+        assert response.json()["result"]["isError"] is True
+    with transaction() as db:
+        assert db.get(McpApproval, "old-approved-native-action").consumed_at is None
+        assert db.get(McpGrant, grant_id).revoked_at is None
+        assert db.get(Connection, "connection").auth_status == "ready"
 
 
 def test_preregistered_https_client_does_not_require_metadata_fetch(enabled, monkeypatch):

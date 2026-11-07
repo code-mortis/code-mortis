@@ -106,7 +106,7 @@ export function runFeedback(run: Run) {
     destination = "repository";
     if (fileLimitSkip) {
       summary = `${selected} reviewable files exceed the limit of ${settings.max_files}. No files were reviewed.`;
-      nextStep = "An enabled Code Mortis member with repository write access can post the command shown in the GitHub skip notice to bypass the file limit for one review. Personal connections remain owner-only. Or adjust the review settings and start a new review.";
+      nextStep = "An enabled Code Mortis member with repository write access can post the command shown in the GitHub skip notice to bypass the file limit for one review. Choose a shared API connection. Or adjust the review settings and start a new review.";
     } else if (selected === 0) {
       summary = "No changed files were eligible for review.";
       if (exclusions.length && exclusions.every((item) => item.exclude_reason === "unsupported_ext")) {

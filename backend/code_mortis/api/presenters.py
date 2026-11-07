@@ -25,7 +25,7 @@ def repo_out(db: Session, repo: Repository) -> RepositoryOut:
     result = RepositoryOut.model_validate(repo)
     graph = db.get(CodeGraphRepository, repo.id)
     result.code_graph_enabled = bool(graph and graph.enabled)
-    result.open_prs, result.has_running_review = db.execute(
+    result.open_prs, result.has_running_review, connection_kind = db.execute(
         select(
             select(func.count())
             .select_from(PullRequest)
@@ -35,8 +35,10 @@ def repo_out(db: Session, repo: Repository) -> RepositoryOut:
             .join(PullRequest, ReviewRun.pr_id == PullRequest.id)
             .where(PullRequest.repository_id == repo.id, PullRequest.ignored.is_(False), ReviewRun.status == "running")
             .exists(),
+            select(Connection.kind).where(Connection.id == repo.connection_id).scalar_subquery(),
         )
     ).one()
+    result.connection_requires_setup = bool(repo.connection_id and connection_kind != "api")
     return result
 
 

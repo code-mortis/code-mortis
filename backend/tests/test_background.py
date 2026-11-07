@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from code_mortis import jobs, native_runner
+from code_mortis import jobs
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.models import Connection, ConnectionGrant, Job, Membership, Repository, ReviewRun, User
@@ -68,42 +68,21 @@ def test_generation_uses_draft_model_and_never_saves_repository(generation, clie
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 def test_personal_generation_requires_consent_and_uses_isolated_runner(generation, client, monkeypatch, kind):
     with transaction() as db:
-        db.get(Repository, 22).settings = {}
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
-        connection.options = {"prompt_token_ceiling": 200000}
-    denied = client.post("/api/v1/repositories/22/background", json={"connection_id": "connection"})
-    assert denied.status_code == 422 and "Authorize this repository" in denied.text
-    with transaction() as db:
         db.add(ConnectionGrant(connection_id="connection", repository_id=22))
-
-    def native(connection_id, identity, body, stopped):
-        assert connection_id == "connection" and body["task"] == "background" and body["kind"] == kind
-        assert body["model"] == "native-model" and not stopped()
-        assert body["prompt_token_ceiling"] == 200000
-        assert "installation-token" not in json.dumps(body) and "provider-secret" not in json.dumps(body)
-        instructions = native_runner.task_instructions(native_runner.ReviewBody(**body))
-        assert "untrusted data" in instructions and "background" in instructions
-        assert body["token_budget"] is None
-        return {"background": "A native background draft."}, {"tokens": 75}
-
-    monkeypatch.setattr(runner_client, "review", native)
-    identity = start(client, model="native-model")
-    jobs.execute_job(identity)
-    assert status(client, identity).json()["background"] == "A native background draft."
-    with transaction() as db:
-        assert db.get(Job, identity).payload["usage"] == {"tokens": 75}
+    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Native generation dispatched"))
+    response = client.post("/api/v1/repositories/22/background", json={"connection_id": "connection"})
+    assert response.status_code == 422 and "retired" in response.text
     assert generation == []
+    with transaction() as db:
+        assert not list(db.scalars(select(Job)))
 
 
-@pytest.mark.parametrize("revocation", ["membership", "installation", "github", "connection", "grant"])
+@pytest.mark.parametrize("revocation", ["membership", "installation", "github", "connection", "kind"])
 def test_access_is_revalidated_before_execution(generation, client, monkeypatch, revocation):
     from code_mortis.models import Installation
 
-    with transaction() as db:
-        connection = db.get(Connection, "connection")
-        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id="connection", repository_id=22))
     identity = start(client)
     with transaction() as db:
         if revocation == "membership":
@@ -111,9 +90,9 @@ def test_access_is_revalidated_before_execution(generation, client, monkeypatch,
         elif revocation == "installation":
             db.get(Installation, 10).active = False
         elif revocation == "connection":
-            db.get(Connection, "connection").auth_status = "revoked"
-        elif revocation == "grant":
-            db.delete(db.get(ConnectionGrant, ("connection", 22)))
+            db.get(Connection, "connection").base_url = "https://changed.example/v1"
+        elif revocation == "kind":
+            db.get(Connection, "connection").kind = "chatgpt"
     if revocation == "github":
         def deny(*args, **kwargs):
             raise github.GitHubError(404, "No repository access")
@@ -192,20 +171,16 @@ def test_recovery_preserves_saved_result_and_never_repeats_inference(generation,
 
 @pytest.mark.parametrize("reason,expected", [("busy", "queued"), ("unavailable", "failed"), ("quota", "failed"), ("authentication", "failed")])
 def test_native_failure_only_retries_busy_before_consumption(generation, client, monkeypatch, reason, expected):
-    with transaction() as db:
-        connection = db.get(Connection, "connection")
-        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id="connection", repository_id=22))
-
-    def fail(*a):
-        raise runner_client.RunnerBlocked(reason)
-
-    monkeypatch.setattr(runner_client, "review", fail)
     identity = start(client)
-    jobs.execute_job(identity)
-    assert status(client, identity).json()["status"] == expected
     with transaction() as db:
-        assert db.get(Job, identity).payload["inference_started"] == (reason != "busy")
+        job = db.get(Job, identity)
+        job.payload = {**job.payload, "connection": {**job.payload["connection"], "kind": "chatgpt"}}
+    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Retired work reached runner"))
+    jobs.execute_job(identity)
+    assert status(client, identity).json()["status"] == "failed"
+    with transaction() as db:
+        assert not db.get(Job, identity).payload.get("inference_started")
+        assert db.get(Job, identity).attempts == 0
     assert generation == []
 
 
