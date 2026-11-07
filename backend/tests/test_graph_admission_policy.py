@@ -1,6 +1,4 @@
 import base64
-import json
-import subprocess
 from types import SimpleNamespace
 
 import httpx
@@ -130,21 +128,6 @@ def test_changed_limits_refresh_identity_failure_preserves_prior_index(graph, cl
     state = client.get("/api/v1/repositories/22/code-graph").json()
     assert state["indexed_sha"] == first.commit_sha and state["state"] == "failed"
     assert state["failure"]["attempt_reference"] and "2,001" in state["error"]
-
-
-def test_real_ocr_policy_prevents_include_override_and_admits_documentation(tmp_path):
-    # Exercise the pinned adapter's real filtering before any provider can be invoked.
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    files = ["image.SVG", "page.mdx", "README.md", "config.yaml", "app.py", "package-lock.json", "app.min.css"]
-    for path in files:
-        (tmp_path / path).write_text("# text data\n")
-    rule = tmp_path / "rules.json"
-    rule.write_text(json.dumps(file_policy.review_rules({"rules": {"include": ["**/*"]}})))
-    output = subprocess.check_output(["ocr", "scan", "--preview", "--repo", str(tmp_path), "--rule", str(rule), "--format", "json"])
-    data = json.loads(output)
-    selected = {item["path"] for item in data["files"] if item["will_review"]}
-    assert {"page.mdx", "README.md", "config.yaml", "app.py"} <= selected
-    assert not {"image.SVG", "package-lock.json", "app.min.css"} & selected
 
 
 @pytest.mark.parametrize("status,code", [(401, "parser_authentication"), (403, "parser_authentication"),

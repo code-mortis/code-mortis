@@ -21,6 +21,7 @@ os.environ["CM_OWNER_GITHUB_LOGIN"] = "test-owner"
 os.environ["CM_OCR_ISOLATED_RUNTIME"] = "true"
 os.environ["CM_ALLOW_PRIVATE_ENDPOINTS"] = "true"
 
+from code_mortis.core import file_policy
 from code_mortis.core.db import now
 from code_mortis.integrations import ocr
 from code_mortis.models import ReviewRun
@@ -177,8 +178,25 @@ class Provider(BaseHTTPRequestHandler):
             assert assessment_hold is not None, "Only cancelled assessments may close the provider connection."
 
 
+def check_file_policy():
+    # The real binary is supplied by the image job, not the backend unit-test job.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        files = ["image.SVG", "page.mdx", "README.md", "config.yaml", "app.py", "package-lock.json", "app.min.css"]
+        for path in files:
+            (root / path).write_text("# text data\n")
+        rule = root / "rules.json"
+        rule.write_text(json.dumps(file_policy.review_rules({"rules": {"include": ["**/*"]}})))
+        output = subprocess.check_output(["ocr", "scan", "--preview", "--repo", str(root), "--rule", str(rule), "--format", "json"])
+        selected = {item["path"] for item in json.loads(output)["files"] if item["will_review"]}
+        assert {"page.mdx", "README.md", "config.yaml", "app.py"} <= selected
+        assert not {"image.SVG", "package-lock.json", "app.min.css"} & selected
+
+
 def main():
     global verification_mode, assessment_barrier, assessment_hold
+    check_file_policy()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     connection = {
@@ -357,13 +375,13 @@ def main():
             for sources in ({"main.py": "count = 1\n"}, {"nested/main.py": "count = 2\n"}):
                 assert verification.filter_context(root, env, sources, options, lambda: False) == set(sources)
             documents = dict.fromkeys(("docs/operations.md", "collections/code-mortis/README.md", "AGENTS.md",
-                                       ".claude/guide.md", ".env.md", "notes.txt"), "# Evidence\n")
+                                       ".claude/guide.md", ".env.md", "notes.txt", "page.mdx", "image.SVG"), "# Evidence\n")
             assert verification.filter_context(root, env, documents, options, lambda: False) == {
-                "docs/operations.md", "collections/code-mortis/README.md"}
+                "docs/operations.md", "collections/code-mortis/README.md", "notes.txt", "page.mdx"}
             options["exclusions"] = "docs/**,**/README.md"
-            assert not verification.filter_context(root, env, documents, options, lambda: False)
+            assert verification.filter_context(root, env, documents, options, lambda: False) == {"notes.txt", "page.mdx"}
             options["exclusions"], options["rules"] = "", {"exclude": ["**/*.md"]}
-            assert not verification.filter_context(root, env, documents, options, lambda: False)
+            assert verification.filter_context(root, env, documents, options, lambda: False) == {"notes.txt", "page.mdx"}
             options["rules"] = None
             options["exclusions"] = "**/private.py"
             assert not verification.filter_context(root, env, {"nested/private.py": "secret = 1"}, options, lambda: False)
