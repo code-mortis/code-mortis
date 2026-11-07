@@ -1,5 +1,7 @@
 # Code Mortis implementation plan
 
+The [engine replacement roadmap](ENGINE_PLAN.md) defines the approved next implementation: our own PR review/security engine, shared API connections only, and compatibility with the current exclusions, limits, and code graph. Its phase gates supersede the OCR/subscription target-state requirements below; the existing delivery remains described here until migration completes.
+
 The approved delivery is the complete self-hosted GitHub review product, in development and on a server. Shared APIs and personal ChatGPT and Claude Code subscriptions are all in scope for manual and automatic reviews. Finishing a phase does not finish the project. External integrations remain unverified until exercised with real accounts.
 
 ## Architecture
