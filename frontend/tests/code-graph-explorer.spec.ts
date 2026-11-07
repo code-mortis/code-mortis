@@ -8,7 +8,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", groups: false, moreFindings: false, verifiedHistory: false, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
+    fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -19,7 +19,7 @@ export async function mockGraph(page: Page, admin = true) {
       unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false,
       reasons: (revision === "head" ? state.status : state.baseStatus) === "partial" ? { syntax_error: 1, unsupported_language: 72 } : { unsupported_language: 72 } } });
   const diff = (body: any) => ({ base_sha: base, head_sha: head, merge_base_sha: mergeBase,
-        file: { path: body.path, change: "modified", additions: 1, deletions: 1 }, patch_state: state.patchState,
+        file: { path: body.path, change: "modified", additions: state.unknownLineCounts ? null : 1, deletions: state.unknownLineCounts ? null : 1 }, patch_state: state.patchState,
         lines: state.large && body.path === selected ? Array.from({ length: 2000 }, (_, i) => ({ kind: "addition", old_line: null, new_line: i + 1, text: "const line = " + i + ";" + "x".repeat(80) })) : state.patchState === "available" || state.patchState === "truncated" ? [
           { kind: "hunk", text: "@@ -1 +1 @@", old_line: null, new_line: null },
           { kind: "deletion", text: "return false;", old_line: 1, new_line: null },
@@ -71,7 +71,7 @@ export async function mockGraph(page: Page, admin = true) {
       const error = state.overviewError || (body.view === "diff" ? state.codeError : state.fileError);
       if (error) return route.fulfill({ status: error, json: { detail: "Code access is unavailable." } });
       const files = state.empty ? [] : [
-        { path: selected, change: "modified", additions: 1, deletions: 1 }, { path: "src/added.ts", change: "added", additions: 1, deletions: 0 },
+        { path: selected, change: "modified", additions: state.unknownLineCounts ? null : 1, deletions: state.unknownLineCounts ? null : 1 }, { path: "src/added.ts", change: "added", additions: 1, deletions: 0 },
         { path: "src/" + "long-directory-name/".repeat(6) + "parser.ts", change: "modified", additions: 1, deletions: 1 },
         ...Array.from({ length: 7 }, (_, i) => ({ path: `src/file${i}.ts`, change: "modified", additions: 1, deletions: 1 })),
         { path: "src/old.ts", change: "removed", additions: 0, deletions: 2 }];
@@ -641,6 +641,19 @@ for (const stateName of ["unavailable", "too_large", "withheld", "truncated"]) t
   await page.goto("/pulls/pr?tab=code");
   await expect(page.getByRole("link", { name: "Open on GitHub", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "File diff" })).toHaveCount(stateName === "truncated" ? 1 : 0);
+});
+
+test("unavailable line counts stay unknown while known zero deletions remain visible", async ({ page }) => {
+  const { state } = await mockGraph(page);
+  state.unknownLineCounts = true;
+  state.patchState = "unavailable";
+  await page.goto("/pulls/pr?tab=code");
+  const selectedFile = page.getByRole("button", { name: selected, exact: false }).filter({ hasText: "Modified" });
+  await expect(selectedFile).toBeVisible();
+  await expect(selectedFile).not.toContainText("+0");
+  await expect(selectedFile).not.toContainText("−0");
+  await expect(selectedFile).not.toContainText("+1");
+  await expect(page.getByRole("button", { name: /src\/added.ts/ })).toContainText("+1 −0");
 });
 
 for (const error of [403, 409]) test(`diff refetch ${error} removes old content`, async ({ page }) => {

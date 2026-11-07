@@ -59,7 +59,7 @@ def graph(seed, tmp_path, monkeypatch):
         return {"id": 22, "default_branch": "main", "permissions": {"pull": True}}
 
     monkeypatch.setattr(github, "authorize_repo", permission)
-    monkeypatch.setattr(github, "repository_read_token", lambda *args: "fixture-token")
+    monkeypatch.setattr(github, "repository_read_token", lambda *args, **kwargs: "fixture-token")
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: {"sha": state["head"]})
 
     def acquire(repository_id, name, sha, snapshot_id, token, stopped):
@@ -320,14 +320,18 @@ def test_binary_command_preserves_source_bytes(tmp_path):
     assert code == 0 and raw == b"\xff\r\n\0"
 
 
-def test_graph_token_is_scoped_to_one_repository_and_read_permissions(seed, monkeypatch):
+@pytest.mark.parametrize("pulls", [False, True])
+def test_graph_token_is_scoped_to_one_repository_and_read_permissions(seed, monkeypatch, pulls):
     calls = []
     monkeypatch.setattr(github, "app_token", lambda db: "fixture-jwt")
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: calls.append((args, kwargs)) or {"token": "fixture"})
     with transaction() as db:
-        assert github.repository_read_token(db, 10, 22) == "fixture"
+        assert github.repository_read_token(db, 10, 22, pulls=pulls) == "fixture"
+    permissions = {"contents": "read", "metadata": "read"}
+    if pulls:
+        permissions["pull_requests"] = "read"
     assert calls == [(("POST", "/app/installations/10/access_tokens", "fixture-jwt"), {
-        "json": {"repository_ids": [22], "permissions": {"contents": "read", "metadata": "read"}},
+        "json": {"repository_ids": [22], "permissions": permissions},
     })]
 
 

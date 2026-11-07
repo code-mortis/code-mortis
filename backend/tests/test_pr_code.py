@@ -33,18 +33,24 @@ PATCH = "@@ -1,2 +1,2 @@\n-old\n+mañana 😀\n context\n\\ No newline at end of
 def comparison(seed, github_stub, monkeypatch):
     github_comparison.cached.cache_clear()
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **kw: {"id": 22, "permissions": {"pull": True, "push": True}})
-    monkeypatch.setattr(github, "repository_read_token", lambda *a: "read-token")
+    monkeypatch.setattr(github, "repository_read_token", lambda *a, **kw: "read-token")
     data = {"base_commit": {"sha": BASE}, "merge_base_commit": {"sha": MERGE}, "files": [
         {"filename": "notes.md", "status": "modified", "additions": 1, "deletions": 1, "patch": PATCH},
         {"filename": "next.py", "previous_filename": "old.py", "status": "renamed", "additions": 1, "deletions": 1, "patch": PATCH},
         {"filename": "image.png", "status": "added", "additions": 0, "deletions": 0},
         {"filename": ".env", "status": "modified", "patch": "+hidden"}]}
-    calls = []
+    calls, pull_files = [], []
+    remote = {"number": 3, "base": {"sha": BASE, "repo": {"id": 22}}, "head": {"sha": HEAD}}
     def request(method, path, token, **kwargs):
         calls.append((path, kwargs))
+        if "/files?" in path:
+            page = int(path.rsplit("page=", 1)[1])
+            return copy.deepcopy(pull_files[(page - 1) * 100:page * 100])
+        if "/pulls/" in path:
+            return copy.deepcopy(remote)
         return copy.deepcopy(data)
     monkeypatch.setattr(github, "request", request)
-    yield data, calls
+    yield data, calls, remote, pull_files
     github_comparison.cached.cache_clear()
 
 
@@ -89,7 +95,7 @@ def test_graph_independent_diff_summary_and_immutable_findings(comparison, clien
     assert [evidence[f"o{i}"]["placement"] for i in range(5)] == ["inline", "inline", "unknown", "historical", "outside_diff"]
     assert evidence["o0"]["current_status"] == "resolved" and "Mutable text" not in response.text
     assert evidence["o1"]["side"] == "old" and MERGE in result["github_url"]
-    assert len(comparison[1]) == 1 and comparison[1][0][1]["max_response_bytes"] == code.MAX_RESPONSE_BYTES
+    assert len(comparison[1]) == 4 and comparison[1][0][1]["max_response_bytes"] == code.MAX_RESPONSE_BYTES
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Job)) == jobs
 
@@ -119,7 +125,7 @@ def test_historical_findings_use_exact_current_verification_without_rewriting_ev
     assert finding["current_status"] == "resolved"
     assert finding["source_sha"] == "d" * 40 and finding["snapshot"]["existing_code"] == "old"
     assert finding["snapshot"]["start_line"] == finding["snapshot"]["end_line"] == 1
-    assert "Saved verification" not in response.text and len(comparison[1]) == 1
+    assert "Saved verification" not in response.text and len(comparison[1]) == 4
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Job)) == jobs
         assert db.get(Occurrence, "o3").snapshot["source_sha"] == "d" * 40
@@ -186,6 +192,106 @@ def test_missing_patch_and_rename(comparison, client, path, state):
     assert result["patch_state"] == state
     if path == "next.py":
         assert result["file"]["previous_path"] == "old.py"
+    else:
+        assert result["file"]["additions"] is None and result["file"]["deletions"] is None
+
+
+def test_pr_files_fallback_recovers_second_page_counts_patch_and_rename(comparison, client):
+    data, calls, _, pull_files = comparison
+    data["files"] = [{"filename": "next.py", "previous_filename": "old.py", "status": "renamed",
+                      "sha": "d" * 40, "additions": 0, "deletions": 0}]
+    pull_files.extend({"filename": f"file{i}.py", "status": "added"} for i in range(100))
+    pull_files.append({**data["files"][0], "additions": 1, "deletions": 1, "patch": PATCH})
+    response = client.post(URL + "/workspace", json={"path": "next.py"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["head_sha"] == HEAD and result["base_sha"] == BASE and result["merge_base_sha"] == MERGE
+    assert result["files"][0]["additions"] == result["files"][0]["deletions"] == 1
+    assert result["diff"]["patch_state"] == "available"
+    assert result["diff"]["lines"][2]["text"] == "mañana 😀"
+    assert result["diff"]["file"]["previous_path"] == "old.py"
+    assert len(calls) == 5
+    assert calls[2][0].endswith("/files?per_page=100&page=1")
+    assert calls[3][0].endswith("/files?per_page=100&page=2")
+    assert 0 < calls[3][1]["max_response_bytes"] < calls[2][1]["max_response_bytes"]
+    assert calls[1][0] == calls[4][0] == "/repos/team/project/pulls/3"
+    assert client.get(URL).status_code == 200 and len(calls) == 5
+
+
+@pytest.mark.parametrize("side", ["base", "head"])
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_pr_files_fallback_rejects_revision_races_without_caching(comparison, client, monkeypatch, side, when):
+    _, calls, remote, _ = comparison
+    original = github.request
+    def request(method, path, token, **kwargs):
+        result = original(method, path, token, **kwargs)
+        if "/files?" in path:
+            remote[side]["sha"] = "e" * 40
+        return result
+    if when == "before":
+        remote[side]["sha"] = "e" * 40
+    else:
+        monkeypatch.setattr(github, "request", request)
+    response = client.post(URL + "/workspace", json={})
+    assert response.status_code == 409 and "mañana" not in response.text
+    assert len(calls) == (2 if when == "before" else 4)
+    assert github_comparison.cached.cache_info().currsize == 0
+    remote[side]["sha"] = BASE if side == "base" else HEAD
+    monkeypatch.setattr(github, "request", original)
+    assert client.get(URL).status_code == 200
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("sha", "e" * 40), ("sha", None), ("status", "removed"), ("previous_filename", "different.py"),
+    ("patch", 123), ("additions", -1),
+])
+def test_pr_files_fallback_validates_recovered_files(comparison, client, key, value):
+    data, _, _, pull_files = comparison
+    data["files"] = [{"filename": "notes.md", "status": "modified", "sha": "d" * 40}]
+    pull_files.append({**data["files"][0], "patch": PATCH, key: value})
+    assert client.get(URL).status_code == 422
+    assert github_comparison.cached.cache_info().currsize == 0
+
+
+def test_pr_files_fallback_bounds_pagination_and_preserves_unknown_counts(comparison, client):
+    data, calls, _, pull_files = comparison
+    data["files"] = [{"filename": "absent.py", "status": "added", "additions": 0, "deletions": 0}]
+    pull_files.extend({"filename": f"file{i}.py", "status": "added"} for i in range(301))
+    response = client.get(URL)
+    assert response.status_code == 200, response.text
+    assert response.json()["files"][0]["additions"] is None
+    assert response.json()["files"][0]["deletions"] is None
+    assert len([path for path, _ in calls if "/files?" in path]) == 3
+
+
+def test_pr_files_fallback_rejects_duplicate_pages(comparison, client):
+    _, _, _, pull_files = comparison
+    pull_files.extend({"filename": f"file{i % 100}.py", "status": "added"} for i in range(101))
+    assert client.get(URL).status_code == 422
+
+
+def test_pr_files_fallback_enforces_aggregate_byte_limit(comparison, client, monkeypatch):
+    _, _, _, pull_files = comparison
+    pull_files.append({"filename": "ignored.py", "status": "added", "patch": "x" * 1000})
+    monkeypatch.setattr(github_comparison, "MAX_RESPONSE_BYTES", 1000)
+    assert client.get(URL).status_code == 422
+
+
+def test_pr_files_fallback_reapplies_source_checks(comparison, client):
+    data, _, _, pull_files = comparison
+    data["files"] = [{"filename": "notes.md", "status": "added", "sha": "d" * 40}]
+    pull_files.append({**data["files"][0], "additions": 1, "deletions": 0,
+                       "patch": "@@ -0,0 +1 @@\n+github-user-token"})
+    response = client.post(URL + "/file", json=body())
+    assert response.status_code == 200 and "github-user-token" not in response.text
+    assert response.json()["patch_state"] == "withheld" and response.json()["lines"] == []
+
+
+def test_complete_comparison_needs_no_pr_files_fallback(comparison, client):
+    data, calls, _, _ = comparison
+    data["files"] = [data["files"][0]]
+    assert client.get(URL).status_code == 200
+    assert len(calls) == 1
 
 
 def test_cache_reapplies_policy_before_paths_counts_groups(comparison, client):
@@ -196,7 +302,7 @@ def test_cache_reapplies_policy_before_paths_counts_groups(comparison, client):
     result = client.get(URL).json()
     assert result["total"] == 1 and not result["groups"] and "next.py" not in json.dumps(result)
     assert client.post(URL + "/file", json=body()).status_code == 404
-    assert len(comparison[1]) == 1
+    assert len(comparison[1]) == 4
 
 
 @pytest.mark.parametrize("change", ["head", "base", "policy", "membership", "github"])
@@ -430,7 +536,7 @@ def test_workspace_returns_initial_diff_and_full_deduplicated_inventory(comparis
     assert len(data["files"]) == 3 and data["groups"][0]["file_indexes"] == [2]
     assert auth.count(True) == 2 and not data["graph_enabled"]
     assert "no-store" in result.headers["cache-control"]
-    assert len(comparison[1]) == 1
+    assert len(comparison[1]) == 4
 
 
 @pytest.mark.parametrize("change", ["head", "policy", "membership", "github"])

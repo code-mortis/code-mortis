@@ -276,9 +276,12 @@ def app_token(db: Session) -> str:
     )
 
 
-def repository_read_token(db: Session, installation_id: int, repository_id: int) -> str:
+def repository_read_token(db: Session, installation_id: int, repository_id: int, *, pulls: bool = False) -> str:
+    permissions = {"contents": "read", "metadata": "read"}
+    if pulls:
+        permissions["pull_requests"] = "read"
     data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db), json={
-        "repository_ids": [repository_id], "permissions": {"contents": "read", "metadata": "read"},
+        "repository_ids": [repository_id], "permissions": permissions,
     })
     return data["token"]
 

@@ -25,13 +25,13 @@ def context(db, user, pr_id, expected=None, *, write=False):
 
 def comparison(db, repo, pr):
     base, head = (TypeAdapter(GitSha).validate_python(sha) for sha in (pr.base_sha, pr.head_sha))
-    merge_base, paths, truncated = comparison_metadata(repo.id, repo.installation_id, repo.full_name, base, head)
+    merge_base, paths, truncated = comparison_metadata(repo.id, repo.installation_id, repo.full_name, base, head, pr.number)
     rules = store.policy(repo)
     return merge_base, [{"path": path, "change": change} for path, change in paths if not store.excluded(path, rules)], truncated
 
 
-def comparison_metadata(repository_id, installation_id, full_name, base, head):
-    merge_base, files, truncated = github_comparison.load(repository_id, installation_id, full_name, base, head)
+def comparison_metadata(repository_id, installation_id, full_name, base, head, pull_number=None):
+    merge_base, files, truncated = github_comparison.load(repository_id, installation_id, full_name, base, head, pull_number)
     paths = {}
     for info, _ in files:
         path, change = info.path, info.change

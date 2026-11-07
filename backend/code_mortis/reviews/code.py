@@ -30,7 +30,7 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
 
 def load(repo, pr):
     base, head = (TypeAdapter(GitSha).validate_python(sha) for sha in (pr.base_sha, pr.head_sha))
-    merge_base, files, truncated = comparison(repo.id, repo.installation_id, repo.full_name, base, head)
+    merge_base, files, truncated = comparison(repo.id, repo.installation_id, repo.full_name, base, head, pr.number)
     rules = store.policy(repo)
     files = [(info, patch) for info, patch in files if not any(store.excluded(p, rules)
              for p in (info.path, info.previous_path) if p)]

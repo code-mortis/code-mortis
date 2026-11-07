@@ -36,8 +36,18 @@ def indexed(graph, monkeypatch):
         "files": [{"filename": "renamed.py", "previous_filename": "a.py", "status": "renamed"},
                   {"filename": "consumer.py", "status": "added"}, {"filename": "skip.py", "status": "modified"},
                   {"filename": ".env", "status": "modified"}]}
-    monkeypatch.setattr(github, "request", lambda method, path, token, **kw:
-                        copy.deepcopy(graph["comparison"]) if "/compare/" in path else {"sha": graph["head"]})
+    def request(method, path, token, **kw):
+        if "/compare/" in path:
+            return copy.deepcopy(graph["comparison"])
+        if "/files?" in path:
+            return []
+        if "/pulls/" in path:
+            with transaction() as db:
+                pr = db.get(PullRequest, "pr")
+                return {"number": pr.number, "base": {"sha": pr.base_sha, "repo": {"id": 22}},
+                        "head": {"sha": pr.head_sha}}
+        return {"sha": graph["head"]}
+    monkeypatch.setattr(github, "request", request)
     run(service.enqueue_snapshot(22, graph["first"]))
     run(service.enqueue_snapshot(22, graph["pr_head"]))
     yield graph
@@ -93,16 +103,16 @@ def test_comparison_cache_preserves_current_exclusions_permissions_and_revision(
     assert client.get(BASE).status_code == 200
     assert client.get(BASE + "?q=consumer&page=2").status_code == 200
     assert client.post(BASE + "/query", json=body(indexed, revision="base")).status_code == 200
-    assert len(calls) == 1
+    assert len(calls) == 4
     with transaction() as db:
         db.get(Repository, 22).settings = {"exclusions": "consumer.py,skip.py"}
     result = client.get(BASE).json()
     assert "consumer.py" not in str(result) and result["head"]["status"] == "unavailable"
-    assert len(calls) == 1
+    assert len(calls) == 4
     with transaction() as db:
         db.get(PullRequest, "pr").head_sha = indexed["second"]
     assert client.get(BASE).json()["head_sha"] == indexed["second"]
-    assert len(calls) == 2
+    assert len(calls) == 8
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **kw: {"id": 23})
     response = client.get(BASE)
     assert response.status_code == 403 and "renamed.py" not in response.text
