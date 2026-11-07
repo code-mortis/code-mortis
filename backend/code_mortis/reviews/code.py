@@ -2,7 +2,6 @@
 
 import json
 import re
-from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi import HTTPException
@@ -11,6 +10,7 @@ from sqlalchemy import Text, case, cast, func, select
 from sqlalchemy.dialects.postgresql import distinct_on
 
 from code_mortis.code_graph import explorer, store
+from code_mortis.core import file_policy
 from code_mortis.integrations.comparison import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
 from code_mortis.integrations.comparison import load as comparison
 from code_mortis.models import Finding, FindingVerification, Occurrence, ReviewRun
@@ -45,7 +45,7 @@ def saved_groups(db, user, repo, pr, files):
         return [], None
     try:
         if ("exclusions" not in run.config["settings"]
-            or store.policy(SimpleNamespace(settings=run.config["settings"])) != store.policy(repo)):
+            or file_policy.policy(run.config["settings"]) != file_policy.policy(repo.settings)):
             return [], None
         coverage = run.report
         for key in ("manifest", "coverage"):

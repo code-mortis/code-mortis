@@ -11,6 +11,7 @@ from sqlalchemy import event, inspect, select
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session
 
+from code_mortis.core import file_policy
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text, digest, unseal
@@ -215,7 +216,8 @@ def diagram_section(diagram):
 
 def build_context(repo, env, run, stopped):
     coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
-    paths = sorted({item["path"] for item in coverage.get("selected", [])})
+    paths = sorted({item["path"] for item in coverage.get("selected", [])
+                    if not file_policy.excluded(item["path"], file_policy.policy(run.config["settings"]))})
     if not paths:
         raise SummaryUnavailable("No reviewable changes were available to summarize.")
     for path in paths:

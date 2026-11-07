@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 
 import httpx
 
+from code_mortis.code_graph import errors
 from code_mortis.code_graph.syntax import LANGUAGES, import_target
 from code_mortis.schemas.code_graph import (
     EXTRACTION_SECONDS,
@@ -18,8 +19,9 @@ from code_mortis.schemas.code_graph import (
 )
 
 
-class ParserUnavailable(ValueError):
-    pass
+class ParserUnavailable(errors.GraphError):
+    def __init__(self, message="Parser unavailable", *, code="parser_unavailable"):
+        super().__init__(code, "parser", *errors.PARSER_ERRORS[code])
 
 
 class ExtractionCancelled(ValueError):
@@ -27,7 +29,7 @@ class ExtractionCancelled(ValueError):
 
 
 def validate_result(request: CodeGraphRequest, result: CodeGraphResult) -> CodeGraphResult:
-    for key in ("schema_version", "repository_id", "commit_sha", "extractor_version", "policy_digest"):
+    for key in ("schema_version", "repository_id", "commit_sha", "extractor_version", "policy_digest", "limits"):
         if getattr(result, key) != getattr(request, key):
             raise ValueError("Parser returned another snapshot identity")
     manifest = {item.path: item for item in request.files}
@@ -95,20 +97,23 @@ async def _request(payload, body, url, token, stopped):
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
                                               "Accept-Encoding": "identity"}) as response:
                 if response.status_code != 200:
-                    raise ParserUnavailable(f"Parser returned HTTP {response.status_code}")
+                    code = {401: "parser_authentication", 403: "parser_authentication", 409: "parser_busy",
+                            413: "transport_limit", 422: "parser_invalid_request", 504: "parser_timeout",
+                            502: "parser_terminated", 507: "parser_storage_limit"}.get(response.status_code, "parser_invalid_result")
+                    raise ParserUnavailable(code=code)
                 if response.headers.get("content-encoding", "identity") != "identity":
-                    raise ParserUnavailable("Parser returned encoded content")
+                    raise ParserUnavailable(code="parser_invalid_result")
                 length = response.headers.get("content-length")
                 if length is not None and not 0 <= int(length) <= MAX_RESULT_BYTES:
-                    raise ParserUnavailable("Parser response exceeds the byte limit")
+                    raise ParserUnavailable(code="parser_invalid_result")
                 raw = bytearray()
                 async for chunk in response.aiter_raw():
                     if len(raw) + len(chunk) > MAX_RESULT_BYTES:
-                        raise ParserUnavailable("Parser response exceeds the byte limit")
+                        raise ParserUnavailable(code="parser_invalid_result")
                     raw.extend(chunk)
                 result = CodeGraphResult.model_validate_json(raw)
                 if not {"schema_version", "extractor_version"} <= result.model_fields_set:
-                    raise ParserUnavailable("Parser omitted its protocol or extractor version")
+                    raise ParserUnavailable(code="parser_invalid_result")
                 result = validate_result(payload, result)
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Parser validation exceeded the deadline")
@@ -136,13 +141,17 @@ def extract(payload: CodeGraphRequest, stopped=lambda: False) -> CodeGraphResult
     payload = CodeGraphRequest.model_validate(payload.model_dump())
     body = payload.model_dump_json().encode()
     if len(body) > MAX_REQUEST_BYTES:
-        raise ValueError("Parser request exceeds the byte limit")
+        raise errors.failure("transport_limit")
     config = settings()
     if not config.code_graph_parser_url or not config.code_graph_token:
         raise ParserUnavailable("Code graph parser is not configured")
     try:
         return asyncio.run(_request(payload, body, config.code_graph_parser_url, config.code_graph_token, stopped))
-    except ExtractionCancelled:
+    except (ExtractionCancelled, errors.GraphError):
         raise
-    except (httpx.HTTPError, TimeoutError, ValueError) as exc:
-        raise ParserUnavailable("Code graph parser failed or returned invalid evidence") from exc
+    except (httpx.TimeoutException, TimeoutError):
+        raise ParserUnavailable(code="parser_timeout") from None
+    except httpx.HTTPError:
+        raise ParserUnavailable() from None
+    except ValueError:
+        raise ParserUnavailable(code="parser_invalid_result") from None

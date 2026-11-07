@@ -15,6 +15,7 @@ from test_ocr import report
 from test_review_flow import new_run
 
 from code_mortis import jobs, native_runner
+from code_mortis.core import file_policy
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import ocr, runner_client
 from code_mortis.models import Job, PullRequest, Repository, ReviewRun
@@ -136,7 +137,7 @@ def test_engine_file_gate_precedes_inference(kind, count, maximum, sensitivity, 
 
     def command(args, root, env, **kwargs):
         assert "--exclude" in args and "--rule" in args
-        assert json.loads(Path(args[args.index("--rule") + 1]).read_text()) == rules
+        assert json.loads(Path(args[args.index("--rule") + 1]).read_text()) == file_policy.review_rules(options)
         background = Path(args[args.index("--background-file") + 1]).read_text()
         assert background == (review_policy.background(options) if kind == "api" else "Project context")
         if "--preview" in args or "preview" in args:

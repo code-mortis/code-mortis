@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from sqlalchemy import select
 
+from code_mortis.core import file_policy
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import clean_text, safe_repo_name, unseal
 from code_mortis.integrations import github, ocr, runner_client
@@ -43,7 +44,7 @@ MANIFESTS = {
     "gemfile", "composer.json", "pom.xml", "build.gradle", "build.gradle.kts", "mix.exs", "pubspec.yaml",
 }
 SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".rb", ".java", ".kt", ".cs", ".cpp", ".c", ".swift", ".ex", ".dart", ".vue", ".svelte"}
-EXCLUDED_DIRS = {".git", ".agents", ".claude", ".codex", ".cursor", ".opencodereview", ".aws", ".ssh", ".azure", ".kube", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage", "generated"}
+EXCLUDED_DIRS = file_policy.EXCLUDED_DIRS
 
 
 class GenerationError(ValueError):
@@ -95,6 +96,8 @@ def job_out(job):
 
 
 def source_kind(path):
+    if file_policy.excluded(path):
+        return None
     parts = PurePosixPath(path.lower()).parts
     if (not parts or path.startswith("/") or any(part in EXCLUDED_DIRS or part in {".", ".."} for part in parts)
         or any(ord(char) < 32 for char in path)):
@@ -107,14 +110,14 @@ def source_kind(path):
         return "readme"
     if name in MANIFESTS:
         return "manifest"
-    if name.endswith((".md", ".rst")):
+    if name.endswith((".md", ".mdx", ".rst", ".txt", ".adoc")):
         return "docs"
     if PurePosixPath(name).suffix in SOURCE_EXTENSIONS:
         return "code"
     return None
 
 
-def collect(repo, env, sha, stopped):
+def collect(repo, env, sha, stopped, *, exclusions=""):
     tree = ocr.git(repo, env, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped)
     candidates = []
     for entry in tree.split("\0"):
@@ -122,7 +125,7 @@ def collect(repo, env, sha, stopped):
             continue
         metadata, path = entry.split("\t", 1)
         mode, kind, _, size = metadata.split()
-        category = source_kind(path)
+        category = None if file_policy.excluded(path, {"exclusions": file_policy.patterns(exclusions)}) else source_kind(path)
         if mode in {"100644", "100755"} and kind == "blob" and category and int(size) <= 64_000:
             candidates.append((category, path))
     candidates.sort(key=lambda item: (item[1].count("/"), item[1]))
@@ -160,7 +163,7 @@ def collect(repo, env, sha, stopped):
     return {"paths": [path for _, path in candidates[:200]], "tree_truncated": len(candidates) > 200, "sources": sources}
 
 
-def context(full_name, branch, token, directory, stopped):
+def context(full_name, branch, token, directory, stopped, *, exclusions=""):
     safe_repo_name(full_name)
     if not isinstance(branch, str) or not branch or len(branch) > 255:
         raise ValueError("GitHub did not return a valid default branch.")
@@ -174,7 +177,7 @@ def context(full_name, branch, token, directory, stopped):
                  "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}"}
     ocr.git(directory, env, "init", "--quiet", stopped=stopped)
     ocr.git(directory, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
-    evidence = collect(directory, env, sha, stopped)
+    evidence = collect(directory, env, sha, stopped, exclusions=exclusions)
     data = {"repository": full_name, "branch": branch, "sha": sha, **evidence}
     # JSON escaping and long filenames also count towards the explicit input bound.
     while len(json.dumps(data, ensure_ascii=False).encode()) > CONTEXT_BYTES and data["paths"]:
@@ -368,7 +371,7 @@ def perform(job_id, attempt):
         repo_path, inference_path = root / "repo", root / "generation"
         repo_path.mkdir()
         inference_path.mkdir()
-        evidence = context(full_name, branch, token, repo_path, stopped)
+        evidence = context(full_name, branch, token, repo_path, stopped, exclusions=repo.settings.get("exclusions", ""))
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.status != "running" or job.attempts != attempt:

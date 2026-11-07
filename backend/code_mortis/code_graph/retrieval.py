@@ -12,10 +12,13 @@ from code_mortis.core.db import transaction
 from code_mortis.models import CodeGraphFile, CodeGraphImport, CodeGraphSnapshot, CodeGraphSymbol
 from code_mortis.schemas.code_graph import (
     EXTRACTOR_VERSION,
-    MAX_FILE_BYTES,
+    CodeGraphLimits,
     GitSha,
     RepositoryPath,
     StrictModel,
+)
+from code_mortis.schemas.code_graph import (
+    MAX_INDEXED_FILE_BYTES as MAX_FILE_BYTES,
 )
 
 MAX_RESULTS = 100
@@ -150,7 +153,8 @@ def sources(row, request, files, response, source_check):
         try:
             if not entry or entry[:2] not in {("100644", "blob"), ("100755", "blob")} or entry[2:] != (file.blob_sha, file.size_bytes):
                 raise ValueError("Missing source")
-            raw = store.read_blob(root, file.blob_sha, file.size_bytes)
+            raw = store.read_blob(root, file.blob_sha, file.size_bytes,
+                                  max_bytes=CodeGraphLimits.model_validate(row.policy.get("limits", {})).max_file_bytes)
             decoded = raw.decode("utf-8")
         except (ValueError, OSError, TimeoutError):
             response["unavailable_sources"].append(path)

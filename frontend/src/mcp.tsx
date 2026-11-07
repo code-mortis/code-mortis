@@ -97,7 +97,7 @@ function ConnectionInstructions({ domain, publicUrl, enabled }: {
   const description = domain === "reviews"
     ? "Read findings, resolve or reopen them, and start or stop reviews."
     : domain === "security" ? "Read and triage findings, manage GitHub issues, and run or stop scans."
-    : "Read indexed definitions, file dependencies, and source at exact commits. Enable code graphs per repository in Project context first. Agents cannot index, run models, or write through this connection.";
+    : "Read indexed definitions, file dependencies, and source at exact commits. Enable code graphs per repository in Code graph settings first. Agents cannot index, run models, or write through this connection.";
   const scopes = domain === "code" ? ["code:read"]
     : [`${domain}:read`, `${domain}:write`, `${domain}:run`, ...(domain === "security" ? ["security:issues"] : [])];
   const endpoint = `${publicUrl.replace(/\/+$/, "")}/mcp/${domain}`;

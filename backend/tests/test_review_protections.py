@@ -122,6 +122,9 @@ def test_older_pinned_ocr_build_cannot_silently_skip_context_guard(monkeypatch):
     with pytest.raises(ValueError, match="context guard"):
         ocr.check_version(Path("/tmp"), {})
     monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-context)", ""))
+    with pytest.raises(ValueError, match="file policy"):
+        ocr.check_version(Path("/tmp"), {})
+    monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-context-scope-v2)", ""))
     ocr.check_version(Path("/tmp"), {})
 
 

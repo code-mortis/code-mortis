@@ -355,7 +355,7 @@ test("explicit indexing, paused and disabled configuration do not admit hidden j
   await expect(page.getByRole("button", { name: "Index selected revision" })).toHaveCount(0);
   state.enabled = false;
   await page.getByRole("button", { name: "Refresh Code" }).click();
-  await expect(page.getByRole("link", { name: "Enable it in Project context" })).toHaveAttribute("href", "/repositories/22/settings?tab=context");
+  await expect(page.getByRole("link", { name: "Enable it in Code graph settings" })).toHaveAttribute("href", "/repositories/22/settings?tab=code-graph");
 });
 
 test("members cannot index; empty and missing source remain explicit", async ({ page }) => {

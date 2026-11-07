@@ -3,7 +3,13 @@ from typing import Literal
 
 from pydantic import Field
 
-from code_mortis.schemas.code_graph import GitSha, StrictModel
+from code_mortis.schemas.code_graph import GitSha, GraphFailure, StrictModel
+
+
+class OversizedGraphFile(StrictModel):
+    path: str
+    size_bytes: int
+    limit_bytes: int
 
 
 class GraphCoverage(StrictModel):
@@ -15,6 +21,7 @@ class GraphCoverage(StrictModel):
     visible_files: int = 0
     complete: bool = False
     reasons: dict[str, int] = Field(default_factory=dict)
+    oversized_files: list[OversizedGraphFile] = Field(default_factory=list, max_length=20)
 
 
 class CodeGraphStatus(StrictModel):
@@ -28,4 +35,5 @@ class CodeGraphStatus(StrictModel):
     checked_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
+    failure: GraphFailure | None = None
     coverage: GraphCoverage | None = None

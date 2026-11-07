@@ -2549,6 +2549,24 @@ export interface components {
             /** End Line */
             end_line: number;
         };
+        /** CodeGraphLimits */
+        CodeGraphLimits: {
+            /**
+             * Max Files
+             * @default 1000
+             */
+            max_files: number;
+            /**
+             * Max File Bytes
+             * @default 1048576
+             */
+            max_file_bytes: number;
+            /**
+             * Max Source Bytes
+             * @default 8388608
+             */
+            max_source_bytes: number;
+        };
         /** CodeGraphStatus */
         CodeGraphStatus: {
             /**
@@ -2584,6 +2602,7 @@ export interface components {
             finished_at?: string | null;
             /** Error */
             error?: string | null;
+            failure?: components["schemas"]["GraphFailure"] | null;
             coverage?: components["schemas"]["GraphCoverage"] | null;
         };
         /** CodeGroup */
@@ -2675,7 +2694,7 @@ export interface components {
             start_byte: number;
             /**
              * End Byte
-             * @default 1048576
+             * @default 4194304
              */
             end_byte: number;
         };
@@ -2883,7 +2902,7 @@ export interface components {
             start_byte: number;
             /**
              * End Byte
-             * @default 1048576
+             * @default 4194304
              */
             end_byte: number;
         };
@@ -3057,6 +3076,8 @@ export interface components {
             reasons?: {
                 [key: string]: number;
             };
+            /** Oversized Files */
+            oversized_files?: components["schemas"]["OversizedGraphFile"][];
         };
         /** GraphCursor */
         GraphCursor: {
@@ -3128,6 +3149,23 @@ export interface components {
              * @default false
              */
             comparison_truncated: boolean;
+        };
+        /** GraphFailure */
+        GraphFailure: {
+            /** Code */
+            code: string;
+            /** Stage */
+            stage: string;
+            /** Message */
+            message: string;
+            /** Recovery */
+            recovery: string;
+            /** Measurements */
+            measurements?: {
+                [key: string]: number;
+            };
+            /** Attempt Reference */
+            attempt_reference?: string | null;
         };
         /** GraphRead */
         GraphRead: {
@@ -3535,6 +3573,15 @@ export interface components {
             /** Current Status */
             current_status?: string | null;
         };
+        /** OversizedGraphFile */
+        OversizedGraphFile: {
+            /** Path */
+            path: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Limit Bytes */
+            limit_bytes: number;
+        };
         /** PRDetail */
         PRDetail: {
             /** Finding Counts */
@@ -3702,6 +3749,7 @@ export interface components {
             enabled: boolean;
             /** Code Graph Enabled */
             code_graph_enabled?: boolean | null;
+            code_graph_limits?: components["schemas"]["CodeGraphLimits"] | null;
             /** Connection Id */
             connection_id?: string | null;
             settings?: components["schemas"]["RepoSettings"];
@@ -3725,6 +3773,7 @@ export interface components {
              * @default false
              */
             code_graph_enabled: boolean;
+            code_graph_limits?: components["schemas"]["CodeGraphLimits"];
             /** Connection Id */
             connection_id: string | null;
             settings: components["schemas"]["RepoSettings"];

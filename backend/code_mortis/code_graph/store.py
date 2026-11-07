@@ -8,10 +8,12 @@ import os
 import re
 import time
 from contextlib import contextmanager
-from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from uuid import UUID
 
+from code_mortis.code_graph import errors
+from code_mortis.code_graph.syntax import LANGUAGES
+from code_mortis.core import file_policy
 from code_mortis.core.config import settings
 from code_mortis.core.security import safe_repo_name
 from code_mortis.integrations import ocr
@@ -20,38 +22,16 @@ from code_mortis.schemas import code_graph as contracts
 
 MAX_STORE_BYTES = 1024 * 1024 * 1024
 MAX_REPOSITORY_BYTES = 256 * 1024 * 1024
-EXCLUDED_DIRS = {
-    ".git", ".agents", ".claude", ".codex", ".cursor", ".opencodereview", ".aws", ".ssh", ".azure", ".kube",
-    "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage", "generated",
-}
-
-
 def policy(repo):
-    exclusions = repo.settings.get("exclusions", "")
-    if not isinstance(exclusions, str) or len(exclusions) > 4000:
-        raise ValueError("Invalid graph file exclusions.")
-    patterns = sorted(set(p.strip() for p in re.split(r"[,\n]", exclusions) if p.strip()))
-    if any(p.startswith("!") for p in patterns):
-        raise ValueError("Graph exclusions accept deny globs, without negation.")
-    return {"version": 1, "exclusions": patterns}
+    return {**file_policy.policy(repo.settings),
+            "limits": contracts.CodeGraphLimits.model_validate(getattr(repo, "code_graph_limits", None) or {}).model_dump()}
 
 
 def policy_digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def excluded(path, rules):
-    parts = PurePosixPath(path.lower()).parts
-    if any(p in EXCLUDED_DIRS or p.startswith(".env") or re.search(r"secret|credential|password|private[-_]?key", p)
-           for p in parts):
-        return True
-    if parts[-1] in {"agents.md", "claude.md", "gemini.md", ".mcp.json", "copilot-instructions.md"}:
-        return True
-    if parts[-1].endswith((".pem", ".key", ".p12", ".pfx", ".lock", ".min.js", ".map")):
-        return True
-    return any(fnmatchcase(path, p) or (p.startswith("**/") and fnmatchcase(path, p[3:]))
-               or path.startswith(p.rstrip("/") + "/") for p in rules["exclusions"])
-
+excluded = file_policy.excluded
 
 @contextmanager
 def locked(*, shared=False):
@@ -92,10 +72,11 @@ def git(root, *args, token=None, stopped=lambda: False, poll=lambda: None):
               "protocol.https.allow": "always", "http.followRedirects": "false", "fetch.recurseSubmodules": "false",
               "core.fsmonitor": "false", "gc.auto": "0", "maintenance.auto": "false", "pack.windowMemory": "32m"}
     flags = [flag for k, v in config.items() for flag in ("-c", f"{k}={v}")]
-    code, output, _ = ocr.command(["git", *flags, *args], root, env, timeout=180,
+    code, output, stderr = ocr.command(["git", *flags, *args], root, env, timeout=180,
                                 stopped=stopped, poll=poll, binary=True)
     if code:
-        raise ValueError("The exact graph Git objects are unavailable; check repository access and retry.")
+        denied = any(marker in stderr.lower() for marker in (b"authentication failed", b"repository not found", b"error: 403", b"error: 401", b"403 forbidden", b"401 unauthorized", b"access denied"))
+        raise errors.failure("git_access_denied" if denied else "git_objects_unavailable", "git_fetch", exit_code=code)
     return output
 
 
@@ -110,7 +91,7 @@ def disk_limit(root):
                 # Git renames temporary packfiles while acquisition is being measured.
                 continue
             if total > limit:
-                raise ValueError("Graph object storage exceeds its configured disk limit.")
+                raise errors.measured("storage_limit", total, limit)
 
 
 def acquire(repository_id, full_name, sha, snapshot_id, token, stopped):
@@ -138,8 +119,8 @@ def acquire(repository_id, full_name, sha, snapshot_id, token, stopped):
 
 def tree(root, sha, stopped=lambda: False):
     entries = git(root, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped).split(b"\0")
-    if len(entries) - 1 > contracts.MAX_FILES:
-        raise ValueError("Graph tree exceeds 1000 files.")
+    if len(entries) - 1 > contracts.MAX_TREE_ENTRIES:
+        raise errors.measured("tree_limit", len(entries) - 1, contracts.MAX_TREE_ENTRIES)
     result = {}
     for entry in filter(None, entries):
         metadata, raw_path = entry.split(b"\t", 1)
@@ -149,8 +130,8 @@ def tree(root, sha, stopped=lambda: False):
     return result
 
 
-def read_blob(root, blob, size, stopped=lambda: False):
-    if size > contracts.MAX_FILE_BYTES:
+def read_blob(root, blob, size, stopped=lambda: False, *, max_bytes=contracts.MAX_FILE_BYTES):
+    if size > max_bytes:
         raise ValueError("Graph source exceeds the file limit.")
     raw = git(root, "cat-file", "blob", blob, stopped=stopped)
     if len(raw) != size or contracts.blob_sha(raw) != blob:
@@ -162,22 +143,30 @@ def request(snapshot, stopped):
     root = directory(snapshot.repository_id)
     if git(root, "rev-parse", reference(snapshot.id), stopped=stopped).strip().decode() != snapshot.commit_sha:
         raise ValueError("Graph source revision is unavailable.")
-    files, total = [], 0
+    limits = contracts.CodeGraphLimits.model_validate(snapshot.policy.get("limits", {}))
+    manifest = []
     for path, (mode, kind, blob, size) in tree(root, snapshot.commit_sha, stopped).items():
         reason = "excluded" if mode not in {"100644", "100755"} or kind != "blob" or excluded(path, snapshot.policy) else None
-        if reason is None and size > contracts.MAX_FILE_BYTES:
+        supported = PurePosixPath(path).suffix in LANGUAGES
+        if reason is None and supported and size > limits.max_file_bytes:
             reason = "file_too_large"
+        manifest.append((path, blob, size, reason, supported))
+    admitted = [item for item in manifest if item[3] is None and item[4]]
+    if len(admitted) > limits.max_files:
+        raise errors.measured("file_count", len(admitted), limits.max_files)
+    total = sum(item[2] for item in admitted)
+    if total > limits.max_source_bytes:
+        raise errors.measured("source_size", total, limits.max_source_bytes)
+    files = []
+    for path, blob, size, reason, supported in manifest:
         content = None
-        if reason is None:
-            total += size
-            if total > contracts.MAX_SOURCE_BYTES:
-                raise ValueError("Graph source exceeds 8 MiB.")
-            content = base64.b64encode(read_blob(root, blob, size, stopped)).decode()
+        if reason is None and supported:
+            content = base64.b64encode(read_blob(root, blob, size, stopped, max_bytes=limits.max_file_bytes)).decode()
         files.append(contracts.CodeGraphSource(path=path, blob_sha=blob, size_bytes=size,
                                               exclusion=reason, content_base64=content))
     return contracts.CodeGraphRequest(repository_id=snapshot.repository_id, commit_sha=snapshot.commit_sha,
                                      extractor_version=snapshot.extractor_version, policy_digest=snapshot.policy_digest,
-                                     files=files)
+                                     limits=limits, files=files)
 
 
 def prune(repository_id, retained):

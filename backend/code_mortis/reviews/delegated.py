@@ -5,6 +5,7 @@ import time
 
 from pydantic import ValidationError
 
+from code_mortis.core import file_policy
 from code_mortis.core.config import settings
 from code_mortis.core.security import digest
 from code_mortis.integrations import ocr, runner_client
@@ -54,10 +55,9 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
     args = ["--repo", str(repo), "--from", base, "--to", head, "--format", "json"]
     if options.get("exclusions"):
         args += ["--exclude", options["exclusions"]]
-    if options.get("rules") is not None:
-        rules = repo.parent / "rules.json"
-        rules.write_text(json.dumps(options["rules"]))
-        args += ["--rule", str(rules)]
+    rules = repo.parent / "rules.json"
+    rules.write_text(json.dumps(file_policy.review_rules(options)))
+    args += ["--rule", str(rules)]
     if options.get("background"):
         background = repo.parent / "background.md"
         background.write_text(options["background"])
@@ -84,6 +84,8 @@ def review(repo, env, base, head, merge_base, connection, options, run_id, stopp
     preview = delegate("preview")
     selected = preview.get("reviewable_files")
     paths = ocr.preview_paths(selected, preview.get("reviewable_count"))
+    paths = [path for path in paths if not file_policy.excluded(path, file_policy.policy(options))]
+    selected = [item for item in selected if item["path"] in paths]
     limited = ocr.file_limit_result(paths, options.get("max_files"))
     if before_analysis:
         before_analysis(limited)

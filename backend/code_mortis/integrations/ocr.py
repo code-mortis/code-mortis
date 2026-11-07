@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from code_mortis.core import file_policy
 from code_mortis.core.config import settings
 from code_mortis.core.security import clean_text, digest, safe_endpoint, safe_repo_name
 from code_mortis.reviews import policy as review_policy
@@ -226,8 +227,8 @@ def configuration(connection: dict, credentials: dict, review_settings: dict, st
 
 def check_version(directory: Path, env: dict):
     code, output, _ = command([settings().ocr_binary, "version"], directory, env, timeout=10)
-    if code or not re.search(rf"\bv{re.escape(settings().ocr_version)}\b", output) or "+cm-context" not in output:
-        raise ValueError(f"The review worker needs Open Code Review (OCR) version {settings().ocr_version} with the Code Mortis context guard. Rebuild and restart the worker image.")
+    if code or not re.search(rf"\bv{re.escape(settings().ocr_version)}\b", output) or "+cm-context-scope-v2" not in output:
+        raise ValueError(f"The review worker needs Open Code Review (OCR) version {settings().ocr_version} with the Code Mortis context guard and file policy. Rebuild and restart the worker image.")
 
 
 def test_connection(connection: dict, credentials: dict) -> str:
@@ -588,10 +589,10 @@ def review(
             background = directory / "background.md"
             background.write_text(policy_background)
             args += ["--background-file", str(background)]
-        if review_settings.get("rules") is not None:
-            rules = directory / "rules.json"
-            rules.write_text(json.dumps(review_settings["rules"]))
-            args += ["--rule", str(rules)]
+        rules = directory / "rules.json"
+        rules.write_text(json.dumps(file_policy.review_rules(review_settings)))
+        env = {**env, "CM_OCR_REVIEW_RULES": str(rules)}
+        args += ["--rule", str(rules)]
         check_version(directory, env)
         limited = None
         credentials.setdefault("redaction_values", []).append(token)
@@ -608,6 +609,7 @@ def review(
             if any(not isinstance(item, dict) or type(item.get("will_review")) is not bool for item in preview["files"]):
                 raise ValueError("The review engine could not determine which files can be reviewed. Check file exclusions and review rules, then start a new review.")
             paths = preview_paths([item for item in preview["files"] if item["will_review"]], preview.get("reviewable_count"))
+            paths = [path for path in paths if not file_policy.excluded(path, file_policy.policy(review_settings))]
             limited = file_limit_result(paths, review_settings.get("max_files"))
             if limited and isinstance(preview.get("excluded_files"), list):
                 limited[1]["excluded_files"] = preview["excluded_files"]
@@ -647,6 +649,8 @@ def review(
             else set()
         )
         for comment in comments:
+            if file_policy.excluded(comment["path"], file_policy.policy(review_settings)):
+                raise ValueError("OCR returned a finding outside the permitted review scope.")
             ref = merge_base if comment["path"] in deleted else head_sha
             source = git(repo, env, "show", f"{ref}:{comment['path']}", stopped=stopped)
             if comment["end_line"] > len(source.splitlines()):

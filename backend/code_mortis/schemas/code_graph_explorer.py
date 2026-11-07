@@ -2,7 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from code_mortis.schemas.code_graph import MAX_FILE_BYTES, GitSha, RepositoryPath, StrictModel
+from code_mortis.schemas.code_graph import MAX_INDEXED_FILE_BYTES as MAX_FILE_BYTES
+from code_mortis.schemas.code_graph import GitSha, RepositoryPath, StrictModel
 from code_mortis.schemas.code_graph_status import GraphCoverage
 
 

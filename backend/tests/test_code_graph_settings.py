@@ -128,6 +128,9 @@ def test_status_actions_require_browser_admin_and_fixed_repo(graph, client, monk
 def test_legacy_mcp_update_cannot_enable_or_schedule_graph(graph, client, monkeypatch):
     monkeypatch.setattr(service.mcp, "current_provenance", lambda: {"grant_id": "reviews-only"})
     assert save(client).status_code == 200
+    changed = client.put("/api/v1/repositories/22", json={"enabled": False, "settings": {"exclusions": "extra/**"}})
+    assert changed.status_code == 200
+    assert changed.json()["settings"]["exclusions"] == "extra/**"
     assert refresh_job() is None
     assert save(client, True).status_code == 422
     assert client.get(BASE).status_code == 422

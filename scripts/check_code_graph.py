@@ -61,8 +61,8 @@ def configurations():
         assert worker["read_only"] and not worker.get("ports")
         stores = [(name, volume) for name, service in services.items() for volume in service.get("volumes", [])
                   if volume.get("source") == "code-graph-data"]
-        assert len(stores) == 1 and stores[0][0] == "code-graph-worker"
-        assert stores[0][1]["target"] == "/var/lib/code-mortis/code-graph" and not stores[0][1].get("read_only")
+        assert {name for name, volume in stores if not volume.get("read_only")} == {"code-graph-worker"}
+        assert all(volume["target"] == "/var/lib/code-mortis/code-graph" for _, volume in stores)
         if base == "compose.yaml":
             coolify = json.loads(command(prefix + ["-f", "compose.coolify.yaml", "--profile", "code-graph", "config", "--format", "json", "--no-env-resolution"]))
             assert coolify["services"]["code-graph-parser"] == parser
@@ -142,6 +142,8 @@ def main():
         assert missing_token.returncode != 0 and "Run upgrade-env" in missing_token.stderr
         report["missing_token_rejected"] = True
         report["fixtures_and_max_source"] = json.loads(command(COMPOSE + ["run", "--rm", "probe"], timeout=60).strip())
+        report["upper_bounds"] = [json.loads(command(COMPOSE + ["run", "--rm", "probe", mode], timeout=130).strip())
+                                  for mode in ("upper_bytes", "upper_files", "upper_combined")]
         peer = command(COMPOSE + ["ps", "-q", "unrelated-peer"]).strip()
         peer_info = json.loads(command(["docker", "inspect", peer]))[0]
         peer_ip = next(iter(peer_info["NetworkSettings"]["Networks"].values()))["IPAddress"]

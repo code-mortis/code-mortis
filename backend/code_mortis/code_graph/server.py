@@ -88,9 +88,9 @@ class ParserApp:
                     if disconnected in done:
                         return
                     if process.returncode != 0:
-                        raise Rejected(422 if process.returncode == 2 else 502)
+                        raise Rejected({2: 422, 3: 500, 4: 507}.get(process.returncode, 502))
                     if not result_path.is_file() or result_path.stat().st_size > MAX_RESULT_BYTES:
-                        raise Rejected(502)
+                        raise Rejected(500)
                     # Keep the slot until delivery finishes, so slow readers cannot accumulate responses.
                     response_started = True
                     await send({"type": "http.response.start", "status": 200,
@@ -106,10 +106,10 @@ class ParserApp:
             await reply(send, 504)
         except Rejected as exc:
             await reply(send, exc.status)
-        except OSError:
+        except OSError as exc:
             if response_started:
                 raise
-            await reply(send, 502)
+            await reply(send, 507 if exc.errno in {28, 122} else 502)
         finally:
             if process is not None and process.returncode is None:
                 with contextlib.suppress(ProcessLookupError):

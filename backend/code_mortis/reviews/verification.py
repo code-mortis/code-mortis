@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import Field, ValidationError
 from sqlalchemy import or_, select
 
+from code_mortis.core import file_policy
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import clean_text
 from code_mortis.integrations import github, ocr, runner_client
@@ -232,6 +233,8 @@ def read_source(repo, env, sha, path, stopped):
 
 def read_requested_source(repo, env, sha, path, options, stopped, *, revision, field):
     ocr.ReviewComment.relative_path(path)
+    if file_policy.excluded(path, file_policy.policy(options)):
+        raise ValueError("This source is excluded by repository policy.")
     try:
         return read_source(repo, env, sha, path, stopped)
     except ValueError as exc:
@@ -257,7 +260,8 @@ def read_requested_source(repo, env, sha, path, options, stopped, *, revision, f
 
 def filter_context(repo, env, sources, options, stopped):
     """Use OCR's exclusions on inert evidence, including Markdown supporting documents."""
-    from code_mortis.security_scans.engine import INSTRUCTION_FILES, PROTECTED
+    sources = {path: source for path, source in sources.items()
+               if not file_policy.excluded(path, file_policy.policy(options))}
 
     with tempfile.TemporaryDirectory(prefix="verify-scope-", dir=repo.parent) as temp:
         root = Path(temp)
@@ -276,26 +280,20 @@ def filter_context(repo, env, sources, options, stopped):
         args = [ocr.settings().ocr_binary, "scan", "--preview", "--repo", str(root), "--format", "json"]
         if options.get("exclusions"):
             args += ["--exclude", options["exclusions"]]
-        if options.get("rules") is not None:
-            rules = root.parent / (root.name + "-rules.json")
-            try:
-                rules.write_text(json.dumps(options["rules"]))
-                args += ["--rule", str(rules)]
-                code, output, _ = ocr.command(args, root, env, stopped=stopped)
-            finally:
-                rules.unlink(missing_ok=True)
-        else:
+        rules = root.parent / (root.name + "-rules.json")
+        try:
+            rules.write_text(json.dumps(file_policy.review_rules(options)))
+            args += ["--rule", str(rules)]
             code, output, _ = ocr.command(args, root, env, stopped=stopped)
+        finally:
+            rules.unlink(missing_ok=True)
         if code:
             raise ValueError("The review engine could not check which evidence files are excluded. Check file exclusions and review rules before starting another review.")
         data = json.loads(output)
-        protected = {part.lower() for part in (*PROTECTED, *INSTRUCTION_FILES)}
         selected = set()
         for item in data.get("files", []):
             path = Path(item["path"])
-            markdown = path.suffix.lower() in {".md", ".markdown"}
-            if markdown and protected.intersection(part.lower() for part in path.parts):
-                continue
+            markdown = path.suffix.lower() in {".md", ".markdown", ".mdx"}
             # OCR checks secrets and user exclusions before rejecting unsupported extensions.
             if item.get("will_review") is True or (markdown and item.get("exclude_reason") == "unsupported_ext"):
                 selected.add(item["path"])
@@ -310,7 +308,6 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     except ValueError:
         ocr.git(repo, fetch_env, "fetch", "--no-tags", "origin", original_sha, stopped=stopped)
     old_path = original["path"]
-    original_source = read_source(repo, env, original_sha, old_path, stopped)
     changes = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--name-status", "-z",
                       original_sha, head_sha, stopped=stopped).rstrip("\0").split("\0")
     current_path, paths, original_paths, index = old_path, set(), {old_path}, 0
@@ -333,15 +330,16 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
         paths.add(current_path)
     if focused:
         paths, original_paths = ({current_path} if current_path else set()), {old_path}
-    if len(paths | original_paths) > 100:
-        raise ValueError("Fix verification needs more than 100 changed source files, exceeding its evidence limit. Review the finding manually.")
     # Apply scope before loading optional changes. An excluded test must not block an unrelated fix
     # or leak into the diff sent to the provider.
     all_paths = paths | original_paths
     selected = filter_context(repo, env, dict.fromkeys(all_paths, "# scope preview\n"), options, stopped)
+    if len(selected) > 100:
+        raise ValueError("Fix verification needs more than 100 eligible source files, exceeding its evidence limit. Review the finding manually.")
     required = {old_path} | ({current_path} if current_path else set())
     if not required.issubset(selected):
         raise ValueError("The finding's original or current source is excluded or unsupported by OCR.")
+    original_source = read_source(repo, env, original_sha, old_path, stopped)
     sources = {"original": {old_path: original_source}, "current": {}}
     if current_path:
         sources["current"][current_path] = read_source(repo, env, head_sha, current_path, stopped)
