@@ -4,7 +4,7 @@ Date: 2026-11-07 (America/Santiago).
 
 Audited baseline: `0cfebd5398ac25c98dcb37d99bb39eda95fcb897` (`docs: add engine replacement plan`). Working tree was clean when the audit began. This audit changes only plans, frozen test fixtures, and test code; it implements no engine or subscription retirement and changes no application runtime.
 
-M0 state: **in progress — five of six checklist items verified**. The feature/removal inventory and deterministic scope baseline are usable. The evaluation protocol is versioned, but actual independently adjudicated pilot cases and the priced/capped live-run resource manifest are missing. The combined sixth item and M0 completion remain unchecked. M1 has not started and its M0 dependency is not silently waived.
+M0 state: **complete — six of six preparation checklist items verified**. The source audit below remains dated at `0cfebd5`; the [pilot completion](ENGINE_PILOT.md) was prepared on clean `9d91f04` (the committed audit), with no intervening runtime changes. Actual synthetic inputs, two nonauthor agent reviews per case, reproducible source hashes, protocol v1.1 and the owner-selected model/spending/resource profile now exist. M1 has not started. Authenticated live behavior, effective runtime ceilings and broader quality evidence remain M2/M5 acceptance gates.
 
 Three GPT-6.1 Sol agents at high reasoning audited PR/OCR, subscription retirement, and security/graph/evaluation in parallel. Each used Graphify for navigation and checked the owning source. The parent reconciled their reports, verified migration-sensitive callsites, and ran the tests below. The local Graphify developer index is not the production code graph.
 
@@ -12,7 +12,7 @@ Three GPT-6.1 Sol agents at high reasoning audited PR/OCR, subscription retireme
 
 No application/runtime source changed between `9277e5f` and the audited HEAD. The intervening changes are ENGINE_PLAN.md/PLAN.md and three test files. The real OCR policy preview moved out of pytest into `ocr_container_smoke.check_file_policy`; PR Code fixtures now use eligible text and explicitly preserve historical evidence when current mandatory exclusions hide source. Do not refer to the removed pytest function as an executable acceptance test.
 
-All feature tables below are source-to-acceptance mappings. A named test is an available acceptance asset, not a claim it was run in this audit. Only this section records newly executed evidence; no new-engine parity or live-provider integration is established.
+All feature tables below are source-to-acceptance mappings. A named test is an available acceptance asset, not a claim it was run in this audit. This section and the subsequent [pilot completion](ENGINE_PILOT.md) record newly executed evidence; no new-engine parity or live-provider integration is established.
 
 | Check | Result | Boundary |
 | --- | --- | --- |
@@ -225,8 +225,8 @@ These decisions define tests needed in M1; no cutover or new behavior is claimed
 
 | ID | Gap / required action | When it must be resolved | Evidence or owner |
 | --- | --- | --- | --- |
-| M0-G1 | Actual pilot case manifest, independent defect/fix/clean labels, reviewer disagreements and family-separated split are absent. Existing deterministic fixtures are not model ground truth. | Before closing M0's final combined checklist item; before model-quality evaluation. | [ENGINE_EVAL_V1.md](ENGINE_EVAL_V1.md), section 2. |
-| M0-G2 | No selected shared model/provider price snapshot, authorized nonzero request/token/USD cap, or full benchmark resource manifest. Current authorization is zero external calls/tokens/USD. | Final M0 live-run manifest remains open; mandatory before the relevant paid run. No M1 implementation was started as an implicit exception. | Evaluation protocol sections 1 and 6. |
+| M0-G1 | Closed for pilot preparation: 12 PR/eight security synthetic cases, controls, candidate pilot split and two nonauthor agent reviews per case; disagreements resolved. | Broader representative/human/external/held-out quality evidence remains M5, not inferred from synthetic cases. | [Pilot artifacts and limitations](ENGINE_PILOT.md). |
+| M0-G2 | Closed for owner/design choices: OpenCode Go / `muse-spark-1.3-contributor`, explicit no aggregate spending cap, public price snapshot, local Docker inventory and selected ceilings. | Saved connection/account binding, exact implemented image/schema/rule/advisory pins and enforced resource observations remain before live M2/M5 runs. | [Profile](scripts/engine_eval/pilot_profile.json); zero inference during preparation. |
 | M1-G1 | New shared-only admission must cover queued jobs, commands/webhooks, stages, summaries/background and scans, plus unknown kinds and delayed retries. | Implement and test in M1 before enabling shared-only cutover. | SUB-01–10 and section 7; current tests establish incumbent behavior only. |
 | M1-G2 | Operational stale-worker fence, full durable cancellation, partial-publication retention, and old native history without runner/profile access are not proven. | M1 cancellation/upgrade exit gate; runtime deletion waits later retirement gate. | Subscription source inspection; existing helper scope and summary retry behavior verified. |
 | M1-G3 | Neutral source/process/exception boundaries must preserve OCR-specific redaction behavior separately, graph lock retry reasons, result fingerprints and legacy report readers. | M1 extraction gate. | OCR inventory; `RunnerBlocked`, `ReviewStopped`, `ocr.command`, saved-review snapshot path. |
@@ -236,7 +236,7 @@ These decisions define tests needed in M1; no cutover or new behavior is claimed
 | M5-G1 | Production-path engine evaluation harness, real-model outcome parity and latency/resource measurements are pending. Old graph experiment failed its rollout gate and used native/custom excerpt tasks. | M5; no speed/quality claims beforehand. | Protocol v1; historical evidence remains separate. |
 | OPS-G1 | `docs/operations.md` still describes a 1,000 tree-entry bound; actual tree guard is 20,000 and indexed-source default is 1,000. Test image Git warns below recommended minimum. | Correct operational documentation/toolchain before release/benchmark acceptance; neither changes policy in M0. | `schemas/code_graph.py`, `store.tree`, container warning. |
 
-The first five M0 items are verified as inventories/contracts, not as completion of the future implementation. The sixth is partially delivered (protocol specification, quality/statistical rules and zero-spend default), but its real corpus and live-run manifest are not frozen. Keep M0 in progress and M1 unstarted. If the owner explicitly elects to stage offline M1 alongside corpus preparation, record that exception; do not silently remove the dependency or pretend paid evaluation is ready.
+All six M0 items are complete as inventories/contracts and pilot preparation. They do not establish completion of the engine implementation, live provider integration or parity. Protocol v1.1 explicitly records the owner’s uncapped aggregate preference and separates M0 planning artifacts from M2/M5 authenticated/effective-runtime preflight. M1 can begin offline with the unresolved M1 acceptance work above; no provider call or runtime retirement has started.
 
 ## 9. Evaluation protocol and handoff
 
@@ -244,4 +244,4 @@ The first five M0 items are verified as inventories/contracts, not as completion
 
 The six-state historical graph experiment and its 306,289 reported subscription tokens cannot establish engine parity or current API cost. Its custom assessment/excerpt path, failed quality gate, limited sample and dated resource experiment are explicitly not reused as proof. M0 makes no claim of improved latency, precision, recall, or complete vulnerability coverage.
 
-Next work to close M0: select and pin actual pilot families, obtain independent adjudication, freeze the split, and prepare the exact shared-provider/configuration/price/resource/cost manifest for the intended run. Then update the final M0 checkbox with concrete artifact identities. M1 implementation should follow the decisions and acceptance gaps above; do not delete OCR/native modules first.
+M0 pilot completion is recorded in [ENGINE_PILOT.md](ENGINE_PILOT.md), including actual case/review/profile artifact identities and reproducible offline checks. Next: implement M1 following the decisions and acceptance gaps above; do not delete OCR/native modules first. No further owner model/budget/host decision is needed for offline M1; saved shared-connection identity/account availability is needed before live testing.

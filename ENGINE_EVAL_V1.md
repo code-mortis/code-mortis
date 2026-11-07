@@ -1,14 +1,14 @@
 # Mortis engine evaluation protocol v1
 
-Protocol: `mortis-engine-eval/v1`.
+Protocol: `mortis-engine-eval/v1.1` (filename retained). Revision 1.1, 2026-11-07: freezes the synthetic pilot and records the owner’s explicit uncapped spending choice and local Docker selection. M0 freezes preparation/design; authenticated transport and effective runtime preflight belong to M2/M5 before live execution.
 
 Frozen design date: 2026-11-07. Source baseline: `0cfebd5398ac25c98dcb37d99bb39eda95fcb897`.
 
-Status: protocol and deterministic scope contract defined; production-path harness, independently adjudicated model-quality corpus, and live-run manifest are pending. This document does not claim that those artifacts exist or that either engine has passed the comparison.
+Status: requirements, scope contract, 20-case synthetic pilot, independent agent adjudication and owner-selected preparation profile are frozen. See [pilot evidence and limitations](ENGINE_PILOT.md). The production-path harness, authenticated model validation, runtime version/resource enforcement and broader representative corpus remain pending; neither engine has passed the comparison.
 
 ## 1. Default execution and authorization
 
-The default is preparation, validation, and replay only: **zero external model requests, zero tokens, and USD 0**. No provider credentials or production history are required for that mode. A live mode must fail before dispatch unless a separate run manifest contains a frozen corpus digest, exact provider/model/configuration, finite request/token/USD caps, a price snapshot, resource limits, and explicit authorization for that run.
+The default is preparation, validation, and replay only: **zero external model requests, zero tokens, and USD 0**. No provider credentials or production history are required for that mode. A live mode must fail before dispatch unless a separate run manifest contains a frozen corpus digest, exact provider/model/configuration, explicit spending policy, a price snapshot, effective resource limits, and authorization for that run. Default spending remains zero. An explicitly recorded owner choice may set aggregate caps to null in `explicit_owner_uncapped` mode; missing fields or an ordinary null budget are never that choice. The owner selected this uncapped mode for the pilot. This preparation does not dispatch requests.
 
 The historical graph experiment's subscription spending authorization does not apply. This protocol authorizes no GitHub publication, issue/thread resolution, real-repository scan, graph opt-in, deployment, or production-history mutation. The harness must use disposable evaluation persistence and disable publishing at the application adapter boundary while exercising the production analysis/validation paths. Check isolation and cost guards with fake providers before allowing live requests.
 
@@ -33,7 +33,7 @@ Development target: 20 PR and ten security cases. Held-out pilot target: 12 PR a
 
 Include clean cases, real high/critical defects, cross-file defects, large changes, documentation/configuration, renames/deletions, sensitive-name source, excluded inputs, unavailable evidence, unsupported formats, graph gaps, stale scanner advisories, and no-supported-target cases. Separately score deterministic reliability/failure injection. The recall denominator contains all eligible adjudicated defects, including ones missed by both engines.
 
-Actual case records, independent adjudication, and split assignments are not supplied by this M0 audit. The [scope fixture](backend/tests/fixtures/engine_scope_v1.json) is a deterministic boundary contract, not this quality corpus.
+The [pilot manifest](scripts/engine_eval/pilot_manifest.json) now pins 12 PR/eight security synthetic cases and their candidate pilot split: 17 quality microcases and three separately scored reliability fixtures. The latter include injected unavailable-source/scanner state and never enter quality precision/recall denominators. [Two nonauthor agent reviews per case and parent adjudication](scripts/engine_eval/reviews/adjudication.json) preserve initial judgments/disagreements and scope amendments; all 40 head/control checks pass. Agent-reviewed synthetic microcases are not human-adjudicated historical defects or a sealed holdout. Source, truth, controls and oracles are separated during export. See [limitations and missing broader strata](ENGINE_PILOT.md#case-inventory). The [scope fixture](backend/tests/fixtures/engine_scope_v1.json) remains a separate deterministic boundary contract.
 
 ## 3. Paired execution
 
@@ -53,7 +53,7 @@ Per workload, report micro precision `TP / (TP + FP)`, micro recall `TP / (TP + 
 
 Aggregate all repetitions without selecting winners. Compute paired Mortis-minus-OCR differences, keeping states and repetitions clustered within independent case/defect family. Freeze one-sided 95% confidence bounds before outputs: family bootstrap with 10,000 resamples and seed `20261107` is the descriptive default. Tiny, no-event, or all-identical samples cannot claim certainty from a degenerate bootstrap; require conservative/exact sensitivity analysis or report the comparison inconclusive. Preserve the method and aggregation when expanding the sample.
 
-Quality acceptance requires no worse point precision/recall and lower confidence bounds at least zero for both quality differences, no confirmed high/critical loss, and no invariant violation. If the evidence cannot establish the claim, the result is inconclusive; add independent cases under the same protocol or a transparently versioned extension. Do not widen tolerance, discard failed attempts, or change scoring after outcomes. A small capped pilot establishes feasibility and failure modes, not statistical parity.
+Quality acceptance requires no worse point precision/recall and lower confidence bounds at least zero for both quality differences, no confirmed high/critical loss, and no invariant violation. If the evidence cannot establish the claim, the result is inconclusive; add independent cases under the same protocol or a transparently versioned extension. Do not widen tolerance, discard failed attempts, or change scoring after outcomes. A small pilot establishes feasibility and failure modes, not statistical parity.
 
 ## 5. Reliability gates
 
@@ -67,13 +67,13 @@ These gates need tests against Mortis in addition to the incumbent evidence in [
 
 ## 6. Cost and resource manifest
 
-Before any live run, replace the zero-call default with an explicitly authorized finite run manifest containing total requests, input/output token ceilings, per-stage/per-case/arm/repetition limits, total token and USD caps, provider/model price snapshot and date, and maximum simultaneous reservations. Account for cache/reasoning/tool charges where applicable. Blank, unlimited, or placeholder values are not a live cap.
+Before any live run, replace the zero-call default with an explicitly selected run manifest containing request/token/USD budget policy, per-stage/per-case/arm/repetition settings, provider/model price snapshot and date, finite request deadlines/retries and maximum simultaneous reservations. Account for cache/reasoning/tool charges where applicable. Finite caps remain supported and enforced when selected. The pilot owner explicitly chose no aggregate caps; [the profile](scripts/engine_eval/pilot_profile.json) records that exception without removing accounting, bounded execution or provider quotas. Unknown/placeholder values are never represented as measured billing or effective resource limits.
 
 Persist attempts and atomically reserve expected input plus permitted output before dispatch. Reconcile actual usage; include repairs, expansion, failures, cancellation, and retries. Unknown usage remains conservatively reserved and stops further spend. Record request IDs, requested/returned usage fields, estimates versus observed billing, and the maximum reservation. Bytes are not tokens, and application controls do not guarantee provider billing behavior.
 
 Freeze deployment image/dependency/platform versions, CPU/memory/swap/PID/disk/tmp ceilings, DB/Redis configuration, concurrency, workload sizes, and overlapping-work schedule. Preserve graph parser/worker isolation and the same declared host ceiling for both arms. Do not reuse an old resource experiment's measurements as the new resource manifest.
 
-The observed M0 test environment was Darwin arm64 with Docker aarch64, 12 CPUs and 5,227,761,664 available bytes. The OCR/Trivy smoke container had no external network or production mounts. This is test-environment evidence, not a chosen benchmark platform or demonstrated production capacity. No paid provider/model, price snapshot, nonzero cap, or full benchmark resource manifest has been selected.
+The observed M0 test environment was Darwin arm64 with Docker aarch64, 12 CPUs and 5,227,761,664 available bytes. The OCR/Trivy smoke container had no external network or production mounts. This is test-environment evidence, not a chosen benchmark platform or demonstrated production capacity. The owner subsequently selected this local Docker target and OpenCode Go / `muse-spark-1.3-contributor`, with no aggregate spending cap. The [dated preparation profile](scripts/engine_eval/pilot_profile.json) pins public prices, incumbent image/service identities and chosen ceilings. Those ceilings still require enforcement and observation before a live benchmark; actual account allowance, returned model version and implementation image/schema/rule hashes remain M2/M5 preflight tasks.
 
 ## 7. Performance reporting
 
@@ -83,6 +83,6 @@ Keep failed/cancelled durations in failure reports; do not discard them or assig
 
 ## 8. Remaining release gates
 
-M0's protocol design is versioned, but its combined ground-truth/cost-manifest checklist item remains open. Before closing it, supply the actual pilot cases, split and independent adjudication records, selected shared-provider configuration, price/cost limits, and reproducible resource manifest. No phase dependency is silently waived by this protocol.
+M0's combined item is complete as requirements/pilot preparation: actual synthetic cases, candidate split, independent agent adjudication, selected shared model, price/spending policy and reproducible preparation/resource profile exist. [ENGINE_PILOT.md](ENGINE_PILOT.md) records the exact boundary and owner's choices. Revision 1.1 makes explicit that runtime-specific pins and authenticated/effective-resource checks occur after implementation in M2/M5; they are not claimed complete in M0.
 
-M1's source-only foundations require no live provider calls. If work is explicitly staged while corpus preparation continues, record that exception in the phase handoff rather than calling all of M0 complete. The implementation harness and fake-provider accounting/isolation checks must pass before paid integration or M5 evaluation. A priced, authorized connection self-test can use its own small manifest; it does not establish corpus quality or authorize the broad pilot.
+M1's source-only foundations require no live provider calls or further owner model/budget/host decisions. Before live integration/evaluation, the implementation harness and fake-provider accounting/isolation checks must pass, bind the saved shared connection and verify its account/model availability, and record effective limits plus all implementation/advisory identities. A connection self-test uses a separate manifest; it does not establish corpus quality or implicitly start the broader evaluation. No live provider behavior, performance gain or feature parity is claimed by M0.

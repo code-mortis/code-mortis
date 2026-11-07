@@ -4,7 +4,7 @@ Date: 2026-11-07
 
 Status: approved implementation roadmap; phase delivery and acceptance remain pending.
 
-M0 audit update (2026-11-07): five of six items are verified at `0cfebd5398ac25c98dcb37d99bb39eda95fcb897`. See [the evidence and migration inventory](ENGINE_M0.md) and [evaluation protocol v1](ENGINE_EVAL_V1.md). The actual independently adjudicated pilot corpus and priced/capped live-run manifest remain pending; M0 is in progress and M1 has not started.
+M0 completion update (2026-11-07): all six preparation items are verified. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), and [frozen pilot and handoff](ENGINE_PILOT.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Live integration/effective resource checks remain M2/M5 gates; M1 has not started.
 
 Source baseline inspected: `9277e5f` (`feat(code-graph): support configurable indexing limits`). Recheck the owning source when starting each phase; this baseline is evidence of inspected behavior, not a promise that the checkout has remained unchanged.
 
@@ -287,7 +287,7 @@ Checklists record verified work only. Existing exclusions/graph functionality is
 | M2 | M1 | Direct shared-provider transports | Protocol contracts pass; actual-provider evidence is separately recorded. |
 | M3 | M2 | PR engine and shared-API graph integration | Complete scope accounting and graph-on/off/unsupported-format checks pass. |
 | M4 | M3 | Full workflow and security parity | Feature matrix passes; no active Mortis path requires OCR. |
-| M5 | M4 | Capped evaluation and failure/resource testing | Quality and reliability gates pass; performance is measured. |
+| M5 | M4 | Budget-policy-controlled evaluation and failure/resource testing | Quality and reliability gates pass; performance is measured. |
 | M6 | M5 | Explicit canary adoption | Representative real reviews/scans complete without blocking defects. |
 | M7 | M6 and rollback window | Mortis default and legacy runtime retirement | No active legacy work; upgrade/recovery pass; history remains readable. |
 
@@ -298,11 +298,11 @@ Checklists record verified work only. Existing exclusions/graph functionality is
 - [x] Inventory all OCR callers, including Git/process helpers, connection testing, background generation, graph indexing, summaries, assessment, verification, and security. [OCR inventory](ENGINE_M0.md#6-ocr-dependency-inventory) includes saved-result snapshot paths, scope previews, common structured transport, and neutral helper imports.
 - [x] Inventory subscription routes, jobs, settings, grants, profile/runtime dependencies, historical readers, and deployment configuration. [Retirement inventory and M1 decisions](ENGINE_M0.md#7-subscription-retirement-inventory-and-m1-decisions) cover indirect MCP/graph dependencies, standalone generation jobs, old-worker fencing, and historical/shared summary retries.
 - [x] Freeze representative scope fixtures under the finalized new exclusions and limits. [Scope v1](backend/tests/fixtures/engine_scope_v1.json) freezes 32 path cases, six graph scenarios, four review gates and graph bounds; [runnable contract](backend/tests/test_engine_scope_contract.py) verifies them. Broader existing scope assets remain listed in [M0 evidence §2](ENGINE_M0.md#2-frozen-scope-contract).
-- [ ] Version the evaluation protocol, independent ground truth, cost limits, quality gates, and resource conditions before model calls. [Protocol v1](ENGINE_EVAL_V1.md) defines the method, quality gates and zero-call/zero-token/USD-0 default. Actual independently adjudicated pilot cases/splits, selected shared model and price snapshot, finite live-run caps, and reproducible benchmark resource manifest remain open. No paid call was made or authorized by this audit.
+- [x] Version the evaluation protocol, independent ground truth, spending policy, quality gates, and resource conditions before model calls. [Protocol v1.1](ENGINE_EVAL_V1.md) and [pilot handoff](ENGINE_PILOT.md) freeze 12 PR/eight security synthetic cases, two nonauthor agent reviews per case, 40 head/control checks, deterministic source identities and the [owner-selected profile](scripts/engine_eval/pilot_profile.json). The owner explicitly chose no aggregate cap; accounting and bounded execution remain. Runtime image/schema/rule pins, account binding and effective-resource checks are M2/M5 preflight, not claimed completed. No external inference ran.
 
 Verification: 1,034 baseline tests and 278 final scope/PR Code tests passed (1,200 distinct cases; overlaps counted once), plus pinned OCR/local-provider and synthetic Trivy container checks and changed-test Ruff. The Trivy check explicitly had missing/stale vulnerability data; it verifies secret/misconfiguration/redaction/isolation and honest partial coverage, not complete dependency vulnerability detection. [Exact commands, limits and gaps](ENGINE_M0.md#1-baseline-and-executed-evidence).
 
-M1 handoff requirements are recorded in [M0 §8](ENGINE_M0.md#8-gaps-and-phase-gates). M0 remains in progress; its final item is not marked complete merely because protocol design and deterministic fixtures exist. M1/runtime retirement has not started.
+M1 handoff requirements are recorded in [M0 §8](ENGINE_M0.md#8-gaps-and-phase-gates). M0 preparation is complete; [pilot limitations and live prerequisites](ENGINE_PILOT.md) remain explicit. M1/runtime retirement has not started.
 
 Exit: no unmapped retained capability or ambiguous intentional removal; comparison cannot obtain an apparent speedup by analyzing less source.
 
@@ -325,7 +325,7 @@ Exit: authorization, scope, budgets, restart/cancellation, and history preservat
 - [ ] Preserve discovery, connection tests, headers, custom endpoints, tool support, and selected-model behavior.
 - [ ] Validate malformed responses, refusals, partial streams, rate limits, auth/quota failures, timeouts, cancellation, and unknown usage.
 - [ ] Verify atomic admission across concurrent requests and independent stage budgets.
-- [ ] Record actual-provider checks separately from mocked protocol fixtures, with explicit consumption caps.
+- [ ] Record actual-provider checks separately from mocked protocol fixtures, with an explicit consumption policy (finite caps, or recorded owner uncapped mode).
 
 Exit: no unsupported existing shared-connection feature and no silent fallback; actual integration gaps remain visible until verified.
 
@@ -353,7 +353,7 @@ Exit: the full retained-feature matrix passes. Subscription UI/runtime removal c
 
 ### M5 — Quality, reliability, and performance
 
-- [ ] Run the capped pilot before broad evaluation and retain all failed attempts/consumption.
+- [ ] Run the explicitly configured pilot before broad evaluation and retain all failed attempts/consumption.
 - [ ] Freeze held-out cases and adjudication before results are inspected.
 - [ ] Run paired comparisons through production code paths with identical revisions, eligible scope, models, and budgets.
 - [ ] Evaluate graph-on/off separately and preserve its opt-in boundary.
@@ -387,9 +387,9 @@ Exit: all required work is complete; retirement is not declared merely because t
 
 ## 15. Evaluation and acceptance protocol
 
-Start with a capped pilot of 12 PR cases and eight security cases. Keep development fixtures separate; the initial development corpus can use 20 PR cases and ten security cases. Do not tune on the held-out evaluation set.
+Start with the frozen pilot of 12 PR cases and eight security cases under its explicit spending policy. The owner selected no aggregate cap; preparation remains offline. Keep development fixtures separate; the initial development corpus can use 20 PR cases and ten security cases. Do not tune on the held-out evaluation set.
 
-The broader target is 100 PR cases and 40 security cases, with three paired repetitions where practical. Both engines use identical pinned revisions, finalized exclusions, eligible scope, selected models, settings, and resource conditions. Record cache state and source manifests. Set explicit token/spending caps before live execution; preparing the harness does not authorize uncapped calls.
+The broader target is 100 PR cases and 40 security cases, with three paired repetitions where practical. Both engines use identical pinned revisions, finalized exclusions, eligible scope, selected models, settings, and resource conditions. Record cache state and source manifests. Set explicit token/spending policy before live execution; finite caps are the default unless the owner explicitly selects uncapped mode, as recorded for this pilot. Preparing the harness does not start live calls.
 
 Comparison runs must never publish GitHub comments/issues, change resolution, or write into production finding history. Preserve failed attempts and their usage rather than rerunning them out of the accounting.
 
@@ -445,7 +445,7 @@ For each completed phase, append a dated record containing the source revision, 
 
 | Phase | State | Evidence |
 | --- | --- | --- |
-| M0 | In progress — 5/6 verified | [2026-11-07 audit](ENGINE_M0.md): source/acceptance maps, OCR/subscription inventory, frozen scope and 1,200 distinct passing pytest cases. [Protocol v1](ENGINE_EVAL_V1.md) exists; actual adjudicated quality corpus and live-run manifest pending. |
+| M0 | Complete — 6/6 preparation items | [Source audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [20-case synthetic pilot, adjudication and owner-selected profile](ENGINE_PILOT.md). Offline fixture/export checks pass; live behavior and broader quality acceptance are pending. |
 | M1 | Not started | Pending |
 | M2 | Not started | Pending |
 | M3 | Not started | Pending |
@@ -454,4 +454,4 @@ For each completed phase, append a dated record containing the source revision, 
 | M6 | Not started | Pending |
 | M7 | Not started | Pending |
 
-Continue M0 by closing the remaining evaluation-corpus/run-manifest item; see ENGINE_M0.md for verified foundations, concrete M1 decisions, and unresolved gates. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and the owning source before changes. Preserve the shared-only target, current exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration, and all remaining product features. Do not start live comparisons until their explicit consumption cap and evaluation protocol are set. Do not mark a phase complete from mocked integration evidence alone.
+Start M1 using ENGINE_M0.md for verified foundations, concrete migration decisions and acceptance gaps, and ENGINE_PILOT.md for the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, satisfy the selected spending policy and M2/M5 runtime/account/resource preflight. Do not mark implementation or live integration complete from mocked evidence alone.
