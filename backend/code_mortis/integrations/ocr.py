@@ -72,7 +72,9 @@ def command(
     timeout: int | None = 60,
     stopped: Callable[[], bool] = lambda: False,
     poll: Callable[[], None] = lambda: None,
-) -> tuple[int, str, str]:
+    *,
+    binary: bool = False,
+) -> tuple[int, str | bytes, str | bytes]:
     if args and args[0] == settings().ocr_binary and any(part in {"review", "scan"} for part in args[1:2]):
         env = {**env, "CM_OCR_REDACTION_FILE": str(Path.home() / ".opencodereview" / "redaction.json")}
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
@@ -95,15 +97,17 @@ def command(
                 if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                     raise ValueError("Review output exceeded the 20 MB safety limit.")
                 poll()
-                time.sleep(0.2)
+                try:
+                    process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
             output.seek(0)
             errors.seek(0)
             if os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > MAX_OUTPUT:
                 raise ValueError("Review output exceeded the 20 MB safety limit.")
-            return (
-                process.returncode,
-                output.read(MAX_OUTPUT).decode("utf-8", "replace"),
-                errors.read(MAX_OUTPUT).decode("utf-8", "replace"),
+            stdout, stderr = output.read(MAX_OUTPUT), errors.read(MAX_OUTPUT)
+            return (process.returncode, stdout, stderr) if binary else (
+                process.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace"),
             )
         finally:
             if process.poll() is None:
@@ -478,6 +482,7 @@ def review(
     saved_review: tuple | None = None,
     after_review: Callable | None = None,
     before_analysis: Callable | None = None,
+    graph_options: dict | None = None,
 ) -> tuple[str, dict, list[dict]]:
     deadline = time.monotonic() + review_settings["timeout_seconds"] if review_settings["timeout_seconds"] is not None else None
     cancelled = stopped
@@ -550,6 +555,7 @@ def review(
                 progress,
                 checkpoint or {},
                 before_analysis=before_analysis, credentials={**credentials, "redaction_values": [*credentials.get("redaction_values", []), token]},
+                graph_options=graph_options,
             ))
         from code_mortis.reviews.context import prepare_ocr_redaction
 
@@ -620,6 +626,10 @@ def review(
             return complete(limited)
         secrets = (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values())
         status, report, comments = parse_report(output, code, secrets)
+        if graph_options:
+            report["code_graph"] = {"version": graph_options["version"], "reason": "unsupported_adapter",
+                                    "detail": "OCR analysis has no bounded per-file optional-context hook; "
+                                              "graph discovery remains available during assessment and verification."}
         deleted = (
             set(
                 git(

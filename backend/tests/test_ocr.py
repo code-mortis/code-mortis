@@ -191,7 +191,8 @@ def test_endpoints_reject_credentials_and_metadata(monkeypatch):
         safe_endpoint("https://metadata.example")
 
 
-def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_path, monkeypatch):
+@pytest.mark.parametrize("graph_enabled", [False, True])
+def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_path, monkeypatch, graph_enabled):
     from contextlib import nullcontext
 
     monkeypatch.setattr(settings(), "work_dir", tmp_path)
@@ -223,12 +224,14 @@ def test_review_fetch_credentials_need_no_executable_and_do_not_reach_ocr(tmp_pa
 
     monkeypatch.setattr(ocr, "git", git)
     monkeypatch.setattr(ocr, "command", model_command)
-    state, _, _ = ocr.review(
+    state, saved, _ = ocr.review(
         "owner/repo", 1, base, head, {}, {},
         {"effort": "low", "concurrency": 1, "token_budget": 1000, "timeout_seconds": 60},
         "installation-secret", lambda: False,
+        graph_options={"version": "graph-native/v1"} if graph_enabled else None,
     )
     assert state == "completed" and len(fetches) == 1
+    assert saved.get("code_graph", {}).get("reason") == ("unsupported_adapter" if graph_enabled else None)
 
 
 def test_provider_probe_does_not_claim_unverified_tools(monkeypatch, tmp_path):

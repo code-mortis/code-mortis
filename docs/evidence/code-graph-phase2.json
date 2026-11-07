@@ -1,0 +1,247 @@
+{
+  "date": "2026-10-26",
+  "implemented": [
+    "2A",
+    "2B",
+    "2C"
+  ],
+  "phase2_complete": true,
+  "remaining": "No remaining Phase 2 experiment calls. Broader rollout requires a separately versioned quality/retrieval evaluation; Phase 3 is not started.",
+  "checks": {
+    "backend_full": {
+      "passed": 2879,
+      "warnings": 637,
+      "seconds": 656.06
+    },
+    "ocr_boundary_followup": 2,
+    "frontend_graph_checks": 8,
+    "frontend_build": "passed",
+    "ruff": "passed",
+    "impeccable_static_findings": 0,
+    "native_startup_smoke_without_inference": "passed at 2A",
+    "quality_citation_scorer_self_check": "passed without inference",
+    "graphify": {
+      "ast_refresh": "passed",
+      "semantic_documents": 7,
+      "final_nodes": 4319,
+      "final_edges": 16265,
+      "communities": 214,
+      "existing_warnings": [
+        "settings.tsx partial extraction",
+        "zero-node JSON artifacts"
+      ]
+    },
+    "quality_checkpoint_unittests": 4,
+    "quality_frozen_and_sanitized_hashes": "passed; standard redaction changes one prose line in each API-token case without changing line counts",
+    "quality_followup_graphify": {
+      "semantic_documents": 6,
+      "semantic_nodes": 243,
+      "semantic_relationships": 376,
+      "final_nodes": 4338,
+      "final_edges": 16300,
+      "communities": 221,
+      "source_hashes_caches_manifests": "verified",
+      "existing_warnings": [
+        "settings.tsx partial extraction",
+        "zero-node JSON artifacts"
+      ]
+    }
+  },
+  "restart": {
+    "before": {
+      "active": {
+        "verification@017c1ae28c85": 0,
+        "sync@ce1b2ea3cff8": 0,
+        "reviews@96332c5484cb": 0
+      },
+      "reserved": {
+        "verification@017c1ae28c85": 0,
+        "sync@ce1b2ea3cff8": 0,
+        "reviews@96332c5484cb": 0
+      },
+      "counts": {
+        "users": 1,
+        "repositories": 6,
+        "connections": 4,
+        "review_runs": 180,
+        "findings": 354,
+        "occurrences": 377,
+        "security_scans": 31,
+        "code_graph_repositories": 1,
+        "code_graph_snapshots": 1,
+        "code_graph_files": 392,
+        "code_graph_symbols": 2999,
+        "code_graph_imports": 2124
+      }
+    },
+    "after": {
+      "queues": {
+        "sync@a06a48bb67a0": [
+          "events",
+          "sync"
+        ],
+        "graph@cabefd6fd064": [
+          "code-graph"
+        ],
+        "security@5100d423627b": [
+          "security"
+        ],
+        "verification@e4bb8d95cb64": [
+          "verification"
+        ],
+        "reviews@5b952da693ef": [
+          "reviews"
+        ],
+        "summaries@071e2581cde5": [
+          "summaries"
+        ]
+      },
+      "counts": {
+        "users": 1,
+        "repositories": 6,
+        "connections": 4,
+        "review_runs": 180,
+        "findings": 354,
+        "occurrences": 377,
+        "security_scans": 31,
+        "code_graph_repositories": 1,
+        "code_graph_snapshots": 1,
+        "code_graph_files": 392,
+        "code_graph_symbols": 2999,
+        "code_graph_imports": 2124
+      },
+      "readiness": {
+        "status": "ready"
+      }
+    },
+    "recreated": [
+      "review-worker",
+      "verification-worker",
+      "sync-worker",
+      "scheduler"
+    ],
+    "application_records_preserved": true
+  },
+  "quality": {
+    "corpus": "code-graph-phase2-corpus.json",
+    "results": "code-graph-phase2-quality.json",
+    "analysis": "code-graph-phase2-quality-analysis.json",
+    "native_invocations": 20,
+    "completed_results": 18,
+    "expected_results": 18,
+    "reported_tokens": 306289,
+    "authorization": "120000 total, then 280000, then 340000 and at most 20 invocations explicitly authorized",
+    "native_budget_is_hard_cap": false,
+    "benefit_established": false,
+    "citation_accuracy_gate_passed": false,
+    "complete_matrix": true
+  },
+  "resources": "code-graph-phase2-overlap.json",
+  "not_performed": [
+    "commit",
+    "push",
+    "production deployment",
+    "additional repository activation"
+  ],
+  "services_running": 14,
+  "quality_followup_health": {
+    "verified_at": "2026-10-27T00:24:50.271683+00:00",
+    "counts": {
+      "users": 1,
+      "repositories": 6,
+      "connections": 4,
+      "review_runs": 180,
+      "findings": 354,
+      "occurrences": 377,
+      "security_scans": 31,
+      "code_graph_repositories": 1,
+      "code_graph_snapshots": 1,
+      "code_graph_files": 392,
+      "code_graph_symbols": 2999,
+      "code_graph_imports": 2124
+    },
+    "workers": {
+      "verification@e4bb8d95cb64": {
+        "ok": "pong"
+      },
+      "summaries@071e2581cde5": {
+        "ok": "pong"
+      },
+      "sync@a06a48bb67a0": {
+        "ok": "pong"
+      },
+      "graph@cabefd6fd064": {
+        "ok": "pong"
+      },
+      "security@5100d423627b": {
+        "ok": "pong"
+      },
+      "reviews@5b952da693ef": {
+        "ok": "pong"
+      }
+    },
+    "readiness": {
+      "status": "ready"
+    },
+    "services": {
+      "api": {
+        "state": "running",
+        "health": "healthy"
+      },
+      "code-graph-parser": {
+        "state": "running",
+        "health": "healthy"
+      },
+      "code-graph-worker": {
+        "state": "running",
+        "health": ""
+      },
+      "frontend": {
+        "state": "running",
+        "health": ""
+      },
+      "postgres": {
+        "state": "running",
+        "health": "healthy"
+      },
+      "redis": {
+        "state": "running",
+        "health": "healthy"
+      },
+      "relay": {
+        "state": "running",
+        "health": ""
+      },
+      "review-worker": {
+        "state": "running",
+        "health": ""
+      },
+      "runner": {
+        "state": "running",
+        "health": ""
+      },
+      "scheduler": {
+        "state": "running",
+        "health": ""
+      },
+      "security-worker": {
+        "state": "running",
+        "health": ""
+      },
+      "summary-worker": {
+        "state": "running",
+        "health": ""
+      },
+      "sync-worker": {
+        "state": "running",
+        "health": ""
+      },
+      "verification-worker": {
+        "state": "running",
+        "health": ""
+      }
+    }
+  },
+  "completion_scope": "Local implementation and frozen evaluation, not broader-rollout acceptance",
+  "rollout_gate_passed": false
+}

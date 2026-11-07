@@ -112,12 +112,14 @@ export function Loading() {
 export function Empty({
   title,
   children,
+  className,
 }: {
   title: string;
   children?: ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="rounded-lg border border-dashed px-6 py-14 text-center">
+    <div className={cn("rounded-lg border border-dashed px-6 py-14 text-center", className)}>
       <h2 className="text-lg font-medium">{title}</h2>
       <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
         {children}

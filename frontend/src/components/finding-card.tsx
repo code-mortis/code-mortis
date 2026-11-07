@@ -16,7 +16,7 @@ export function FindingCard({ evidence, state, onClick }: {
 }) {
   const path = String(evidence.path ?? "Path not recorded");
   const slash = path.lastIndexOf("/");
-  return <button type="button" data-slot="finding-card" onClick={onClick}
+  return <button type="button" data-slot="finding-card" aria-haspopup="dialog" onClick={onClick}
     className="group grid w-full min-w-0 gap-x-4 gap-y-1.5 bg-card px-4 py-3 text-left text-card-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
     <span className="line-clamp-2 min-w-0 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]">{String(evidence.content ?? "Finding evidence").replaceAll(/[*`#]/g, "")}</span>
     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground sm:col-start-1 sm:flex-nowrap">

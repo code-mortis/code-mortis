@@ -345,7 +345,7 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
 
 
 def check_context_size(context, options):
-    size = len(json.dumps(context).encode())
+    size = len(json.dumps({key: value for key, value in context.items() if key != "code_graph"}).encode())
     limit = 1_500_000
     if size > limit:
         raise ValueError(f"Assessment evidence requires {size:,} bytes; context limit is {limit:,} bytes. "
@@ -570,6 +570,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             return run, rows, previous, history_key, budget, usage_known
 
     def assess(row, run, previous, history_key, budget, usage_known, context=None):
+        from code_mortis.reviews import graph_context
+
         identity, snapshot = row.id, dict(row.snapshot)
         attempt_id = "assess-" + identity + (f"-retry-{len(row.attempts)}" if row.attempts else "")
         usage = {"tokens": 0}
@@ -592,6 +594,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                     raise ocr.ReviewStopped("The assessment stopped because the review was cancelled, replaced by a newer run, or reached its time limit. Check the review outcome.")
                 allowance = None if budget is None else budget - consumed
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
+                context = graph_context.discovery(
+                    context, run.config.get("code_graph"), repo_path, env, options, credentials, stopped,
+                    connection, instructions, output_schema(context),
+                )
                 request_context = review_context.sanitize(
                     {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
                 check_context_size(request_context, options)

@@ -31,7 +31,7 @@ def finding_detail(finding_id: str, db: DB, user: USER):
         ],
         verifications=[VerificationOut.model_validate(row) for row in db.scalars(
             select(FindingVerification).where(FindingVerification.finding_id == finding.id)
-            .order_by(FindingVerification.created_at)
+            .order_by(FindingVerification.created_at.desc(), FindingVerification.id.desc())
         )],
     )
 

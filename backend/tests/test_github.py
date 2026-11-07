@@ -21,7 +21,7 @@ def test_conditional_get_revalidates_and_does_not_share_mutated_results(monkeypa
         httpx.Response(200, headers={"ETag": '"second"'}, json={"permissions": {"push": False}}),
         httpx.Response(304),
     ])
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     path = "/repos/team/project"
     first = github.request("GET", path, "user-token")
     first["permissions"]["push"] = False
@@ -40,7 +40,7 @@ def test_conditional_get_never_falls_back_to_cached_access_on_error(monkeypatch,
         httpx.Response(status, headers={"Retry-After": "60"}),
         httpx.Response(200, json={"permissions": {"pull": False}}),
     ])
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     github.request("GET", "/repos/team/project", "user-token")
     with pytest.raises(github.GitHubError) as caught:
         github.request("GET", "/repos/team/project", "user-token")
@@ -51,7 +51,7 @@ def test_conditional_get_never_falls_back_to_cached_access_on_error(monkeypatch,
 
 def test_conditional_get_is_scoped_to_token_and_url(monkeypatch):
     request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     for path, token in [("/repos/team/a", "one"), ("/repos/team/a", "two"), ("/repos/team/b", "one")]:
         github.request("GET", path, token)
     assert all("If-None-Match" not in call.kwargs["headers"] for call in request.call_args_list)
@@ -63,7 +63,7 @@ def test_conditional_get_still_rejects_revoked_write_permission(monkeypatch):
         httpx.Response(304),
         httpx.Response(200, headers={"ETag": '"read"'}, json={"permissions": {"pull": True, "push": False}}),
     ])
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github, "user_token", lambda *_: "user-token")
     user = User(id=7)
     github.authorize_repo(None, user, "team/project", write=True)
@@ -79,7 +79,7 @@ def test_conditional_get_still_rejects_revoked_write_permission(monkeypatch):
 ])
 def test_conditional_get_skips_responses_without_etags_or_over_the_size_limit(monkeypatch, response):
     request = Mock(return_value=response)
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     for _ in range(2):
         github.request("GET", "/repos/team/project", "user-token")
     assert not github._get_cache
@@ -89,7 +89,7 @@ def test_conditional_get_skips_responses_without_etags_or_over_the_size_limit(mo
 @pytest.mark.parametrize("kwargs", [{"params": {"page": 2}}, {"headers": {"Accept": "custom"}}])
 def test_conditional_get_does_not_reuse_a_different_request_variant(monkeypatch, kwargs):
     request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     github.request("GET", "/repos/team/a", "token")
     github.request("GET", "/repos/team/a", "token", **kwargs)
     assert "If-None-Match" not in request.call_args.kwargs["headers"]
@@ -97,7 +97,7 @@ def test_conditional_get_does_not_reuse_a_different_request_variant(monkeypatch,
 
 def test_conditional_get_cache_is_bounded(monkeypatch):
     request = Mock(return_value=httpx.Response(200, headers={"ETag": '"one"'}, json={"id": 1}))
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     for index in range(130):
         github.request("GET", f"/repos/team/{index}", "token")
     assert len(github._get_cache) == 128
@@ -120,7 +120,7 @@ def test_conditional_get_cache_is_bounded(monkeypatch):
 def test_get_retries_transient_failure_with_the_same_request(monkeypatch, method, failure):
     request = Mock(side_effect=[failure, httpx.Response(200, json={"number": 3})])
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     assert github.request(
@@ -146,7 +146,7 @@ def test_get_preserves_transport_cause_after_retry(monkeypatch):
     failure = httpx.RemoteProtocolError("private-provider-key")
     request = Mock(side_effect=failure)
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -163,7 +163,7 @@ def test_get_preserves_last_http_failure_after_retry(monkeypatch):
         httpx.Response(503), httpx.Response(502, json={"message": "private-provider-key"}),
     ])
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -179,7 +179,7 @@ def test_get_preserves_last_http_failure_after_retry(monkeypatch):
 def test_get_defers_to_retry_after_without_sleeping(monkeypatch, retry_after, delay):
     request = Mock(return_value=httpx.Response(503, headers={"Retry-After": retry_after}))
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -194,7 +194,7 @@ def test_get_defers_to_retry_after_without_sleeping(monkeypatch, retry_after, de
 def test_get_does_not_retry_other_http_errors(monkeypatch, status):
     request = Mock(return_value=httpx.Response(status))
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -210,7 +210,7 @@ def test_get_does_not_retry_other_http_errors(monkeypatch, status):
 def test_other_methods_are_not_replayed(monkeypatch, method, failure):
     request = Mock(side_effect=[failure])
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -225,7 +225,7 @@ def test_other_methods_are_not_replayed(monkeypatch, method, failure):
 def test_get_does_not_retry_other_httpx_errors(monkeypatch, failure):
     request = Mock(side_effect=failure)
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     with pytest.raises(github.GitHubError) as caught:
@@ -240,10 +240,88 @@ def test_get_does_not_retry_other_httpx_errors(monkeypatch, failure):
 def test_successful_get_does_not_retry(monkeypatch, response, result):
     request = Mock(return_value=response)
     sleep = Mock()
-    monkeypatch.setattr(github.httpx, "request", request)
+    monkeypatch.setattr(github.http_client(), "request", request)
     monkeypatch.setattr(github.time, "sleep", sleep)
 
     assert github.request("GET", "/repos/team/project/pulls/3", "installation-token") == result
 
     request.assert_called_once()
     sleep.assert_not_called()
+
+
+def test_pool_reuses_connections_without_sharing_request_identity(monkeypatch):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    observed = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            observed.append((self.client_address[1], self.headers.get("Authorization"), self.headers.get("Cookie")))
+            body = json.dumps({"auth": self.headers.get("Authorization")}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie", "identity=private; Path=/")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    github.close_http_client()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(github, "API", f"http://127.0.0.1:{server.server_port}")
+    try:
+        client = github.http_client()
+        assert github.request("GET", "/a", "alice") == {"auth": "Bearer alice"}
+        assert github.request("GET", "/b", "bob", max_response_bytes=100) == {"auth": "Bearer bob"}
+        assert observed[0][0] == observed[1][0]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda i: github.request("GET", "/c", str(i)), range(12)))
+        assert results == [{"auth": f"Bearer {i}"} for i in range(12)]
+        assert all(cookie is None for _, _, cookie in observed)
+        assert not list(client.cookies.jar)
+        github.close_http_client()
+        assert client.is_closed and github.http_client() is not client
+    finally:
+        github.close_http_client()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_pool_is_reset_after_fork():
+    import multiprocessing
+    import os
+
+    if not hasattr(os, "fork"):
+        pytest.skip("Requires fork")
+    parent_client = github.http_client()
+    context = multiprocessing.get_context("fork")
+    result = context.Queue()
+
+    def child():
+        result.put(github._client is None)
+
+    process = context.Process(target=child)
+    process.start()
+    process.join(5)
+    assert process.exitcode == 0 and result.get(timeout=1)
+    assert github.http_client() is parent_client and not parent_client.is_closed
+    result.close()
+
+
+def test_api_lifespan_closes_github_pool():
+    from fastapi.testclient import TestClient
+
+    from code_mortis.main import app
+
+    with TestClient(app):
+        pooled = github.http_client()
+    assert pooled.is_closed

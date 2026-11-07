@@ -1,0 +1,1282 @@
+{
+  "samples": [
+    {
+      "iteration": 0,
+      "mode": "cold",
+      "view": "diff",
+      "ms": 2405.31,
+      "bytes": 19182,
+      "sql_count": 33,
+      "sql_ms": 18.53,
+      "comparison_hits": 0,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 8.35,
+          "fresh": false
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 626.95,
+          "fresh": true
+        },
+        {
+          "stage": "github.request",
+          "ms": 489.28,
+          "kind": "installation_token"
+        },
+        {
+          "stage": "github.request",
+          "ms": 788.31,
+          "kind": "compare"
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.38
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 0.99
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.04
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 3.67
+        },
+        {
+          "stage": "github.request",
+          "ms": 387.76,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 391.5,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 7.44
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "mode": "initial",
+      "view": "dependencies",
+      "ms": 888.24,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 37.75,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 3.67,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 415.74,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 420.92,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 5.18
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 33.58
+        },
+        {
+          "stage": "github.request",
+          "ms": 371.92,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 374.94,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 4.16
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "mode": "initial",
+      "view": "definitions",
+      "ms": 872.01,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 12.53,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.87,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 395.47,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 398.68,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 2.26
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 12.13
+        },
+        {
+          "stage": "github.request",
+          "ms": 402.3,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 407.43,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.56
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "mode": "initial",
+      "view": "source",
+      "ms": 875.72,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 12.36,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.39,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 379.84,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 385.15,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 1.08
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 1.82
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.22
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 17.18
+        },
+        {
+          "stage": "github.request",
+          "ms": 426.77,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 430.36,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.29
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "mode": "warm",
+      "view": "diff",
+      "ms": 821.74,
+      "bytes": 19182,
+      "sql_count": 32,
+      "sql_ms": 11.57,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.85,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 381.99,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 386.99,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.19
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 0.66
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.04
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 1.74
+        },
+        {
+          "stage": "github.request",
+          "ms": 373.37,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 378.35,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 4.53
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "mode": "warm",
+      "view": "dependencies",
+      "ms": 923.23,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 30.99,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.37,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 400.54,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 406.28,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 4.1
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 30.74
+        },
+        {
+          "stage": "github.request",
+          "ms": 434.07,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 440.82,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.91
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "mode": "warm",
+      "view": "definitions",
+      "ms": 820.16,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 12.73,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.72,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 371.28,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 376.22,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 2.9
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 8.55
+        },
+        {
+          "stage": "github.request",
+          "ms": 375.78,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 379.91,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.23
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "mode": "warm",
+      "view": "source",
+      "ms": 834.24,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 13.93,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.65,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 366.25,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 372.89,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.48
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 1.64
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.15
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 19.98
+        },
+        {
+          "stage": "github.request",
+          "ms": 376.99,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 380.5,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.5
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "mode": "warm",
+      "view": "diff",
+      "ms": 1134.34,
+      "bytes": 19182,
+      "sql_count": 32,
+      "sql_ms": 15.46,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.99,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 695.34,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 699.25,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 6.13
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.09
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.06
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 2.6
+        },
+        {
+          "stage": "github.request",
+          "ms": 362.22,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 367.29,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.11
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "mode": "warm",
+      "view": "dependencies",
+      "ms": 912.05,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 32.17,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.66,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 420.83,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 428.53,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 5.18
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 36.36
+        },
+        {
+          "stage": "github.request",
+          "ms": 384.38,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 390.12,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 4.44
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "mode": "warm",
+      "view": "definitions",
+      "ms": 897.26,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 17.62,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.97,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 428.02,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 436.06,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 4.22
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 8.34
+        },
+        {
+          "stage": "github.request",
+          "ms": 394.31,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 398.14,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.08
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "mode": "warm",
+      "view": "source",
+      "ms": 920.64,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 11.52,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.86,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 433.98,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 440.35,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.32
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 4.6
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.1
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 23.03
+        },
+        {
+          "stage": "github.request",
+          "ms": 402.98,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 406.22,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.89
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "mode": "warm",
+      "view": "diff",
+      "ms": 822.92,
+      "bytes": 19182,
+      "sql_count": 32,
+      "sql_ms": 9.93,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 3.48,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 380.5,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 384.14,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.29
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 0.67
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.05
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 1.89
+        },
+        {
+          "stage": "github.request",
+          "ms": 382.15,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 387.88,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.66
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "mode": "warm",
+      "view": "dependencies",
+      "ms": 887.19,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 29.7,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.06,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 370.77,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 376.81,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 4.46
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 33.86
+        },
+        {
+          "stage": "github.request",
+          "ms": 405.56,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 410.7,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 4.02
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "mode": "warm",
+      "view": "definitions",
+      "ms": 833.39,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 10.35,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.6,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 380.53,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 387.59,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 2.22
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 10.53
+        },
+        {
+          "stage": "github.request",
+          "ms": 380.41,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 383.44,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.58
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "mode": "warm",
+      "view": "source",
+      "ms": 876.47,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 12.12,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.8,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 403.46,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 408.48,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.08
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 2.33
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.42
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 20.01
+        },
+        {
+          "stage": "github.request",
+          "ms": 389.61,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 394.3,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.67
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "mode": "warm",
+      "view": "diff",
+      "ms": 834.17,
+      "bytes": 19182,
+      "sql_count": 32,
+      "sql_ms": 11.34,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.53,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 419.58,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 424.31,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 3.36
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 0.85
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.03
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 2.39
+        },
+        {
+          "stage": "github.request",
+          "ms": 347.46,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 350.9,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.29
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "mode": "warm",
+      "view": "dependencies",
+      "ms": 821.57,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 28.69,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.27,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 361.27,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 368.7,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 5.82
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 28.54
+        },
+        {
+          "stage": "github.request",
+          "ms": 347.88,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 351.61,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 4.95
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "mode": "warm",
+      "view": "definitions",
+      "ms": 868.83,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 14.25,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 4.25,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 365.88,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 372.01,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 5.85
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 18.81
+        },
+        {
+          "stage": "github.request",
+          "ms": 413.03,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 418.5,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 3.54
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "mode": "warm",
+      "view": "source",
+      "ms": 931.75,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 15.51,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.13,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 400.15,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 405.79,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 5.84
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 5.44
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.2
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 28.25
+        },
+        {
+          "stage": "github.request",
+          "ms": 422.63,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 429.31,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.81
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "mode": "warm",
+      "view": "diff",
+      "ms": 847.6,
+      "bytes": 19182,
+      "sql_count": 32,
+      "sql_ms": 17.48,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 5.87,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 373.71,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 380.54,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 4.56
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.47
+        },
+        {
+          "stage": "code.parse_patch",
+          "ms": 0.08
+        },
+        {
+          "stage": "code.saved_findings",
+          "ms": 4.61
+        },
+        {
+          "stage": "github.request",
+          "ms": 380.9,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 387.98,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.46
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "mode": "warm",
+      "view": "dependencies",
+      "ms": 956.92,
+      "bytes": 14853,
+      "sql_count": 41,
+      "sql_ms": 28.84,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 9.05,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 409.24,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 414.42,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 2.1
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 33.16
+        },
+        {
+          "stage": "github.request",
+          "ms": 444.3,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 448.07,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.44
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "mode": "warm",
+      "view": "definitions",
+      "ms": 901.95,
+      "bytes": 13166,
+      "sql_count": 36,
+      "sql_ms": 10.07,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 10.32,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 406.42,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 414.64,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 0.8
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 10.81
+        },
+        {
+          "stage": "github.request",
+          "ms": 424.58,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 429.75,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.99
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "mode": "warm",
+      "view": "source",
+      "ms": 868.16,
+      "bytes": 16353,
+      "sql_count": 37,
+      "sql_ms": 17.07,
+      "comparison_hits": 1,
+      "stages": [
+        {
+          "stage": "github.authorize_repo",
+          "ms": 6.56,
+          "fresh": false
+        },
+        {
+          "stage": "github.request",
+          "ms": 393.41,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 401.96,
+          "fresh": true
+        },
+        {
+          "stage": "code.saved_groups",
+          "ms": 6.52
+        },
+        {
+          "stage": "store.read_blob",
+          "ms": 1.51
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 1.71
+        },
+        {
+          "stage": "retrieval.read_snapshot",
+          "ms": 25.19
+        },
+        {
+          "stage": "github.request",
+          "ms": 366.1,
+          "kind": "permission"
+        },
+        {
+          "stage": "github.authorize_repo",
+          "ms": 371.61,
+          "fresh": true
+        },
+        {
+          "stage": "explorer.check_source",
+          "ms": 5.64
+        }
+      ]
+    }
+  ],
+  "background_jobs_delta": {}
+}

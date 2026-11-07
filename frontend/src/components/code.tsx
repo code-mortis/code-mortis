@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { structuredPatch } from "diff";
+import { cn } from "@/lib/utils";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import css from "highlight.js/lib/languages/css";
@@ -34,13 +35,14 @@ function fileLanguage(path = "") {
   return name === "dockerfile" ? "dockerfile" : extensions[name.split(".").pop()!] ?? "text";
 }
 
-export function Code({ children, path, language, label = "Code snippet", startLine, lineNumbers }: {
+export function Code({ children, path, language, label = "Code snippet", startLine, lineNumbers, className }: {
   children: string;
   path?: string;
   language?: string;
   label?: string;
   startLine?: number;
   lineNumbers?: (number | null)[];
+  className?: string;
 }) {
   const grammar = language?.toLowerCase() || fileLanguage(path);
   const numbered = typeof startLine === "number" && Number.isSafeInteger(startLine) && startLine > 0;
@@ -58,7 +60,7 @@ export function Code({ children, path, language, label = "Code snippet", startLi
   }, [children, grammar]);
   return (
     <pre
-      className="code-block flex max-w-full gap-3 overflow-x-auto rounded-md border bg-muted p-4 text-xs leading-relaxed"
+      className={cn("code-block flex max-w-full gap-3 overflow-x-auto rounded-md border bg-muted p-4 text-xs leading-relaxed", className)}
       tabIndex={0}
       role="region"
       aria-label={label}

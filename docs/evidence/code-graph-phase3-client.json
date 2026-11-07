@@ -1,0 +1,69 @@
+{
+  "client": "MCP Python SDK",
+  "client_version": "2.3.0",
+  "transport": "Streamable HTTP",
+  "oauth": "DCR + S256 PKCE + manual browser consent",
+  "tools": [
+    "code_list_repositories",
+    "code_index_status",
+    "code_search",
+    "code_get_symbol",
+    "code_get_source",
+    "code_get_relations",
+    "code_change_impact"
+  ],
+  "repository_id": 1407742623,
+  "commit_sha": "d8a09f12956bf074cdc9f5db868ecf04895eb812",
+  "snapshot_id": "bc70cd31-d172-4846-804f-92050788c8e5",
+  "status": "partial",
+  "searched_path": "frontend/src/mcp.tsx",
+  "symbol_key": "37f2ebd6d1bdf00e329cae210afa39829d2f766af28a7851841e564727199b6c",
+  "relation": {
+    "kind": "dependency",
+    "path": "frontend/src/mcp.tsx",
+    "target_path": "frontend/src/components/ui/button.tsx",
+    "relationship": "imports_file",
+    "provenance": "relative_path",
+    "start_byte": 305,
+    "end_byte": 353,
+    "start_line": 6,
+    "end_line": 6
+  },
+  "source_path": "frontend/src/components/ui/button.tsx",
+  "source_blob_sha": "d62b5d4d84a39e0c4f3104a1c9e725c439df3cb3",
+  "source_bytes": 2386,
+  "source_excerpt_sha256": "930cde7755a04d9ab0f3fa11de505e18ba0a1b6cd20da84ff59849f4b9d5ab89",
+  "checked_at": "2026-10-27T02:36:08.764307+00:00",
+  "origin": "http://localhost:5173",
+  "grant_revoked": true,
+  "model_calls": 0,
+  "source_bodies_recorded": false,
+  "consent_execution": "User explicitly authorized activation and this repository/scope in chat; assistant completed the actual Chrome consent form on their behalf.",
+  "initial_attempt": "First browser request expired without a grant; the second completed DCR/PKCE/browser consent.",
+  "verified_grant": {
+    "id": "fa624a79-285b-48ff-aad0-75efdb1ba34d",
+    "scopes": [
+      "code:read"
+    ],
+    "repository_ids": [
+      1407742623
+    ],
+    "revoked_at": "2026-10-27T02:36:08.752862+00:00"
+  },
+  "audit_tools_succeeded": [
+    "code_list_repositories",
+    "code_index_status",
+    "code_search",
+    "code_get_symbol",
+    "code_get_relations",
+    "code_get_source"
+  ],
+  "operation_records": 0,
+  "application_counts_unchanged": true,
+  "snapshot_file_symbol_import_digests_unchanged": true,
+  "repository_status_note": "Repository configuration digest changed during the scheduled head check at 02:34:45 UTC, before the successful client grant; immutable snapshots and all facts remained identical.",
+  "limits": [
+    "Change-impact comparison is covered by isolated real-Git transport tests, not this one-snapshot real repository check.",
+    "No permanent Codex or other agent configuration was created."
+  ]
+}

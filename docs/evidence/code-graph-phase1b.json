@@ -1,0 +1,64 @@
+{
+  "checked_at": "2026-10-26T17:36:47.057266+00:00",
+  "baseline_commit": "227b9bfc01a0fe3535484db8aef5fae77ab3e37e",
+  "local_changes": true,
+  "compose_prod_dev_optional": true,
+  "parser_image_id": "sha256:40d914d6e4611e8cefee9d72da141fdcf5d2415158cb0222fc646f35e4d18f84",
+  "fixtures_and_max_source": {
+    "mode": "fixtures",
+    "fixtures": 32,
+    "symbols": 37,
+    "imports": 20,
+    "source_limit_bytes": 8388608,
+    "passed": true
+  },
+  "runtime": {
+    "network_denials": [
+      [
+        "1.1.1.1",
+        443
+      ],
+      [
+        "8.8.8.8",
+        53
+      ],
+      [
+        "postgres",
+        5432
+      ],
+      [
+        "redis",
+        6379
+      ],
+      [
+        "host.docker.internal",
+        55439
+      ],
+      [
+        "192.168.117.2",
+        5432
+      ],
+      [
+        "192.168.117.2",
+        6379
+      ]
+    ],
+    "memory_max_bytes": 268435456,
+    "swap_bytes": 0,
+    "cpu_quota": 1,
+    "tmpfs_bytes": 134217728,
+    "fixture_peak_bytes": 101580800,
+    "repository_execution_marker_absent": true
+  },
+  "cancellation": {
+    "mode": "cancel",
+    "passed": true
+  },
+  "deadline": {
+    "mode": "deadline",
+    "passed": true
+  },
+  "tmpfs_limit": "ENOSPC at 128 MiB",
+  "memory_limit": "300 MiB allocation killed inside 256 MiB cgroup",
+  "recovered": true
+}

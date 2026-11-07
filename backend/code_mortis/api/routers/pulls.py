@@ -1,17 +1,20 @@
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import func, select
 
-from code_mortis.api.dependencies import DB, USER, pr_access, review_pr_access
+from code_mortis.api.dependencies import DB, SESSION_ADMIN, SESSION_USER, USER, pr_access, review_pr_access
 from code_mortis.api.presenters import pr_out, repo_out
 from code_mortis.api_tokens import provenance as pat_provenance
+from code_mortis.code_graph import explorer
 from code_mortis.integrations import github
 from code_mortis.models import Finding, FindingVerification, PullRequest, ReviewRun
+from code_mortis.reviews import code as pr_code
 from code_mortis.reviews import findings as finding_list
 from code_mortis.reviews import inbox, verification
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.reviews.service import ACTIVE, can_publish, cancel_pr_reviews, create_run, upsert_pr
+from code_mortis.schemas.code_graph_explorer import ExplorerQuery, ExplorerRevision, GraphExplorer, GraphRead
 from code_mortis.schemas.common import (
     LIST_PAGE_SIZE,
     FindingFilters,
@@ -25,8 +28,47 @@ from code_mortis.schemas.common import (
     RunPage,
     StartRunInput,
 )
+from code_mortis.schemas.pr_code import CodeFile, CodeFileRequest, CodeNavigation, CodeOverview, CodeWorkspace
 
 router = APIRouter()
+
+
+@router.get("/pulls/{pr_id}/code", response_model=CodeOverview)
+def pull_code(pr_id: str, db: DB, user: SESSION_USER, response: Response,
+              page: Annotated[int, Query(ge=1, le=100)] = 1,
+              q: Annotated[str, Query(max_length=256)] = "",
+              group: Annotated[str | None, Query(max_length=64)] = None):
+    response.headers["Cache-Control"] = "no-store"
+    return explorer.respond(lambda: pr_code.overview(db, user, pr_id, page, q, group))
+
+
+@router.post("/pulls/{pr_id}/code/file", response_model=CodeFile)
+def pull_code_file(pr_id: str, body: CodeFileRequest, db: DB, user: SESSION_USER, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return explorer.respond(lambda: pr_code.read(db, user, pr_id, body))
+
+
+@router.post("/pulls/{pr_id}/code/workspace", response_model=CodeWorkspace)
+def pull_code_workspace(pr_id: str, body: CodeNavigation, db: DB, user: SESSION_USER, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return explorer.respond(lambda: pr_code.workspace(db, user, pr_id, body))
+
+
+@router.get("/pulls/{pr_id}/code-graph", response_model=GraphExplorer)
+def pull_code_graph(pr_id: str, db: DB, user: SESSION_USER,
+                    page: Annotated[int, Query(ge=1, le=100)] = 1,
+                    q: Annotated[str, Query(max_length=512)] = ""):
+    return explorer.respond(lambda: explorer.overview(db, user, pr_id, page, q))
+
+
+@router.post("/pulls/{pr_id}/code-graph/query", response_model=GraphRead)
+def query_pull_code_graph(pr_id: str, body: ExplorerQuery, db: DB, user: SESSION_USER):
+    return explorer.respond(lambda: explorer.read(db, user, pr_id, body))
+
+
+@router.post("/pulls/{pr_id}/code-graph/index", status_code=202)
+def index_pull_code_graph(pr_id: str, body: ExplorerRevision, db: DB, user: SESSION_ADMIN) -> dict:
+    return explorer.respond(lambda: explorer.index(db, user, pr_id, body))
 
 
 @router.get("/pulls", response_model=InboxOut)
@@ -52,6 +94,8 @@ def pull_detail(pr_id: str, db: DB, user: USER):
             .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1)
         ),
         can_write=remote.get("permissions", {}).get("push", False),
+        finding_counts=dict(db.execute(select(Finding.status, func.count()).where(Finding.pr_id == pr.id)
+                                       .group_by(Finding.status)).all()),
     )
 
 

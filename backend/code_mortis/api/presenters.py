@@ -20,7 +20,11 @@ from code_mortis.schemas.common import (
 
 
 def repo_out(db: Session, repo: Repository) -> RepositoryOut:
+    from code_mortis.models import CodeGraphRepository
+
     result = RepositoryOut.model_validate(repo)
+    graph = db.get(CodeGraphRepository, repo.id)
+    result.code_graph_enabled = bool(graph and graph.enabled)
     result.open_prs, result.has_running_review = db.execute(
         select(
             select(func.count())

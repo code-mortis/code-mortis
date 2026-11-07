@@ -5,7 +5,7 @@ from typing import Any
 
 import sentry_sdk
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown, worker_shutdown
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, or_, select
@@ -43,6 +43,8 @@ from code_mortis.reviews.service import (
 )
 
 init_sentry("worker")
+worker_process_shutdown.connect(github.close_http_client)
+worker_shutdown.connect(github.close_http_client)
 
 
 @worker_process_init.connect
@@ -51,6 +53,7 @@ def init_worker_sentry(**kwargs):
 
 
 log = logging.getLogger("code_mortis.jobs")
+CODE_GRAPH_KINDS = {"code_graph", "code_graph_cleanup", "code_graph_refresh"}
 celery = Celery("code_mortis")
 celery.conf.update(
     broker_url=settings().redis_url,
@@ -272,7 +275,17 @@ def process_webhook(payload: dict):
 
 
 def execute(kind: str, payload: dict):
-    if kind == "revoke_api_token_work":
+    if kind in CODE_GRAPH_KINDS:
+        from code_mortis.code_graph import service as graphs
+
+        if kind == "code_graph":
+            graphs.perform(payload["snapshot_id"], payload["_job_id"], payload["_attempt"])
+        elif kind == "code_graph_refresh":
+            graphs.refresh(payload["repository_id"], payload["_job_id"], payload["_attempt"], payload["actor_id"],
+                           retry=payload["retry"], commit_sha=payload.get("commit_sha"))
+        else:
+            graphs.cleanup()
+    elif kind == "revoke_api_token_work":
         # Internal revocation cleanup: idempotent, token_id only, never
         # token-authorized and never starts model work or publishes content.
         from code_mortis.api_tokens import provenance as _pat
@@ -341,6 +354,12 @@ def execute_job(job_id: str):
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job or job.status != "queued" or job.available_at.timestamp() > now().timestamp():
             return
+        delivered_queue = (execute_job.request.delivery_info or {}).get("routing_key")
+        graph_delivery = job.kind in CODE_GRAPH_KINDS or delivered_queue == "code-graph"
+        if graph_delivery and delivered_queue and delivered_queue != job_queue(job.kind, job.payload):
+            # Old broker deliveries cannot run graph work on the review worker after an upgrade.
+            job.dispatched_at = None
+            return
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
@@ -390,6 +409,8 @@ def execute_job(job_id: str):
                          if job.kind == "generate_background" else 7200)
         if job.kind == "security_scan":
             lease_seconds = 360
+        if job.kind in CODE_GRAPH_KINDS:
+            lease_seconds = 600
         job.status, job.lease_until = "running", now() + timedelta(seconds=lease_seconds)
         job.attempts += 1
         kind, payload, attempt = job.kind, job.payload, job.attempts
@@ -405,7 +426,7 @@ def execute_job(job_id: str):
         with transaction() as fresh:
             _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "security_scan", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
+        execute(kind, execution if kind in {"review", "security_scan", "code_graph", "code_graph_refresh", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
     except _pat.TransientAuthorizationError:
         # Temporary authorization outage, not revocation: requeue for retry
         # instead of failing the work as revoked.
@@ -459,7 +480,7 @@ def execute_job(job_id: str):
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
-        retry = retryable and attempt < 3 and kind not in {"generate_summary", *pipeline.KINDS}
+        retry = retryable and attempt < 3 and kind not in {"code_graph", "generate_summary", *pipeline.KINDS}
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
@@ -535,6 +556,8 @@ def execute_job(job_id: str):
 
 
 def job_queue(kind, payload=None):
+    if kind in CODE_GRAPH_KINDS:
+        return "code-graph"
     if kind == "security_scan":
         return "security"
     if kind in {"security_refresh", "security_issue_publish", "security_issue_sync"}:
@@ -590,6 +613,12 @@ def dispatch():
                 job.error = None if job.status == "done" else background.INTERRUPTED
                 job.lease_until = None
                 continue
+            if job.kind == "code_graph":
+                from code_mortis.code_graph.service import settle
+
+                settle(db, job, expired=True)
+                if job.status in {"done", "failed"}:
+                    continue
             if job.attempts < 3:
                 job.status, job.dispatched_at = "queued", None
             else:
@@ -655,7 +684,22 @@ def dispatch():
 
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
+    from code_mortis.code_graph.service import schedule_refresh
+    from code_mortis.models import CodeGraphRepository
+
     with transaction() as db:
+        identities = list(db.scalars(select(CodeGraphRepository.repository_id).where(
+            CodeGraphRepository.enabled.is_(True), CodeGraphRepository.paused.is_(False),
+        ).order_by(CodeGraphRepository.checked_at.asc().nulls_first(), CodeGraphRepository.repository_id).limit(16)))
+    # Keep configuration locks out of the reconciliation transaction's job locks.
+    for identity in identities:
+        with transaction() as db:
+            schedule_refresh(db, identity)
+
+    with transaction() as db:
+        if (db.scalar(select(CodeGraphRepository.repository_id).limit(1))
+            or db.scalar(select(Job.id).where(Job.kind == "code_graph").limit(1))):
+            enqueue_reconciliation(db, "code_graph_cleanup", {})
         from code_mortis.mcp import auth as _mcp_auth
 
         _mcp_auth.cleanup(db)

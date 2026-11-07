@@ -57,6 +57,8 @@ services:
     command: [alembic, upgrade, head]
   api:
     <<: *app
+    volumes:
+      - code-graph-data:/var/lib/code-mortis/code-graph:ro
     command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --no-access-log]
     ports: ["127.0.0.1:${CM_PORT:-8080}:8080"]
     networks: [default, runners]
@@ -128,6 +130,49 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+  code-graph-worker:
+    <<: *app
+    profiles: [code-graph]
+    volumes: [code-graph-data:/var/lib/code-mortis/code-graph]
+    environment:
+      <<: *environment
+      CM_CODE_GRAPH_PARSER_URL: http://code-graph-parser:8091
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
+    command: [celery, -A, code_mortis.jobs:celery, worker, -Q, code-graph, --concurrency=1, --loglevel=INFO, --hostname=graph@%h]
+    networks: [default, code-graph]
+    tmpfs: ["/tmp:mode=1777,size=128m"]
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1
+    pids_limit: 64
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      code-graph-parser: {condition: service_healthy}
+  code-graph-parser:
+    image: code-mortis-code-graph:0.1.0
+    profiles: [code-graph]
+    build: {context: ., dockerfile: Dockerfile.code-graph}
+    environment:
+      CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
+    networks: [code-graph]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=128m"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8091/health',headers={'Authorization':'Bearer '+os.environ['CM_CODE_GRAPH_TOKEN']}),timeout=5)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
   runner:
     image: code-mortis-runner:0.2.0
     build:
@@ -154,6 +199,9 @@ volumes:
   redis-data:
   runner-profiles:
   trivy-cache:
+  code-graph-data:
 
 networks:
+  code-graph:
+    internal: true
   runners:

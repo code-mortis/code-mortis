@@ -38,7 +38,7 @@ export function AppSidebar({ user, onLogout, signingOut }: {
 }) {
   const route = useLocation();
   const { setOpenMobile } = useSidebar();
-  const repos = useApi<Repository[]>("/repositories", true);
+  const repos = useApi<Repository[]>("/repositories", (data) => data?.some((repo) => repo.has_running_review || ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? "")) ? 5000 : 60000);
   const inboxReturn = getInboxReturn(route.state);
   const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);

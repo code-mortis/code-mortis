@@ -1,9 +1,12 @@
+import atexit
 import json
 import logging
+import os
 import time
 from collections import OrderedDict
 from datetime import timedelta
 from hashlib import sha256
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from math import ceil
 from threading import Lock
 
@@ -26,6 +29,37 @@ API = "https://api.github.com"
 logger = logging.getLogger(__name__)
 _get_cache: OrderedDict[tuple[bytes, str], tuple[str, bytes]] = OrderedDict()
 _get_cache_lock = Lock()
+_client: httpx.Client | None = None
+_client_lock = Lock()
+
+
+def http_client():
+    global _client
+    with _client_lock:
+        if _client is None:
+            # GitHub identity is per request; a pooled connection must never carry another user's cookies.
+            _client = httpx.Client(cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=[])),
+                limits=httpx.Limits(max_connections=40, max_keepalive_connections=20, keepalive_expiry=30))
+        return _client
+
+
+def close_http_client(**kwargs):
+    global _client
+    with _client_lock:
+        client, _client = _client, None
+    if client is not None:
+        client.close()
+
+
+def _after_fork():
+    global _client, _client_lock, _get_cache_lock
+    # Do not enter inherited transport locks; children establish their own connections.
+    _client, _client_lock, _get_cache_lock = None, Lock(), Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+atexit.register(close_http_client)
 
 
 def visible_repositories(db: Session, user: User) -> list[Repository]:
@@ -67,8 +101,9 @@ def request(method: str, path: str, token: str, **kwargs):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     custom_headers = kwargs.pop("headers", {})
+    max_response_bytes = kwargs.pop("max_response_bytes", None)
     headers.update(custom_headers)
-    cache_key = (sha256(token.encode()).digest(), path) if method.upper() == "GET" and token and not kwargs and not custom_headers else None
+    cache_key = (sha256(token.encode()).digest(), path) if method.upper() == "GET" and token and not kwargs and not custom_headers and not max_response_bytes else None
     cached = None
     if cache_key:
         with _get_cache_lock:
@@ -80,9 +115,24 @@ def request(method: str, path: str, token: str, **kwargs):
     for attempt in range(2):
         retry_get = method.upper() == "GET" and attempt == 0
         try:
-            response = httpx.request(
-                method, API + path, headers=headers, timeout=25, follow_redirects=False, **kwargs
-            )
+            if max_response_bytes:
+                # Bound decoded bytes before JSON parsing, including compressed responses.
+                started = time.monotonic()
+                with http_client().stream(method, API + path, headers=headers, timeout=5, follow_redirects=False, **kwargs) as stream:
+                    body = bytearray()
+                    for chunk in stream.iter_bytes(chunk_size=65536):
+                        if len(body) + len(chunk) > max_response_bytes:
+                            raise GitHubError(422, "This comparison is too large to display. Open it on GitHub.")
+                        if time.monotonic() - started > 20:
+                            raise GitHubError(503, "GitHub took too long to return this comparison. Try again shortly.")
+                        body.extend(chunk)
+                    decoded_headers = {key: value for key, value in stream.headers.items()
+                                       if key.lower() not in {"content-encoding", "content-length"}}
+                    response = httpx.Response(stream.status_code, headers=decoded_headers, content=bytes(body))
+            else:
+                response = http_client().request(
+                    method, API + path, headers=headers, timeout=25, follow_redirects=False, **kwargs
+                )
         except httpx.HTTPError as exc:
             if not retry_get or not isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)):
                 raise GitHubError(503, "GitHub could not be reached. Try again shortly.") from exc
@@ -226,6 +276,16 @@ def app_token(db: Session) -> str:
     )
 
 
+def repository_read_token(db: Session, installation_id: int, repository_id: int, *, pulls: bool = False) -> str:
+    permissions = {"contents": "read", "metadata": "read"}
+    if pulls:
+        permissions["pull_requests"] = "read"
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db), json={
+        "repository_ids": [repository_id], "permissions": permissions,
+    })
+    return data["token"]
+
+
 def installation_token(db: Session, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
     options = {"checks": checks, "resolve": resolve}
     if issues:
@@ -325,7 +385,7 @@ def user_token(db: Session, user: User) -> str:
         return unseal(locked.access_token)
 
 
-def authorize_repo(db: Session, user: User, full_name: str, write: bool = False) -> dict:
+def authorize_repo(db: Session, user: User, full_name: str, write: bool = False, *, fresh: bool = False) -> dict:
     from code_mortis.core.access import effective_repository_ids
 
     selected = effective_repository_ids(user)
@@ -335,7 +395,7 @@ def authorize_repo(db: Session, user: User, full_name: str, write: bool = False)
         if getattr(user, "api_token_repository_ids", None) is not None:
             raise GitHubError(403, "This repository was not selected for this API token.")
         raise GitHubError(403, "This repository was not selected for this MCP client.")
-    result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write)
+    result = permission_request(user.id, f"/repos/{full_name}", user_token(db, user), fresh=write or fresh)
     permissions = result.get("permissions", {})
     if not permissions.get("pull") or (write and not permissions.get("push")):
         raise GitHubError(

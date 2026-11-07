@@ -1,0 +1,3138 @@
+{
+  "corpora": [
+    {
+      "bytes": 4176007,
+      "commit": "d8a09f12956bf074cdc9f5db868ecf04895eb812",
+      "excluded": [],
+      "files": 244,
+      "manifest_sha256": "ba4e772a58d9edd62e10c113925ca5c6564fe29b3a26063a3053d3097f2bc618",
+      "name": "code-mortis",
+      "runs": [
+        {
+          "cgroup_peak_bytes": 85893120,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 3283,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 243,
+              "partial": 1
+            },
+            "json_bytes": 8962901,
+            "nodes": 3252,
+            "partial_files": [
+              "frontend/src/settings.tsx"
+            ],
+            "relations": {
+              "defines": 3008,
+              "imports_file": 275
+            },
+            "unresolved_calls": 50488
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 94908416,
+          "python": "3.13.17",
+          "seconds": 1.2145
+        },
+        {
+          "cgroup_peak_bytes": 81448960,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 3283,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 243,
+              "partial": 1
+            },
+            "json_bytes": 8962901,
+            "nodes": 3252,
+            "partial_files": [
+              "frontend/src/settings.tsx"
+            ],
+            "relations": {
+              "defines": 3008,
+              "imports_file": 275
+            },
+            "unresolved_calls": 50488
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 94896128,
+          "python": "3.13.17",
+          "seconds": 1.2157
+        },
+        {
+          "cgroup_peak_bytes": 81657856,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 3283,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 243,
+              "partial": 1
+            },
+            "json_bytes": 8962901,
+            "nodes": 3252,
+            "partial_files": [
+              "frontend/src/settings.tsx"
+            ],
+            "relations": {
+              "defines": 3008,
+              "imports_file": 275
+            },
+            "unresolved_calls": 50488
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 95006720,
+          "python": "3.13.17",
+          "seconds": 1.199
+        },
+        {
+          "cgroup_peak_bytes": 237252608,
+          "diagnostics": [
+            "AST extraction: 100/244 uncached files (40%)",
+            "  AST extraction: 200/244 uncached files (81%)",
+            "  AST extraction: 244/244 uncached files (100%)",
+            "  warning: 1 file(s) had syntax errors and may be partially extracted: settings.tsx (first error at line 416) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 15312,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 5169954,
+            "nodes": 3184,
+            "partial_files": [],
+            "relations": {
+              "calls": 4939,
+              "contains": 2418,
+              "imports": 1983,
+              "imports_from": 1886,
+              "indirect_call": 232,
+              "inherits": 267,
+              "method": 99,
+              "rationale_for": 178,
+              "re_exports": 3,
+              "references": 1372,
+              "uses": 1935
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 243675136,
+          "python": "3.13.17",
+          "seconds": 4.5091
+        },
+        {
+          "cgroup_peak_bytes": 237170688,
+          "diagnostics": [
+            "AST extraction: 100/244 uncached files (40%)",
+            "  AST extraction: 200/244 uncached files (81%)",
+            "  AST extraction: 244/244 uncached files (100%)",
+            "  warning: 1 file(s) had syntax errors and may be partially extracted: settings.tsx (first error at line 416) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 15312,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 5169954,
+            "nodes": 3184,
+            "partial_files": [],
+            "relations": {
+              "calls": 4939,
+              "contains": 2418,
+              "imports": 1983,
+              "imports_from": 1886,
+              "indirect_call": 232,
+              "inherits": 267,
+              "method": 99,
+              "rationale_for": 178,
+              "re_exports": 3,
+              "references": 1372,
+              "uses": 1935
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 243654656,
+          "python": "3.13.17",
+          "seconds": 4.5027
+        },
+        {
+          "cgroup_peak_bytes": 237174784,
+          "diagnostics": [
+            "AST extraction: 100/244 uncached files (40%)",
+            "  AST extraction: 200/244 uncached files (81%)",
+            "  AST extraction: 244/244 uncached files (100%)",
+            "  warning: 1 file(s) had syntax errors and may be partially extracted: settings.tsx (first error at line 416) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 15312,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 5169954,
+            "nodes": 3184,
+            "partial_files": [],
+            "relations": {
+              "calls": 4939,
+              "contains": 2418,
+              "imports": 1983,
+              "imports_from": 1886,
+              "indirect_call": 232,
+              "inherits": 267,
+              "method": 99,
+              "rationale_for": 178,
+              "re_exports": 3,
+              "references": 1372,
+              "uses": 1935
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 243646464,
+          "python": "3.13.17",
+          "seconds": 4.5081
+        }
+      ]
+    },
+    {
+      "bytes": 6275421,
+      "commit": "2153c7745e66b72f48dee76b992e91b3be7c653f",
+      "excluded": [],
+      "files": 653,
+      "manifest_sha256": "4c25bafd4b5324adf76365b91b60df8378070e6e4418d2a0311aea9d4e09b6b0",
+      "name": "noodle",
+      "runs": [
+        {
+          "cgroup_peak_bytes": 80789504,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 5998,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 648,
+              "partial": 5
+            },
+            "json_bytes": 13330769,
+            "nodes": 3831,
+            "partial_files": [
+              "native/response-file/response_file.c",
+              "src/app/humanOutput.ts",
+              "src/ui/MainView.tsx",
+              "src/ui/collectionImport.ts",
+              "src/ui/timeline/TimelineTab.tsx"
+            ],
+            "relations": {
+              "defines": 3178,
+              "imports_file": 2820
+            },
+            "unresolved_calls": 76039
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 87678976,
+          "python": "3.13.17",
+          "seconds": 1.2282
+        },
+        {
+          "cgroup_peak_bytes": 72949760,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 5998,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 648,
+              "partial": 5
+            },
+            "json_bytes": 13330769,
+            "nodes": 3831,
+            "partial_files": [
+              "native/response-file/response_file.c",
+              "src/app/humanOutput.ts",
+              "src/ui/MainView.tsx",
+              "src/ui/collectionImport.ts",
+              "src/ui/timeline/TimelineTab.tsx"
+            ],
+            "relations": {
+              "defines": 3178,
+              "imports_file": 2820
+            },
+            "unresolved_calls": 76039
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 87691264,
+          "python": "3.13.17",
+          "seconds": 1.2271
+        },
+        {
+          "cgroup_peak_bytes": 72663040,
+          "diagnostics": [],
+          "engine": "direct",
+          "graph": {
+            "edges": 5998,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 648,
+              "partial": 5
+            },
+            "json_bytes": 13330769,
+            "nodes": 3831,
+            "partial_files": [
+              "native/response-file/response_file.c",
+              "src/app/humanOutput.ts",
+              "src/ui/MainView.tsx",
+              "src/ui/collectionImport.ts",
+              "src/ui/timeline/TimelineTab.tsx"
+            ],
+            "relations": {
+              "defines": 3178,
+              "imports_file": 2820
+            },
+            "unresolved_calls": 76039
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 87691264,
+          "python": "3.13.17",
+          "seconds": 1.2225
+        },
+        {
+          "cgroup_peak_bytes": 511221760,
+          "diagnostics": [
+            "AST extraction: 100/653 uncached files (15%)",
+            "  AST extraction: 200/653 uncached files (30%)",
+            "  AST extraction: 300/653 uncached files (45%)",
+            "  AST extraction: 400/653 uncached files (61%)",
+            "  AST extraction: 500/653 uncached files (76%)",
+            "  AST extraction: 600/653 uncached files (91%)",
+            "  AST extraction: 653/653 uncached files (100%)",
+            "  warning: 5 file(s) had syntax errors and may be partially extracted: response_file.c (first error at line 20), humanOutput.ts (first error at line 404), MainView.tsx (first error at line 51), collectionImport.ts (first error at line 19), TimelineTab.tsx (first error at line 29) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 16571,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 4932933,
+            "nodes": 4078,
+            "partial_files": [],
+            "relations": {
+              "calls": 2631,
+              "contains": 3705,
+              "defines": 1,
+              "imports": 4649,
+              "imports_from": 4405,
+              "indirect_call": 215,
+              "inherits": 10,
+              "method": 296,
+              "re_exports": 246,
+              "references": 413
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 527306752,
+          "python": "3.13.17",
+          "seconds": 6.2764
+        },
+        {
+          "cgroup_peak_bytes": 511217664,
+          "diagnostics": [
+            "AST extraction: 100/653 uncached files (15%)",
+            "  AST extraction: 200/653 uncached files (30%)",
+            "  AST extraction: 300/653 uncached files (45%)",
+            "  AST extraction: 400/653 uncached files (61%)",
+            "  AST extraction: 500/653 uncached files (76%)",
+            "  AST extraction: 600/653 uncached files (91%)",
+            "  AST extraction: 653/653 uncached files (100%)",
+            "  warning: 5 file(s) had syntax errors and may be partially extracted: response_file.c (first error at line 20), humanOutput.ts (first error at line 404), MainView.tsx (first error at line 51), collectionImport.ts (first error at line 19), TimelineTab.tsx (first error at line 29) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 16571,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 4932933,
+            "nodes": 4078,
+            "partial_files": [],
+            "relations": {
+              "calls": 2631,
+              "contains": 3705,
+              "defines": 1,
+              "imports": 4649,
+              "imports_from": 4405,
+              "indirect_call": 215,
+              "inherits": 10,
+              "method": 296,
+              "re_exports": 246,
+              "references": 413
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 527306752,
+          "python": "3.13.17",
+          "seconds": 6.1169
+        },
+        {
+          "cgroup_peak_bytes": 511385600,
+          "diagnostics": [
+            "AST extraction: 100/653 uncached files (15%)",
+            "  AST extraction: 200/653 uncached files (30%)",
+            "  AST extraction: 300/653 uncached files (45%)",
+            "  AST extraction: 400/653 uncached files (61%)",
+            "  AST extraction: 500/653 uncached files (76%)",
+            "  AST extraction: 600/653 uncached files (91%)",
+            "  AST extraction: 653/653 uncached files (100%)",
+            "  warning: 5 file(s) had syntax errors and may be partially extracted: response_file.c (first error at line 20), humanOutput.ts (first error at line 404), MainView.tsx (first error at line 51), collectionImport.ts (first error at line 19), TimelineTab.tsx (first error at line 29) (#2551)"
+          ],
+          "engine": "graphify",
+          "graph": {
+            "edges": 16571,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 4932933,
+            "nodes": 4078,
+            "partial_files": [],
+            "relations": {
+              "calls": 2631,
+              "contains": 3705,
+              "defines": 1,
+              "imports": 4649,
+              "imports_from": 4405,
+              "indirect_call": 215,
+              "inherits": 10,
+              "method": 296,
+              "re_exports": 246,
+              "references": 413
+            },
+            "unresolved_calls": 0
+          },
+          "machine": "aarch64",
+          "packages": {
+            "RapidFuzz": "3.14.5",
+            "graphifyy": "0.9.37",
+            "networkx": "3.6.1",
+            "numpy": "2.5.2",
+            "pip": "26.2.2",
+            "tree-sitter": "0.25.2",
+            "tree-sitter-bash": "0.25.1",
+            "tree-sitter-c": "0.24.2",
+            "tree-sitter-c-sharp": "0.23.5",
+            "tree-sitter-cpp": "0.23.4",
+            "tree-sitter-elixir": "0.3.5",
+            "tree-sitter-fortran": "0.6.0",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-groovy": "0.1.2",
+            "tree-sitter-java": "0.23.5",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-json": "0.24.8",
+            "tree-sitter-julia": "0.23.1",
+            "tree-sitter-kotlin": "1.1.0",
+            "tree-sitter-lua": "0.5.0",
+            "tree-sitter-objc": "3.0.2",
+            "tree-sitter-php": "0.24.1",
+            "tree-sitter-powershell": "0.26.4",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-ruby": "0.23.1",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-scala": "0.26.2",
+            "tree-sitter-swift": "0.7.3",
+            "tree-sitter-typescript": "0.23.2",
+            "tree-sitter-verilog": "1.0.3",
+            "tree-sitter-zig": "1.1.2"
+          },
+          "process_peak_rss_bytes": 527331328,
+          "python": "3.13.17",
+          "seconds": 6.1757
+        }
+      ]
+    }
+  ],
+  "docker": "linux aarch64 CPUs=12 Memory=5227761664",
+  "format": 1,
+  "harness_sha256": {
+    "Dockerfile": "eced803911981557045aac38ff3c842355c4d268fd56fd2fc2b9f05131b7ecb0",
+    "evaluate.py": "7622e1f45ffe203b870457805e1b310b597a5ef17120326bc7009d221b27ec15",
+    "fixtures.json": "38cdc530db841319ab5e01e98fcfe9aa3c3269b5a0ff0d999f2e3b0de98f72db",
+    "requirements.txt": "26991e374e5945e36f9c599cb3233f164d1e5c79c1e8997f08383b6129224190",
+    "run.py": "4218675dc51abe1974e539c602fae33b122337b72636442a82fefa2bad28d0c6"
+  },
+  "image": "sha256:c4312917b91be8df6415acfbbf3592d868dc34c90ebdb06da127d124b21cb187",
+  "limits": {
+    "cpus": 1,
+    "memory_MiB": {
+      "direct": 256,
+      "graphify": 512
+    },
+    "pids": 32,
+    "timeout_seconds": 120,
+    "tmpfs_MiB": 128
+  },
+  "probes": {
+    "direct": {
+      "cgroup_peak_bytes": 56733696,
+      "diagnostics": [],
+      "engine": "direct",
+      "machine": "aarch64",
+      "packages": {
+        "RapidFuzz": "3.14.5",
+        "graphifyy": "0.9.37",
+        "networkx": "3.6.1",
+        "numpy": "2.5.2",
+        "pip": "26.2.2",
+        "tree-sitter": "0.25.2",
+        "tree-sitter-bash": "0.25.1",
+        "tree-sitter-c": "0.24.2",
+        "tree-sitter-c-sharp": "0.23.5",
+        "tree-sitter-cpp": "0.23.4",
+        "tree-sitter-elixir": "0.3.5",
+        "tree-sitter-fortran": "0.6.0",
+        "tree-sitter-go": "0.25.0",
+        "tree-sitter-groovy": "0.1.2",
+        "tree-sitter-java": "0.23.5",
+        "tree-sitter-javascript": "0.25.0",
+        "tree-sitter-json": "0.24.8",
+        "tree-sitter-julia": "0.23.1",
+        "tree-sitter-kotlin": "1.1.0",
+        "tree-sitter-lua": "0.5.0",
+        "tree-sitter-objc": "3.0.2",
+        "tree-sitter-php": "0.24.1",
+        "tree-sitter-powershell": "0.26.4",
+        "tree-sitter-python": "0.25.0",
+        "tree-sitter-ruby": "0.23.1",
+        "tree-sitter-rust": "0.24.2",
+        "tree-sitter-scala": "0.26.2",
+        "tree-sitter-swift": "0.7.3",
+        "tree-sitter-typescript": "0.23.2",
+        "tree-sitter-verilog": "1.0.3",
+        "tree-sitter-zig": "1.1.2"
+      },
+      "probe": {
+        "after_definition_change": {
+          "call_edges": [],
+          "file_statuses": {
+            "bash/main.sh": "parsed",
+            "c/main.c": "parsed",
+            "cpp/main.cpp": "parsed",
+            "csharp/Main.cs": "parsed",
+            "go/main.go": "parsed",
+            "java/Main.java": "parsed",
+            "javascript/barrel.js": "parsed",
+            "javascript/component.jsx": "parsed",
+            "javascript/use.js": "parsed",
+            "php/main.php": "parsed",
+            "python/__init__.py": "parsed",
+            "python/barrel.py": "parsed",
+            "python/cycle_a.py": "parsed",
+            "python/cycle_b.py": "parsed",
+            "python/other.py": "parsed",
+            "python/target.py": "parsed",
+            "python/use.py": "parsed",
+            "ruby/main.rb": "parsed",
+            "rust/main.rs": "parsed",
+            "safety/AGENTS.md": "unsupported",
+            "safety/broken.py": "partial",
+            "safety/package.json": "unsupported",
+            "safety/trap.py": "parsed",
+            "safety/unsupported.unknown": "unsupported",
+            "typescript/barrel.ts": "parsed",
+            "typescript/component.tsx": "parsed",
+            "typescript/cycle_a.ts": "parsed",
+            "typescript/cycle_b.ts": "parsed",
+            "typescript/other.ts": "parsed",
+            "typescript/use.ts": "parsed"
+          },
+          "imports": [
+            {
+              "line": 1,
+              "path": "c/main.c",
+              "specifier": "#include <stdio.h>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "cpp/main.cpp",
+              "specifier": "#include <vector>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "csharp/Main.cs",
+              "specifier": "using System;",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "go/main.go",
+              "specifier": "import \"fmt\"",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "java/Main.java",
+              "specifier": "import java.util.List;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "javascript/barrel.js",
+              "specifier": "./target.js",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "javascript/use.js",
+              "specifier": "./barrel.js",
+              "target": "javascript/barrel.js"
+            },
+            {
+              "line": 2,
+              "path": "php/main.php",
+              "specifier": "require 'other.php'",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "python/barrel.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_a.py",
+              "specifier": ".cycle_b",
+              "target": "python/cycle_b.py"
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_b.py",
+              "specifier": ".cycle_a",
+              "target": "python/cycle_a.py"
+            },
+            {
+              "line": 1,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 2,
+              "path": "python/use.py",
+              "specifier": ".barrel",
+              "target": "python/barrel.py"
+            },
+            {
+              "line": 3,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 1,
+              "path": "rust/main.rs",
+              "specifier": "use std::fmt;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "typescript/barrel.ts",
+              "specifier": "./target",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_a.ts",
+              "specifier": "./cycle_b",
+              "target": "typescript/cycle_b.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_b.ts",
+              "specifier": "./cycle_a",
+              "target": "typescript/cycle_a.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/use.ts",
+              "specifier": "./target",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "typescript/use.ts",
+              "specifier": "./barrel",
+              "target": "typescript/barrel.ts"
+            }
+          ],
+          "matrix": {
+            "bash": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 3
+            },
+            "c": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "cpp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "csharp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "go": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "java": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 2,
+              "labels": [
+                "",
+                "",
+                "",
+                "Component",
+                "entry"
+              ],
+              "relations": {
+                "defines": 2,
+                "imports_file": 1
+              },
+              "unresolved_call_sites": 2
+            },
+            "php": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "python": {
+              "calls": 0,
+              "import_sites": 6,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "a",
+                "b",
+                "entry",
+                "replacement",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 6,
+                "imports_file": 6
+              },
+              "unresolved_call_sites": 7
+            },
+            "ruby": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "rust": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                ""
+              ],
+              "relations": {},
+              "unresolved_call_sites": 1
+            },
+            "typescript": {
+              "calls": 0,
+              "import_sites": 5,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "Component",
+                "a",
+                "b",
+                "entry",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 6,
+                "imports_file": 3
+              },
+              "unresolved_call_sites": 7
+            }
+          },
+          "summary": {
+            "edges": 44,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 26,
+              "partial": 1,
+              "unsupported": 3
+            },
+            "json_bytes": 17045,
+            "nodes": 64,
+            "partial_files": [
+              "safety/broken.py"
+            ],
+            "relations": {
+              "defines": 34,
+              "imports_file": 10
+            },
+            "unresolved_calls": 30
+          }
+        },
+        "after_target_deletion": {
+          "call_edges": [],
+          "file_statuses": {
+            "bash/main.sh": "parsed",
+            "c/main.c": "parsed",
+            "cpp/main.cpp": "parsed",
+            "csharp/Main.cs": "parsed",
+            "go/main.go": "parsed",
+            "java/Main.java": "parsed",
+            "javascript/barrel.js": "parsed",
+            "javascript/component.jsx": "parsed",
+            "javascript/use.js": "parsed",
+            "php/main.php": "parsed",
+            "python/__init__.py": "parsed",
+            "python/barrel.py": "parsed",
+            "python/cycle_a.py": "parsed",
+            "python/cycle_b.py": "parsed",
+            "python/other.py": "parsed",
+            "python/use.py": "parsed",
+            "ruby/main.rb": "parsed",
+            "rust/main.rs": "parsed",
+            "safety/AGENTS.md": "unsupported",
+            "safety/broken.py": "partial",
+            "safety/package.json": "unsupported",
+            "safety/trap.py": "parsed",
+            "safety/unsupported.unknown": "unsupported",
+            "typescript/barrel.ts": "parsed",
+            "typescript/component.tsx": "parsed",
+            "typescript/cycle_a.ts": "parsed",
+            "typescript/cycle_b.ts": "parsed",
+            "typescript/other.ts": "parsed",
+            "typescript/use.ts": "parsed"
+          },
+          "imports": [
+            {
+              "line": 1,
+              "path": "c/main.c",
+              "specifier": "#include <stdio.h>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "cpp/main.cpp",
+              "specifier": "#include <vector>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "csharp/Main.cs",
+              "specifier": "using System;",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "go/main.go",
+              "specifier": "import \"fmt\"",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "java/Main.java",
+              "specifier": "import java.util.List;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "javascript/barrel.js",
+              "specifier": "./target.js",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "javascript/use.js",
+              "specifier": "./barrel.js",
+              "target": "javascript/barrel.js"
+            },
+            {
+              "line": 2,
+              "path": "php/main.php",
+              "specifier": "require 'other.php'",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "python/barrel.py",
+              "specifier": ".target",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_a.py",
+              "specifier": ".cycle_b",
+              "target": "python/cycle_b.py"
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_b.py",
+              "specifier": ".cycle_a",
+              "target": "python/cycle_a.py"
+            },
+            {
+              "line": 1,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "python/use.py",
+              "specifier": ".barrel",
+              "target": "python/barrel.py"
+            },
+            {
+              "line": 3,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "rust/main.rs",
+              "specifier": "use std::fmt;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "typescript/barrel.ts",
+              "specifier": "./target",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_a.ts",
+              "specifier": "./cycle_b",
+              "target": "typescript/cycle_b.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_b.ts",
+              "specifier": "./cycle_a",
+              "target": "typescript/cycle_a.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/use.ts",
+              "specifier": "./target",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "typescript/use.ts",
+              "specifier": "./barrel",
+              "target": "typescript/barrel.ts"
+            }
+          ],
+          "matrix": {
+            "bash": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 3
+            },
+            "c": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "cpp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "csharp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "go": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "java": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 2,
+              "labels": [
+                "",
+                "",
+                "",
+                "Component",
+                "entry"
+              ],
+              "relations": {
+                "defines": 2,
+                "imports_file": 1
+              },
+              "unresolved_call_sites": 2
+            },
+            "php": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "python": {
+              "calls": 0,
+              "import_sites": 6,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "a",
+                "b",
+                "entry",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 5,
+                "imports_file": 3
+              },
+              "unresolved_call_sites": 7
+            },
+            "ruby": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "rust": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                ""
+              ],
+              "relations": {},
+              "unresolved_call_sites": 1
+            },
+            "typescript": {
+              "calls": 0,
+              "import_sites": 5,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "Component",
+                "a",
+                "b",
+                "entry",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 6,
+                "imports_file": 3
+              },
+              "unresolved_call_sites": 7
+            }
+          },
+          "summary": {
+            "edges": 40,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 25,
+              "partial": 1,
+              "unsupported": 3
+            },
+            "json_bytes": 16280,
+            "nodes": 62,
+            "partial_files": [
+              "safety/broken.py"
+            ],
+            "relations": {
+              "defines": 33,
+              "imports_file": 7
+            },
+            "unresolved_calls": 30
+          }
+        },
+        "initial": {
+          "call_edges": [],
+          "file_statuses": {
+            "bash/main.sh": "parsed",
+            "c/main.c": "parsed",
+            "cpp/main.cpp": "parsed",
+            "csharp/Main.cs": "parsed",
+            "go/main.go": "parsed",
+            "java/Main.java": "parsed",
+            "javascript/barrel.js": "parsed",
+            "javascript/component.jsx": "parsed",
+            "javascript/target.js": "parsed",
+            "javascript/use.js": "parsed",
+            "php/main.php": "parsed",
+            "python/__init__.py": "parsed",
+            "python/barrel.py": "parsed",
+            "python/cycle_a.py": "parsed",
+            "python/cycle_b.py": "parsed",
+            "python/other.py": "parsed",
+            "python/target.py": "parsed",
+            "python/use.py": "parsed",
+            "ruby/main.rb": "parsed",
+            "rust/main.rs": "parsed",
+            "safety/AGENTS.md": "unsupported",
+            "safety/broken.py": "partial",
+            "safety/package.json": "unsupported",
+            "safety/trap.py": "parsed",
+            "safety/unsupported.unknown": "unsupported",
+            "typescript/barrel.ts": "parsed",
+            "typescript/component.tsx": "parsed",
+            "typescript/cycle_a.ts": "parsed",
+            "typescript/cycle_b.ts": "parsed",
+            "typescript/other.ts": "parsed",
+            "typescript/target.ts": "parsed",
+            "typescript/use.ts": "parsed"
+          },
+          "imports": [
+            {
+              "line": 1,
+              "path": "c/main.c",
+              "specifier": "#include <stdio.h>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "cpp/main.cpp",
+              "specifier": "#include <vector>\n",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "csharp/Main.cs",
+              "specifier": "using System;",
+              "target": null
+            },
+            {
+              "line": 2,
+              "path": "go/main.go",
+              "specifier": "import \"fmt\"",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "java/Main.java",
+              "specifier": "import java.util.List;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "javascript/barrel.js",
+              "specifier": "./target.js",
+              "target": "javascript/target.js"
+            },
+            {
+              "line": 1,
+              "path": "javascript/use.js",
+              "specifier": "./barrel.js",
+              "target": "javascript/barrel.js"
+            },
+            {
+              "line": 2,
+              "path": "php/main.php",
+              "specifier": "require 'other.php'",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "python/barrel.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_a.py",
+              "specifier": ".cycle_b",
+              "target": "python/cycle_b.py"
+            },
+            {
+              "line": 1,
+              "path": "python/cycle_b.py",
+              "specifier": ".cycle_a",
+              "target": "python/cycle_a.py"
+            },
+            {
+              "line": 1,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 2,
+              "path": "python/use.py",
+              "specifier": ".barrel",
+              "target": "python/barrel.py"
+            },
+            {
+              "line": 3,
+              "path": "python/use.py",
+              "specifier": ".target",
+              "target": "python/target.py"
+            },
+            {
+              "line": 1,
+              "path": "rust/main.rs",
+              "specifier": "use std::fmt;",
+              "target": null
+            },
+            {
+              "line": 1,
+              "path": "typescript/barrel.ts",
+              "specifier": "./target",
+              "target": "typescript/target.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_a.ts",
+              "specifier": "./cycle_b",
+              "target": "typescript/cycle_b.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/cycle_b.ts",
+              "specifier": "./cycle_a",
+              "target": "typescript/cycle_a.ts"
+            },
+            {
+              "line": 1,
+              "path": "typescript/use.ts",
+              "specifier": "./target",
+              "target": "typescript/target.ts"
+            },
+            {
+              "line": 2,
+              "path": "typescript/use.ts",
+              "specifier": "./barrel",
+              "target": "typescript/barrel.ts"
+            }
+          ],
+          "matrix": {
+            "bash": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 3
+            },
+            "c": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "cpp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "csharp": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "go": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "java": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "Main",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 3
+              },
+              "unresolved_call_sites": 1
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 2,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "Component",
+                "entry",
+                "same"
+              ],
+              "relations": {
+                "defines": 3,
+                "imports_file": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "php": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "python": {
+              "calls": 0,
+              "import_sites": 6,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "a",
+                "b",
+                "decorate",
+                "entry",
+                "same",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 7,
+                "imports_file": 6
+              },
+              "unresolved_call_sites": 7
+            },
+            "ruby": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 2
+            },
+            "rust": {
+              "calls": 0,
+              "import_sites": 1,
+              "labels": [
+                "",
+                "entry",
+                "helper"
+              ],
+              "relations": {
+                "defines": 2
+              },
+              "unresolved_call_sites": 1
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                ""
+              ],
+              "relations": {},
+              "unresolved_call_sites": 1
+            },
+            "typescript": {
+              "calls": 0,
+              "import_sites": 5,
+              "labels": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "Component",
+                "a",
+                "b",
+                "entry",
+                "same",
+                "same",
+                "shadow"
+              ],
+              "relations": {
+                "defines": 7,
+                "imports_file": 5
+              },
+              "unresolved_call_sites": 7
+            }
+          },
+          "summary": {
+            "edges": 50,
+            "failed_sources": [],
+            "file_statuses": {
+              "parsed": 28,
+              "partial": 1,
+              "unsupported": 3
+            },
+            "json_bytes": 18521,
+            "nodes": 69,
+            "partial_files": [
+              "safety/broken.py"
+            ],
+            "relations": {
+              "defines": 37,
+              "imports_file": 13
+            },
+            "unresolved_calls": 30
+          }
+        },
+        "repository_execution_marker_absent": true,
+        "unchanged_caller_hash": "33c1aa633caa047c2e69d431a9d1b6d3e38bfa51df1eba88fb0c0df75b110898"
+      },
+      "process_peak_rss_bytes": 32862208,
+      "python": "3.13.17",
+      "seconds": 0.018
+    },
+    "graphify": {
+      "cgroup_peak_bytes": 27492352,
+      "diagnostics": [
+        "warning: 1 file(s) had syntax errors and may be partially extracted: broken.py (first error at line 1) (#2551)",
+        "  warning: 1 file(s) had syntax errors and may be partially extracted: broken.py (first error at line 1) (#2551)",
+        "  warning: 1 file(s) had syntax errors and may be partially extracted: broken.py (first error at line 1) (#2551)"
+      ],
+      "engine": "graphify",
+      "machine": "aarch64",
+      "packages": {
+        "RapidFuzz": "3.14.5",
+        "graphifyy": "0.9.37",
+        "networkx": "3.6.1",
+        "numpy": "2.5.2",
+        "pip": "26.2.2",
+        "tree-sitter": "0.25.2",
+        "tree-sitter-bash": "0.25.1",
+        "tree-sitter-c": "0.24.2",
+        "tree-sitter-c-sharp": "0.23.5",
+        "tree-sitter-cpp": "0.23.4",
+        "tree-sitter-elixir": "0.3.5",
+        "tree-sitter-fortran": "0.6.0",
+        "tree-sitter-go": "0.25.0",
+        "tree-sitter-groovy": "0.1.2",
+        "tree-sitter-java": "0.23.5",
+        "tree-sitter-javascript": "0.25.0",
+        "tree-sitter-json": "0.24.8",
+        "tree-sitter-julia": "0.23.1",
+        "tree-sitter-kotlin": "1.1.0",
+        "tree-sitter-lua": "0.5.0",
+        "tree-sitter-objc": "3.0.2",
+        "tree-sitter-php": "0.24.1",
+        "tree-sitter-powershell": "0.26.4",
+        "tree-sitter-python": "0.25.0",
+        "tree-sitter-ruby": "0.23.1",
+        "tree-sitter-rust": "0.24.2",
+        "tree-sitter-scala": "0.26.2",
+        "tree-sitter-swift": "0.7.3",
+        "tree-sitter-typescript": "0.23.2",
+        "tree-sitter-verilog": "1.0.3",
+        "tree-sitter-zig": "1.1.2"
+      },
+      "probe": {
+        "after_definition_change": {
+          "call_edges": [
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "bash/main.sh",
+              "target": "helper()",
+              "target_file": "bash/main.sh"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "c/main.c",
+              "target": "helper()",
+              "target_file": "c/main.c"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "cpp/main.cpp",
+              "target": "helper()",
+              "target_file": "cpp/main.cpp"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "csharp/Main.cs",
+              "target": ".helper()",
+              "target_file": "csharp/Main.cs"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "go/main.go",
+              "target": "helper()",
+              "target_file": "go/main.go"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "java/Main.java",
+              "target": ".helper()",
+              "target_file": "java/Main.java"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "php/main.php",
+              "target": "helper()",
+              "target_file": "php/main.php"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "ruby/main.rb",
+              "target": "helper()",
+              "target_file": "ruby/main.rb"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "rust/main.rs",
+              "target": "helper()",
+              "target_file": "rust/main.rs"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_a.py",
+              "target": "b()",
+              "target_file": "python/cycle_b.py"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_b.py",
+              "target": "a()",
+              "target_file": "python/cycle_a.py"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_a.ts",
+              "target": "b()",
+              "target_file": "typescript/cycle_b.ts"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_b.ts",
+              "target": "a()",
+              "target_file": "typescript/cycle_a.ts"
+            }
+          ],
+          "file_statuses": {},
+          "imports": [],
+          "matrix": {
+            "bash": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.sh",
+                "main.sh script"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "defines": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "c": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.c"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "cpp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.cpp"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "csharp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.cs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "go": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.go"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "java": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.java"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "barrel.js",
+                "component.jsx",
+                "entry()",
+                "use.js"
+              ],
+              "relations": {
+                "contains": 2,
+                "imports": 1,
+                "imports_from": 2,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "php": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.php"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "python": {
+              "calls": 2,
+              "import_sites": 0,
+              "labels": [
+                "__init__.py",
+                "a()",
+                "b()",
+                "barrel.py",
+                "cycle_a.py",
+                "cycle_b.py",
+                "entry()",
+                "other.py",
+                "replacement()",
+                "same()",
+                "shadow()",
+                "target.py",
+                "use.py"
+              ],
+              "relations": {
+                "calls": 2,
+                "contains": 6,
+                "imports": 2,
+                "imports_from": 6,
+                "references": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "ruby": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rb"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "rust": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "broken()",
+                "broken.py",
+                "trap.py"
+              ],
+              "relations": {
+                "contains": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "typescript": {
+              "calls": 2,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "a()",
+                "b()",
+                "barrel.ts",
+                "component.tsx",
+                "cycle_a.ts",
+                "cycle_b.ts",
+                "entry()",
+                "other.ts",
+                "same()",
+                "shadow()",
+                "use.ts"
+              ],
+              "relations": {
+                "calls": 2,
+                "contains": 6,
+                "imports": 4,
+                "imports_from": 5,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            }
+          },
+          "summary": {
+            "edges": 80,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 25433,
+            "nodes": 64,
+            "partial_files": [],
+            "relations": {
+              "calls": 13,
+              "contains": 30,
+              "defines": 2,
+              "imports": 11,
+              "imports_from": 15,
+              "method": 4,
+              "re_exports": 4,
+              "references": 1
+            },
+            "unresolved_calls": 0
+          }
+        },
+        "after_target_deletion": {
+          "call_edges": [
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "bash/main.sh",
+              "target": "helper()",
+              "target_file": "bash/main.sh"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "c/main.c",
+              "target": "helper()",
+              "target_file": "c/main.c"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "cpp/main.cpp",
+              "target": "helper()",
+              "target_file": "cpp/main.cpp"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "csharp/Main.cs",
+              "target": ".helper()",
+              "target_file": "csharp/Main.cs"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "go/main.go",
+              "target": "helper()",
+              "target_file": "go/main.go"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "java/Main.java",
+              "target": ".helper()",
+              "target_file": "java/Main.java"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "php/main.php",
+              "target": "helper()",
+              "target_file": "php/main.php"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "ruby/main.rb",
+              "target": "helper()",
+              "target_file": "ruby/main.rb"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "rust/main.rs",
+              "target": "helper()",
+              "target_file": "rust/main.rs"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_a.py",
+              "target": "b()",
+              "target_file": "python/cycle_b.py"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_b.py",
+              "target": "a()",
+              "target_file": "python/cycle_a.py"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_a.ts",
+              "target": "b()",
+              "target_file": "typescript/cycle_b.ts"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_b.ts",
+              "target": "a()",
+              "target_file": "typescript/cycle_a.ts"
+            }
+          ],
+          "file_statuses": {},
+          "imports": [],
+          "matrix": {
+            "bash": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.sh",
+                "main.sh script"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "defines": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "c": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.c"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "cpp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.cpp"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "csharp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.cs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "go": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.go"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "java": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.java"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "barrel.js",
+                "component.jsx",
+                "entry()",
+                "use.js"
+              ],
+              "relations": {
+                "contains": 2,
+                "imports": 1,
+                "imports_from": 2,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "php": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.php"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "python": {
+              "calls": 2,
+              "import_sites": 0,
+              "labels": [
+                "__init__.py",
+                "a()",
+                "b()",
+                "barrel.py",
+                "cycle_a.py",
+                "cycle_b.py",
+                "entry()",
+                "other.py",
+                "same()",
+                "shadow()",
+                "use.py"
+              ],
+              "relations": {
+                "calls": 2,
+                "contains": 5,
+                "imports": 2,
+                "imports_from": 6,
+                "references": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "ruby": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rb"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "rust": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "broken()",
+                "broken.py",
+                "trap.py"
+              ],
+              "relations": {
+                "contains": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "typescript": {
+              "calls": 2,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "a()",
+                "b()",
+                "barrel.ts",
+                "component.tsx",
+                "cycle_a.ts",
+                "cycle_b.ts",
+                "entry()",
+                "other.ts",
+                "same()",
+                "shadow()",
+                "use.ts"
+              ],
+              "relations": {
+                "calls": 2,
+                "contains": 6,
+                "imports": 4,
+                "imports_from": 5,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            }
+          },
+          "summary": {
+            "edges": 79,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 24978,
+            "nodes": 62,
+            "partial_files": [],
+            "relations": {
+              "calls": 13,
+              "contains": 29,
+              "defines": 2,
+              "imports": 11,
+              "imports_from": 15,
+              "method": 4,
+              "re_exports": 4,
+              "references": 1
+            },
+            "unresolved_calls": 0
+          }
+        },
+        "confirmed_false_shadow_call": {
+          "caller": "shadow()",
+          "confidence": "EXTRACTED",
+          "line": "L13",
+          "source_file": "python/use.py",
+          "target": "same()",
+          "target_file": "python/target.py"
+        },
+        "initial": {
+          "call_edges": [
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "bash/main.sh",
+              "target": "helper()",
+              "target_file": "bash/main.sh"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "c/main.c",
+              "target": "helper()",
+              "target_file": "c/main.c"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "cpp/main.cpp",
+              "target": "helper()",
+              "target_file": "cpp/main.cpp"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "csharp/Main.cs",
+              "target": ".helper()",
+              "target_file": "csharp/Main.cs"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "go/main.go",
+              "target": "helper()",
+              "target_file": "go/main.go"
+            },
+            {
+              "caller": ".entry()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "java/Main.java",
+              "target": ".helper()",
+              "target_file": "java/Main.java"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L4",
+              "source_file": "php/main.php",
+              "target": "helper()",
+              "target_file": "php/main.php"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "ruby/main.rb",
+              "target": "helper()",
+              "target_file": "ruby/main.rb"
+            },
+            {
+              "caller": "entry()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "rust/main.rs",
+              "target": "helper()",
+              "target_file": "rust/main.rs"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_a.py",
+              "target": "b()",
+              "target_file": "python/cycle_b.py"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L3",
+              "source_file": "python/cycle_b.py",
+              "target": "a()",
+              "target_file": "python/cycle_a.py"
+            },
+            {
+              "caller": "shadow()",
+              "confidence": "EXTRACTED",
+              "line": "L13",
+              "source_file": "python/use.py",
+              "target": "same()",
+              "target_file": "python/target.py"
+            },
+            {
+              "caller": "a()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_a.ts",
+              "target": "b()",
+              "target_file": "typescript/cycle_b.ts"
+            },
+            {
+              "caller": "b()",
+              "confidence": "EXTRACTED",
+              "line": "L2",
+              "source_file": "typescript/cycle_b.ts",
+              "target": "a()",
+              "target_file": "typescript/cycle_a.ts"
+            }
+          ],
+          "file_statuses": {},
+          "imports": [],
+          "matrix": {
+            "bash": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.sh",
+                "main.sh script"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "defines": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "c": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.c"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "cpp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.cpp"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "csharp": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.cs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "go": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.go"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "java": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                ".entry()",
+                ".helper()",
+                "Main",
+                "Main.java"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 1,
+                "imports": 1,
+                "method": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "javascript": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "barrel.js",
+                "component.jsx",
+                "entry()",
+                "same()",
+                "target.js",
+                "use.js"
+              ],
+              "relations": {
+                "contains": 3,
+                "imports": 2,
+                "imports_from": 2,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "php": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.php"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "python": {
+              "calls": 3,
+              "import_sites": 0,
+              "labels": [
+                "__init__.py",
+                "a()",
+                "b()",
+                "barrel.py",
+                "cycle_a.py",
+                "cycle_b.py",
+                "decorate()",
+                "entry()",
+                "other.py",
+                "same()",
+                "same()",
+                "shadow()",
+                "target.py",
+                "use.py"
+              ],
+              "relations": {
+                "calls": 3,
+                "contains": 7,
+                "imports": 5,
+                "imports_from": 6,
+                "references": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "ruby": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rb"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2
+              },
+              "unresolved_call_sites": 0
+            },
+            "rust": {
+              "calls": 1,
+              "import_sites": 0,
+              "labels": [
+                "entry()",
+                "helper()",
+                "main.rs"
+              ],
+              "relations": {
+                "calls": 1,
+                "contains": 2,
+                "imports_from": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "safety": {
+              "calls": 0,
+              "import_sites": 0,
+              "labels": [
+                "broken()",
+                "broken.py",
+                "trap.py"
+              ],
+              "relations": {
+                "contains": 1
+              },
+              "unresolved_call_sites": 0
+            },
+            "typescript": {
+              "calls": 2,
+              "import_sites": 0,
+              "labels": [
+                "Component()",
+                "a()",
+                "b()",
+                "barrel.ts",
+                "component.tsx",
+                "cycle_a.ts",
+                "cycle_b.ts",
+                "entry()",
+                "other.ts",
+                "same()",
+                "same()",
+                "shadow()",
+                "target.ts",
+                "use.ts"
+              ],
+              "relations": {
+                "calls": 2,
+                "contains": 7,
+                "imports": 4,
+                "imports_from": 5,
+                "re_exports": 2
+              },
+              "unresolved_call_sites": 0
+            }
+          },
+          "summary": {
+            "edges": 88,
+            "failed_sources": [],
+            "file_statuses": {},
+            "json_bytes": 27615,
+            "nodes": 68,
+            "partial_files": [],
+            "relations": {
+              "calls": 14,
+              "contains": 33,
+              "defines": 2,
+              "imports": 15,
+              "imports_from": 15,
+              "method": 4,
+              "re_exports": 4,
+              "references": 1
+            },
+            "unresolved_calls": 0
+          }
+        },
+        "repository_execution_marker_absent": true,
+        "unchanged_caller_hash": "33c1aa633caa047c2e69d431a9d1b6d3e38bfa51df1eba88fb0c0df75b110898"
+      },
+      "process_peak_rss_bytes": 44228608,
+      "python": "3.13.17",
+      "seconds": 0.081
+    }
+  }
+}

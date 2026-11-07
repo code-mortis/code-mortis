@@ -13,6 +13,7 @@ const installation: Schema["InstallationOut"] = {
   unavailable_reason: null, job_id: null, operation_status: null, operation_error: null,
 };
 const repo = {
+  code_graph_enabled: false,
   id: 22,
   installation_id: 10,
   full_name: "acme/payments",
@@ -44,6 +45,80 @@ const repo = {
   open_prs: 2,
   has_running_review: false,
 };
+
+test("code graph stays opt-in and saves with the existing repository draft", async ({ page }) => {
+  const requests = await mock(page);
+  let statusReads = 0;
+  await page.route("**/api/v1/repositories/22/code-graph", async (route) => { statusReads++; await route.fulfill({ json: { state: "disabled" } }); });
+  await page.goto("/repositories/22/settings?tab=context");
+  const toggle = page.getByRole("switch", { name: "Code graph", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByText("Save to start indexing.", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Existing project context");
+  await repositorySection(page, "Review behavior");
+  await repositorySection(page, "Project context");
+  await expect(toggle).toBeChecked();
+  expect(statusReads).toBe(0);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
+  expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
+    code_graph_enabled: true, enabled: true, connection_id: "connection", settings: { background: "Existing project context" },
+  });
+});
+
+for (const mode of ["light", "dark"] as const) {
+  test(`code graph readiness and retry cancel actions ${mode}`, async ({ page }, info) => {
+    await page.addInitScript((value) => localStorage.setItem("theme", value), mode);
+    const requests = await mock(page);
+    await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, code_graph_enabled: true }] }));
+    const status: Schema["CodeGraphStatus"] = { enabled: true, paused: false, state: "partial", refreshing: false,
+      commit_sha: "b".repeat(40), indexed_sha: "b".repeat(40), snapshot_id: "snapshot", checked_at: at, finished_at: at, error: null,
+      coverage: { parsed: 239, partial: 1, unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false, reasons: { syntax_error: 1, unsupported_language: 72 } } };
+    const actions: string[] = [];
+    await page.route("**/api/v1/repositories/22/code-graph**", async (route) => {
+      if (route.request().method() === "POST") {
+        const action = new URL(route.request().url()).pathname.split("/").at(-1)!;
+        actions.push(action);
+        status.state = action === "retry" ? "queued" : "cancelled";
+        status.paused = action === "cancel";
+        status.error = null;
+      }
+      await route.fulfill({ json: status });
+    });
+    await page.goto("/repositories/22/settings?tab=context");
+    await expect(page.getByText("Indexed with warnings", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Index coverage")).toContainText("239 files fully parsed");
+    await expect(page.getByLabel("Index coverage")).toContainText("72 files use formats without structural support");
+    await expect(page.getByLabel("Index coverage")).toContainText("1 file could only be partly parsed");
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/code-graph-${info.project.name}-${mode}.png`, fullPage: true });
+    status.state = "failed";
+    status.error = "Could not update the code index. Check repository access and retry.";
+    await page.reload();
+    await expect(page.getByRole("alert").filter({ hasText: status.error })).toBeVisible();
+    const retry = page.getByRole("button", { name: "Retry indexing", exact: true });
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Cancel indexing", exact: true }).click();
+    await expect(page.getByText("Indexing is paused. Retry to resume automatic updates.")).toBeVisible();
+    expect(actions).toEqual(["retry", "cancel"]);
+    expect(requests.filter((r) => r.path === "/repositories/22")).toHaveLength(0);
+    await page.getByRole("switch", { name: "Code graph", exact: true }).uncheck();
+    await expect(page.getByText("Save to disable indexing and code access.")).toBeVisible();
+    await expect(retry).toBeHidden();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
+    expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({ code_graph_enabled: false });
+  });
+}
+
+test("code graph is unavailable to workspace members", async ({ page }) => {
+  await mock(page, { role: "member" });
+  await page.goto("/repositories/22/settings?tab=context");
+  await expect(page.getByRole("switch", { name: "Code graph", exact: true })).toBeHidden();
+});
 const run = {
   id: "run",
   connection_id: "connection",
@@ -205,9 +280,10 @@ async function mockRepositoryPulls(page: Page, repositoryId: number, items: () =
 
 type PullDetailFixture = { pull_request: typeof pr; runs: Run[]; findings: Schema["FindingOut"][]; [key: string]: unknown };
 
-function pullMetadata({ runs, findings: _findings, pull_request, ...metadata }: PullDetailFixture) {
+function pullMetadata({ runs, findings, pull_request, ...metadata }: PullDetailFixture) {
   return {
     ...metadata, pull_request: { ...pull_request, latest_run: runs[0] ?? null }, run_count: runs.length,
+    finding_counts: Object.fromEntries(["open", "resolved", "dismissed"].map((state) => [state, findings.filter((finding) => finding.status === state).length])),
     has_active_run: runs.some((run) => ["queued", "running"].includes(run.status)),
     latest_observed_run_id: runs.find((run) => ["completed", "partial"].includes(run.status))?.id ?? null,
   };
@@ -894,7 +970,7 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await expect(inbox).toHaveAttribute("title", "0 open pull requests");
   running = true;
   openPrs = 1;
-  await page.clock.fastForward(6000);
+  await page.clock.fastForward(61000);
   await expect(activity).toBeVisible();
   await expect(inbox).toHaveAccessibleDescription("1 open pull request");
   await expect(inbox).toHaveAttribute("title", "1 open pull request");
@@ -8677,6 +8753,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
   await expect(list.getByRole("region")).toHaveCount(1);
+  await expect(list.getByRole("heading")).toHaveCount(0);
   await expect(list.getByRole("button")).toHaveCount(1);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Findings 1", exact: true })).toBeVisible();
@@ -8694,6 +8771,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
   await expect(list.getByRole("button")).toHaveCount(1);
   await page.getByRole("tab", { name: "Resolved 1", exact: true }).click();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toContainText("Validate the response");
+  await expect(page.getByRole("region", { name: "Resolved findings", exact: true }).getByRole("heading")).toHaveCount(0);
   await expect(list).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
   for (const theme of ["light", "dark"]) {

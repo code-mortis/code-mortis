@@ -136,7 +136,7 @@ collection:
 
 - Token management itself (Settings → API tokens list, create, revoke).
 - Sign-in, sign-out, and `/auth/me`.
-- Repository configuration and background generation/status.
+- Repository configuration, code graph readiness/retry/cancel, and background generation/status.
 - Connection creation, edits, deletion, tests, draft-model discovery,
   personal-provider authorization, grants, console tickets, and disconnect.
 - Installation and team administration, member management, instance

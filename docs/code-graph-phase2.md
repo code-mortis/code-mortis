@@ -1,0 +1,98 @@
+# Code graph phase 2
+
+The repository opt-in now enables bounded native analysis context and graph-assisted evidence discovery. Graph indexing remains on its dedicated worker. It uses no model tokens or embeddings. Review prompts can grow; token savings have not been established.
+
+## Implemented adapters
+
+| Stage | API / OCR | ChatGPT | Claude Code |
+| --- | --- | --- | --- |
+| Initial assigned-file analysis | Explicit `unsupported_adapter` provenance; ordinary OCR input | Up to three related files / 12 KiB per assignment, 48 KiB reserved per run | Same |
+| Candidate assessment | Up to three exact-current path suggestions | Same | Same |
+| Fix verification | Up to three exact-current path suggestions | Same | Same |
+
+The [pinned OCR 1.13.1 implementation](https://github.com/alibaba/open-code-review/blob/v1.13.1/internal/agent/agent.go) substitutes global background into plan/main prompts, including repeated group rounds, then checks the rendered prompt budget. It has no application-controlled per-assigned-file optional-context hook. Injecting graph source into global business background could repeat it, change the trust boundary and fail otherwise valid groups. Initial OCR analysis therefore records the unsupported path. Assessment and verification use the existing bounded evidence adapter, independently of initial analysis.
+
+`reviews/graph_context.py` selects one-hop imports from the exact head/extractor/policy identity. Review workers query metadata in PostgreSQL and verify related blobs against their existing fetched Git objects. They do not mount the retained graph store, call the parser or grant new runner tools. Metadata reads hold a shared snapshot row lock against retention. Source/text retrieval retains the existing filesystem lock.
+
+Native analysis persists selection metadata and omission reasons before inference. Retries freeze attempted selections, including omissions; they do not adopt an index that became available later. Required input remains intact when optional context exceeds the prompt ceiling. Reported usage still counts every inference round, including retries. Coverage and finding paths remain restricted to the assigned files.
+
+Assessment/verification expose graph paths as discovery candidates, not citation evidence. The existing `required_paths` / revision-qualified `required_sources` loop fetches needed source; citation IDs, exact quotes, historical identity and confirmed-fix gates are unchanged. Only current-head hints are suggested; original evidence always retains its original revision. Each round rechecks graph permissions and policy. A conservative prompt reserve drops optional hints before they can crowd out required evidence. Omission metadata is saved in the evidence record but omitted from the citation-selection model envelope.
+
+Eligibility is frozen only for new browser/automatic runs on opted-in repositories. A manual browser actor, native connection owner, or recorded graph-enabling actor for automatic API work is reauthorized on every graph read. Existing PAT/MCP origins never acquire graph access through this feature. Turning the graph off stops future enrichment; existing review evidence is preserved.
+
+## Local validation
+
+The 2A checkpoint passed 2,865 backend tests, the real isolated native-client startup smoke without inference, a real container Git/OCR scope probe, and eight desktop/mobile/light/dark graph-settings browser checks. See [2A evidence](evidence/code-graph-phase2a.json). The [combined evidence record](evidence/code-graph-phase2.json) confirms that review, verification, sync and scheduler containers were reloaded after active/reserved work drained; all six workers responded afterward, API readiness passed, and application record counts were unchanged. The later 2B checks cover dispatch and persistence for API, ChatGPT and Claude Code in both evidence stages, plus missing snapshots, revocation, prompt limits and citation boundaries. The final combined suite passed **2,879 tests** with 637 warnings in 656.06 seconds. Ruff, the production frontend build and eight graph-settings browser checks passed. Impeccable reported no static findings; mobile-light and desktop-dark captures were inspected. Two additional focused OCR boundary cases passed after the full suite, including explicit unsupported-adapter provenance. Public OpenAPI/types are unchanged. The native smoke uses empty profiles and no inference; these checks do not establish real provider quality or token savings.
+
+## Frozen quality experiment
+
+The [corpus manifest](evidence/code-graph-phase2-corpus.json) records six source states from three historical changes: SearchSelect popup ownership, in-flight API-token dialog dismissal, and queued job provenance argument handling. Each defect state is paired with the corrected state. The corresponding regression tests and inspected source changes establish the scoped ground truth; accepted review comments are not used as labels.
+
+Each state has three arms: existing assigned context, deterministic text/symbol-like identifier retrieval, and production-parser one-hop graph retrieval. Related source has the same three-file / 12 KiB cap. Assigned excerpts are bounded to 8 KiB and identical across arms. Prompts have exact revision, path and line ranges. Private source prompts stay outside the repository; committed evidence records hashes, locations and byte counts. `scripts/code_graph_eval/quality_prepare.py` reproduces preparation with the real parser in a credential-free 256 MiB container and makes no model calls.
+
+Before inference, the acceptance thresholds are fixed: all citations valid; no additional false positives; and either at least one additional confirmed target defect with at most 25% more reported tokens, or equal confirmed defects with at least 10% fewer reported tokens, compared with **both** baselines. The latency threshold is a p95 ratio no greater than 1.25. Record input/output/total usage when the transport reports them, otherwise null. The current native transport exposes aggregate tokens only, so separate input/output values remain unknown in that adapter. Never derive model tokens from byte counts. Record every attempted inference, including failure, and stop if usage becomes unknown.
+
+This is a six-case scoped experiment, not a statistically representative whole-PR benchmark. One native invocation per arm means requested extra paths are recorded, while executed source-expansion rounds are zero. Internal provider inference rounds are not exposed separately; aggregate reported usage is retained. Future multi-round measurements need a separate budget. Python absolute imports are intentionally unresolved by the current extractor, so some graph arms can equal the baseline. Negative results keep the feature experimental and opt-in; they do not justify wider rollout.
+
+`scripts/code_graph_eval/quality_run.py` requires `--authorized`, refuses production databases, revalidates connection/repository access before each request, persists every dispatch, and stops on unknown usage or transport failure. Existing output requires explicit `--resume` with the same corpus, connection/configuration and a larger approved `--token-budget`. Only known terminal consumption may resume; only a `token_limit` failure may be retried. Completed requests are skipped and failed usage stays in the total. Four standard-library tests cover checkpoint identity, accounting, unknown usage and citation bounds: `python3 -m unittest scripts.code_graph_eval.test_quality_run`. Native usage arrives after a request, so a running request can exceed its allowance; this is not a hard provider-side cap.
+
+## Recorded quality results: complete, rollout gate not met
+
+The user authorized the existing ChatGPT subscription with `gpt-6-luna`, low effort, the frozen corpus and a 120,000-token continuation allowance, then explicitly raised the total to 280,000 and finally 340,000 tokens with at most 20 invocations. The [raw results](evidence/code-graph-phase2-quality.json) contain **all 18 answers from 20 native invocations, consuming 306,289 reported tokens**. Two attempts failed at the post-inference token limit; both remain counted, and their discarded answers are not scored. Each was repeated only after additional authorization. The completed matrix needs no more calls. No review records or GitHub comments were created.
+
+All six cases can now be compared across all three arms. All nine defect-state answers are uncertain; none confirmed a target defect. Graph and text/symbol retrieval each identified the corrected SearchSelect control. Graph also identified the corrected job-dispatch control, although its prompt is identical to the ordinary-context arm, so this difference cannot be attributed to retrieval. Uncertain is not a false positive, a confirmed defect or a verified fix.
+
+| Six matched cases | Ordinary context | Text/symbol retrieval | Graph retrieval |
+| --- | ---: | ---: | ---: |
+| Completed answers | 6 | 6 | 6 |
+| Confirmed target defects | 0 | 0 | 0 |
+| False positives | 0 | 0 | 0 |
+| Correct fixed controls | 0 | 1 | 2 |
+| Uncertain answers | 6 | 5 | 4 |
+| Tokens, all attempts | 87,909 | 130,728 | 87,652 |
+| Tokens, completed attempts only | 87,909 | 101,409 | 87,652 |
+| p95 runner latency, seconds | 9.300 | 6.273 | 7.279 |
+
+The graph used **0.29% fewer tokens than ordinary context**, below the frozen 10% saving threshold, without additional confirmed defects. Against text/symbol retrieval it used 32.95% fewer including the two discarded attempts, or 13.57% fewer on completed attempts. Those retries must not be advertised as graph efficiency. Identical Python graph/baseline prompts also produced different usage, showing execution variability. Latency ratios are 0.78 against ordinary context and 1.16 against text/symbol retrieval, within the 1.25 threshold on this tiny sample. Latency measures individual runner calls, excluding preparation, authorization and approval pauses; p95 uses nearest rank.
+
+Across all 18 completed answers, **38/38 citations have valid source IDs and ranges**, but source review found only **2/18 fully supported citation sets**. This stricter answer-level check requires the cited spans to cover the positive code-behavior claims without unrelated citations. For example, graph case 2 cites anchor/choices at lines 28–29 but misses the arrow at 90–95 and controlled Popover at 72; graph case 4 cites revoke/pagination UI for the one-time-secret warning. The [analysis record](evidence/code-graph-phase2-quality-analysis.json) records each adjudication. Range validity is not semantic accuracy. The frozen 100% citation requirement is not met.
+
+**Phase 2 implementation and evaluation are complete locally; the broader-rollout gate fails.** Keep the repository opt-in experimental. The measurement checkbox is complete because the comparison is recorded, not because benefit was established. No token-saving or general review-quality improvement is demonstrated.
+
+The harness limits what can be concluded: its 8 KiB assigned excerpts omit the token dialog's request lifecycle in both states, whereas production initial analysis receives a complete assigned file. It uses the native assessment task with a custom scoped verdict schema and no finding history; some responses ask for that missing history. Sources include range metadata but no inline line numbering. Python absolute imports remain unresolved, and bounded graph ordering omits the useful combobox wrapper from the defective SearchSelect case. Extra paths are requested but never fetched. Production citation/fix gates are not exercised by this custom schema. Preserve this frozen experiment; any improved protocol must be versioned before a separately authorized rerun, not mixed into these results.
+
+Prepared hashes match the frozen manifest; sent hashes additionally reflect standard redaction. Redaction changes one prose line in each token-dialog state equally across arms and preserves all line counts and behavior-relevant evidence. Separate input/output tokens and internal provider inference rounds remain unknown. Subscription consumption is not a monetary API-cost estimate. Four checkpoint tests and Ruff pass for the follow-up scripts. All 14 local services remain running, all six workers respond, API readiness is ready and the recorded application counts are unchanged. No application runtime code changed during this evaluation, so the earlier worker reload remains sufficient.
+
+Before a broader rollout, a separately scoped follow-up should use the production task contract and complete assigned source, explicit line labels, a corpus with required cross-file evidence available to the tested resolver, and bounded measured evidence expansion. Freeze that protocol before another authorized model experiment. Do not change this experiment's labels or thresholds retrospectively.
+
+## Phase 2D: local context selection
+
+The provider-free follow-up reuses real Git objects, the production parser and PostgreSQL retrieval, and the actual `delegated.review` prompt builder. GitHub authorization/acquisition, OCR planning/scope and native model replies are stubbed. The fixtures contain small known contracts that are necessary to understand the assigned code; they measure source delivery, not defect detection. No provider calls or subscription tokens are used.
+
+| Case | Before correction | After correction |
+| --- | --- | --- |
+| Python caller with 16 incoming imports and one required contract | The 12-edge response fills with consumers; `z_contract.py` never reaches the prompt | Required contract reaches the prompt within existing limits |
+| TypeScript caller with a large consumer and a required contract that individually fits 12 KiB | Alphabetical selection consumes bytes on the consumer; `z_contract.ts` is omitted | Required contract reaches the prompt in full; the competing consumer is omitted |
+| Necessary same-file logic beyond 8 KiB | Complete assigned source already reaches the prompt | Remains complete and identical to the ordinary-context prompt |
+
+Mixed-direction dependency queries now prioritize the current file's outgoing imports before incoming consumers, before both traversal and response limits. Outgoing imports retain source order; remaining incoming edges keep deterministic path/site order. Context selection preserves that order instead of sorting the paths again. Incoming-only impact queries keep their original behavior. No new resolver, schema, model call, shared source mount or configuration is introduced.
+
+The limits remain one hop / 12 edges, three related files / 12 KiB per assignment and 48 KiB per run. Exact revision/blob checks, current permissions, exclusions/redaction, prompt ceilings and immutable attempted selections are unchanged. A saved retry can keep an older order even after its graph snapshot is removed by retention. Each new case also compares the entire required prompt and validated coverage with graph enrichment disabled; assigned code, diff and rules remain intact.
+
+Before the fix, the new cases recorded **two failures and one pass**. After the fix, all three pass within **50 focused graph/review checks** (207.02 seconds); Ruff passes. The full backend suite passed **2,883 tests** with 637 warnings in 678.54 seconds. Review and verification consumers were paused, verified empty of active/reserved/scheduled work, then both workers were restarted. All six workers responded afterward, the two consumers resumed, API readiness passed and all 14 services remained running. Application record counts were unchanged, mounted source hashes matched the corrected files, and recent worker logs had no ERROR/Traceback/FATAL lines. No frontend, API schema, migration or runner change required additional checks. See [2D evidence](evidence/code-graph-phase2d.json). The frozen 2C corpus, prompts and recorded provider results are unchanged.
+
+This ordering is a structural heuristic. More than 12 import sites, repeated imports, multiple useful direct dependencies and unsupported resolution can still omit useful source; preferring outgoing imports also leaves less room for downstream consumers. The broader-rollout gate remains failed. A future quality experiment must exercise the production context/evidence contracts and needs separate authorization.
+
+## Resource experiment
+
+`scripts/code_graph_eval/overlap.py` runs disposable review, graph, security and database workloads inside the existing development containers, using only `mortis_test`. It refuses to run alongside pytest or when Docker's total VM memory exceeds 8 GiB. It never changes the VM's memory allocation, starts a second deployment stack, or changes repository activation in the application database.
+
+The source corpus is a pinned committed tree with twelve inert comment changes. Git reads, OCR scope selection, graph parser transport, PostgreSQL publication and Trivy offline scanning are real; GitHub acquisition/authorization and model responses are stubbed. Security snapshot completion releases graph and review work to overlap with scanning. Model fixture usage must never be interpreted as a token benchmark. Existing application services, runner, database and Redis remain running throughout. Samples record each container's CPU/memory/IO, process failures, OOM/restart state, temporary bytes and test database growth.
+
+The [recorded overlap run](evidence/code-graph-phase2-overlap.json) used 434 files / 5,595,956 bytes, a 4.87 GiB Docker VM ceiling and 12 virtual CPUs. Across 116 samples over 360 seconds, simultaneous container memory peaked at 2,668,909,036 bytes (2.49 GiB), with aggregate CPU peaking at 280% (about 2.8 cores). No container OOM/restart state changed. These measurements include both development and isolated test databases.
+
+The twelve-file native review completed while all graph lookups reported `running`; it did not wait for indexing. The graph published a partial immutable snapshot. Security materialized 428 files and completed 367 stubbed AI analysis units at concurrency four, with no failed analysis unit. Real Trivy secret/misconfiguration scanning ran, but vulnerability analysis remained unavailable because its cached advisory database was older than 24 hours; the saved security result correctly remained partial. This experiment deliberately disabled advisory downloads and is not evidence for a fresh-database vulnerability workload or real model-client memory usage.
+
+The additional database workload completed 300 read/write transactions; database size grew from 22,484,659 to 23,049,907 bytes during that interval. This is an interval measurement, not final database/WAL growth after every workload. Per-workload temporary storage peaked at 14,609,063 bytes for security, 8,744,950 for graph and 7,341,754 each for review/API fixture copies; temporary fixture directories were removed. Three harness setup issues were corrected before the recorded successful run: a too-short request key, the deliberately forbidden local clone transport in the application Git helper, and insufficient time for security snapshot preparation. Application Git restrictions were not relaxed.
+
+This establishes the recorded modest workload under a memory ceiling smaller than 8 GiB. It does not establish arbitrary repository sizes, a two-core server's latency, fresh vulnerability database scanning, real provider/client overlap or production capacity.

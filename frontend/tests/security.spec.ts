@@ -12,7 +12,7 @@ test("diagnostic attribution ignores quoted provider content", () => {
 const at = "2026-10-18T15:00:00Z";
 const sha = "a".repeat(40);
 const repository: Schema["RepositoryOut"] = { id: 22, installation_id: 10, full_name: "acme/payments", private: false,
-  active: true, enabled: false, connection_id: "connection", open_prs: 0, has_running_review: false,
+  active: true, enabled: false, code_graph_enabled: false, connection_id: "connection", open_prs: 0, has_running_review: false,
   settings: { timeout_seconds: 900, token_budget: 200000, language: "English",
     summary_diagram_enabled: false, ai_fix_prompts_enabled: false, automatic: false, include_bot_prs: false,
     model: "", review_sensitivity: "balanced", background: "", exclusions: "",
