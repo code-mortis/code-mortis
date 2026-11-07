@@ -28,6 +28,9 @@ from code_mortis.models import ReviewRun
 from code_mortis.reviews import assessment, background, checks, verification
 from code_mortis.security_scans import engine as security_engine
 
+# Adapter-only smoke: no database or cross-worker admission service is available.
+ocr.configuration = ocr._configuration
+
 calls = []
 verification_mode = "fixed"
 assessment_barrier = None

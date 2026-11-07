@@ -22,6 +22,9 @@ from code_mortis.schemas.security import SecurityAnalysis
 from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans.engine import model_schema
 
+# Adapter-only smoke: no database or cross-worker admission service is available.
+ocr.configuration = ocr._configuration
+
 RESULT = {"findings": [], "required_paths": []}
 original_command = ocr.command
 diagnostic_mode = ""

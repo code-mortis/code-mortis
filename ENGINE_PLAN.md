@@ -4,7 +4,7 @@ Date: 2026-11-07
 
 Status: approved implementation roadmap; phase delivery and acceptance remain pending.
 
-M0 completion update (2026-11-07): all six preparation items are verified. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), and [frozen pilot and handoff](ENGINE_PILOT.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Live integration/effective resource checks remain M2/M5 gates. M1 is implemented and locally verified; see [the implementation and verification record](ENGINE_M1.md).
+Milestone update (2026-11-07): M0 preparation, M1 foundation and M2 transport implementation are complete locally. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [frozen pilot](ENGINE_PILOT.md), [M1 verification](ENGINE_M1.md) and [M2 verification and remaining gates](ENGINE_M2.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Its live tool/schema smoke passed; other live providers, effective resource enforcement and the comparative pilot remain unverified. Mortis PR/scanner routing remains gated for M3/M4.
 
 Source baseline inspected: `9277e5f` (`feat(code-graph): support configurable indexing limits`). Recheck the owning source when starting each phase; this baseline is evidence of inspected behavior, not a promise that the checkout has remained unchanged.
 
@@ -323,11 +323,13 @@ Exit: authorization, scope, budgets, restart/cancellation, and history preservat
 
 ### M2 — Shared-provider transports
 
-- [ ] Implement and contract-test all currently supported API protocols and options.
-- [ ] Preserve discovery, connection tests, headers, custom endpoints, tool support, and selected-model behavior.
-- [ ] Validate malformed responses, refusals, partial streams, rate limits, auth/quota failures, timeouts, cancellation, and unknown usage.
-- [ ] Verify atomic admission across concurrent requests and independent stage budgets.
-- [ ] Record actual-provider checks separately from mocked protocol fixtures, with an explicit consumption policy (finite caps, or recorded owner uncapped mode).
+- [x] Implement and contract-test all four currently supported API protocols and options. Direct pooled HTTP/Bedrock transports retain exact model selection, tools/schemas, reasoning replay, safe custom options and explicit capability failures.
+- [x] Preserve discovery, connection tests, headers, custom endpoints, tool support, and selected-model behavior. Discovery stays metadata-only; connection-test Jobs now use the new transport with changed-configuration and stale-attempt fencing.
+- [x] Validate malformed responses, refusals, partial streams, rate limits, auth/quota failures, timeouts, cancellation, and unknown usage. Only known-zero safe failures may retry within three attempts and the original deadline; unknown consumption remains reserved.
+- [x] Verify atomic admission across concurrent requests and independent stage budgets. Connection ceiling eight, per-run limits, fair turns, OCR whole-capacity reservation, retained worker-loss admissions and independent stage accounting are covered with real PostgreSQL tests.
+- [x] Record actual-provider checks separately from mocked protocol fixtures, with an explicit consumption policy. Owner-approved uncapped OpenCode Go smoke passed tool round trip and structured output; the full pilot and other live providers remain unverified.
+
+[ENGINE_M2.md](ENGINE_M2.md) records implementation, tests, actual-provider evidence and remaining gates. The Go model supports automatic tool selection only; explicit unsupported choices fail without fallback. Mortis PR/scanner routing remains gated for M3/M4. Before deployment, rebuild locked dependencies, apply the additive migration and drain old workers; before M5, enforce the pilot's lower connection ceiling and resource profile.
 
 Exit: no unsupported existing shared-connection feature and no silent fallback; actual integration gaps remain visible until verified.
 
@@ -432,7 +434,7 @@ Use existing backend/frontend test infrastructure. Run checks appropriate to eac
 | --- | --- |
 | File policy and limits | `core/file_policy.py`, `schemas/common.py`, `schemas/code_graph.py`, repository settings router and frontend |
 | PR orchestration/history | `reviews/service.py`, `reviews/pipeline.py`, `reviews/assessment.py`, `reviews/verification.py`, `models.py` |
-| Shared inference and source access | `integrations/ocr.py`, `reviews/context.py`, existing HTTP/provider discovery infrastructure; move only reusable helpers to neutral owners |
+| Shared inference and source access | `integrations/llm.py`, `llm_http.py`, `llm_bedrock.py`, `schemas/inference.py`, `core/analysis.py`, `core/inference_admission.py`, `core/source.py`; retain `integrations/ocr.py` for staged coexistence and existing provider discovery |
 | Summaries/background | `reviews/summary.py`, `reviews/background.py` |
 | Security | `security_scans/engine.py`, `service.py`, `scanner.py`, `assessments.py`, `issues.py`, `analytics.py`, `schemas/security.py` |
 | Code graph | `code_graph/store.py`, `service.py`, `retrieval.py`, `client.py`, `reviews/graph_context.py`, graph schemas and parser isolation |
@@ -448,12 +450,12 @@ For each completed phase, append a dated record containing the source revision, 
 | Phase | State | Evidence |
 | --- | --- | --- |
 | M0 | Complete — 6/6 preparation items | [Source audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [20-case synthetic pilot, adjudication and owner-selected profile](ENGINE_PILOT.md). Offline fixture/export checks pass; live behavior and broader quality acceptance are pending. |
-| M1 | Complete — local implementation and verification, 8/8 items | [Implementation, cutover procedure, verification and M2 gaps](ENGINE_M1.md). Mortis inference and operational cutover remain disabled/unperformed. |
-| M2 | Not started | Pending |
+| M1 | Complete — local implementation and verification, 8/8 items | [Implementation, cutover procedure and verification](ENGINE_M1.md). Operational cutover remains unperformed. |
+| M2 | Complete — local implementation and verification, 5/5 items | [Transports, admission, final 536-case regression, live Go smoke and remaining gates](ENGINE_M2.md). Other live providers and production deployment remain unverified. |
 | M3 | Not started | Pending |
 | M4 | Not started | Pending |
 | M5 | Not started | Pending |
 | M6 | Not started | Pending |
 | M7 | Not started | Pending |
 
-Start M2 from ENGINE_M1.md for implementation evidence, operational cutover requirements and transport integration gaps; retain ENGINE_M0.md as the dated source/feature audit and ENGINE_PILOT.md as the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, satisfy the selected spending policy and M2/M5 runtime/account/resource preflight. Do not mark implementation or live integration complete from mocked evidence alone.
+Start M3 from ENGINE_M2.md for the transport/gateway contracts, verification evidence and unresolved integration/operational gates. Retain ENGINE_M1.md for foundation/cutover requirements, ENGINE_M0.md as the dated source/feature audit and ENGINE_PILOT.md as the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, bind the actual saved endpoint and enforce the selected spending policy, lower pilot connection ceiling and M5 resource profile. Do not claim live compatibility, benchmark performance or quality from mocked evidence alone.

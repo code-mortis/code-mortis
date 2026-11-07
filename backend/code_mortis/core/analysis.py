@@ -9,12 +9,20 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.inference_admission import (
+    admit,
+    lock_connection,
+    release_in_transaction,
+    renew_in_transaction,
+    validate_limits,
+)
 from code_mortis.models import (
     AnalysisAttempt,
     AnalysisBudget,
     AnalysisPlan,
     AnalysisTask,
     Connection,
+    InferenceAdmission,
     Installation,
     Job,
     PullRequest,
@@ -109,6 +117,7 @@ class TaskLease:
     job_id: str
     job_attempt: int
     lease_until: datetime
+    admission_id: str | None = None
 
 
 def job_live(job, attempt, timestamp):
@@ -152,12 +161,14 @@ def mark_uncertain(task, attempt, timestamp):
 
 
 def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int,
-               output_tokens: int, lease_seconds: int = 60) -> TaskLease | None:
+               output_tokens: int, lease_seconds: int = 60, concurrency_limit: int | None = None) -> TaskLease | None:
     """Reserve a whole request atomically. Revalidate external authorization before calling."""
     if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
         raise ValueError("Input and output reservations must be nonnegative whole tokens")
     if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
         raise ValueError("Task leases must last between 1 and 3600 seconds")
+    if concurrency_limit is not None:
+        validate_limits(1, concurrency_limit, lease_seconds)
     with transaction() as db:
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == task_id).with_for_update())
@@ -190,14 +201,25 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
         if (not job_live(job, job_attempt, timestamp) or unknown or budget.deadline_at and budget.deadline_at <= timestamp
                 or budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit):
             return None
-        budget.charged_tokens += reservation
-        task.status, task.attempts = "running", task.attempts + 1
         expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
                       budget.deadline_at or job.lease_until)
+        run_limit = plan.snapshot["settings"].get("concurrency", 4 if plan.scan_id else 2)
+        validate_limits(1, run_limit, lease_seconds)
+        if concurrency_limit is not None:
+            run_limit = min(run_limit, concurrency_limit)
+        run_key = f"review:{plan.run_id}" if plan.run_id else f"scan:{plan.scan_id}" if plan.scan_id else f"job:{job_id}"
+        admission_id = fingerprint(["inference", task.id, job_attempt, task.attempts + 1])
+        capacity = admit(db, identity=admission_id, connection_id=plan.snapshot["connection"]["id"],
+                         run_key=run_key, run_limit=run_limit, lease_until=expires,
+                         task_id=task.id, job_id=job_id, job_attempt=job_attempt)
+        if not capacity:
+            return None
+        budget.charged_tokens += reservation
+        task.status, task.attempts = "running", task.attempts + 1
         attempt = AnalysisAttempt(id=uid(), task_id=task.id, number=task.attempts, job_attempt=job_attempt,
                                   lease_until=expires, reserved_tokens=reservation)
         db.add(attempt)
-        return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires)
+        return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires, admission_id)
 
 
 def owned_attempt(db, lease):
@@ -235,6 +257,16 @@ def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | No
         task, attempt = owned
         budget = db.scalar(select(AnalysisBudget).where(
             AnalysisBudget.plan_id == task.plan_id, AnalysisBudget.stage == task.stage).with_for_update())
+        if lease.admission_id:
+            ticket = db.get(InferenceAdmission, lease.admission_id)
+            if (not ticket or ticket.task_id != task.id or ticket.job_id != lease.job_id
+                    or ticket.job_attempt != lease.job_attempt):
+                return False
+            if not lock_connection(db, ticket.connection_id, require_api=False):
+                return False
+            db.refresh(ticket)
+            if ticket.status != "active" or ticket.lease_until <= now():
+                return False
         timestamp = now()
         if not job_live(db.get(Job, lease.job_id), lease.job_attempt, timestamp) or attempt.lease_until <= timestamp:
             return False
@@ -246,6 +278,8 @@ def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | No
         task.result = result
         task.status = "completed" if result is not None else "failed" if usage_tokens is not None else "uncertain"
         attempt.status = task.status
+        if lease.admission_id:
+            release_in_transaction(db, lease.admission_id)
         return True
 
 
@@ -263,8 +297,11 @@ def renew_task(lease: TaskLease, *, lease_seconds: int = 60) -> bool:
         if (not job_live(job, lease.job_attempt, timestamp) or attempt.lease_until <= timestamp
                 or budget.deadline_at and budget.deadline_at <= timestamp):
             return False
-        attempt.lease_until = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
-                                  budget.deadline_at or job.lease_until)
+        expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
+                      budget.deadline_at or job.lease_until)
+        if lease.admission_id and not renew_in_transaction(db, lease.admission_id, expires):
+            return False
+        attempt.lease_until = expires
         return True
 
 
@@ -318,6 +355,9 @@ def cancel_tasks(job_id: str) -> None:
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
         if not plan:
             return
+        for ticket in db.scalars(select(InferenceAdmission).where(
+                InferenceAdmission.job_id == job_id, InferenceAdmission.status == "queued")):
+            release_in_transaction(db, ticket.id, queued_only=True)
         for task in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id).with_for_update()):
             if task.status == "running":
                 attempt = db.scalar(select(AnalysisAttempt).where(

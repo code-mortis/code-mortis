@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from code_mortis.core import file_policy, process
+from code_mortis.core import file_policy, inference_admission, process
 from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.errors import ReviewStopped
@@ -38,6 +38,25 @@ def command(args, directory, env, timeout=60, stopped=lambda: False, poll=lambda
 @contextmanager
 def configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False,
                   *, session_per_task=False, structured_result=False):
+    if not settings().ocr_isolated_runtime:
+        raise ValueError("OCR execution requires the isolated Docker worker (CM_OCR_ISOLATED_RUNTIME=true).")
+    if connection.get("kind", "api") != "api" or not isinstance(connection.get("id"), str) or not connection["id"]:
+        raise ValueError("OCR inference requires an existing shared API connection snapshot.")
+    try:
+        with inference_admission.reserve_connection(
+            connection["id"], "ocr:" + str(uuid4()), stopped=stopped,
+            wait_seconds=review_settings.get("timeout_seconds") or 900, lease_seconds=3600,
+        ):
+            with _configuration(connection, credentials, review_settings, stopped,
+                                session_per_task=session_per_task, structured_result=structured_result) as update:
+                yield update
+    except inference_admission.AdmissionStopped as exc:
+        raise ReviewStopped("Review cancelled while waiting for shared connection capacity.") from exc
+
+
+@contextmanager
+def _configuration(connection: dict, credentials: dict, review_settings: dict, stopped=lambda: False,
+                   *, session_per_task=False, structured_result=False):
     if not settings().ocr_isolated_runtime:
         raise ValueError("OCR execution requires the isolated Docker worker (CM_OCR_ISOLATED_RUNTIME=true).")
     folder = Path.home() / ".opencodereview"

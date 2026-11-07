@@ -89,7 +89,7 @@ def test_selected_provider_is_isolated_and_configuration_removed(protocol, tmp_p
         "base_url": "https://example.com/v1",
         "options": {"timeout_sec": 30, "prompt_token_ceiling": 200000},
     }
-    with ocr.configuration(connection, {"api_key": "secret"}, {"language": "Spanish"}):
+    with ocr._configuration(connection, {"api_key": "secret"}, {"language": "Spanish"}):
         path = tmp_path / ".opencodereview/config.json"
         data = json.loads(path.read_text())
         assert data["mcp_servers"] == {} and data["provider"] == "mortis"
@@ -100,7 +100,7 @@ def test_selected_provider_is_isolated_and_configuration_removed(protocol, tmp_p
     assert not path.exists()
     path.write_text('{"provider":"operator"}')
     with pytest.raises(ValueError, match="cannot replace it safely"):
-        with ocr.configuration(connection, {}, {}):
+        with ocr._configuration(connection, {}, {}):
             pass
     assert json.loads(path.read_text())["provider"] == "operator"
 
@@ -129,7 +129,7 @@ def test_structured_responses_enforces_schema_without_changing_saved_options(pro
     monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
     options = {"extra_body": {"keep": "value", "tools.0.strict": False}}
     connection = {"protocol": protocol, "model": "model", "base_url": "https://example.com/v1", "options": options}
-    with ocr.configuration(connection, {}, {}, structured_result=structured):
+    with ocr._configuration(connection, {}, {}, structured_result=structured):
         data = json.loads((tmp_path / ".opencodereview/config.json").read_text())
         body = data["custom_providers"]["mortis"]["extra_body"]
         assert body == {"keep": "value", "tools.0.strict": structured and protocol == "openai-responses"}
@@ -152,7 +152,7 @@ def test_opencode_go_headers_are_scoped_and_session_changes_per_invocation(url, 
     credentials = {"extra_headers": {"user-agent": "old-client", "X-OpenCode-Session": "old", "X-Test": "keep"}}
     sessions = []
     for _ in range(2):
-        with ocr.configuration(connection, credentials, {}):
+        with ocr._configuration(connection, credentials, {}):
             data = json.loads((tmp_path / ".opencodereview/config.json").read_text())
             headers = data["custom_providers"]["mortis"]["extra_headers"]
             if is_go:
@@ -173,7 +173,7 @@ def test_shared_opencode_configuration_uses_native_conversation_keys(tmp_path, m
     connection = {"protocol": "openai-responses", "model": "same-model",
                   "base_url": "https://opencode.ai/zen/go/v1", "options": {}}
     credentials = {"api_key": "fake", "extra_headers": {"X-Test": "keep"}}
-    with ocr.configuration(connection, credentials, {}, session_per_task=True):
+    with ocr._configuration(connection, credentials, {}, session_per_task=True):
         config = json.loads((tmp_path / ".opencodereview/config.json").read_text())
         provider = config["custom_providers"]["mortis"]
         assert provider["model"] == "same-model"
@@ -266,9 +266,102 @@ def test_private_redaction_material_refreshes_and_is_removed(tmp_path, monkeypat
     connection = {"protocol": "openai", "model": "test", "options": {}, "base_url": "https://provider.test"}
     credentials = {"api_key": "synthetic-key", "redaction_values": []}
     redaction = tmp_path / ".opencodereview/redaction.json"
-    with ocr.configuration(connection, credentials, {}) as refresh:
+    with ocr._configuration(connection, credentials, {}) as refresh:
         assert redaction.stat().st_mode & 0o777 == 0o600
         credentials["redaction_values"].append("recovered-historical-value")
         refresh()
         assert "recovered-historical-value" in json.loads(redaction.read_text())
     assert not redaction.exists()
+
+
+def test_configuration_reserves_shared_capacity_through_cleanup(seed, tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from code_mortis.core.db import transaction
+    from code_mortis.models import InferenceAdmission
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    connection = {"id": seed["connection"].id, "kind": "api", "protocol": "openai", "model": "test",
+                  "base_url": "https://provider.test", "options": {}}
+    released = []
+    original = ocr.inference_admission.release_connection
+    def release(identity):
+        assert not (tmp_path / ".opencodereview/config.json").exists()
+        assert not (tmp_path / ".opencodereview/redaction.json").exists()
+        released.append(identity)
+        return original(identity)
+    monkeypatch.setattr(ocr.inference_admission, "release_connection", release)
+    with ocr.configuration(connection, {}, {}) as refresh:
+        assert callable(refresh) and (tmp_path / ".opencodereview/config.json").exists()
+        with transaction() as db:
+            admission = db.scalar(select(InferenceAdmission))
+            assert admission.connection_id == connection["id"] and admission.status == "active"
+            assert admission.slots == admission.run_limit == 8
+            assert admission.run_key.startswith("ocr:")
+            identity = admission.id
+    with transaction() as db:
+        assert db.get(InferenceAdmission, identity).status == "released"
+    assert released == [identity]
+
+
+@pytest.mark.parametrize("connection", [{}, {"kind": "api", "id": ""}, {"kind": "chatgpt", "id": "connection"}])
+def test_configuration_requires_saved_shared_snapshot(connection, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr.inference_admission, "reserve_connection", lambda *a, **k: pytest.fail("Invalid snapshot was admitted"))
+    with pytest.raises(ValueError, match="shared API connection snapshot"):
+        with ocr.configuration(connection, {}, {}):
+            pytest.fail("Invalid snapshot was configured")
+    assert not (tmp_path / ".opencodereview").exists()
+
+
+def test_configuration_admission_cancellation_becomes_review_stopped(seed, tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from code_mortis.core.db import transaction
+    from code_mortis.models import InferenceAdmission
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    stopped = []
+    def cancelled():
+        stopped.append(True)
+        return len(stopped) > 1
+    with ocr.inference_admission.reserve_connection(seed["connection"].id, "other-run"):
+        with pytest.raises(ocr.ReviewStopped, match="shared connection capacity"):
+            with ocr.configuration({"id": seed["connection"].id, "kind": "api"}, {}, {}, cancelled):
+                pytest.fail("An occupied connection was configured")
+        with transaction() as db:
+            rows = list(db.scalars(select(InferenceAdmission)))
+            assert sorted(row.status for row in rows) == ["active", "cancelled"]
+    assert not (tmp_path / ".opencodereview").exists()
+
+
+def test_admission_outlives_cancelled_subprocess_shutdown(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(settings(), "ocr_isolated_runtime", True)
+    monkeypatch.setattr(ocr, "safe_endpoint", lambda value: value)
+    pid_file = tmp_path / "child.pid"
+    releases = []
+    @contextmanager
+    def reserve(*args, **kwargs):
+        try:
+            yield
+        finally:
+            pid = int(pid_file.read_text())
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+            assert not (tmp_path / ".opencodereview/config.json").exists()
+            releases.append(True)
+    monkeypatch.setattr(ocr.inference_admission, "reserve_connection", reserve)
+    connection = {"id": "connection", "kind": "api", "protocol": "openai", "model": "test",
+                  "base_url": "https://provider.test", "options": {}}
+    with pytest.raises(ocr.ReviewStopped):
+        with ocr.configuration(connection, {}, {}):
+            ocr.command([sys.executable, "-c", "import os,pathlib,time; pathlib.Path('child.pid').write_text(str(os.getpid())); time.sleep(30)"],
+                        tmp_path, os.environ.copy(), stopped=pid_file.exists)
+    assert releases == [True]

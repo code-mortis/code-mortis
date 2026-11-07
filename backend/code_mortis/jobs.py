@@ -10,11 +10,12 @@ from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, or_, select
 
+from code_mortis.core.analysis import fingerprint
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import unseal
 from code_mortis.core.telemetry import init_sentry
-from code_mortis.integrations import github, installations, ocr, runner_client
+from code_mortis.integrations import github, installations, llm, ocr, runner_client
 from code_mortis.models import (
     Connection,
     Finding,
@@ -277,6 +278,15 @@ def process_webhook(payload: dict):
                                      "sender_type": sender.get("type") if isinstance(sender, dict) else None})
 
 
+def connection_test_matches(job, connection):
+    if not connection:
+        return False
+    identity = job.payload.get("connection_test_fingerprint")
+    if identity is None:
+        return connection.last_test == "Testing connection…"
+    return identity == fingerprint([connection_snapshot(connection), connection.secret])
+
+
 def execute(kind: str, payload: dict):
     if kind in CODE_GRAPH_KINDS:
         from code_mortis.code_graph import service as graphs
@@ -338,17 +348,43 @@ def execute(kind: str, payload: dict):
                 automatic=payload.get("automatic", True), sender_type=payload.get("sender_type"))
     elif kind == "test_connection":
         with transaction() as db:
+            job = None
+            if payload.get("_job_id"):
+                from code_mortis.core.analysis import job_live
+
+                job = db.scalar(select(Job).where(Job.id == payload["_job_id"]).with_for_update())
+                if not job_live(job, payload["_attempt"], now()):
+                    return
             connection = db.get(Connection, payload["connection_id"])
             if not connection:
                 return
             from code_mortis.core.shared_execution import require_shared
 
             require_shared(connection)
-            snapshot, credentials = connection_snapshot(connection), json.loads(unseal(connection.secret))
-        result = ocr.test_connection(snapshot, credentials)
+            snapshot, secret = connection_snapshot(connection), connection.secret
+            credentials = json.loads(unseal(secret))
+            if job:
+                job.payload = {**job.payload, "connection_test_fingerprint": fingerprint([snapshot, secret])}
+        def stopped():
+            with transaction() as db:
+                current = db.get(Connection, snapshot["id"])
+                valid = bool(current and current.secret == secret and connection_snapshot(current) == snapshot)
+                if payload.get("_job_id"):
+                    from code_mortis.core.analysis import job_live
+
+                    valid = valid and job_live(db.get(Job, payload["_job_id"]), payload["_attempt"], now())
+            return not valid
+
+        result = llm.test_connection(snapshot, credentials, stopped=stopped)
         with transaction() as db:
-            connection = db.get(Connection, payload["connection_id"])
-            if connection:
+            if payload.get("_job_id"):
+                from code_mortis.core.analysis import job_live
+
+                job = db.scalar(select(Job).where(Job.id == payload["_job_id"]).with_for_update())
+                if not job_live(job, payload["_attempt"], now()):
+                    return
+            connection = db.scalar(select(Connection).where(Connection.id == snapshot["id"]).with_for_update())
+            if connection and connection.secret == secret and connection_snapshot(connection) == snapshot:
                 connection.last_test, connection.tested_at = result, now()
     else:
         raise ValueError("This background operation is not supported by the running worker. Ask the administrator to check that the server and workers run the same version.")
@@ -439,7 +475,7 @@ def execute_job(job_id: str):
         with transaction() as fresh:
             _pat_token = _pat.execution_context.set(_pat.job_provenance(fresh, job))
         execution = {**payload, "_claim": f"{job_id}:{attempt}", "_job_id": job_id, "_attempt": attempt}
-        execute(kind, execution if kind in {"review", "security_scan", "code_graph", "code_graph_refresh", "generate_background", "generate_summary", "uninstall_installation", *pipeline.KINDS} else payload)
+        execute(kind, execution if kind in {"review", "security_scan", "code_graph", "code_graph_refresh", "generate_background", "generate_summary", "test_connection", "uninstall_installation", *pipeline.KINDS} else payload)
     except _pat.TransientAuthorizationError:
         # Temporary authorization outage, not revocation: requeue for retry
         # instead of failing the work as revoked.
@@ -489,7 +525,7 @@ def execute_job(job_id: str):
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
             str(exc)
-            if isinstance(exc, (github.GitHubError, ValueError, TimeoutError, ocr.ReviewStopped))
+            if isinstance(exc, (github.GitHubError, ValueError, TimeoutError, ocr.ReviewStopped, llm.InferenceError))
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
@@ -503,7 +539,7 @@ def execute_job(job_id: str):
             if kind == "generate_background" and isinstance(exc, background.GenerationError):
                 job.payload = {**job.payload, "diagnostics": exc.diagnostics}
             job.status, job.error, job.lease_until = ("queued" if retry else "failed"), message[:2000], None
-            delay = max(min(30 * 2**attempt, 300), getattr(exc, "retry_after", 0))
+            delay = max(min(30 * 2**attempt, 300), getattr(exc, "retry_after", 0) or 0)
             job.available_at, job.dispatched_at = now() + timedelta(seconds=delay), None
             if kind == "review":
                 run = db.scalar(select(ReviewRun).where(ReviewRun.id == payload["run_id"]).with_for_update())
@@ -543,8 +579,8 @@ def execute_job(job_id: str):
             elif kind == "resolve":
                 verification.sync_failed(db, payload, message[:2000])
             elif kind == "test_connection":
-                connection = db.get(Connection, payload["connection_id"])
-                if connection:
+                connection = db.scalar(select(Connection).where(Connection.id == payload["connection_id"]).with_for_update())
+                if connection_test_matches(job, connection):
                     connection.last_test, connection.tested_at = message[:2000], now()
         log.warning(
             "job_failed id=%s kind=%s run_id=%s error_type=%s retry=%s",
@@ -665,8 +701,8 @@ def dispatch():
                 elif job.kind == "resolve":
                     verification.sync_failed(db, job.payload, job.error)
                 elif job.kind == "test_connection":
-                    connection = db.get(Connection, job.payload["connection_id"])
-                    if connection:
+                    connection = db.scalar(select(Connection).where(Connection.id == job.payload["connection_id"]).with_for_update())
+                    if connection_test_matches(job, connection):
                         connection.last_test, connection.tested_at = job.error, now()
         candidates = list(
             db.scalars(

@@ -257,7 +257,7 @@ def test_waiting_for_ocr_configuration_keeps_polling_cancellation(tmp_path, monk
     with (folder / ".mortis.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         with pytest.raises(ocr.ReviewStopped):
-            with ocr.configuration({}, {}, {}, stopped):
+            with ocr._configuration({}, {}, {}, stopped):
                 pytest.fail("Must not acquire another invocation's configuration")
     assert len(polls) == 2 and not (folder / "config.json").exists()
 

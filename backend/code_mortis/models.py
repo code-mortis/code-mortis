@@ -497,6 +497,28 @@ class AnalysisAttempt(Base):
     error_code: Mapped[str | None] = mapped_column(String(80))
 
 
+class InferenceAdmission(Base):
+    __tablename__ = "inference_admissions"
+    __table_args__ = (
+        CheckConstraint("slots BETWEEN 1 AND 8 AND run_limit BETWEEN 1 AND 8", name="ck_inference_capacity"),
+        Index("ix_inference_connection_queue", "connection_id", "status", "created_at"),
+        Index("ix_inference_run_grants", "connection_id", "run_key", "admitted_at"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"))
+    run_key: Mapped[str] = mapped_column(String(100))
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("analysis_tasks.id", ondelete="CASCADE"))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
+    job_attempt: Mapped[int | None] = mapped_column(Integer)
+    slots: Mapped[int] = mapped_column(Integer)
+    run_limit: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class SecurityScan(Base):
     __tablename__ = "security_scans"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
