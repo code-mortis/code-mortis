@@ -8,7 +8,7 @@ import { Empty, ErrorNotice, Loading, Status } from "./common";
 import { GraphFileDetails, indexDescriptions, rowClass, StatusHint } from "./code-graph-explorer";
 import { CodeGraphCoverage } from "./code-graph-coverage";
 import { FilterBar } from "./filter-bar";
-import { FindingCategory } from "./finding-card";
+import { FindingCard, FindingCategory } from "./finding-card";
 import { SearchSelect } from "./search-select";
 import { Pagination } from "./pagination";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -50,11 +50,11 @@ function FileReview({ view, query, occurrenceId, openFinding, renderFinding, clo
     if (occurrenceId) diffRoot.current?.querySelector(`[data-occurrence="${CSS.escape(occurrenceId)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [occurrenceId, data]);
   function findingButton(item: SavedFinding, history = false) {
-    return <button key={item.occurrence_id} aria-haspopup="dialog" className={`${rowClass} flex flex-wrap items-start gap-2`} onClick={(event) => openFinding(item, event.currentTarget)}>
-      <Status value={item.current_status} /><span className="line-clamp-2 min-w-0 flex-1 break-words text-left text-sm [overflow-wrap:anywhere]">{String(item.snapshot.content).replaceAll(/[*`#]/g, "")}</span>
-      {history ? <span className="w-full text-xs text-muted-foreground">{item.source_sha ? `Saved at ${item.source_sha.slice(0, 7)}` : "Source revision unavailable"}{item.snapshot.start_line != null && <> · Lines {String(item.snapshot.start_line)}{item.snapshot.end_line !== item.snapshot.start_line ? `–${item.snapshot.end_line}` : ""}</>}</span>
-        : item.placement !== "inline" && <span className="w-full text-xs text-muted-foreground">{item.placement === "historical" ? "Earlier revision" : item.placement === "unknown" ? "Unverified location" : "Outside this diff"}{item.source_sha ? ` · ${item.source_sha.slice(0, 7)}` : ""}</span>}
-    </button>;
+    return <>
+      <FindingCard evidence={item.snapshot} state={<Status value={item.current_status} />} onClick={(event) => openFinding(item, event.currentTarget)} />
+      {history ? <p className="px-4 pb-3 text-xs text-muted-foreground sm:px-5">{item.source_sha ? `Saved at ${item.source_sha.slice(0, 7)}` : "Source revision unavailable"}</p>
+        : item.placement !== "inline" && <p className="px-4 pb-3 text-xs text-muted-foreground sm:px-5">{item.placement === "historical" ? "Earlier revision" : item.placement === "unknown" ? "Unverified location" : "Outside this diff"}{item.source_sha ? ` · ${item.source_sha.slice(0, 7)}` : ""}</p>}
+    </>;
   }
   function findingMarker(item: SavedFinding) {
     const description = String(item.snapshot.content ?? "Finding evidence").replaceAll(/[*`#]/g, "");
@@ -67,7 +67,8 @@ function FileReview({ view, query, occurrenceId, openFinding, renderFinding, clo
         <div className="flex flex-wrap items-center gap-2"><Status value={item.current_status} />{item.snapshot.severity != null && <Status value={String(item.snapshot.severity)} />}{!!item.snapshot.category && <FindingCategory value={String(item.snapshot.category)} />}</div>
         <p className="line-clamp-4 break-words leading-5 [overflow-wrap:anywhere]">{description}</p>
         <p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{String(item.snapshot.path)}:{String(item.verification?.start_line ?? item.snapshot.start_line)}{(item.verification?.end_line ?? item.snapshot.end_line) !== (item.verification?.start_line ?? item.snapshot.start_line) ? `–${item.verification?.end_line ?? item.snapshot.end_line}` : ""}</p>
-        {item.verification && <p className="text-xs text-muted-foreground">Verification at {data?.head_sha.slice(0, 7)}: {item.verification.verdict.replaceAll("_", " ")}</p>}
+        {item.verification ? <p className="text-xs text-muted-foreground">Verification at {(item.verification.source_sha ?? data?.head_sha)?.slice(0, 7)}: {item.verification.verdict.replaceAll("_", " ")}</p>
+          : item.source_sha && item.source_sha !== data?.head_sha && <p className="text-xs text-muted-foreground">Evidence at {item.source_sha.slice(0, 7)}</p>}
       </TooltipContent>
     </Tooltip>;
   }

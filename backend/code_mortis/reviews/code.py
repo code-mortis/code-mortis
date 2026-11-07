@@ -221,6 +221,7 @@ def saved_findings(db, user, repo, pr, info, identity, lines):
         .limit(MAX_FINDINGS + 1)).all()
     results = []
     check = explorer.source_checker(db, user, repo)
+    current_lines = {line["new_line"]: line["text"] for line in lines if line.get("new_line") is not None}
     for occurrence_id, finding_id, run_id, base_sha, head_sha, status, raw in records[:MAX_FINDINGS]:
         try:
             snapshot = evidence_snapshot(raw, check)
@@ -238,6 +239,12 @@ def saved_findings(db, user, repo, pr, info, identity, lines):
         # The complete range must exist in the displayed hunk, not merely its last line.
         visible = {line.get(f"{side}_line") for line in lines} if side else set()
         inline = exact and side and valid_range and end - start < MAX_LINES and all(n in visible for n in range(start, end + 1))
+        if (not inline and sha and sha == head_sha and snapshot["path"] == info.path
+            and valid_range and end - start < MAX_LINES):
+            quoted = snapshot.get("existing_code", "").splitlines()
+            if (len(quoted) == end - start + 1 and any(text.strip() for text in quoted)
+                and all(current_lines.get(n) == quoted[n - start] for n in range(start, end + 1))):
+                inline, side = True, "new"
         results.append({"occurrence_id": occurrence_id, "finding_id": finding_id, "run_id": run_id,
             "source_sha": sha, "current_status": status, "snapshot": snapshot, "side": side if inline else None,
             "line": end if inline else None, "placement": "inline" if inline else
@@ -247,7 +254,7 @@ def saved_findings(db, user, repo, pr, info, identity, lines):
 
 
 def place_verified_findings(db, pr, info, identity, lines, findings):
-    """Attach saved current-commit citations without rewriting the original review evidence."""
+    """Attach saved citations whose location is validated against the displayed diff."""
     ids = {item["finding_id"] for item in findings if item["placement"] != "inline"}
     visible = {line["new_line"]: line["text"] for line in lines if line.get("new_line") is not None}
     if not ids or not visible:
@@ -255,21 +262,23 @@ def place_verified_findings(db, pr, info, identity, lines, findings):
     bounded = case((func.octet_length(cast(FindingVerification.result, Text)) <= MAX_VERIFICATION_BYTES,
                     FindingVerification.result), else_=None)
     rows = db.execute(select(FindingVerification.finding_id, FindingVerification.id, FindingVerification.status,
-        FindingVerification.verdict, bounded)
+        FindingVerification.verdict, FindingVerification.head_sha, bounded)
         .join(ReviewRun, ReviewRun.id == FindingVerification.run_id)
         .join(Occurrence, Occurrence.id == FindingVerification.occurrence_id)
-        .where(FindingVerification.finding_id.in_(ids), FindingVerification.head_sha == identity["head_sha"],
-               ReviewRun.pr_id == pr.id, ReviewRun.head_sha == identity["head_sha"],
+        .where(FindingVerification.finding_id.in_(ids), FindingVerification.head_sha == ReviewRun.head_sha,
+               ReviewRun.pr_id == pr.id,
                Occurrence.finding_id == FindingVerification.finding_id,
                Occurrence.run_id.in_(select(ReviewRun.id).where(ReviewRun.pr_id == pr.id)))
         .ext(distinct_on(FindingVerification.finding_id))
-        .order_by(FindingVerification.finding_id, FindingVerification.created_at.desc(), FindingVerification.id.desc())).all()
+        .order_by(FindingVerification.finding_id, (FindingVerification.head_sha == identity["head_sha"]).desc(),
+                  FindingVerification.created_at.desc(), FindingVerification.id.desc())).all()
     verified = {}
-    for finding_id, verification_id, status, verdict, raw in rows:
+    for finding_id, verification_id, status, verdict, source_sha, raw in rows:
         if status != "completed":
             continue
         try:
             result = VerificationResult.model_validate(raw, strict=True)
+            TypeAdapter(GitSha).validate_python(source_sha)
         except (ValueError, TypeError):
             continue
         if result.verdict != verdict:
@@ -282,10 +291,13 @@ def place_verified_findings(db, pr, info, identity, lines, findings):
             if len(quoted) != evidence.end_line - evidence.start_line + 1:
                 continue
             matched = [n for n in range(evidence.start_line, evidence.end_line + 1) if n in visible]
+            # Older citations need their entire quote visible and unchanged at the saved location.
+            if source_sha != identity["head_sha"] and len(matched) != len(quoted):
+                continue
             # A citation may cross omitted context. Every displayed line must match its exact quoted line.
             if not matched or any(visible[n] != quoted[n - evidence.start_line] for n in matched) or not any(visible[n].strip() for n in matched):
                 continue
-            citations.append({"id": verification_id, "verdict": verdict,
+            citations.append({"id": verification_id, "verdict": verdict, "source_sha": source_sha,
                               "start_line": evidence.start_line, "end_line": evidence.end_line,
                               "line": matched[-1]})
         if citations:

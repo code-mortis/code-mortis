@@ -8,7 +8,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
+    fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, verificationSource: head, reviewSource: head, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -24,17 +24,17 @@ export async function mockGraph(page: Page, admin = true) {
           { kind: "hunk", text: "@@ -1 +1 @@", old_line: null, new_line: null },
           { kind: "deletion", text: "return false;", old_line: 1, new_line: null },
           { kind: "addition", text: body.path === selected ? "return true; // mañana 😀" : "export const added = true;", old_line: null, new_line: 1 } ] : [],
-        findings: state.groups ? [ { occurrence_id: "o1", finding_id: "f1", run_id: "run", source_sha: head, current_status: "open",
+        findings: state.groups ? [ { occurrence_id: "o1", finding_id: "f1", run_id: "run", source_sha: state.reviewSource, current_status: "open",
           snapshot: { path: selected, content: "Validate the response status", severity: "high", category: "bug", start_line: 1, end_line: 1, existing_code: "return true;", suggestion: "" }, side: "new", line: 1, placement: "inline" },
           { occurrence_id: "o2", finding_id: "f2", run_id: "old-run", source_sha: base, current_status: "resolved",
           snapshot: { path: selected, content: "Earlier saved evidence", start_line: 20, end_line: 22 }, side: state.verifiedHistory ? "new" : null, line: state.verifiedHistory ? 1 : null, placement: state.verifiedHistory ? "inline" : "historical",
-          verification: state.verifiedHistory ? { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } : null },
+          verification: state.verifiedHistory ? { id: "verification", verdict: "still_present", source_sha: state.verificationSource, start_line: 1, end_line: 1 } : null },
           ...(state.verifiedHistory ? [{ occurrence_id: "o2-older", finding_id: "f2", run_id: "older-run", source_sha: "e".repeat(40), current_status: "resolved",
             snapshot: { path: selected, content: "Earlier version of saved evidence", start_line: 30, end_line: 32 }, side: "new", line: 1, placement: "inline",
-            verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } },
+            verification: { id: "verification", verdict: "still_present", source_sha: state.verificationSource, start_line: 1, end_line: 1 } },
             { occurrence_id: "o2-oldest", finding_id: "f2", run_id: "oldest-run", source_sha: "f".repeat(40), current_status: "resolved",
               snapshot: { path: selected, content: "First saved review entry", start_line: 40, end_line: 42 }, side: "new", line: 1, placement: "inline",
-              verification: { id: "verification", verdict: "still_present", start_line: 1, end_line: 1 } }] : []),
+              verification: { id: "verification", verdict: "still_present", source_sha: state.verificationSource, start_line: 1, end_line: 1 } }] : []),
           ...(state.moreFindings ? [
             { occurrence_id: "o3", finding_id: "f3", run_id: "run", source_sha: head, current_status: "resolved",
               snapshot: { path: selected, content: "Preserve response headers", severity: "medium", category: "bug", start_line: 1, end_line: 1 }, side: "new", line: 1, placement: "inline" },
@@ -558,6 +558,33 @@ test("verified historical findings appear once in the diff and retain original e
   await expect(page.getByRole("list", { name: "Findings for this file", exact: true })).toBeHidden();
 });
 
+test("unchanged historical markers display the actual review and verification commits", async ({ page, isMobile }) => {
+  const { state } = await mockGraph(page);
+  state.groups = true;
+  state.verifiedHistory = true;
+  state.reviewSource = "d".repeat(40);
+  state.verificationSource = "e".repeat(40);
+  await page.goto("/pulls/pr?tab=code");
+  const diff = page.getByRole("region", { name: "File diff" });
+  await expect(diff.getByRole("button")).toHaveCount(2);
+  const original = diff.getByRole("button", { name: "Open finding at new line 1: Validate the response status", exact: true });
+  const verified = diff.getByRole("button", { name: "Open finding at new line 1: Earlier saved evidence", exact: true });
+  if (!isMobile) {
+    await original.hover();
+    await expect(page.getByRole("tooltip")).toContainText("Evidence at ddddddd");
+    await original.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await verified.focus();
+    await expect(page.getByRole("tooltip")).toContainText("Verification at eeeeeee: still present");
+    await expect(page.getByRole("tooltip")).not.toContainText("Verification at aaaaaaa");
+  }
+  await original.click();
+  await expect(page.getByRole("dialog")).toContainText("Saved at ddddddd");
+  await page.keyboard.press("Escape");
+  await verified.click();
+  await expect(page.getByRole("dialog")).toContainText("Earlier saved evidence");
+});
+
 test("Findings tab groups review entries and preserves each saved snapshot without another read", async ({ page, isMobile }, info) => {
   const { state, calls } = await mockGraph(page); state.groups = true; state.verifiedHistory = true; state.enabled = false;
   await page.goto("/pulls/pr?tab=code");
@@ -574,6 +601,12 @@ test("Findings tab groups review entries and preserves each saved snapshot witho
   await expect(page.getByRole("combobox", { name: "Revision" })).toHaveCount(0);
   const list = page.getByRole("list", { name: "Findings for this file", exact: true });
   await expect(list.locator(":scope > li")).toHaveCount(2);
+  const card = list.locator('[data-slot="finding-card"]').filter({ hasText: "Validate the response status" });
+  await expect(card).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(card).toContainText("high");
+  await expect(card).toContainText("Bug");
+  await expect(card).toContainText("src/service.ts");
+  await expect(card).toContainText("open");
   const group = list.locator(":scope > li").filter({ hasText: "Earlier saved evidence" });
   await expect(group.getByRole("button")).toHaveCount(1);
   const history = group.locator("summary");

@@ -2542,6 +2542,8 @@ export interface components {
              * @enum {string}
              */
             verdict: "fixed" | "still_present" | "uncertain";
+            /** Source Sha */
+            source_sha: string;
             /** Start Line */
             start_line: number;
             /** End Line */

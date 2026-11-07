@@ -55,6 +55,7 @@ class CodeLine(StrictModel):
 class CodeFindingVerification(StrictModel):
     id: str
     verdict: Literal["fixed", "still_present", "uncertain"]
+    source_sha: GitSha
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
 

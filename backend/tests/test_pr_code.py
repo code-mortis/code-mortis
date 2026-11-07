@@ -121,7 +121,8 @@ def test_historical_findings_use_exact_current_verification_without_rewriting_ev
     assert response.status_code == 200, response.text
     finding = next(item for item in response.json()["findings"] if item["finding_id"] == "f3")
     assert (finding["placement"], finding["side"], finding["line"]) == ("inline", "new", 2)
-    assert finding["verification"] == {"id": "verified", "verdict": verdict, "start_line": 1, "end_line": 2}
+    assert finding["verification"] == {"id": "verified", "verdict": verdict, "source_sha": HEAD,
+                                       "start_line": 1, "end_line": 2}
     assert finding["current_status"] == "resolved"
     assert finding["source_sha"] == "d" * 40 and finding["snapshot"]["existing_code"] == "old"
     assert finding["snapshot"]["start_line"] == finding["snapshot"]["end_line"] == 1
@@ -184,6 +185,85 @@ def test_newer_failed_verification_does_not_fall_back_and_history_is_newest_firs
     assert finding["placement"] == "historical" and finding["verification"] is None
     detail = client.get("/api/v1/findings/f3").json()
     assert [row["id"] for row in detail["verifications"]] == ["later-check", "verified"]
+
+
+@pytest.mark.parametrize("changed_quote", [False, True])
+def test_prior_verification_keeps_marker_only_for_unchanged_complete_quote(comparison, client, changed_quote):
+    seed_current_verification()
+    with transaction() as db:
+        db.get(ReviewRun, "run").head_sha = "d" * 40
+        db.get(FindingVerification, "verified").head_sha = "d" * 40
+    if changed_quote:
+        comparison[0]["files"][0]["patch"] = PATCH.replace("mañana 😀", "changed")
+    result = client.post(URL + "/file", json=body()).json()
+    finding = next(item for item in result["findings"] if item["finding_id"] == "f3")
+    assert result["head_sha"] == HEAD
+    if changed_quote:
+        assert finding["placement"] == "historical" and finding["verification"] is None
+    else:
+        assert finding["placement"] == "inline" and finding["line"] == 2
+        assert finding["verification"]["source_sha"] == "d" * 40
+        assert finding["snapshot"]["existing_code"] == "old" and finding["current_status"] == "resolved"
+
+
+def test_prior_verification_requires_omitted_context_to_be_visible(comparison, client):
+    seed_current_verification()
+    comparison[0]["files"][0].update(patch="@@ -1 +1 @@\n-old\n+mañana 😀\n@@ -5 +5 @@\n context")
+    with transaction() as db:
+        db.get(ReviewRun, "run").head_sha = "d" * 40
+        row = db.get(FindingVerification, "verified")
+        row.head_sha = "d" * 40
+        row.result = {**row.result, "evidence": [{"revision": "current", "path": "notes.md",
+            "start_line": 1, "end_line": 5, "quote": "mañana 😀\nomitted\nomitted\nomitted\ncontext\n"}]}
+    finding = next(item for item in client.post(URL + "/file", json=body()).json()["findings"]
+                   if item["finding_id"] == "f3")
+    assert finding["placement"] == "historical" and finding["verification"] is None
+
+
+def test_current_failed_verification_takes_precedence_over_prior_success(comparison, client):
+    seed_current_verification()
+    with transaction() as db:
+        db.get(ReviewRun, "run").head_sha = "d" * 40
+        db.get(FindingVerification, "verified").head_sha = "d" * 40
+        db.add(ReviewRun(id="current", pr_id="pr", trigger="manual", dedup_key="current", status="failed",
+                        base_sha=BASE, head_sha=HEAD, config={}, report={}))
+        db.flush()
+        db.add(FindingVerification(id="failed", finding_id="f3", run_id="current", occurrence_id="o3",
+            head_sha=HEAD, finding_version=0, status="failed", created_at=now() - timedelta(days=1)))
+    finding = next(item for item in client.post(URL + "/file", json=body()).json()["findings"]
+                   if item["finding_id"] == "f3")
+    assert finding["placement"] == "historical" and finding["verification"] is None
+
+
+@pytest.mark.parametrize("invalid", [None, "changed", "incomplete", "blank", "source", "run", "path"])
+def test_prior_review_marker_requires_original_provenance_and_complete_quote(comparison, client, invalid):
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(ReviewRun, "run").head_sha = "d" * 40
+        row = db.get(Occurrence, "o3")
+        snapshot = {**row.snapshot, "existing_code": "mañana 😀\ncontext", "end_line": 2}
+        if invalid == "changed":
+            snapshot["existing_code"] = "different\ncontext"
+        elif invalid == "incomplete":
+            snapshot["existing_code"] = "mañana 😀"
+        elif invalid == "blank":
+            snapshot.update(existing_code="\n", end_line=1)
+        elif invalid == "source":
+            snapshot["source_sha"] = None
+        elif invalid == "run":
+            db.get(ReviewRun, "run").head_sha = "e" * 40
+        elif invalid == "path":
+            snapshot["path"] = "old.py"
+        row.snapshot = snapshot
+    result = client.post(URL + "/file", json=body()).json()
+    finding = next((item for item in result["findings"] if item["finding_id"] == "f3"), None)
+    if invalid == "path":
+        assert finding is None
+    elif invalid:
+        assert finding["placement"] != "inline"
+    else:
+        assert finding["placement"] == "inline" and finding["line"] == 2
+        assert finding["source_sha"] == "d" * 40 and finding["verification"] is None
 
 
 @pytest.mark.parametrize("path,state", [("image.png", "unavailable"), ("next.py", "available")])
