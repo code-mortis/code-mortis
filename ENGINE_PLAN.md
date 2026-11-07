@@ -4,6 +4,8 @@ Date: 2026-11-07
 
 Status: approved implementation roadmap; phase delivery and acceptance remain pending.
 
+M0 audit update (2026-11-07): five of six items are verified at `0cfebd5398ac25c98dcb37d99bb39eda95fcb897`. See [the evidence and migration inventory](ENGINE_M0.md) and [evaluation protocol v1](ENGINE_EVAL_V1.md). The actual independently adjudicated pilot corpus and priced/capped live-run manifest remain pending; M0 is in progress and M1 has not started.
+
 Source baseline inspected: `9277e5f` (`feat(code-graph): support configurable indexing limits`). Recheck the owning source when starting each phase; this baseline is evidence of inspected behavior, not a promise that the checkout has remained unchanged.
 
 This document replaces the earlier engine-replacement proposal. It incorporates shared-only connections, the new mandatory/additional exclusions and graph limits, and compatibility with the existing code graph. It supersedes the target-state requirements to retain OCR and personal subscriptions in [PLAN.md](PLAN.md) and [PRODUCT.md](PRODUCT.md). Those files still describe existing delivered behavior until the corresponding migration phases complete.
@@ -104,7 +106,7 @@ Preserve existing custom-rule behavior, including trusted-base loading, rule ord
 
 | Domain | Default / maximum | Required behavior |
 | --- | --- | --- |
-| PR `settings.max_files` | `null` is unlimited; configured values are positive integers | Count eligible files after selection. Exceeding the limit skips the review before inference; never silently review the first N. Preserve the dependent-stage limit gate. |
+| PR `settings.max_files` | `null` is unlimited; configured values are positive integers | Count eligible files after selection. Exceeding the limit skips PR analysis and dependent assessment/verification; never silently review the first N. Preserve independently budgeted summary generation, as verified by the M0 baseline. |
 | Graph `code_graph_limits.max_files` | 1,000 / 5,000 | Count admitted supported source, not every tree entry. |
 | Graph `max_file_bytes` | 1 MiB / 4 MiB | Skip an oversized supported file with explicit `file_too_large` status/warning. |
 | Graph `max_source_bytes` | 8 MiB / 32 MiB | Fail indexing before blob reads when admitted source exceeds the total. |
@@ -276,7 +278,7 @@ An engine change affects future work only. Never silently resume an old task und
 
 ## 14. Phase-by-phase delivery
 
-All phases start unchecked. Existing exclusions/graph functionality is a foundation to preserve, not evidence that a replacement phase has passed. Complete the exit gate and record evidence before marking a phase done.
+Checklists record verified work only. Existing exclusions/graph functionality is a foundation to preserve, not evidence that a replacement phase has passed. Complete the exit gate and record evidence before marking a phase done.
 
 | Phase | Depends on | Deliverable | Exit requirement |
 | --- | --- | --- | --- |
@@ -291,12 +293,16 @@ All phases start unchecked. Existing exclusions/graph functionality is a foundat
 
 ### M0 — Freeze requirements and evaluation
 
-- [ ] Reinspect the current checkout and record the source baseline and relevant differences from `9277e5f`.
-- [ ] Map every feature in section 3 to source, replacement ownership, and an acceptance case.
-- [ ] Inventory all OCR callers, including Git/process helpers, connection testing, background generation, graph indexing, summaries, assessment, verification, and security.
-- [ ] Inventory subscription routes, jobs, settings, grants, profile/runtime dependencies, historical readers, and deployment configuration.
-- [ ] Freeze representative scope fixtures under the finalized new exclusions and limits.
-- [ ] Version the evaluation protocol, independent ground truth, cost limits, quality gates, and resource conditions before model calls.
+- [x] Reinspect the current checkout and record the source baseline and relevant differences from `9277e5f`. [M0 evidence §1](ENGINE_M0.md#1-baseline-and-executed-evidence): baseline `0cfebd5`; no application runtime changes, only plan/test follow-ups.
+- [x] Map every feature in section 3 to source, replacement ownership, and an acceptance case. [PR/shared, security and graph matrices](ENGINE_M0.md#3-retained-prshared-connection-feature-map) map existing checks and identify replacement-specific gaps; a mapped test is not automatically a newly executed test.
+- [x] Inventory all OCR callers, including Git/process helpers, connection testing, background generation, graph indexing, summaries, assessment, verification, and security. [OCR inventory](ENGINE_M0.md#6-ocr-dependency-inventory) includes saved-result snapshot paths, scope previews, common structured transport, and neutral helper imports.
+- [x] Inventory subscription routes, jobs, settings, grants, profile/runtime dependencies, historical readers, and deployment configuration. [Retirement inventory and M1 decisions](ENGINE_M0.md#7-subscription-retirement-inventory-and-m1-decisions) cover indirect MCP/graph dependencies, standalone generation jobs, old-worker fencing, and historical/shared summary retries.
+- [x] Freeze representative scope fixtures under the finalized new exclusions and limits. [Scope v1](backend/tests/fixtures/engine_scope_v1.json) freezes 32 path cases, six graph scenarios, four review gates and graph bounds; [runnable contract](backend/tests/test_engine_scope_contract.py) verifies them. Broader existing scope assets remain listed in [M0 evidence §2](ENGINE_M0.md#2-frozen-scope-contract).
+- [ ] Version the evaluation protocol, independent ground truth, cost limits, quality gates, and resource conditions before model calls. [Protocol v1](ENGINE_EVAL_V1.md) defines the method, quality gates and zero-call/zero-token/USD-0 default. Actual independently adjudicated pilot cases/splits, selected shared model and price snapshot, finite live-run caps, and reproducible benchmark resource manifest remain open. No paid call was made or authorized by this audit.
+
+Verification: 1,034 baseline tests and 278 final scope/PR Code tests passed (1,200 distinct cases; overlaps counted once), plus pinned OCR/local-provider and synthetic Trivy container checks and changed-test Ruff. The Trivy check explicitly had missing/stale vulnerability data; it verifies secret/misconfiguration/redaction/isolation and honest partial coverage, not complete dependency vulnerability detection. [Exact commands, limits and gaps](ENGINE_M0.md#1-baseline-and-executed-evidence).
+
+M1 handoff requirements are recorded in [M0 §8](ENGINE_M0.md#8-gaps-and-phase-gates). M0 remains in progress; its final item is not marked complete merely because protocol design and deterministic fixtures exist. M1/runtime retirement has not started.
 
 Exit: no unmapped retained capability or ambiguous intentional removal; comparison cannot obtain an apparent speedup by analyzing less source.
 
@@ -439,7 +445,7 @@ For each completed phase, append a dated record containing the source revision, 
 
 | Phase | State | Evidence |
 | --- | --- | --- |
-| M0 | Not started | Pending |
+| M0 | In progress — 5/6 verified | [2026-11-07 audit](ENGINE_M0.md): source/acceptance maps, OCR/subscription inventory, frozen scope and 1,200 distinct passing pytest cases. [Protocol v1](ENGINE_EVAL_V1.md) exists; actual adjudicated quality corpus and live-run manifest pending. |
 | M1 | Not started | Pending |
 | M2 | Not started | Pending |
 | M3 | Not started | Pending |
@@ -448,4 +454,4 @@ For each completed phase, append a dated record containing the source revision, 
 | M6 | Not started | Pending |
 | M7 | Not started | Pending |
 
-Start implementation with M0. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and the owning source before changes. Preserve the shared-only target, current exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration, and all remaining product features. Do not start live comparisons until their explicit consumption cap and evaluation protocol are set. Do not mark a phase complete from mocked integration evidence alone.
+Continue M0 by closing the remaining evaluation-corpus/run-manifest item; see ENGINE_M0.md for verified foundations, concrete M1 decisions, and unresolved gates. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and the owning source before changes. Preserve the shared-only target, current exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration, and all remaining product features. Do not start live comparisons until their explicit consumption cap and evaluation protocol are set. Do not mark a phase complete from mocked integration evidence alone.

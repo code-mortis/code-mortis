@@ -1,0 +1,95 @@
+{
+  "schema_version": "code-mortis.engine-scope/v1",
+  "source_baseline": "0cfebd5",
+  "policy_version": 2,
+  "note": "Deterministic policy/admission fixtures, not independently adjudicated model-quality cases. Policy eligibility alone does not prove OCR selected a file.",
+  "graph_defaults": {"max_files": 1000, "max_file_bytes": 1048576, "max_source_bytes": 8388608},
+  "graph_maxima": {"max_files": 5000, "max_file_bytes": 4194304, "max_source_bytes": 33554432},
+  "paths": [
+    {"id": "source", "path": "src/app.py", "eligible": true},
+    {"id": "markdown", "path": "README.md", "eligible": true},
+    {"id": "mdx", "path": "guide.mdx", "eligible": true},
+    {"id": "yaml", "path": "config.yaml", "eligible": true},
+    {"id": "sql", "path": "schema.sql", "eligible": true},
+    {"id": "astro", "path": "page.astro", "eligible": true},
+    {"id": "json-manifest", "path": "package.json", "eligible": true},
+    {"id": "upper-media", "path": "images/ICON.SVG", "eligible": false},
+    {"id": "audio", "path": "audio/song.mp3", "eligible": false},
+    {"id": "archive", "path": "release.zip", "eligible": false},
+    {"id": "office", "path": "report.docx", "eligible": false},
+    {"id": "binary", "path": "extension.so", "eligible": false},
+    {"id": "upper-build", "path": "BUILD/app.py", "eligible": false},
+    {"id": "dependency", "path": "nested/node_modules/app.js", "eligible": false},
+    {"id": "cache", "path": ".cache/item.py", "eligible": false},
+    {"id": "lockfile", "path": "package-lock.json", "eligible": false},
+    {"id": "go-checksums", "path": "go.sum", "eligible": false},
+    {"id": "minified", "path": "app.min.CSS", "eligible": false},
+    {"id": "source-map", "path": "app.js.map", "eligible": false},
+    {"id": "environment", "path": ".env.example", "eligible": false},
+    {"id": "agent-instructions", "path": "nested/AGENTS.md", "eligible": false},
+    {"id": "mcp-config", "path": ".mcp.json", "eligible": false},
+    {"id": "sensitive-source-name", "path": "auth/password_reset.py", "eligible": false},
+    {"id": "parent-traversal", "path": "../outside.py", "eligible": false},
+    {"id": "absolute", "path": "/tmp/outside.py", "eligible": false},
+    {"id": "backslash", "path": "src\\app.py", "eligible": false},
+    {"id": "noncanonical", "path": "./src/app.py", "eligible": false},
+    {"id": "control", "path": "src/bad\u0000name.py", "eligible": false},
+    {"id": "additional-directory", "path": "fixtures/app.py", "exclusions": "fixtures", "eligible": false},
+    {"id": "additional-glob", "path": "docs/page.mdx", "exclusions": "docs/**", "eligible": false},
+    {"id": "custom-case-preserved", "path": "Docs/page.mdx", "exclusions": "docs/**", "eligible": true},
+    {"id": "root-glob", "path": "test_app.py", "exclusions": "**/test_*.py", "eligible": false}
+  ],
+  "graph_cases": [
+    {
+      "id": "exact-count-and-bytes-with-oversized",
+      "limits": {"max_files": 2, "max_file_bytes": 4, "max_source_bytes": 8},
+      "files": {"a.py": "# a\n", "b.py": "# b\n", "big.py": "# big\n"},
+      "sources": ["a.py", "b.py"],
+      "exclusions": {"big.py": "file_too_large"},
+      "unsupported": []
+    },
+    {
+      "id": "metadata-does-not-consume-parser-budget",
+      "limits": {"max_files": 1, "max_file_bytes": 4, "max_source_bytes": 4},
+      "files": {"a.py": "# a\n", "README.md": "documentation exceeds four bytes", "guide.mdx": "<Component />", "image.SVG": "media exceeds four bytes", "package-lock.json": "{}"},
+      "sources": ["a.py"],
+      "exclusions": {"image.SVG": "excluded", "package-lock.json": "excluded"},
+      "unsupported": ["README.md", "guide.mdx"]
+    },
+    {
+      "id": "additional-exclusion-before-admission",
+      "limits": {"max_files": 1, "max_file_bytes": 4, "max_source_bytes": 4},
+      "additional_exclusions": "fixtures/**",
+      "files": {"a.py": "# a\n", "fixtures/b.py": "# b\n"},
+      "sources": ["a.py"],
+      "exclusions": {"fixtures/b.py": "excluded"},
+      "unsupported": []
+    },
+    {
+      "id": "count-failure",
+      "limits": {"max_files": 1, "max_file_bytes": 4, "max_source_bytes": 8},
+      "files": {"a.py": "# a\n", "b.py": "# b\n"},
+      "failure": "file_count", "measurements": {"actual": 2, "limit": 1}
+    },
+    {
+      "id": "total-byte-failure",
+      "limits": {"max_files": 2, "max_file_bytes": 4, "max_source_bytes": 7},
+      "files": {"a.py": "# a\n", "b.py": "# b\n"},
+      "failure": "source_size", "measurements": {"actual": 8, "limit": 7}
+    },
+    {
+      "id": "all-excluded-is-empty-admission",
+      "limits": {"max_files": 1, "max_file_bytes": 4, "max_source_bytes": 4},
+      "files": {"AGENTS.md": "untrusted instructions", "password_reset.py": "# ordinary source\n"},
+      "sources": [],
+      "exclusions": {"AGENTS.md": "excluded", "password_reset.py": "excluded"},
+      "unsupported": []
+    }
+  ],
+  "review_gates": [
+    {"id": "exact", "selected_count": 40, "maximum": 40, "skipped": false},
+    {"id": "over", "selected_count": 41, "maximum": 40, "skipped": true},
+    {"id": "unlimited", "selected_count": 41, "maximum": null, "skipped": false},
+    {"id": "empty", "selected_count": 0, "maximum": 1, "skipped": false}
+  ]
+}
