@@ -4,7 +4,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from code_mortis.schemas.code_graph import MAX_FILE_BYTES, Digest, GitSha, RepositoryPath
+from code_mortis.schemas.code_graph import MAX_INDEXED_FILE_BYTES as MAX_FILE_BYTES
+from code_mortis.schemas.code_graph import Digest, GitSha, RepositoryPath
 from code_mortis.schemas.code_graph_explorer import GraphRead
 from code_mortis.schemas.common import StrictModel
 

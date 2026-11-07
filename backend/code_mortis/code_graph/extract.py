@@ -132,7 +132,9 @@ def main():
         return 2
     try:
         result_path.write_text(extract(request).model_dump_json(), encoding="utf-8")
-    except (ValueError, MemoryError, OSError):
+    except OSError as exc:
+        return 4 if exc.errno in {28, 122} else 3
+    except (ValueError, MemoryError):
         return 3
     return 0
 

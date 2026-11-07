@@ -78,7 +78,7 @@ def test_contract_rejects_noncanonical_or_unsafe_paths(path):
 
 @pytest.mark.parametrize("patch", [
     {"repository_id": True}, {"commit_sha": "main"}, {"policy_digest": "x" * 64},
-    {"extractor_version": ""}, {"schema_version": "code-graph/v2"}, {"unexpected": "data"},
+    {"extractor_version": ""}, {"schema_version": "code-graph/v1"}, {"unexpected": "data"},
 ])
 def test_contract_rejects_invalid_snapshot_identity(patch):
     with pytest.raises(ValidationError):
@@ -149,7 +149,7 @@ def test_excluded_targets_cannot_be_resolved():
 def test_contract_bounds_and_skipped_file_metadata(monkeypatch):
     file = extraction()["files"][0]
     with pytest.raises(ValidationError, match="per-file source limit"):
-        contracts.CodeGraphFile.model_validate(file | {"size_bytes": contracts.MAX_FILE_BYTES + 1})
+        contracts.CodeGraphFile.model_validate(file | {"size_bytes": contracts.MAX_INDEXED_FILE_BYTES + 1})
     skipped = contracts.CodeGraphFile.model_validate(file | {
         "size_bytes": contracts.MAX_FILE_BYTES + 1, "status": "excluded",
         "reason": "file_too_large", "unresolved_calls": None,
@@ -162,7 +162,7 @@ def test_contract_bounds_and_skipped_file_metadata(monkeypatch):
     with pytest.raises(ValidationError, match="snapshot byte limit"):
         contracts.CodeGraphResult.model_validate(data)
     data["files"] = [file | {"path": f"{i}.py"} for i in range(1001)]
-    with pytest.raises(ValidationError, match="at most 1000"):
+    with pytest.raises(ValidationError, match="configured file limits"):
         contracts.CodeGraphResult.model_validate(data)
     monkeypatch.setattr(contracts, "MAX_RESULT_BYTES", 1000)
     with pytest.raises(ValidationError, match="serialized byte limit"):
@@ -234,7 +234,7 @@ def test_default_order_upgrade_preserves_existing_graph_pin(seed):
         assert graph.enabled and graph.actor_id == 7
         assert graph.checked_at == graph.default_observed_at == checked
         assert db.execute(text("SELECT * FROM code_graph_snapshots WHERE id = :id"),
-                          {"id": identity}).mappings().one() == before
+                          {"id": identity}).mappings().one() == {**before, "failure": None}
 
 
 def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
@@ -252,12 +252,12 @@ def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
     try:
         command.downgrade(config, "20261025_api_tokens")
         with engine().connect() as connection:
-            before = {t.name: connection.execute(select(t).order_by(*t.primary_key.columns)).mappings().all()
+            before = {t.name: connection.execute(select(*[c for c in t.columns if c.name != "code_graph_limits"]).order_by(*t.primary_key.columns)).mappings().all()
                       for t in legacy_tables}
     finally:
         command.upgrade(config, "head")
     with engine().connect() as connection:
-        after = {t.name: connection.execute(select(t).order_by(*t.primary_key.columns)).mappings().all()
+        after = {t.name: connection.execute(select(*[c for c in t.columns if c.name != "code_graph_limits"]).order_by(*t.primary_key.columns)).mappings().all()
                  for t in legacy_tables}
         assert before == after
         context = MigrationContext.configure(connection, opts={

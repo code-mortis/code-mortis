@@ -13,6 +13,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+from code_mortis.code_graph.syntax import LANGUAGES
 from code_mortis.code_graph import store
 from code_mortis.schemas.code_graph import (
     EXTRACTOR_VERSION,
@@ -61,7 +62,7 @@ def corpus(sha):
         excluded = 'excluded' if store.excluded(name, RULES) else 'file_too_large' if size > MAX_FILE_BYTES else None
         raw = git('cat-file', 'blob', blob) if not excluded else None
         files.append(CodeGraphSource(path=name, blob_sha=blob, size_bytes=size, exclusion=excluded,
-                     content_base64=base64.b64encode(raw).decode() if raw is not None else None))
+                     content_base64=base64.b64encode(raw).decode() if raw is not None and Path(name).suffix in LANGUAGES else None))
         if raw is not None:
             try:
                 source = raw.decode('utf-8')

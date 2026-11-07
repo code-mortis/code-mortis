@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import jobs
+from code_mortis.core import file_policy
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.integrations.github import threads as github_threads
@@ -96,11 +97,11 @@ def test_markdown_context_preserves_scope_and_protected_paths(tmp_path, monkeypa
         if args[0] != ocr.settings().ocr_binary:
             return original_command(args, root, env, **kwargs)
         assert args[:3] == [ocr.settings().ocr_binary, "scan", "--preview"]
-        assert args[-2:] == (["--rule", args[-1]] if rule_source == "custom" else ["--exclude", "excluded/**"])
+        assert args[-2:] == ["--rule", args[-1]]
         if rule_source == "project":
             assert json.loads((root / ".opencodereview/rule.json").read_text()) == rules
         if rule_source == "custom":
-            assert json.loads(Path(args[-1]).read_text()) == rules
+            assert json.loads(Path(args[-1]).read_text()) == file_policy.review_rules(options)
         return 0, json.dumps({"files": [{"path": path, "will_review": reason is None,
                                         "exclude_reason": reason} for path, reason in reasons.items()]}), ""
 

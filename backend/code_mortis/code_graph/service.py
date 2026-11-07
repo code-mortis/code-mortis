@@ -1,5 +1,6 @@
 """Authorized graph lifecycle and repository indexing readiness."""
 
+import logging
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -9,7 +10,7 @@ from pydantic import TypeAdapter
 from sqlalchemy import func, insert, select, text
 
 from code_mortis.api_tokens import provenance as pat
-from code_mortis.code_graph import client, store
+from code_mortis.code_graph import client, errors, store
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.integrations import github, ocr
 from code_mortis.mcp import provenance as mcp
@@ -25,7 +26,7 @@ from code_mortis.models import (
     Repository,
     User,
 )
-from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, GitSha
+from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, CodeGraphLimits, GitSha
 from code_mortis.schemas.code_graph_status import CodeGraphStatus, GraphCoverage
 
 ACTIVE = {"queued", "running"}
@@ -92,6 +93,7 @@ def configure_record(db, repo, actor_id, *, enabled):
         config = CodeGraphRepository(repository_id=repo.id)
         db.add(config)
     changed = config.actor_id != actor_id or not enabled
+    config.failure = None
     config.enabled, config.actor_id, config.paused, config.error = enabled, actor_id, False, None
     if changed:
         for row in db.scalars(select(CodeGraphSnapshot).where(
@@ -99,6 +101,7 @@ def configure_record(db, repo, actor_id, *, enabled):
         ).with_for_update()):
             row.cancel_requested = True
             row.status, row.finished_at, row.error = "cancelled", now(), "Graph indexing was disabled or reconfigured."
+            row.failure = errors.describe(errors.failure("cancelled", "configuration"), "configuration", row.job_id).model_dump()
     return config
 
 
@@ -141,6 +144,7 @@ def enqueue_snapshot(repository_id, commit_sha=None, *, retry=False):
 
 def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     config = db.get(CodeGraphRepository, repo.id)
+    config.failure = None
     config.observed_sha, config.checked_at, config.error = default_sha, now(), None
     rules = store.policy(repo)
     identity = dict(repository_id=repo.id, commit_sha=sha, extractor_version=EXTRACTOR_VERSION,
@@ -162,6 +166,7 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     db.add(job)
     db.flush()
     row.job_id, row.actor_id, row.policy = job.id, actor_id, rules
+    row.failure = None
     row.status, row.cancel_requested, row.error = "queued", False, None
     row.started_at = row.finished_at = None
     return row.id
@@ -215,12 +220,14 @@ def refresh(repository_id, job_id, attempt, actor_id, *, retry=False, commit_sha
             if (current.full_name, current.installation_id) != (repo.full_name, repo.installation_id):
                 raise AccessLost("Repository identity changed.")
             admit(db, current, actor_id, commit_sha or sha, sha, retry=retry)
-    except Exception:
+    except Exception as exc:
+        diagnostic = diagnostic_for(exc, "git_access", f"{job_id}:{attempt}")
         with transaction() as db:
             owner(db)
             config = db.scalar(select(CodeGraphRepository).where(CodeGraphRepository.repository_id == repository_id).with_for_update())
             if config and config.enabled and not config.paused and config.actor_id == actor_id:
-                config.checked_at, config.error = now(), "Could not update the code index. Check repository access and retry."
+                config.checked_at, config.error = now(), diagnostic.message + " " + diagnostic.recovery
+                config.failure = diagnostic.model_dump()
         raise ValueError("Code graph refresh failed; retry from repository settings.") from None
 
 
@@ -229,11 +236,12 @@ def cancel_repository(db, repo):
     config = db.get(CodeGraphRepository, repo.id)
     if not config or not config.enabled:
         raise ValueError("Enable the code graph before cancelling indexing.")
-    config.paused, config.error = True, None
+    config.paused, config.error, config.failure = True, None, None
     for row in db.scalars(select(CodeGraphSnapshot).where(CodeGraphSnapshot.repository_id == repo.id,
                                                         CodeGraphSnapshot.status.in_(ACTIVE)).with_for_update()):
         row.cancel_requested = True
         row.status, row.finished_at, row.error = "cancelled", now(), "Graph indexing was cancelled."
+        row.failure = errors.describe(errors.failure("cancelled", "cancellation"), "cancellation", row.job_id).model_dump()
 
 
 def status(db, repo):
@@ -260,6 +268,7 @@ def status(db, repo):
                            snapshot_id=current.id if current else None, checked_at=config.checked_at,
                            finished_at=current.finished_at if current else None,
                            error=config.error or (current.error if current and state != "cancelled" else None),
+                           failure=config.failure or (current.failure if current else None),
                            coverage=coverage(db, current) if current and current.status in USABLE else None)
 
 
@@ -270,7 +279,10 @@ def coverage(db, row):
     reasons = Counter(file.reason for file in files if file.reason)
     return GraphCoverage(**{state: counts[state] for state in ("parsed", "partial", "unsupported", "failed")},
                          too_large=reasons["file_too_large"], visible_files=len(files),
-                         complete=counts["parsed"] == len(files), reasons=dict(reasons))
+                         complete=counts["parsed"] == len(files), reasons=dict(reasons),
+                         oversized_files=[dict(path=file.path, size_bytes=file.size_bytes,
+                                               limit_bytes=CodeGraphLimits.model_validate(row.policy.get("limits", {})).max_file_bytes)
+                                          for file in files if file.reason == "file_too_large"][:20])
 
 
 def claimed(db, snapshot_id, job_id, attempt, *, lock=False):
@@ -302,6 +314,7 @@ def cancel(snapshot_id, actor_id):
         if row and row.status in ACTIVE:
             row.cancel_requested = True
             row.status, row.finished_at, row.error = "cancelled", now(), "Graph indexing was cancelled."
+            row.failure = errors.describe(errors.failure("cancelled", "cancellation"), "cancellation", row.job_id).model_dump()
 
 
 def settle(db, job, *, expired=False):
@@ -319,10 +332,32 @@ def settle(db, job, *, expired=False):
     else:
         row.status = "cancelled" if row.cancel_requested else "failed"
         row.finished_at, row.error = now(), "Graph worker stopped; retry explicitly."
+        diagnostic = errors.describe(errors.GraphError("worker_terminated", "worker", "The indexing worker stopped before finishing.",
+                                                       "Check worker logs and resource limits, then retry."), "worker", f"{job.id}:{job.attempts}")
+        row.failure = diagnostic.model_dump()
+        row.error = diagnostic.message + " " + diagnostic.recovery
+
+
+def diagnostic_for(exc, stage, reference):
+    if isinstance(exc, AccessLost) or isinstance(exc, github.GitHubError) and exc.status in {401, 403, 404}:
+        exc = errors.failure("git_access_denied", stage)
+    elif isinstance(exc, (client.ExtractionCancelled, ocr.ReviewStopped)):
+        exc = errors.failure("cancelled", stage)
+    elif stage == "result_validation" and isinstance(exc, ValueError):
+        exc = errors.failure("parser_invalid_result", stage)
+    elif isinstance(exc, TimeoutError):
+        exc = errors.GraphError("timeout", stage, f"Indexing exceeded its deadline during {stage.replace('_', ' ')}.",
+                                "Check service health or reduce source scope, then retry.")
+    elif isinstance(exc, OSError) and exc.errno in {28, 122}:
+        exc = errors.GraphError("storage_limit", stage, "Indexing storage is full.", "Free graph storage, then retry.")
+    diagnostic = errors.describe(exc, stage, reference)
+    logging.getLogger(__name__).warning("Code graph failure %s type=%s", diagnostic.model_dump(), type(exc).__name__)
+    return diagnostic
 
 
 def perform(snapshot_id, job_id, attempt):
     with store.locked():
+        stage = "git_access"
         try:
             with transaction() as db:
                 row, _ = claimed(db, snapshot_id, job_id, attempt, lock=True)
@@ -349,10 +384,15 @@ def perform(snapshot_id, job_id, attempt):
                 checked = time.monotonic()
                 return False
 
+            stage = "git_fetch"
             store.acquire(repo.id, repo.full_name, row.commit_sha, row.id, token, stopped)
+            stage = "admission"
             payload = store.request(row, stopped)
+            stage = "parser"
             result = client.extract(payload, stopped=stopped)
+            stage = "result_validation"
             client.validate_result(payload, result)
+            stage = "storage"
             authorize(row.repository_id, row.actor_id)
             with transaction() as db:
                 current, job = claimed(db, snapshot_id, job_id, attempt, lock=True)
@@ -381,14 +421,15 @@ def perform(snapshot_id, job_id, attempt):
                 if observed_at and (config.default_observed_at is None or observed_at >= config.default_observed_at):
                     config.default_sha, config.default_observed_at = current.commit_sha, observed_at
         except Exception as exc:
+            diagnostic = diagnostic_for(exc, stage, f"{job_id}:{attempt}")
             with transaction() as db:
                 job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 current = db.scalar(select(CodeGraphSnapshot).where(CodeGraphSnapshot.id == snapshot_id).with_for_update())
                 if job and current and current.job_id == job_id and job.attempts == attempt and job.status == "running" and current.status in ACTIVE:
                     current.status = "cancelled" if isinstance(exc, (AccessLost, client.ExtractionCancelled, ocr.ReviewStopped)) else "failed"
                     current.finished_at = now()
-                    current.error = ("Graph access or indexing policy changed; request a new snapshot."
-                                     if current.status == "cancelled" else "Graph extraction failed; check parser availability, limits and Git access, then retry explicitly.")
+                    current.error = diagnostic.message + " " + diagnostic.recovery
+                    current.failure = diagnostic.model_dump()
             raise ValueError("Graph indexing did not finish; inspect its snapshot status before retrying.") from None
         finally:
             cleanup_locked()
@@ -414,6 +455,8 @@ def cleanup_locked():
                     job = db.get(Job, row.job_id) if row.job_id else None
                     if not job or job.status in {"done", "failed"}:
                         row.status, row.finished_at, row.error = "failed", now(), "Graph worker stopped; retry explicitly."
+                        row.failure = errors.describe(errors.GraphError("worker_terminated", "worker", row.error,
+                            "Check worker logs and resources, then retry."), "worker", row.job_id).model_dump()
                     else:
                         keep.add(row.id)
                 if row.status in USABLE and row.id not in keep:
@@ -455,4 +498,5 @@ def source(snapshot_id, actor_id, path):
         entry = store.tree(root, current.commit_sha).get(path)
         if not entry or entry[:2] not in {("100644", "blob"), ("100755", "blob")} or entry[2:] != (file.blob_sha, file.size_bytes):
             raise ValueError("Graph source does not match its pinned tree.")
-        return store.read_blob(root, file.blob_sha, file.size_bytes)
+        return store.read_blob(root, file.blob_sha, file.size_bytes,
+                               max_bytes=CodeGraphLimits.model_validate(current.policy.get("limits", {})).max_file_bytes)

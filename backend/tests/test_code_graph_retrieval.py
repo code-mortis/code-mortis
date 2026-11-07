@@ -142,8 +142,8 @@ def test_revocation_during_read_does_not_return_content(graph, monkeypatch):
     run(service.enqueue_snapshot(22))
     original = store.read_blob
 
-    def revoked(*args):
-        raw = original(*args)
+    def revoked(*args, **kwargs):
+        raw = original(*args, **kwargs)
         with transaction() as db:
             db.get(User, 7).enabled = False
         return raw

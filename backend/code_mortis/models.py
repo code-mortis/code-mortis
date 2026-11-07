@@ -133,6 +133,8 @@ class Repository(Base):
     connection_id: Mapped[str | None] = mapped_column(ForeignKey("connections.id"))
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    code_graph_limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
+
 
 class CodeGraphRepository(Base):
     __tablename__ = "code_graph_repositories"
@@ -144,6 +146,7 @@ class CodeGraphRepository(Base):
     observed_sha: Mapped[str | None] = mapped_column(String(40))
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
@@ -170,6 +173,7 @@ class CodeGraphSnapshot(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
     policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
 

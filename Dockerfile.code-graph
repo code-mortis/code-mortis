@@ -5,6 +5,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --only-group code-graph --no-install-project --no-cache
 COPY backend/code_mortis/__init__.py ./code_mortis/__init__.py
 COPY backend/code_mortis/schemas/__init__.py backend/code_mortis/schemas/code_graph.py ./code_mortis/schemas/
+COPY backend/code_mortis/core/__init__.py backend/code_mortis/core/file_policy.py ./code_mortis/core/
 COPY backend/code_mortis/code_graph/ ./code_mortis/code_graph/
 ENV PATH="/app/backend/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER 65534:65534

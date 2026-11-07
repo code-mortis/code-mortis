@@ -8,19 +8,47 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from code_mortis.code_graph.syntax import LANGUAGES
+from code_mortis.core import file_policy
+
 MAX_FILES = 1000
 MAX_FILE_BYTES = 1024 * 1024
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
+MAX_INDEXED_FILES = 5000
+MAX_INDEXED_FILE_BYTES = 4 * 1024 * 1024
+MAX_INDEXED_SOURCE_BYTES = 32 * 1024 * 1024
+MAX_TREE_ENTRIES = 20_000
 MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_FACTS = 100_000
-MAX_REQUEST_BYTES = 16 * 1024 * 1024
+MAX_REQUEST_BYTES = 64 * 1024 * 1024
 EXTRACTION_SECONDS = 120
-EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/3"
+EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/4"
 
 
 class StrictModel(BaseModel):
     # This contract also runs in the parser image, without application dependencies.
     model_config = ConfigDict(extra="forbid")
+
+
+class CodeGraphLimits(StrictModel):
+    max_files: int = Field(default=MAX_FILES, ge=1, le=MAX_INDEXED_FILES, strict=True)
+    max_file_bytes: int = Field(default=MAX_FILE_BYTES, ge=1, le=MAX_INDEXED_FILE_BYTES, strict=True)
+    max_source_bytes: int = Field(default=MAX_SOURCE_BYTES, ge=1, le=MAX_INDEXED_SOURCE_BYTES, strict=True)
+
+    @model_validator(mode="after")
+    def file_fits_total(self) -> Self:
+        if self.max_file_bytes > self.max_source_bytes:
+            raise ValueError("Maximum individual file size cannot exceed Maximum total source size.")
+        return self
+
+
+class GraphFailure(StrictModel):
+    code: str
+    stage: str
+    message: str
+    recovery: str
+    measurements: dict[str, int] = Field(default_factory=dict)
+    attempt_reference: str | None = None
 
 
 def stored_text(value: str) -> str:
@@ -68,7 +96,7 @@ class CodeGraphFile(StrictModel):
     @model_validator(mode="after")
     def extraction_status(self) -> Self:
         if self.status in {"parsed", "partial"}:
-            if self.language is None or self.line_count is None or self.size_bytes > MAX_FILE_BYTES:
+            if self.language is None or self.line_count is None or self.size_bytes > MAX_INDEXED_FILE_BYTES:
                 raise ValueError("Parsed files require language, line count and the per-file source limit")
             expected = None if self.status == "parsed" else "syntax_error"
             if self.reason != expected:
@@ -83,8 +111,8 @@ class CodeGraphFile(StrictModel):
 
 class CodeGraphLocation(StrictModel):
     file_path: RepositoryPath
-    start_byte: int = Field(ge=0, le=MAX_FILE_BYTES, strict=True)
-    end_byte: int = Field(gt=0, le=MAX_FILE_BYTES, strict=True)
+    start_byte: int = Field(ge=0, le=MAX_INDEXED_FILE_BYTES, strict=True)
+    end_byte: int = Field(gt=0, le=MAX_INDEXED_FILE_BYTES, strict=True)
     start_line: int = Field(ge=1, le=2**31 - 1, strict=True)
     end_line: int = Field(ge=1, le=2**31 - 1, strict=True)
 
@@ -121,12 +149,13 @@ class CodeGraphImport(CodeGraphLocation):
 
 
 class CodeGraphResult(StrictModel):
-    schema_version: Literal["code-graph/v1"] = "code-graph/v1"
+    schema_version: Literal["code-graph/v2"] = "code-graph/v2"
     repository_id: int = Field(gt=0, le=2**63 - 1, strict=True)
     commit_sha: GitSha
     extractor_version: GraphText = Field(min_length=1, max_length=128)
     policy_digest: Digest
-    files: list[CodeGraphFile] = Field(max_length=MAX_FILES)
+    limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
+    files: list[CodeGraphFile] = Field(max_length=MAX_TREE_ENTRIES)
     symbols: list[CodeGraphSymbol] = Field(default_factory=list, max_length=MAX_FACTS)
     imports: list[CodeGraphImport] = Field(default_factory=list, max_length=MAX_FACTS)
 
@@ -135,7 +164,10 @@ class CodeGraphResult(StrictModel):
         files = {item.path: item for item in self.files}
         if len(files) != len(self.files):
             raise ValueError("Graph file paths must be unique within a snapshot")
-        if sum(item.size_bytes for item in self.files if item.status in {"parsed", "partial"}) > MAX_SOURCE_BYTES:
+        admitted = [item for item in self.files if item.status in {"parsed", "partial", "failed"}]
+        if len(admitted) > self.limits.max_files or any(item.size_bytes > self.limits.max_file_bytes for item in admitted):
+            raise ValueError("Graph source exceeds the configured file limits")
+        if sum(item.size_bytes for item in admitted) > self.limits.max_source_bytes:
             raise ValueError("Graph source exceeds the snapshot byte limit")
         if len({item.key for item in self.symbols}) != len(self.symbols):
             raise ValueError("Graph declaration identities must be unique within a snapshot")
@@ -170,7 +202,7 @@ class CodeGraphSource(StrictModel):
     path: RepositoryPath
     blob_sha: GitSha
     size_bytes: int = Field(ge=0, le=2**63 - 1, strict=True)
-    content_base64: str | None = Field(default=None, max_length=4 * ((MAX_FILE_BYTES + 2) // 3))
+    content_base64: str | None = Field(default=None, max_length=4 * ((MAX_INDEXED_FILE_BYTES + 2) // 3))
     exclusion: Literal["excluded", "file_too_large"] | None = None
 
     def source(self) -> bytes:
@@ -181,10 +213,11 @@ class CodeGraphSource(StrictModel):
         if self.exclusion is not None:
             if self.content_base64 is not None:
                 raise ValueError("Excluded files must not carry source")
-            if self.exclusion == "file_too_large" and self.size_bytes <= MAX_FILE_BYTES:
-                raise ValueError("File does not exceed the per-file limit")
+        elif PurePosixPath(self.path).suffix not in LANGUAGES:
+            if self.content_base64 is not None:
+                raise ValueError("Unsupported formats carry metadata only")
         else:
-            if self.content_base64 is None or self.size_bytes > MAX_FILE_BYTES:
+            if self.content_base64 is None or self.size_bytes > MAX_INDEXED_FILE_BYTES:
                 raise ValueError("Admitted files require bounded source")
             try:
                 source = self.source()
@@ -196,17 +229,26 @@ class CodeGraphSource(StrictModel):
 
 
 class CodeGraphRequest(StrictModel):
-    schema_version: Literal["code-graph/v1"] = "code-graph/v1"
+    schema_version: Literal["code-graph/v2"] = "code-graph/v2"
     repository_id: int = Field(gt=0, le=2**63 - 1, strict=True)
     commit_sha: GitSha
     extractor_version: Literal[EXTRACTOR_VERSION] = EXTRACTOR_VERSION
     policy_digest: Digest
-    files: list[CodeGraphSource] = Field(max_length=MAX_FILES)
+    limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
+    files: list[CodeGraphSource] = Field(max_length=MAX_TREE_ENTRIES)
 
     @model_validator(mode="after")
     def bounded_manifest(self) -> Self:
         if len({item.path for item in self.files}) != len(self.files):
             raise ValueError("Request paths must be unique")
-        if sum(item.size_bytes for item in self.files if item.exclusion is None) > MAX_SOURCE_BYTES:
+        for item in self.files:
+            if file_policy.excluded(item.path) and item.exclusion != "excluded":
+                raise ValueError("Mandatory exclusions cannot carry source")
+            if item.exclusion == "file_too_large" and item.size_bytes <= self.limits.max_file_bytes:
+                raise ValueError("File does not exceed the configured per-file limit")
+        admitted = [item for item in self.files if item.exclusion is None and PurePosixPath(item.path).suffix in LANGUAGES]
+        if len(admitted) > self.limits.max_files or any(item.size_bytes > self.limits.max_file_bytes for item in admitted):
+            raise ValueError("Request exceeds the configured file limits")
+        if sum(item.size_bytes for item in admitted) > self.limits.max_source_bytes:
             raise ValueError("Request exceeds the source byte limit")
         return self

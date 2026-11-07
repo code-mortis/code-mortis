@@ -50,15 +50,16 @@ test("code graph stays opt-in and saves with the existing repository draft", asy
   const requests = await mock(page);
   let statusReads = 0;
   await page.route("**/api/v1/repositories/22/code-graph", async (route) => { statusReads++; await route.fulfill({ json: { state: "disabled" } }); });
-  await page.goto("/repositories/22/settings?tab=context");
+  await page.goto("/repositories/22/settings?tab=code-graph");
   const toggle = page.getByRole("switch", { name: "Code graph", exact: true });
   await expect(toggle).not.toBeChecked();
   await toggle.focus();
   await page.keyboard.press("Space");
-  await expect(page.getByText("Save to start indexing.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Save graph settings before indexing.", { exact: true })).toBeVisible();
+  await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Existing project context");
   await repositorySection(page, "Review behavior");
-  await repositorySection(page, "Project context");
+  await repositorySection(page, "Code graph");
   await expect(toggle).toBeChecked();
   expect(statusReads).toBe(0);
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -87,7 +88,7 @@ for (const mode of ["light", "dark"] as const) {
       }
       await route.fulfill({ json: status });
     });
-    await page.goto("/repositories/22/settings?tab=context");
+    await page.goto("/repositories/22/settings?tab=code-graph");
     await expect(page.getByText("Indexed with warnings", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Index coverage")).toContainText("239 files fully parsed");
     await expect(page.getByLabel("Index coverage")).toContainText("72 files use formats without structural support");
@@ -107,7 +108,7 @@ for (const mode of ["light", "dark"] as const) {
     expect(requests.filter((r) => r.path === "/repositories/22")).toHaveLength(0);
     await page.getByRole("switch", { name: "Code graph", exact: true }).uncheck();
     await expect(page.getByText("Save to disable indexing and code access.")).toBeVisible();
-    await expect(retry).toBeHidden();
+    await expect(retry).toBeDisabled();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
     expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({ code_graph_enabled: false });
@@ -116,9 +117,57 @@ for (const mode of ["light", "dark"] as const) {
 
 test("code graph is unavailable to workspace members", async ({ page }) => {
   await mock(page, { role: "member" });
-  await page.goto("/repositories/22/settings?tab=context");
+  await page.goto("/repositories/22/settings?tab=code-graph");
   await expect(page.getByRole("switch", { name: "Code graph", exact: true })).toBeHidden();
 });
+test("code graph limits retain drafts across tabs and focus invalid settings", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, code_graph_enabled: true }] }));
+  await page.route("**/api/v1/repositories/22/code-graph", (route) => route.fulfill({ json: {
+    enabled: true, state: "failed", indexed_sha: "b".repeat(40), commit_sha: "a".repeat(40),
+    error: "1,207 eligible files exceed the 1,000-file limit. Increase Maximum indexed files or add exclusions.",
+    failure: { code: "file_count", stage: "admission", attempt_reference: "00000000-0000-0000-0000-000000000001:1", measurements: { actual: 1207, limit: 1000 } },
+  } }));
+  await page.goto("/repositories/22/settings?tab=code-graph");
+  const files = page.getByRole("spinbutton", { name: "Maximum indexed files", exact: true });
+  const individual = page.getByRole("spinbutton", { name: "Maximum individual file size (MiB)", exact: true });
+  const total = page.getByRole("spinbutton", { name: "Maximum total source size (MiB)", exact: true });
+  const retry = page.getByRole("button", { name: "Retry indexing", exact: true });
+  await expect(files).toHaveValue("1000");
+  await expect(individual).toHaveValue("1");
+  await expect(total).toHaveValue("8");
+  await expect(retry).toBeEnabled();
+  await page.getByText("Indexing error details", { exact: true }).click();
+  await expect(page.getByText("file_count", { exact: true })).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({ path: `../.impeccable/review/graph-errors-${info.project.name}.png`, fullPage: true });
+  await files.fill("5001");
+  await expect(retry).toBeDisabled();
+  await repositorySection(page, "Project context");
+  await page.getByText("Mandatory file exclusions", { exact: true }).click();
+  await expect(page.getByText(/Markdown, MDX, text documentation/)).toBeVisible();
+  await page.getByRole("textbox", { name: "Additional file exclusions", exact: true }).fill("fixtures/**");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL(/tab=code-graph/);
+  await expect(files).toBeFocused();
+  await files.fill("2000");
+  await individual.fill("4");
+  await total.fill("2");
+  await repositorySection(page, "Project context");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(individual).toBeFocused();
+  await total.fill("32");
+  await noOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `../.impeccable/review/graph-limits-${info.project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
+  expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
+    code_graph_enabled: true, code_graph_limits: { max_files: 2000, max_file_bytes: 4194304, max_source_bytes: 33554432 },
+    settings: { exclusions: "fixtures/**" },
+  });
+});
+
 const run = {
   id: "run",
   connection_id: "connection",

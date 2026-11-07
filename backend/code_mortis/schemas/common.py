@@ -5,7 +5,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
+from code_mortis.schemas.code_graph import CodeGraphLimits
 
 NATIVE_REVIEW_INSTRUCTIONS = (
     "Review the assigned code for actionable defects using the supplied review rules. "
@@ -147,6 +149,12 @@ class RepoSettings(RunLimits):
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None
 
+    @field_validator("exclusions")
+    @classmethod
+    def deny_only_exclusions(cls, value):
+        file_policy.patterns(value)
+        return value
+
     @field_validator("model")
     @classmethod
     def trim_model(cls, value):
@@ -161,6 +169,7 @@ class RepoSettings(RunLimits):
 class RepositoryInput(StrictModel):
     enabled: bool
     code_graph_enabled: bool | None = None
+    code_graph_limits: CodeGraphLimits | None = None
     connection_id: str | None = None
     settings: RepoSettings = Field(default_factory=RepoSettings)
 
@@ -316,6 +325,7 @@ class RepositoryOut(ORMModel):
     active: bool
     enabled: bool
     code_graph_enabled: bool = False
+    code_graph_limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
     connection_id: str | None
     settings: RepoSettings
     open_prs: int = 0

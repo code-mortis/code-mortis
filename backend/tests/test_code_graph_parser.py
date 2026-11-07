@@ -9,6 +9,8 @@ import pytest
 
 from code_mortis.code_graph import client, server
 from code_mortis.code_graph.extract import extract
+from code_mortis.code_graph.syntax import LANGUAGES
+from code_mortis.core import file_policy
 from code_mortis.schemas.code_graph import (
     MAX_FILE_BYTES,
     MAX_FILES,
@@ -22,7 +24,8 @@ def request(files=None):
     files = files if files is not None else {"main.py": "def café():\r\n    return 1\r\n"}
     return CodeGraphRequest(repository_id=1, commit_sha="a" * 40, policy_digest="b" * 64,
                             files=[dict(path=path, blob_sha=blob_sha(raw), size_bytes=len(raw),
-                                        content_base64=base64.b64encode(raw).decode())
+                                        content_base64=base64.b64encode(raw).decode() if Path(path).suffix in LANGUAGES and not file_policy.excluded(path) else None,
+                                        exclusion="excluded" if file_policy.excluded(path) else None)
                                    for path, text in files.items()
                                    for raw in [text.encode() if isinstance(text, str) else text]])
 
@@ -147,7 +150,7 @@ def test_limits_before_transfer(monkeypatch):
     with pytest.raises(ValueError, match="source byte limit"):
         request({f"{i}.py": b"a" * MAX_FILE_BYTES for i in range(9)})
     monkeypatch.setattr(client, "MAX_REQUEST_BYTES", 1)
-    with pytest.raises(ValueError, match="byte limit"):
+    with pytest.raises(ValueError, match="transport safety limit"):
         client.extract(request())
 
 
@@ -294,7 +297,7 @@ def test_transport_requires_explicit_response_versions(monkeypatch, version):
     async def handle(req):
         return httpx.Response(200, stream=httpx.ByteStream(json.dumps(result).encode()))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original_client(transport=httpx.MockTransport(handle), **kw))
-    with pytest.raises(ValueError, match="omitted|Field required"):
+    with pytest.raises(ValueError, match="valid, bounded result|Field required"):
         asyncio.run(client._request(payload, payload.model_dump_json().encode(), "http://parser", "test", lambda: False))
 
 

@@ -173,8 +173,8 @@ def test_disabled_missing_and_new_policy_never_use_old_snapshot(indexed, client)
 def test_changes_during_read_discard_content(indexed, client, monkeypatch, change):
     original = store.read_blob
 
-    def read(*args):
-        result = original(*args)
+    def read(*args, **kwargs):
+        result = original(*args, **kwargs)
         with transaction() as db:
             if change == "head":
                 db.get(PullRequest, "pr").head_sha = "c" * 40
@@ -193,7 +193,7 @@ def test_changes_during_read_discard_content(indexed, client, monkeypatch, chang
 
 def test_secret_check_precedes_source_slice_and_missing_objects(indexed, client, monkeypatch):
     original = store.read_blob
-    monkeypatch.setattr(store, "read_blob", lambda *args: b"provider-secret\n" + original(*args))
+    monkeypatch.setattr(store, "read_blob", lambda *args, **kwargs: b"provider-secret\n" + original(*args, **kwargs))
     response = client.post(BASE + "/query", json=body(indexed, operation="source", start_byte=16))
     assert response.status_code == 422 and "provider-secret" not in response.text
     monkeypatch.setattr(store, "read_blob", original)

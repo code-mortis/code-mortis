@@ -37,6 +37,7 @@ def comparison(seed, github_stub, monkeypatch):
     data = {"base_commit": {"sha": BASE}, "merge_base_commit": {"sha": MERGE}, "files": [
         {"filename": "notes.md", "status": "modified", "additions": 1, "deletions": 1, "patch": PATCH},
         {"filename": "next.py", "previous_filename": "old.py", "status": "renamed", "additions": 1, "deletions": 1, "patch": PATCH},
+        {"filename": "guide.txt", "status": "added", "additions": 0, "deletions": 0},
         {"filename": "image.png", "status": "added", "additions": 0, "deletions": 0},
         {"filename": ".env", "status": "modified", "patch": "+hidden"}]}
     calls, pull_files = [], []
@@ -266,7 +267,7 @@ def test_prior_review_marker_requires_original_provenance_and_complete_quote(com
         assert finding["source_sha"] == "d" * 40 and finding["verification"] is None
 
 
-@pytest.mark.parametrize("path,state", [("image.png", "unavailable"), ("next.py", "available")])
+@pytest.mark.parametrize("path,state", [("guide.txt", "unavailable"), ("next.py", "available")])
 def test_missing_patch_and_rename(comparison, client, path, state):
     result = client.post(URL + "/file", json=body(path)).json()
     assert result["patch_state"] == state
@@ -383,6 +384,22 @@ def test_cache_reapplies_policy_before_paths_counts_groups(comparison, client):
     assert result["total"] == 1 and not result["groups"] and "next.py" not in json.dumps(result)
     assert client.post(URL + "/file", json=body()).status_code == 404
     assert len(comparison[1]) == 4
+
+
+def test_mandatory_exclusions_hide_source_without_changing_saved_evidence(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        occurrence = db.get(Occurrence, "o2")
+        saved = {**occurrence.snapshot, "path": "image.png"}
+        occurrence.snapshot = saved
+    overview = client.get(URL).json()
+    workspace = client.post(URL + "/workspace", json={}).json()
+    for result in (overview, workspace):
+        assert {item["path"] for item in result["files"]} == {"guide.txt", "next.py", "notes.md"}
+    assert client.post(URL + "/file", json=body("image.png")).status_code == 404
+    with transaction() as db:
+        assert db.get(Finding, "f2").status == "open"
+        assert db.get(Occurrence, "o2").snapshot == saved
 
 
 @pytest.mark.parametrize("change", ["head", "base", "policy", "membership", "github"])
@@ -696,9 +713,9 @@ def test_finding_counts_deduplicate_use_immutable_sides_and_withhold_invalid(com
 
 
 @pytest.mark.parametrize(("findings", "path"), [
-    ("any", "next.py"), ("none", "image.png"), ("open", "next.py"), ("resolved", "notes.md"), ("dismissed", "next.py"),
+    ("any", "next.py"), ("none", "guide.txt"), ("open", "next.py"), ("resolved", "notes.md"), ("dismissed", "next.py"),
     (["open", "resolved"], "next.py"), (["resolved", "dismissed"], "next.py"),
-    (["none", "resolved"], "image.png"), (["any", "none"], "image.png"), (["resolved"], "notes.md"),
+    (["none", "resolved"], "guide.txt"), (["any", "none"], "guide.txt"), (["resolved"], "notes.md"),
 ])
 def test_workspace_filters_saved_findings_across_revisions_and_renames(comparison, client, findings, path):
     with transaction() as db:
@@ -802,15 +819,15 @@ def test_automatic_review_checks_use_validated_results_without_any_writes(compar
     with transaction() as db:
         run = db.get(ReviewRun, "run")
         run.status = "partial"
-        run.report = {"manifest": {"coverage": saved_coverage(reused=("image.png",))}}
+        run.report = {"manifest": {"coverage": saved_coverage(reused=("guide.txt",))}}
         before = [(f.id, f.status) for f in db.scalars(select(Finding))]
         jobs = db.scalar(select(func.count()).select_from(Job))
     data = client.post(URL + "/workspace", json={"unreviewed": True}).json()
     assert [state["reviewed"] for state in data["file_states"]] == [True, False, True]
     assert data["path"] == "next.py"
-    assert client.post(URL + "/workspace", json={"reviewed": True}).json()["path"] == "image.png"
+    assert client.post(URL + "/workspace", json={"reviewed": True}).json()["path"] == "guide.txt"
     assert client.post(URL + "/workspace", json={"reviewed": False}).json()["path"] == "next.py"
-    assert client.post(URL + "/workspace", json={"reviewed": [True, False]}).json()["path"] == "image.png"
+    assert client.post(URL + "/workspace", json={"reviewed": [True, False]}).json()["path"] == "guide.txt"
     assert client.post(URL + "/workspace", json={"reviewed": [False], "findings": ["open", "resolved"]}).json()["path"] is None
     assert client.post(URL + "/workspace", json={"reviewed": [True], "findings": ["open", "resolved"]}).json()["path"] == "notes.md"
     assert client.post(URL + "/workspace", json={}).json()["file_states"] == data["file_states"]
@@ -835,7 +852,7 @@ def test_review_check_never_infers_completion_from_status(comparison, client, ch
         elif change == "overlap":
             coverage["failed"] += coverage["completed"]
         elif change == "wrong_path":
-            coverage["completed"][0] = {"item_id": "notes.md", "path": "image.png"}
+            coverage["completed"][0] = {"item_id": "notes.md", "path": "guide.txt"}
         elif change == "malformed":
             coverage["completed"] = [None]
         elif change == "partial_file":
@@ -855,7 +872,7 @@ def test_review_checks_retain_saved_fact_but_never_expose_currently_excluded_fil
         run = db.get(ReviewRun, "run")
         run.report = {"manifest": {"coverage": saved_coverage()}}
         run.config = {}
-        db.get(Repository, 22).settings = {"exclusions": "image.png"}
+        db.get(Repository, 22).settings = {"exclusions": "guide.txt"}
     data = client.post(URL + "/workspace", json={}).json()
     assert data["file_states"][1]["reviewed"]
     with transaction() as db:

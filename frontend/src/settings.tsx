@@ -144,7 +144,7 @@ export function RepositorySettings({
   const id = useId();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
-  const sections = [["reviews", "Review behavior"], ["connection", "AI connection"], ["context", "Project context"], ["limits", "Limits & rules"]];
+  const sections = [["reviews", "Review behavior"], ["connection", "AI connection"], ["context", "Project context"], ["code-graph", "Code graph"], ["limits", "Limits & rules"]];
   const section = sections.some(([value]) => value === params.get("tab")) ? params.get("tab")! : "reviews";
   const invalidField = useRef<HTMLInputElement | null>(null);
   useLayoutEffect(() => {
@@ -158,6 +158,22 @@ export function RepositorySettings({
   }
   const [enabled, setEnabled] = useState(repo.enabled);
   const [codeGraphEnabled, setCodeGraphEnabled] = useState(repo.code_graph_enabled ?? false);
+  const savedGraphLimits = repo.code_graph_limits ?? { max_files: 1000, max_file_bytes: 1048576, max_source_bytes: 8388608 };
+  const [graphDraft, setGraphDraft] = useState({
+    max_files: String(savedGraphLimits.max_files),
+    max_file_bytes: String(savedGraphLimits.max_file_bytes / 1048576),
+    max_source_bytes: String(savedGraphLimits.max_source_bytes / 1048576),
+  });
+  const graphLimits = {
+    max_files: Number(graphDraft.max_files),
+    max_file_bytes: Number(graphDraft.max_file_bytes) * 1048576,
+    max_source_bytes: Number(graphDraft.max_source_bytes) * 1048576,
+  };
+  const graphFileInput = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    graphFileInput.current?.setCustomValidity(graphLimits.max_file_bytes > graphLimits.max_source_bytes
+      ? "Maximum individual file size cannot exceed Maximum total source size." : "");
+  }, [graphLimits.max_file_bytes, graphLimits.max_source_bytes]);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState({
     ...repo.settings,
@@ -222,6 +238,7 @@ export function RepositorySettings({
             body: {
               enabled,
               code_graph_enabled: codeGraphEnabled,
+              code_graph_limits: graphLimits,
               connection_id: connection || null,
               settings: {
                 ...settings,
@@ -391,11 +408,9 @@ export function RepositorySettings({
               <h2 id={`${id}-context`} className="text-xl font-semibold tracking-tight">Project context</h2>
               <p className="mt-1 text-sm text-muted-foreground">Give reviewers context and choose which files to exclude.</p>
             </div>
-            <CodeGraphSettings repositoryId={repo.id} enabled={codeGraphEnabled} savedEnabled={repo.code_graph_enabled ?? false}
-              visible={section === "context"} onChange={setCodeGraphEnabled} />
             <Field
-              label="Exclude files"
-              hint="Comma-separated glob patterns, such as **/*.lock,dist/**. Also excludes files from the code graph."
+              label="Additional file exclusions"
+              hint="Comma-separated glob patterns, such as fixtures/**. These add to the mandatory policy for reviews, context, and code graph indexing. Inclusion overrides are not allowed."
             >
               {(id) => (
                 <Input
@@ -405,6 +420,20 @@ export function RepositorySettings({
                 />
               )}
             </Field>
+            <details className="text-sm">
+              <summary className="cursor-pointer font-medium">Mandatory file exclusions</summary>
+              <div className="mt-3 space-y-2 text-muted-foreground">
+                <p>Always excluded from reviews, context, and the code graph. These exclusions cannot be disabled.</p>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>Images, including SVG; audio and video; fonts.</li>
+                  <li>Archives and binary documents, including PDF and Office files.</li>
+                  <li>Compiled artifacts, dependency, build and cache directories.</li>
+                  <li>Source maps, minified JavaScript/CSS, and package-manager lockfiles.</li>
+                  <li>Secrets, credentials, agent instructions, and unsafe paths.</li>
+                </ul>
+                <p>Markdown, MDX, text documentation, source, and configuration files remain eligible. Security scans use their own coverage policy.</p>
+              </div>
+            </details>
             <BackgroundField
               repositoryId={repo.id}
               connectionId={connection}
@@ -415,6 +444,30 @@ export function RepositorySettings({
               value={settings.background}
               onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
             />
+          </section>
+          <section hidden={section !== "code-graph"} data-settings-section="code-graph" aria-labelledby={`${id}-code-graph`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-code-graph`} className="text-xl font-semibold tracking-tight">Code graph</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Manage indexing, source limits, and the current index.</p>
+            </div>
+            <CodeGraphSettings repositoryId={repo.id} enabled={codeGraphEnabled} savedEnabled={repo.code_graph_enabled ?? false}
+              visible={section === "code-graph"} onChange={setCodeGraphEnabled}
+              dirty={codeGraphEnabled !== (repo.code_graph_enabled ?? false) || settings.exclusions !== repo.settings.exclusions
+                || Object.entries(graphLimits).some(([key, value]) => value !== savedGraphLimits[key as keyof typeof savedGraphLimits])} />
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Limits apply to eligible source after mandatory and additional exclusions and language filtering. Unsupported formats retain metadata for coverage and source navigation; their bodies are not parsed.</p>
+              {([
+                { key: "max_files", label: "Maximum indexed files", max: 5000, min: 1, step: 1, hint: "Default: 1,000. Maximum: 5,000 files." },
+                { key: "max_file_bytes", label: "Maximum individual file size (MiB)", max: 4, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 1 MiB. Maximum: 4 MiB. Larger files are skipped with a warning." },
+                { key: "max_source_bytes", label: "Maximum total source size (MiB)", max: 32, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 8 MiB. Maximum: 32 MiB. Exceeding this limit or the file count fails the attempt and preserves the previous index." },
+              ] as const).map((field) => <Field key={field.key} label={field.label} hint={field.hint}>
+                {(fieldId) => <Input id={fieldId} type="number" required min={field.min} max={field.max} step={field.step}
+                  ref={field.key === "max_file_bytes" ? graphFileInput : undefined}
+                  value={graphDraft[field.key]} className="max-w-xs"
+                  onChange={(event) => { setError(undefined); setGraphDraft({ ...graphDraft, [field.key]: event.target.value }); }} />}
+              </Field>)}
+              <p className="text-xs text-muted-foreground">Saving changes schedules a fresh index when enabled. Paused indexing stays paused until you retry.</p>
+            </div>
           </section>
           <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
             <div>

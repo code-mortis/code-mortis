@@ -17,7 +17,7 @@ from code_mortis.reviews import background
 def generation(seed, github_stub, monkeypatch):
     calls = []
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"default_branch": "main"})
-    monkeypatch.setattr(background, "context", lambda *a: {
+    monkeypatch.setattr(background, "context", lambda *a, **k: {
         "repository": "team/project", "branch": "main", "sha": "a" * 40,
         "sources": {"README.md": {"text": "A review service", "truncated": False}},
     })
