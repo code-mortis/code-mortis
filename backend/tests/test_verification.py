@@ -20,6 +20,7 @@ from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import jobs
 from code_mortis.core import file_policy
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import github, ocr, runner_client
 from code_mortis.integrations.github import threads as github_threads
@@ -458,7 +459,7 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
         return "\0".join(f"{mode} blob {'a' * 40}\t{path}" for mode, path in (
             ("100644", "helper.py"), ("100644", "private/helper.py"), ("120000", "linked/helper.py"),
         ))
-    monkeypatch.setattr(ocr, "git", tree)
+    monkeypatch.setattr(git_source, "git", tree)
     reads, calls, native_ids = [], [], []
     def read(repo, env, sha, path, stopped):
         reads.append((sha, path))
@@ -565,7 +566,7 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
             if stop == "missing_timeout":
                 tick += timedelta(hours=1)
             return ""
-        monkeypatch.setattr(ocr, "git", missing_git)
+        monkeypatch.setattr(git_source, "git", missing_git)
     else:
         monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
     if stop in {"budget", "missing_budget"}:
@@ -624,7 +625,7 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
                 return ""
             return f"{'120000' if bad == 'symlink' else '100644'} blob {'a' * 40}\thelper.py"
         return "\x00binary" if bad == "binary" else "x" * 1_500_001
-    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(git_source, "git", git)
     with pytest.raises(ValueError) as error:
         verification.expand_context(tmp_path, {}, context, [{"revision": "current", "path": path}], {}, lambda: False)
     if bad in {"missing", "symlink"}:
@@ -1194,7 +1195,7 @@ def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, ba
         return {"verdict": "bad"} if bad == "malformed" else RESULT
     monkeypatch.setattr(verification, "terminal_result", terminal)
     monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     def command(args, *a, **k):
         if "--preview" in args:
             return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
@@ -1221,7 +1222,7 @@ def test_api_process_failure_preserves_redacted_diagnostics(tmp_path, monkeypatc
         finally:
             active.clear()
     monkeypatch.setattr(ocr, "configuration", configuration)
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     def command(args, root, *a, **k):
         calls.append(args)
         if "--preview" in args:
@@ -1659,7 +1660,7 @@ def test_lost_compensation_response_reconciles_without_duplicate_activity(scenar
 @pytest.mark.parametrize("failure", ["too_large", "invalid_preview", "cancelled"])
 @pytest.mark.parametrize("ceiling", [58888, 200000])
 def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatch, failure, ceiling):
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
     def preview(args, *a, **k):
         assert "--preview" in args
@@ -1683,7 +1684,7 @@ def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatc
 def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch, options, ceiling):
     from contextlib import nullcontext
 
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
     def command(args, *a, **k):
@@ -1705,7 +1706,7 @@ def test_failed_scan_prompt_limit_requires_matching_pre_request_session(tmp_path
     from contextlib import nullcontext
 
     session_id = "00000000-0000-4000-8000-000000000001"
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     calls = []
     def command(args, root, *a, **k):
@@ -1756,7 +1757,7 @@ def test_failed_scan_prompt_limit_requires_matching_pre_request_session(tmp_path
 def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, monkeypatch):
     from contextlib import nullcontext
 
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: RESULT)
     calls = []
@@ -1785,7 +1786,7 @@ def test_api_adapter_retains_structured_citation_feedback_before_truncation(tmp_
            "history_explanation": "", "contradicts_prior": False, "changed_conditions": "",
            "suggestion_supported": False, "evidence": copy.deepcopy(RESULT["evidence"]), "required_paths": []}
     raw["evidence"].append({**raw["evidence"][-1], "quote": "invented"})
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
     monkeypatch.setattr(verification, "terminal_result", lambda *a: raw)
     def command(args, *a, **k):

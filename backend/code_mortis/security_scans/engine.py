@@ -63,7 +63,7 @@ INSTRUCTIONS = (
     "unavailable, explain the gap and return uncertain for assessment or verification; never invent source or confirm "
     "an issue or fix without evidence. Use the requested language for "
     "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
-    "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
+    "using the requested response contract. For kind schema, correct every listed field to "
     "match the requested schema. For kind citation_selection, correct every listed source_id or line range using "
     "citation_sources and the numbered source blocks. Return the complete "
     "requested schema, never invent evidence or weaken a finding to bypass validation. "
@@ -575,7 +575,7 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
-        *, configuration_managed=False):
+        *, configuration_managed=False, infer=None):
     require_shared(connection)
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
@@ -688,7 +688,11 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             exc.usage = {"tokens": used}
             raise
         try:
-            if connection["kind"] == "api":
+            if infer is not None:
+                result, usage = infer(request_context, schema=schema, instructions=instructions,
+                                      validator=lambda raw, supplied: redacted_context(item, validate(raw, supplied)),
+                                      budget=remaining, timeout=remaining_time, round=attempt)
+            elif connection["kind"] == "api":
                 result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
                     remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
                     configuration_managed=configuration_managed, structured_result=True, delivery=verification.STRUCTURED_RESULT_DELIVERY +
@@ -707,6 +711,10 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 except (ValueError, KeyError, TypeError) as exc:
                     raise verification.VerificationOutputError("The native security result failed source validation: " + str(exc), usage,
                         feedback=exc.feedback if isinstance(exc, verification.ResultValidationError) else None) from exc
+        except ReviewStopped as exc:
+            tokens = getattr(exc, "usage", {}).get("tokens")
+            exc.usage = {"tokens": used + tokens if type(tokens) is int and tokens >= 0 else None}
+            raise
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = exc.usage.get("tokens")
             known = type(tokens) is int and tokens >= 0

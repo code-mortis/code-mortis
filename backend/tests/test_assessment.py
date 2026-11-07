@@ -17,6 +17,7 @@ from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import jobs
 from code_mortis.api.routers import members as members_routes
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import seal
 from code_mortis.integrations import github, ocr, runner_client
@@ -1407,7 +1408,7 @@ def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline
             return sources[args[1].split(":", 1)[1]]
         assert args[0] == "diff"
         return ""
-    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(git_source, "git", git)
     def respond(context):
         if pipeline["calls"] == 1:
             return verdict(context, verdict="uncertain", required_paths=[missing])
@@ -1453,7 +1454,7 @@ def test_excluded_requested_evidence_is_feedback_not_an_execution_failure(pipeli
         reads.append(path)
         return "guard = True\n"
     monkeypatch.setattr(verification, "read_source", read)
-    monkeypatch.setattr(ocr, "git", lambda *a, **kw: "")
+    monkeypatch.setattr(git_source, "git", lambda *a, **kw: "")
     def respond(context):
         step = pipeline["calls"]
         if step < request_pass:

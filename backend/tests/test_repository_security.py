@@ -16,7 +16,7 @@ from code_mortis import jobs, native_runner
 from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.security import digest
-from code_mortis.integrations import github
+from code_mortis.integrations import github, ocr
 from code_mortis.models import (
     ConnectionGrant,
     Job,
@@ -82,7 +82,7 @@ def test_historical_secret_fingerprint_redaction_preserves_lines_and_stops(tmp_p
     assert credential in item.secret_values
     item.secret_values.clear()
     item.stopped = lambda: True
-    with pytest.raises(security.ocr.ReviewStopped):
+    with pytest.raises(security.ReviewStopped):
         item.redact("x" * 10000)
 
 
@@ -246,7 +246,7 @@ def test_unmapped_directory_failure_is_explicitly_incomplete(tmp_path):
 def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
     item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, renamed=lambda sha, path: path,
         diff=lambda sha: "changed", read=lambda path, sha=None: "unsafe" if sha else "unsafe\nunrelated change")
-    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "100644 blob object\tmain.tf")
+    monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "100644 blob object\tmain.tf")
     old = {"path": "main.tf", "evidence": {"kind": "infrastructure", "source_sha": OLD,
         "rule_id": "fixture", "resource": "group.unsafe"}}
     result = security.deterministic_fix(item, old, {"targets": {"main.tf": {
@@ -263,7 +263,7 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
         sha=SHA, git=tmp_path, env={})
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     calls = []
 
     def ask(*args, **kwargs):
@@ -422,7 +422,7 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
     monkeypatch.setattr(native_runner, "auth_status", lambda *args: pytest.fail("Oversized history must be blocked before authentication"))
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security.verification, "api_verify", api)
     with transaction() as db:
@@ -979,7 +979,7 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
     item.diff = lambda sha: "lockfile updated"
     packages = [{"name": f"dependency-{index}", "version": "1.1.0"} for index in range(40)]
     packages.append({"name": "http-cache-semantics", "version": "4.3.0"})
-    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "bun.lock")
+    monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "bun.lock")
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "problems": [], "metadata": {},
         "targets": {"bun.lock": {"packages": packages}}})
@@ -1063,7 +1063,7 @@ def test_independent_resolution_preserves_global_guards_and_finding_versions(see
 
 
 def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
-    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "regular file")
+    monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "regular file")
     item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha=None: "unsafe", diff=lambda sha: "",
                            git=None, env={}, sha=SHA, stopped=lambda: False)
     old = {"evidence": {"kind": "dependency", "source_sha": OLD}, "path": "requirements.txt"}
@@ -1328,7 +1328,7 @@ def test_dependency_advisory_lookup_stops_safely_without_manufacturing_a_fix(mon
         return failure == "cancel_before" or failure == "cancel_after" and bool(calls)
 
     monkeypatch.setattr(github, "request", request)
-    error = ValueError if failure == "network" else TimeoutError if failure == "timeout" else security.ocr.ReviewStopped
+    error = ValueError if failure == "network" else TimeoutError if failure == "timeout" else security.ReviewStopped
     with pytest.raises(error):
         security.dependency_advisory(evidence, [{"name": evidence["package"], "version": "4.3.0"}], "token", stopped, {})
     assert len(calls) == int(failure in {"network", "cancel_after"})
@@ -1490,7 +1490,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
-    monkeypatch.setattr(security.ocr, "configuration", configuration)
+    monkeypatch.setattr(security, "legacy_configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
         {"findings": [], "required_paths": ["bad.py"]}, {"tokens": 12}))
@@ -1572,7 +1572,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", api)
     with transaction() as db:
@@ -1637,7 +1637,7 @@ def test_security_stage_status_only_reflects_its_own_results(
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {},
         "problems": ["Dependency scan incomplete"] if earlier_error == "trivy" else [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         finding = saved_finding(db, seed, saved_scan(db, seed, status="completed"))
@@ -1715,7 +1715,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", configuration)
+    monkeypatch.setattr(security, "legacy_configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
@@ -1809,7 +1809,7 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -1863,7 +1863,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     body = {"connection_id": "connection", "token_budget": budget, "concurrency": concurrency}
     with transaction() as db:
@@ -2082,7 +2082,7 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security.ocr, "configuration", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine.verification, "api_verify", api)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -2846,9 +2846,9 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
         calls.append(payload["token_budget"])
         return response(), {"tokens": 7}
 
-    monkeypatch.setattr(security.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security.ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(security.ocr, "command", command)
+    monkeypatch.setattr(security.git_source, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
+    monkeypatch.setattr(ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "terminal_result", lambda *a: response())
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     monkeypatch.setattr(security_engine.runner_client, "review", native)
@@ -2903,9 +2903,9 @@ def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_
             "summary": {"files_reviewed": 1, "total_tokens": None if case == "unknown_usage" else 71300},
             "warnings": ["incomplete"] if case == "warning" else None}), ""
 
-    monkeypatch.setattr(security.ocr, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(security.ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(security.ocr, "command", command)
+    monkeypatch.setattr(security.git_source, "git", lambda *a, **kwargs: "")
+    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
+    monkeypatch.setattr(ocr, "command", command)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": ""}
     budget = 71300 if case == "budget" else 200000
@@ -3059,7 +3059,7 @@ def test_secret_resolution_requires_rotation_and_repository_wide_removal(monkeyp
     old = {"path": "secret.txt", "evidence": evidence, "rotation": {"identity": evidence["identity"]} if acknowledged else None}
     item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, inventory={"elsewhere.txt": {}},
         renamed=lambda sha, path: path, diff=lambda sha: "removed", read=lambda path, sha=None: material if sha or present else "safe")
-    monkeypatch.setattr(security.ocr, "git", lambda *args, **kwargs: "")
+    monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "")
     assert security.deterministic_fix(item, old, {"targets": {}})["verdict"] == outcome
 
 
@@ -3358,7 +3358,7 @@ def test_cancelled_scan_cannot_write_late_observations_and_retains_unknown_consu
         scan.progress = {"tokens": 20, "tasks": {"analysis:app.py": {"status": "running"}}}
         security.cancel(db, scan)
         assert scan.progress["tokens"] is None and scan.report["tokens"] is None
-        with pytest.raises(security.ocr.ReviewStopped):
+        with pytest.raises(security.ReviewStopped):
             security.observe(db, scan, finding.evidence)
 
 

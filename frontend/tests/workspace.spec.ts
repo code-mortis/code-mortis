@@ -8523,3 +8523,46 @@ test("native review history stays readable after subscription setup is retired",
   await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(finding.content);
   await noOverflow(page);
 });
+
+for (const status of ["completed", "partial"] as const) test(`Mortis ${status} history retains saved configuration, coverage and summary without inference`, async ({ page }, info) => {
+  const selected = [{ path: "src/retry.ts" }, { path: "src/config.ts" }];
+  const requests = await mock(page, { canWrite: false, run: {
+    engine: "mortis", status, publication: "published", publication_error: null,
+    check_pending: false, check_error: null, check_status: "completed", check_conclusion: "neutral",
+    config: { analysis_engine: "mortis", pipeline_version: 2,
+      connection: { kind: "api", name: "Archived team connection", model: "saved-mortis-model" },
+      settings: { summary_diagram_enabled: true, ai_fix_prompts_enabled: true } },
+    report: { manifest: { coverage: { selected, completed: status === "completed" ? selected : selected.slice(0, 1),
+      reused: [], failed: [], waived: status === "partial" ? [{ path: "src/config.ts", reason: "Token budget reached" }] : [] } } },
+    stages: { ocr: { status, tokens: 100 }, assessment: { status: "completed", tokens: 20 },
+      verification: { status: "skipped", tokens: 0 }, summary: { status: "completed", tokens: 40 } },
+    summary: { status: "completed", tokens: 40, limited_context: false, settings: { summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
+      result: { narrative: "Payment retries now stop at their limit.",
+        groups: [{ title: "Retry behavior", description: "Bound retry work.", paths: ["src/retry.ts"] }] } },
+  }, overview: { summary_url: "https://github.com/acme/payments/pull/148#issuecomment-10", summary_pending: false } });
+  await page.goto("/runs/run?tab=details");
+  const setup = page.getByRole("region", { name: "Review setup", exact: true });
+  await expect(setup.getByText("Mortis", { exact: true })).toBeVisible();
+  await expect(setup.getByText("Archived team connection", { exact: true })).toBeVisible();
+  await expect(setup.getByText("saved-mortis-model", { exact: true })).toBeVisible();
+  await page.getByText("Configuration used", { exact: true }).click();
+  await expect(page.getByRole("tabpanel")).toContainText('"summary_diagram_enabled": true');
+  await expect(page.getByRole("tabpanel")).toContainText('"ai_fix_prompts_enabled": true');
+  const trigger = page.getByRole("button", { name: "Review stage details", exact: true });
+  await expect(trigger).toHaveAttribute("data-status", status);
+  await trigger.click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details.getByRole("link", { name: "PR summary", exact: true })).toHaveAttribute("href", /#issuecomment-10$/);
+  await expect(details.getByText("40 tokens", { exact: true })).toBeVisible();
+  await expect(details.getByText("Analysis", { exact: true })).toBeVisible();
+  await expect(details.getByText("OCR", { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath(`mortis-${status}-review-stages.png`), fullPage: true });
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "Coverage", exact: true }).click();
+  const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  await expect(coverage.getByText("selected", { exact: true }).locator("..")).toContainText("2");
+  await expect(coverage.getByText("completed", { exact: true }).locator("..")).toContainText(status === "completed" ? "2" : "1");
+  if (status === "partial") await expect(coverage.getByRole("heading", { name: /Files not reviewed/ })).toBeVisible();
+  await noOverflow(page);
+  expect(requests).toHaveLength(0);
+});

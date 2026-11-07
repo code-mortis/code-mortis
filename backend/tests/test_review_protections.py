@@ -14,7 +14,7 @@ def test_repeated_empty_source_produces_correctable_feedback(stage):
     context = {"sources": {"current": {"empty.py": ""}}}
     with pytest.raises(verification.ResultValidationError) as caught:
         if stage == "assessment":
-            assessment.expand_context(Path("/tmp"), {}, SimpleNamespace(), context, ["empty.py"], lambda: False)
+            assessment.expand_context(Path("/tmp"), {}, SimpleNamespace(config={}), context, ["empty.py"], lambda: False)
         else:
             verification.expand_context(Path("/tmp"), {}, context,
                 [{"revision": "current", "path": "empty.py"}], {}, lambda: False)
@@ -84,7 +84,7 @@ def test_unavailable_history_commit_does_not_abort_unrelated_current_assessment(
     def git(*args, **kwargs):
         calls.append(args)
         raise ValueError("historical commit unavailable")
-    monkeypatch.setattr(assessment.ocr, "git", git)
+    monkeypatch.setattr(assessment.git_source, "git", git)
     previous = {"findings": [{"id": "old", "snapshot": {"path": "unrelated.py", "existing_code": "old"},
                  "sha": "a" * 40, "fingerprint": "old"}], "prior_candidates": []}
     for _ in range(2):
@@ -148,7 +148,7 @@ def test_source_references_remain_stable_after_evidence_expansion():
 def test_rejected_candidate_history_follows_renames_and_connects_secondary_citations(monkeypatch):
     def git(*args, **kwargs):
         return "R100\0old.py\0new.py\0" if "--name-status" in args else ""
-    monkeypatch.setattr(assessment.ocr, "git", git)
+    monkeypatch.setattr(assessment.git_source, "git", git)
     previous = {"findings": [], "prior_candidates": [{"id": "rejected", "snapshot": {
         "path": "old.py", "source_sha": "a" * 40, "existing_code": "previous"},
         "result": {"verdict": "rejected", "evidence": [{"path": "helper.py", "quote": "guard"}]}}]}

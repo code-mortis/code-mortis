@@ -201,7 +201,7 @@ def test_finite_budget_failure_is_explicit_and_has_no_http_calls(scenario):
     assert not scenario["wire"] and len(report["manifest"]["coverage"]["failed"]) == 2
     with transaction() as db:
         assert list(db.scalars(select(AnalysisAttempt))) == []
-        assert db.scalar(select(AnalysisBudget)).charged_tokens == 0
+        assert db.scalar(select(AnalysisBudget).where(AnalysisBudget.stage == "analysis")).charged_tokens == 0
         assert not list(db.scalars(select(InferenceAdmission).where(InferenceAdmission.status == "active")))
 
 
@@ -315,7 +315,7 @@ def test_two_batches_can_use_a_finite_budget_after_first_reservation_settles(sce
     assert report["summary"]["total_tokens"] == 24
     assert len(report["manifest"]["coverage"]["completed"]) == 2
     with transaction() as db:
-        budget = db.scalar(select(AnalysisBudget))
+        budget = db.scalar(select(AnalysisBudget).where(AnalysisBudget.stage == "analysis"))
         assert budget.token_limit == 18_000 and budget.charged_tokens == 24
         assert len(list(db.scalars(select(AnalysisAttempt)))) == 2
 

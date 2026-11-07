@@ -85,17 +85,22 @@ async def _claim(task_id, job_id, job_attempt, **kwargs):
 
 
 async def execute_task(task_id, job_id, job_attempt, request: Request, credentials, *, client,
-                       authorize, validate_result, stopped=lambda: False, authorize_admission=None) -> Response | None:
+                       authorize, validate_result, stopped=lambda: False, authorize_admission=None, timeout=None) -> Response | None:
     """Execute an immutable task after fresh external authorization.
 
     None means admission/dependencies/budget require scheduler attention. The caller
     must reschedule or cancel its queued ticket. validate_result must enforce the
     workload's evidence and redaction rules before anything is persisted.
     """
+    if timeout is not None and (type(timeout) not in {int, float} or not 0 < timeout < float("inf")):
+        raise InferenceError("cancelled", "The inference deadline expired before admission.", consumption_unknown=False)
+    dispatch_deadline = time.monotonic() + timeout if timeout is not None else None
     request = Request.model_validate(request.model_dump(mode="python"))
     connection, deadline = await asyncio.to_thread(_inputs, task_id, job_id, request)
     estimate = reservation(connection, request)
     until = time.monotonic() + connection.get("options", {}).get("timeout_sec", 120)
+    if dispatch_deadline is not None:
+        until = min(until, dispatch_deadline)
     if deadline:
         until = min(until, time.monotonic() + max(0, (deadline - now()).total_seconds()))
     for attempt in range(3):
@@ -165,10 +170,10 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
                 retry = exc
             else:
                 raise
-        except BaseException:
+        except BaseException as exc:
             await asyncio.to_thread(analysis.finish_task, lease,
                                     usage_tokens=response.usage.total_tokens if response else None if dispatched else 0,
-                                    error_code="cancelled" if stopped() else "invalid_result",
+                                    error_code="cancelled" if isinstance(exc, asyncio.CancelledError) else "invalid_result",
                                     provider_request_id=response.request_id if response else None)
             raise
         finally:

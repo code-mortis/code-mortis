@@ -51,6 +51,11 @@ def require_available_engine(options):
         raise ValueError("Mortis analysis is not available yet. Select OCR for new work; no fallback was used.")
 
 
+def require_execution_engine(options):
+    """Validate a frozen worker snapshot; public admission remains independently gated."""
+    return engine_snapshot(options)
+
+
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                      ensure_ascii=False, allow_nan=False).encode()).hexdigest()
@@ -152,6 +157,31 @@ def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specific
         return task
     task = AnalysisTask(id=identity, plan_id=plan.id, key=specification.key, stage=parent.stage,
                         input_hash=specification.input_hash, scope=specification.scope, dependencies=[parent.id])
+    db.add(task)
+    db.flush()
+    return task
+
+
+def workflow_task(db, plan_id, job_attempt, specification: TaskSpec):
+    """Freeze discovered assessment/security work without rewriting its owning plan."""
+    specification = TaskSpec.model_validate(specification.model_dump(mode="json"))
+    plan = db.get(AnalysisPlan, plan_id)
+    job = db.scalar(select(Job).where(Job.id == plan.job_id).with_for_update()) if plan else None
+    if (not plan or plan.snapshot["settings"].get("workflow_contract") != "mortis-workflow/v1"
+            or specification.stage not in plan.snapshot["budgets"] or specification.dependencies
+            or not specification.key.startswith("workflow:") or not owner_live(db, plan)
+            or not job_live(job, job_attempt, now())):
+        raise ValueError("Workflow tasks require their original live plan and stage")
+    task = db.scalar(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id,
+                                               AnalysisTask.key == specification.key))
+    if task:
+        if (task.stage != specification.stage or task.input_hash != specification.input_hash
+                or task.scope != specification.scope or task.dependencies):
+            raise ValueError("Saved workflow task inputs are immutable; start new work for changed evidence")
+        return task
+    task = AnalysisTask(id=fingerprint([plan.id, specification.key]), plan_id=plan.id,
+                        key=specification.key, stage=specification.stage,
+                        input_hash=specification.input_hash, scope=specification.scope, dependencies=[])
     db.add(task)
     db.flush()
     return task
@@ -270,7 +300,7 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
         return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires, admission_id)
 
 
-def owned_attempt(db, lease):
+def owned_attempt(db, lease, *, settlement_only=False):
     job = db.scalar(select(Job).where(Job.id == lease.job_id).with_for_update())
     task = db.scalar(select(AnalysisTask).where(AnalysisTask.id == lease.task_id).with_for_update())
     attempt = db.get(AnalysisAttempt, lease.attempt_id)
@@ -280,7 +310,7 @@ def owned_attempt(db, lease):
     live_owner = owner_live(db, plan)
     timestamp = now()
     if (plan.job_id != lease.job_id or not job_live(job, lease.job_attempt, timestamp)
-            or not live_owner or task.attempts != lease.number or task.status != "running"
+            or not live_owner and not settlement_only or task.attempts != lease.number or task.status != "running"
             or attempt.status != "running" or attempt.job_attempt != lease.job_attempt
             or attempt.lease_until <= timestamp):
         return None
@@ -299,7 +329,7 @@ def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | No
     if result is not None and (not isinstance(result, dict) or error_code is not None):
         raise ValueError("A validated result cannot be combined with a failure")
     with transaction() as db:
-        owned = owned_attempt(db, lease)
+        owned = owned_attempt(db, lease, settlement_only=result is None)
         if not owned:
             return False
         task, attempt = owned

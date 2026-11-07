@@ -13,9 +13,10 @@ from sqlalchemy import and_, case, func, or_, select
 from code_mortis.core.analysis import fingerprint
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import unseal
 from code_mortis.core.telemetry import init_sentry
-from code_mortis.integrations import github, installations, llm, ocr, runner_client
+from code_mortis.integrations import github, installations, llm, runner_client
 from code_mortis.models import (
     Connection,
     Finding,
@@ -133,7 +134,7 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
             except Exception as exc:
                 if _pat._is_transient(exc):
                     raise _pat.TransientAuthorizationError("Token authorization is temporarily unavailable.") from exc
-                raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE) from exc
+                raise ReviewStopped(_pat.REVOKED_MESSAGE) from exc
         token = github.installation_token(db, repo.installation_id)
         data = github.request("GET", f"/repos/{repo.full_name}/pulls/{number}", token)
         if not tracked:
@@ -525,7 +526,7 @@ def execute_job(job_id: str):
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
             str(exc)
-            if isinstance(exc, (github.GitHubError, ValueError, TimeoutError, ocr.ReviewStopped, llm.InferenceError))
+            if isinstance(exc, (github.GitHubError, ValueError, TimeoutError, ReviewStopped, llm.InferenceError))
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}

@@ -17,6 +17,8 @@ from code_mortis.core import file_policy, inference_admission, process
 from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.review_results import fingerprint as fingerprint
+from code_mortis.core.review_results import report_tokens as report_tokens
 from code_mortis.core.security import clean_text, digest, safe_endpoint
 from code_mortis.reviews import policy as review_policy
 from code_mortis.schemas.common import ReviewComment
@@ -234,24 +236,6 @@ def parse_report(raw: str, exit_code: int, secrets: tuple[str, ...] = ()) -> tup
         report["excluded_files"] = data["excluded_files"]
     report = json.loads(clean_text(json.dumps(report), secrets))
     return ("completed" if state == "complete" else state), report, comments
-
-
-def report_tokens(report: dict | None):
-    summary = (report or {}).get("summary")
-    return summary.get("total_tokens") if isinstance(summary, dict) else None
-
-
-def fingerprint(comment: dict) -> str:
-    def text(value):
-        return " ".join(value.split()).casefold()
-
-    anchor = text(comment.get("existing_code", "")) or f"{comment['start_line']}:{comment['end_line']}"
-    return digest(
-        json.dumps(
-            [comment["path"], comment.get("category", "other"), anchor, text(comment["content"])],
-            ensure_ascii=False,
-        )
-    )
 
 
 def diff_lines(patch: str) -> set[int]:

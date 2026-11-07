@@ -786,7 +786,7 @@ def test_review_pre_dispatch_rejects_malformed_origin_without_crashing(seed, git
     monkeypatch.setattr(github, "request", lambda *a, **k: {
         "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
     })
-    monkeypatch.setattr(reviews.ocr, "review", lambda *a, **k: pytest.fail("invalid origin must not execute"))
+    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("invalid origin must not execute"))
     with transaction() as db:
         run_id = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),
                                     db.get(Repository, seed["repo"].id), "manual", seed["user"]).id
@@ -811,7 +811,7 @@ def test_review_pre_dispatch_cleans_both_revoked_origins(seed, github_stub, pat_
     monkeypatch.setattr(github, "request", lambda *a, **k: {
         "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
     })
-    monkeypatch.setattr(reviews.ocr, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
+    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
     with transaction() as db:
         db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
         run = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),

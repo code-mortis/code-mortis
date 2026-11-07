@@ -296,7 +296,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
 
     monkeypatch.setattr(ocr, "review", engine)
     monkeypatch.setattr(ocr, "configuration", lambda *a, **k: nullcontext())
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(assessment.git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(assessment, "build_context", context)
     monkeypatch.setattr(verification, "api_verify", infer)
     # OCR finishes first; candidates must remain queued until the other worker stops writing history.

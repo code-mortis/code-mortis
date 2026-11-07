@@ -14,11 +14,13 @@ from sqlalchemy import or_, select
 
 from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import require_available_engine
+from code_mortis.core.analysis import require_execution_engine
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import InferenceOutputError, ReviewStopped
+from code_mortis.core.review_results import evidence_bundle, report_tokens
 from code_mortis.core.security import clean_text
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Activity,
     Connection,
@@ -168,7 +170,7 @@ def validate_response(value, context):
             {"kind": "schema", "errors": exc.errors(include_input=False, include_url=False, include_context=False)}) from exc
     requested = response.pop("required_sources")
     for item in requested:
-        ocr.ReviewComment.relative_path(item["path"])
+        git_source.repository_path(item["path"])
     if requested and response["verdict"] != "uncertain":
         raise ValueError("Verification requiring additional source must remain uncertain.")
     result = validate_result(response, context)
@@ -226,17 +228,17 @@ def validate_result(value, context):
 def read_source(repo, env, sha, path, stopped):
     if file_policy.excluded(path):
         raise ValueError("This source is excluded by repository policy.")
-    return git_source.read_source(repo, env, sha, path, stopped, git=ocr.git)
+    return git_source.read_source(repo, env, sha, path, stopped, git=git_source.git)
 
 
-def read_requested_source(repo, env, sha, path, options, stopped, *, revision, field):
-    ocr.ReviewComment.relative_path(path)
+def read_requested_source(repo, env, sha, path, options, stopped, *, revision, field, base_sha=None, head_sha=None):
+    git_source.repository_path(path)
     if file_policy.excluded(path, file_policy.policy(options)):
         raise ValueError("This source is excluded by repository policy.")
     try:
         return read_source(repo, env, sha, path, stopped)
     except ValueError as exc:
-        entries = ocr.git(repo, env, "ls-tree", "-r", "-t", "-z", sha, stopped=stopped)
+        entries = git_source.git(repo, env, "ls-tree", "-r", "-t", "-z", sha, stopped=stopped)
         candidates = []
         requested = Path(path)
         for entry in entries.split("\0"):
@@ -250,20 +252,27 @@ def read_requested_source(repo, env, sha, path, options, stopped, *, revision, f
             ):
                 candidates.append(candidate)
         candidates.sort(key=lambda item: (Path(item).name != requested.name, item))
-        allowed = filter_context(repo, env, dict.fromkeys(candidates[:10], "# context\n"), options, stopped) if candidates else set()
+        scope = {"base_sha": base_sha, "head_sha": head_sha} if base_sha is not None else {}
+        allowed = filter_context(repo, env, dict.fromkeys(candidates[:10], "# context\n"), options, stopped, **scope) if candidates else set()
         problem = {"field": field, "revision": revision, "path": path,
                    "reason": "source path does not exist in this revision", "available_paths": sorted(allowed)}
         raise ResultValidationError(str(exc), {**problem, "errors": [problem]}) from exc
 
 
-def filter_context(repo, env, sources, options, stopped):
-    """Use OCR's exclusions on inert evidence, including Markdown supporting documents."""
+def filter_context(repo, env, sources, options, stopped, *, base_sha=None, head_sha=None):
+    """Filter inert evidence with the selected engine's trusted scope policy."""
+    if base_sha is not None:
+        from code_mortis.reviews import planning
+
+        return planning.allowed_context(repo, env, base_sha, head_sha, sources, options, stopped)
+
+    from code_mortis.integrations import ocr
     sources = {path: source for path, source in sources.items()
                if not file_policy.excluded(path, file_policy.policy(options))}
 
     with tempfile.TemporaryDirectory(prefix="verify-scope-", dir=repo.parent) as temp:
         root = Path(temp)
-        ocr.git(root, env, "init", "--quiet", stopped=stopped)
+        git_source.git(root, env, "init", "--quiet", stopped=stopped)
         for path, source in sources.items():
             target = root / path
             if path.startswith(".opencodereview/"):
@@ -298,15 +307,15 @@ def filter_context(repo, env, sources, options, stopped):
         return set(sources) & selected
 
 
-def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped, *, focused=False):
+def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped, *, focused=False, base_sha=None):
     if not re.fullmatch(r"[0-9a-f]{40}", original_sha):
         raise ValueError("The original finding has no valid commit reference, so its original code cannot be checked. Review the finding manually.")
     try:
-        ocr.git(repo, env, "cat-file", "-e", f"{original_sha}^{{commit}}", stopped=stopped)
+        git_source.git(repo, env, "cat-file", "-e", f"{original_sha}^{{commit}}", stopped=stopped)
     except ValueError:
-        ocr.git(repo, fetch_env, "fetch", "--no-tags", "origin", original_sha, stopped=stopped)
+        git_source.git(repo, fetch_env, "fetch", "--no-tags", "origin", original_sha, stopped=stopped)
     old_path = original["path"]
-    changes = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--name-status", "-z",
+    changes = git_source.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--name-status", "-z",
                       original_sha, head_sha, stopped=stopped).rstrip("\0").split("\0")
     current_path, paths, original_paths, index = old_path, set(), {old_path}, 0
     while index < len(changes) and changes[index]:
@@ -327,28 +336,30 @@ def build_context(repo, env, fetch_env, original, original_sha, head_sha, option
     if current_path:
         paths.add(current_path)
     inventory_paths = paths | original_paths
-    permitted = git_source.review_paths(repo, env, original_sha, head_sha, inventory_paths, options, stopped, git=ocr.git)
+    permitted = git_source.review_paths(repo, env, original_sha, head_sha, inventory_paths, options, stopped, git=git_source.git)
     if focused:
         paths, original_paths = ({current_path} if current_path else set()), {old_path}
     # Apply scope before loading optional changes. An excluded test must not block an unrelated fix
     # or leak into the diff sent to the provider.
     all_paths = paths | original_paths
-    selected = filter_context(repo, env, dict.fromkeys(all_paths, "# scope preview\n"), options, stopped)
+    scope = {"base_sha": base_sha, "head_sha": head_sha} if base_sha is not None else {}
+    selected = filter_context(repo, env, dict.fromkeys(all_paths, "# scope preview\n"), options, stopped, **scope)
     selected &= permitted
     if len(selected) > 100:
         raise ValueError("Fix verification needs more than 100 eligible source files, exceeding its evidence limit. Review the finding manually.")
     required = {old_path} | ({current_path} if current_path else set())
     if not required.issubset(selected):
-        raise ValueError("The finding's original or current source is excluded or unsupported by OCR.")
+        raise ValueError("The finding's original or current source is excluded or unsupported by the review scope.")
     original_source = read_source(repo, env, original_sha, old_path, stopped)
     sources = {"original": {old_path: original_source}, "current": {}}
     if current_path:
         sources["current"][current_path] = read_source(repo, env, head_sha, current_path, stopped)
-    patch = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=5",
+    patch = git_source.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=5",
                     original_sha, head_sha, "--", *(f":(literal){path}" for path in sorted(selected)), stopped=stopped)
     context = {"finding": original, "original_sha": original_sha, "head_sha": head_sha,
                "current_path": current_path, "sources": sources, "diff": patch,
                "exclusions": options.get("exclusions", ""),
+               **({"base_sha": base_sha} if base_sha is not None else {}),
                "excluded_paths": sorted((all_paths - selected) | (inventory_paths - permitted)), "diff_only_paths": sorted(selected - required)}
     check_context_size(context)
     return context
@@ -369,8 +380,9 @@ def expand_context(repo, env, context, requested, options, stopped):
             review_context.evidence_feedback([item["path"] for item in requested], "required_sources"))
     paths = {path for _, path in missing}
     for path in paths:
-        ocr.ReviewComment.relative_path(path)
-    allowed = filter_context(repo, env, dict.fromkeys(paths, "# context\n"), options, stopped)
+        git_source.repository_path(path)
+    scope = {"base_sha": context["base_sha"], "head_sha": context["head_sha"]} if context.get("base_sha") else {}
+    allowed = filter_context(repo, env, dict.fromkeys(paths, "# context\n"), options, stopped, **scope)
     allowed -= set(context.get("excluded_paths", []))
     if len(allowed | set(context.get("diff_only_paths", []))
            | {path for sources in context["sources"].values() for path in sources}) > 100:
@@ -383,13 +395,13 @@ def expand_context(repo, env, context, requested, options, stopped):
             continue
         sha = context["original_sha" if revision == "original" else "head_sha"]
         source = read_requested_source(repo, env, sha, path, options, stopped,
-                                       revision=revision, field="required_sources")
+                                       revision=revision, field="required_sources", **scope)
         context["sources"].setdefault(revision, {})[path] = source
         check_context_size(context)
     context["diff_only_paths"] = sorted(set(context.get("diff_only_paths", [])) - allowed)
     if excluded:
         check_context_size(context)
-        raise ResultValidationError("Necessary verification evidence is excluded or unsupported by OCR: "
+        raise ResultValidationError("Necessary verification evidence is excluded or unsupported by the review scope: "
             + ", ".join(sorted(excluded)), review_context.unavailable_evidence_feedback(excluded, "required_sources"))
     repeated = [item["path"] for item in requested if (item["revision"], item["path"]) not in missing]
     if repeated:
@@ -403,29 +415,7 @@ class ResultValidationError(ValueError):
         self.feedback = feedback
 
 
-class VerificationOutputError(ValueError):
-    def __init__(self, message, usage, status="failed", *, feedback=None):
-        super().__init__(message)
-        self.usage = usage
-        self.status = status
-        self.feedback = feedback
-
-
-def evidence_bundle(context):
-    # Keep code verbatim instead of JSON-escaping every newline/quote. Full source is focused on
-    # the finding; the permitted cross-file diff remains available without duplicating whole files.
-    parts = ["# Code Mortis verification evidence", json.dumps({
-        key: value for key, value in context.items() if key not in {"sources", "diff"}
-    }, indent=2)]
-    blocks = [("Subsequent Git diff", context["diff"])]
-    blocks.extend((f"{revision} source: {json.dumps(path)} (source line numbers before |)",
-                   "\n".join(f"{number} | {line}" for number, line in enumerate(source.splitlines(), 1)))
-                  for revision, sources in context["sources"].items() for path, source in sources.items())
-    for title, source in blocks:
-        fence = "`" * max(3, 1 + max((len(value) for value in re.findall(r"`+", source)), default=0))
-        parts.extend([title, fence, source, fence])
-    return "\n\n".join(parts)
-
+VerificationOutputError = InferenceOutputError
 
 STRUCTURED_RESULT_DELIVERY = (
     " Submit exactly one task_done call with state DONE and the complete structured result in result. "
@@ -524,6 +514,8 @@ def terminal_result(root, session_id):
 
 
 def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, int | None]:
+    from code_mortis.integrations import ocr
+
     detail = {"exit_code": code, "stderr": clean_text(errors, secrets)}
     overflow_limit = None
     session = re.search(r"\[ocr\] Session: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b", errors)
@@ -549,14 +541,38 @@ def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, in
                     overflow = re.fullmatch(r"prompt tokens \((\d+)\) exceed 80% of max_tokens\((\d+)\)", items[0].get("error", ""))
                     if overflow and int(overflow[1]) > int(overflow[2]) * 4 // 5:
                         overflow_limit = int(overflow[2])
-        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ocr.ReviewStopped, github.GitHubError):
+        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ReviewStopped, github.GitHubError):
             pass  # Missing diagnostics must not hide the original failure or release its reservation.
     return json.dumps(detail)[:4000], overflow_limit
+
+
+def mortis_verify(connection, credentials, context, token_budget, timeout, stopped, *,
+                  run_id, claim, stage, task_key, round=0, instructions=INSTRUCTIONS,
+                  schema=None, validator=validate_response, selection=False, authorize=None, effort="medium"):
+    from code_mortis.core import workflow_inference
+
+    context = review_context.sanitize(context, credentials, stopped)
+    instructions = review_context.sanitize(instructions, credentials, stopped)
+    if selection or context.get("task_contract") == review_context.TASK_CONTRACT:
+        original_context, original_validator = context, validator
+        context, schema, history_ids = review_context.selection_context(context, schema or output_schema())
+
+        def validator(raw, supplied):
+            return original_validator(review_context.selected_result(raw, supplied, history_ids), original_context)
+
+        instructions += review_context.SELECTION_INSTRUCTIONS
+    return workflow_inference.execute(
+        connection, credentials, context, instructions=instructions, schema=schema or output_schema(),
+        validator=validator, claim=claim, stage=stage, task_key=f"{task_key}:{round}", run_id=run_id,
+        stopped=stopped, authorize=authorize, effort=effort, token_budget=token_budget, timeout=timeout,
+    )
 
 
 def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
                *, instructions=INSTRUCTIONS, schema=None, validator=validate_response, configuration_managed=False,
                delivery=RESULT_DELIVERY, structured_result=False, selection=False):
+    from code_mortis.integrations import ocr
+
     if token_budget is not None and token_budget <= 0:
         raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
     if timeout is not None and timeout <= 0:
@@ -593,7 +609,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
         diagnostic_key = secrets.token_bytes(32)
         if connection.get("protocol") == "openai-responses":
             env = {**env, "CM_OCR_DIAGNOSTIC_FILE": str(capture), "CM_OCR_DIAGNOSTIC_KEY": diagnostic_key.hex()}
-        ocr.git(root, env, "init", "--quiet", stopped=stopped)
+        git_source.git(root, env, "init", "--quiet", stopped=stopped)
         evidence = root / "evidence.py"
         bundle = evidence_bundle(context)
         evidence.write_text(bundle)
@@ -615,7 +631,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
             selected = next((item for item in json.loads(preview).get("files", [])
                              if item.get("path") == "evidence.py"), {})
         except Exception as exc:
-            status = "skipped" if isinstance(exc, (ocr.ReviewStopped, TimeoutError)) else "failed"
+            status = "skipped" if isinstance(exc, (ReviewStopped, TimeoutError)) else "failed"
             raise VerificationOutputError("The review engine could not check the source evidence before analysis. No AI request was made for this assessment. Start a new review.", {"tokens": 0}, status) from exc
         if code or selected.get("will_review") is not True:
             reason = selected.get("exclude_reason", "evidence.py was not selected")
@@ -634,7 +650,7 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                 connection, credentials, {}, before_dispatch, structured_result=structured_result,
             ):
                 if before_dispatch():
-                    raise ocr.ReviewStopped("Verification stopped before provider analysis.")
+                    raise ReviewStopped("Verification stopped before provider analysis.")
                 allowance = remaining_time()
                 dispatched = True
                 code, output, errors = ocr.command(args, root, env, timeout=allowance, stopped=stopped)
@@ -663,10 +679,10 @@ def api_verify(repo, env, connection, credentials, context, token_budget, timeou
                     if result_feedback and result_feedback.get("kind") == "delivery":
                         result_feedback = {**result_feedback, "transport": result_diagnostics.compare(
                             root, data.get("session_id"), capture, diagnostic_key)}
-        except (ValueError, OSError, TimeoutError, ocr.ReviewStopped, github.GitHubError) as exc:
+        except (ValueError, OSError, TimeoutError, ReviewStopped, github.GitHubError) as exc:
             if dispatched:
                 raise
-            status = "skipped" if isinstance(exc, (ocr.ReviewStopped, TimeoutError)) else "failed"
+            status = "skipped" if isinstance(exc, (ReviewStopped, TimeoutError)) else "failed"
             raise VerificationOutputError(str(exc), {"tokens": 0}, status) from exc
         summary = data.get("summary") or {}
         usage = summary.get("total_tokens") if isinstance(summary, dict) else None
@@ -808,10 +824,11 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
 
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
-        require_available_engine(run.config)
+        require_execution_engine(run.config)
         ids = list(db.scalars(select(FindingVerification.id).where(
             FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
         ).order_by(FindingVerification.created_at, FindingVerification.id)))
+        mortis = run.config.get("analysis_engine") == "mortis"
         separate = pipeline.enabled(run)
         options = dict(run.config["settings"])
         if separate:
@@ -835,8 +852,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 continue
             # A vanished worker may have spent its entire reservation. Never repeat unknown paid work.
             if row.status == "running":
-                finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
-                continue
+                if not mortis:
+                    finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
+                    continue
+                row.usage = {"tokens": 0}
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             finding = db.get(Finding, row.finding_id)
@@ -846,7 +865,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 or finding.desired_status or finding.sync_version != row.finding_version):
                 finish(db, row, status="skipped", error="Fix verification was skipped because the pull request or finding changed, or automatic resolution was disabled. Check the latest finding status and repository settings.")
                 continue
-            used_tokens = ocr.report_tokens(run.report)
+            used_tokens = report_tokens(run.report)
             prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
             if not separate:
                 prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
@@ -886,16 +905,26 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             row.status, row.started_at = "running", now()
             row.usage = {"tokens": 0}
         usage = dict(row.usage)
+        consumed = 0
+
+        def authorize_finding(finding_id=row.finding_id, version=row.finding_version):
+            with transaction() as db:
+                current = db.get(Finding, finding_id)
+                if (not current or current.status != "open" or current.desired_status
+                        or current.sync_version != version):
+                    raise ReviewStopped("The finding changed during fix verification.")
+
         try:
-            context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped)
+            context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped,
+                                    **({"base_sha": run.base_sha} if mortis else {}))
             consumed, feedback, corrected = 0, None, False
             for attempt in range(3):
                 allowance = None if budget is None else budget - consumed
                 remaining = int(deadline - now().timestamp()) if deadline is not None else None
                 if stopped():
-                    raise ocr.ReviewStopped("Fix verification stopped because the run, permissions, or time limit changed.")
+                    raise ReviewStopped("Fix verification stopped because the run, permissions, or time limit changed.")
                 if reason := limit_error(options, allowance, remaining, True):
-                    raise ocr.ReviewStopped(reason + " Fix verification stopped.")
+                    raise ReviewStopped(reason + " Fix verification stopped.")
                 context = graph_context.discovery(
                     context, run.config.get("code_graph"), repo_path, env, options, credentials, stopped,
                     connection, INSTRUCTIONS + "\nLanguage: " + options["language"], output_schema(), base_sha=run.base_sha,
@@ -911,7 +940,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     if attempt:
                         finding = db.get(Finding, saved.finding_id)
                         if finding.status != "open" or finding.desired_status or finding.sync_version != saved.finding_version:
-                            raise ocr.ReviewStopped("The finding changed before verification could continue.")
+                            raise ReviewStopped("The finding changed before verification could continue.")
                         selected = db.get(Connection, current.connection_id)
                         if not selected or any(connection[key] != getattr(selected, key) for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
                             raise ValueError("The selected connection changed during verification.")
@@ -929,7 +958,14 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     record_summary(db, current)
                 known = False
                 try:
-                    if connection["kind"] == "api":
+                    if mortis:
+                        raw, spent = mortis_verify(
+                            connection, credentials, request_context, allowance, remaining, stopped,
+                            run_id=run_id, claim=claim, stage="verification", task_key="verify:" + identity,
+                            round=attempt, instructions=INSTRUCTIONS + "\nLanguage: " + options["language"],
+                            effort=options["effort"], authorize=authorize_finding,
+                        )
+                    elif connection["kind"] == "api":
                         raw, spent = api_verify(repo_path, env, connection, credentials, request_context, allowance, remaining, stopped)
                     else:
                         raw, spent = runner_client.review(connection["id"], "verify-" + identity + (f"-{attempt}" if attempt else ""), {
@@ -956,7 +992,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         known = type(amount) is int and amount >= 0
                         if known:
                             consumed += amount
-                        exc.usage = {"tokens": consumed if known else None if separate else budget}
+                        exc.usage = {"tokens": consumed if known else None if mortis or separate else budget}
                         usage = exc.usage
                     if review_context.correctable(exc.feedback) and known and not corrected and attempt < 2:
                         feedback, corrected = exc.feedback, True
@@ -971,7 +1007,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 if not known:
                     raise ValueError("Token usage is unavailable; verification cannot request additional evidence safely.")
                 if stopped():
-                    raise ocr.ReviewStopped("Fix verification stopped before loading additional evidence.")
+                    raise ReviewStopped("Fix verification stopped before loading additional evidence.")
                 try:
                     expand_context(repo_path, env, context, requested, options, stopped)
                     feedback = None
@@ -984,12 +1020,15 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             result = review_context.sanitize(result, credentials, stopped, usage=usage)
             outcome, error = "completed", None
         except Exception as exc:
-            result, outcome = None, "skipped" if isinstance(exc, ocr.ReviewStopped) else "failed"
+            result, outcome = None, "skipped" if isinstance(exc, ReviewStopped) else "failed"
             if isinstance(exc, VerificationOutputError):
                 usage, outcome = exc.usage, exc.status
+            elif isinstance(exc, ReviewStopped) and hasattr(exc, "usage"):
+                amount = exc.usage.get("tokens")
+                usage = {"tokens": consumed + amount if type(amount) is int and amount >= 0 else None}
             elif isinstance(exc, runner_client.RunnerBlocked):
                 usage = exc.usage
-            error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ocr.ReviewStopped)) else "The fix could not be verified automatically. " + (
+            error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ReviewStopped)) else "The fix could not be verified automatically. " + (
                 str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError, ResultValidationError} else "The AI returned an unsupported response. Start a new review or check the selected model."
             )
             error = clean_text(error, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:10000]

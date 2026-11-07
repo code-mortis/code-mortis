@@ -11,12 +11,14 @@ from urllib.parse import quote
 
 from sqlalchemy import select
 
-from code_mortis.core import file_policy
-from code_mortis.core.analysis import engine_snapshot, require_available_engine
+from code_mortis.core import file_policy, source
+from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
 from code_mortis.core.db import now, transaction
+from code_mortis.core.errors import InferenceOutputError, ReviewStopped
+from code_mortis.core.process import child_environment
 from code_mortis.core.security import clean_text, safe_repo_name, unseal
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -86,7 +88,8 @@ def enqueue(db, repo, actor, connection, model, limits=None):
     job = enqueue_job(db, "generate_background", {
         "repository_id": repo.id, "actor_id": actor.id, "connection_id": connection.id,
         **engine_snapshot(repo.settings),
-        "connection": snapshot, "limits": limits.model_dump(), "expires_at": now().timestamp() + 600,
+        "connection": snapshot, "limits": limits.model_dump(), "file_policy": file_policy.policy(repo.settings),
+        "expires_at": now().timestamp() + 600,
     })
     db.flush()
     return job
@@ -122,8 +125,17 @@ def source_kind(path):
     return None
 
 
-def collect(repo, env, sha, stopped, *, exclusions=""):
-    tree = ocr.git(repo, env, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped)
+def source_adapter(mortis):
+    if mortis:
+        return source
+    from code_mortis.integrations import ocr
+
+    return ocr
+
+
+def collect(repo, env, sha, stopped, *, exclusions="", mortis=False):
+    adapter = source_adapter(mortis)
+    tree = adapter.git(repo, env, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped)
     candidates = []
     for entry in tree.split("\0"):
         if not entry:
@@ -157,7 +169,7 @@ def collect(repo, env, sha, stopped, *, exclusions=""):
             available = min(4000, 24_000 - used[group])
             if available <= 0:
                 break
-            raw = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
+            raw = adapter.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
             if "\0" in raw or "\ufffd" in raw:
                 continue
             text = clean_text(raw.encode()[:available].decode("utf-8", "ignore"))
@@ -168,7 +180,8 @@ def collect(repo, env, sha, stopped, *, exclusions=""):
     return {"paths": [path for _, path in candidates[:200]], "tree_truncated": len(candidates) > 200, "sources": sources}
 
 
-def context(full_name, branch, token, directory, stopped, *, exclusions=""):
+def context(full_name, branch, token, directory, stopped, *, exclusions="", mortis=False):
+    adapter = source_adapter(mortis)
     safe_repo_name(full_name)
     if not isinstance(branch, str) or not branch or len(branch) > 255:
         raise ValueError("GitHub did not return a valid default branch.")
@@ -176,13 +189,13 @@ def context(full_name, branch, token, directory, stopped, *, exclusions=""):
     sha = commit.get("sha") if isinstance(commit, dict) else None
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("GitHub did not return a valid default-branch commit.")
-    env = ocr.child_environment()
+    env = child_environment()
     authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     fetch_env = {**env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
                  "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}"}
-    ocr.git(directory, env, "init", "--quiet", stopped=stopped)
-    ocr.git(directory, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
-    evidence = collect(directory, env, sha, stopped, exclusions=exclusions)
+    adapter.git(directory, env, "init", "--quiet", stopped=stopped)
+    adapter.git(directory, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
+    evidence = collect(directory, env, sha, stopped, exclusions=exclusions, mortis=mortis)
     data = {"repository": full_name, "branch": branch, "sha": sha, **evidence}
     # JSON escaping and long filenames also count towards the explicit input bound.
     while len(json.dumps(data, ensure_ascii=False).encode()) > CONTEXT_BYTES and data["paths"]:
@@ -207,7 +220,8 @@ def validate_result(value):
 
 
 def api_generate(directory, connection, credentials, prompt, timeout, stopped, token_budget):
-    """Use OCR's existing provider adapter and an internal result envelope, as verification does."""
+    """Explicit legacy OCR execution; Mortis uses the shared structured gateway."""
+    from code_mortis.integrations import ocr
     env = ocr.child_environment()
     ocr.check_version(directory, env)
     ocr.git(directory, env, "init", "--quiet", stopped=stopped)
@@ -342,7 +356,8 @@ def perform(job_id, attempt):
             raise ValueError(INTERRUPTED)
         payload = job.payload
         require_shared(payload.get("connection", {}))
-        require_available_engine(payload)
+        require_execution_engine(payload)
+        mortis = engine_snapshot(payload)["analysis_engine"] == "mortis"
         if now().timestamp() >= payload["expires_at"]:
             raise TimeoutError("Background generation expired. Generate again to retry.")
         from code_mortis.api_tokens import provenance as _pat
@@ -350,10 +365,10 @@ def perform(job_id, attempt):
 
         if _mcp.revoked(db, _mcp.provenance_from_payload(payload),
                         repository_id=payload.get("repository_id")):
-            raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+            raise ReviewStopped(_mcp.REVOKED_MESSAGE)
         if _pat.revoked(db, _pat.origin_for(payload),
                         repository_id=payload.get("repository_id")):
-            raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
+            raise ReviewStopped(_pat.REVOKED_MESSAGE)
         repo, actor = db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"])
         connection = db.get(Connection, payload["connection_id"])
         remote = authorize(db, repo, actor, connection)
@@ -371,28 +386,59 @@ def perform(job_id, attempt):
         full_name, branch = repo.full_name, remote.get("default_branch")
         token = github.installation_token(db, repo.installation_id)
         credentials = json.loads(unseal(connection.secret))
+        secret = connection.secret
+        exclusions = payload.get("file_policy", file_policy.policy(repo.settings)).get("exclusions", [])
     if stopped():
-        raise ocr.ReviewStopped("Background generation stopped.")
+        raise ReviewStopped("Background generation stopped.")
     with tempfile.TemporaryDirectory(prefix="mortis-background-") as temp:
         root = Path(temp)
         repo_path, inference_path = root / "repo", root / "generation"
         repo_path.mkdir()
         inference_path.mkdir()
-        evidence = context(full_name, branch, token, repo_path, stopped, exclusions=repo.settings.get("exclusions", ""))
+        evidence = context(full_name, branch, token, repo_path, stopped, exclusions=",".join(exclusions),
+                           **({"mortis": True} if mortis else {}))
+        if mortis:
+            from code_mortis.reviews import context as review_context
+
+            credentials.setdefault("redaction_values", []).append(token)
+            evidence = review_context.sanitize(evidence, credentials, stopped)
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.status != "running" or job.attempts != attempt:
-                raise ocr.ReviewStopped("Background generation stopped.")
+                raise ReviewStopped("Background generation stopped.")
             authorize(db, db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"]),
                       db.get(Connection, payload["connection_id"]))
             job.payload = {**job.payload, "inference_started": True, "source_sha": evidence["sha"]}
+        def authorize_inference():
+            if stopped():
+                raise ReviewStopped("Background generation stopped.")
+            with transaction() as db:
+                current_job = db.get(Job, job_id)
+                selected = db.get(Connection, payload["connection_id"])
+                if (not current_job or current_job.status != "running" or current_job.attempts != attempt
+                        or not current_job.lease_until or current_job.lease_until <= now()
+                        or current_job.payload.get("source_sha") != evidence["sha"]):
+                    raise ReviewStopped("Background generation lost its execution claim.")
+                if (not selected or selected.secret != secret or any(snapshot[key] != getattr(selected, key)
+                        for key in ("kind", "provider", "protocol", "base_url", "options", "owner_id"))):
+                    raise ValueError("The connection changed during generation. Generate again to retry.")
+                authorize(db, db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"]), selected)
+
         prompt = INSTRUCTIONS + "\n\n" + json.dumps(evidence, ensure_ascii=False)
         usage = None
         try:
             if stopped():
-                raise ocr.ReviewStopped("Background generation stopped.")
+                raise ReviewStopped("Background generation stopped.")
             timeout = max(1, int(deadline - time.monotonic())) if deadline is not None else None
-            if snapshot["kind"] == "api":
+            if mortis:
+                from code_mortis.core.workflow_inference import execute
+
+                result, usage = execute(snapshot, credentials, evidence, instructions=INSTRUCTIONS,
+                    schema=output_schema(), validator=lambda value, _: {"background": validate_result(value)},
+                    claim=f"{job_id}:{attempt}", stage="summary", task_key="background:0",
+                    repository_id=payload["repository_id"], revisions={"head": evidence["sha"]},
+                    stopped=stopped, authorize=authorize_inference, token_budget=limits.token_budget, timeout=timeout)
+            elif snapshot["kind"] == "api":
                 result = api_generate(inference_path, snapshot, credentials, prompt, timeout, stopped, limits.token_budget)
             else:
                 result, usage = runner_client.review(snapshot["id"], job_id, {
@@ -408,6 +454,9 @@ def perform(job_id, attempt):
                 if limits.timeout_seconds is not None else
                 "A background generation request timed out. Check the provider connection timeout, then generate again. Your background was not changed."
             ) from exc
+        except (InferenceOutputError, ReviewStopped) as exc:
+            usage = getattr(exc, "usage", usage)
+            raise
         except runner_client.RunnerBlocked as exc:
             usage = exc.usage
             if exc.reason == "busy":
@@ -422,9 +471,11 @@ def perform(job_id, attempt):
                     job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                     if job.status == "running" and job.attempts == attempt:
                         job.payload = {**job.payload, "usage": usage}
+        if mortis:
+            authorize_inference()
         background = clean_text(validate_result(result), (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
         if stopped():
-            raise ocr.ReviewStopped("Background generation stopped.")
+            raise ReviewStopped("Background generation stopped.")
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.status == "running" and job.attempts == attempt:

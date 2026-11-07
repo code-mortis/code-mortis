@@ -216,7 +216,9 @@ def test_job_uses_direct_transport_and_never_ocr(seed, monkeypatch):
 
     calls = []
     monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
-    monkeypatch.setattr(jobs.ocr, "test_connection", lambda *args, **kwargs: pytest.fail("OCR probe was dispatched"))
+    from code_mortis.integrations import ocr
+
+    monkeypatch.setattr(ocr, "test_connection", lambda *args, **kwargs: pytest.fail("OCR probe was dispatched"))
 
     async def handler(wire):
         calls.append(wire)

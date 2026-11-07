@@ -5,6 +5,14 @@ class ReviewStopped(Exception):
     pass
 
 
+class InferenceOutputError(ValueError):
+    def __init__(self, message, usage, status="failed", *, feedback=None):
+        super().__init__(message)
+        self.usage = usage
+        self.status = status
+        self.feedback = feedback
+
+
 class RunnerBlocked(ValueError):
     def __init__(self, reason: str, usage=None):
         self.reason = reason

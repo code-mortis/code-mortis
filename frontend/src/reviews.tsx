@@ -902,7 +902,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
       {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
     </div>}
-    {([["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
+    {([["ocr", run.engine === "mortis" ? "Analysis" : "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
       const stage = run.stages?.[key];
       if (!stage) return null;
       const status = key === "assessment" ? assessmentStatus : stage.status;

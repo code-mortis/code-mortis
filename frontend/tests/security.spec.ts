@@ -3105,3 +3105,31 @@ test("scan findings remain historical after triage while the repository updates"
   await expect(page.getByRole("tab", { name: "False positives 1", exact: true })).toBeVisible();
   await expect(page.locator('[data-slot="finding-card"]')).toHaveCount(1);
 });
+
+for (const status of ["completed", "partial"] as const) test(`Mortis ${status} security history keeps saved evidence and downloadable reports without new work`, async ({ page }) => {
+  const problem = "One source file could not be analyzed within its stage budget.";
+  const writes = await mock(page, { canWrite: false, ...(status === "partial" ? { scanError: problem } : {}) });
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, can_write: false, finding_count: 1, finding_state_counts: { open: 1 }, report_count: 1,
+    activity_count: 0, activity: [],
+    scan: { ...scan, status, grade: status === "completed" ? "D" : null,
+      config: { ...scan.config, analysis_engine: "mortis" },
+      stages: { ...scan.stages, analysis: { status, completed: 1, total: status === "partial" ? 2 : 1 } },
+      report: { commit: sha, status, grade: status === "completed" ? "D" : null,
+        problems: status === "partial" ? [problem] : [] } },
+  } }));
+  await page.goto("/security/scans/scan");
+  await expect(page.getByRole("button", { name: "Scan stage details", exact: true })).toHaveAttribute("data-status", status);
+  if (status === "partial") await expect(page.getByRole("heading", { name: "Incomplete analysis", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Download report", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Download Markdown", exact: true })).toHaveAttribute("href", /\/scans\/scan\/report\?format=markdown$/);
+  await expect(page.getByRole("menuitem", { name: "Download JSON", exact: true })).toHaveAttribute("href", /\/scans\/scan\/report\?format=json$/);
+  await page.keyboard.press("Escape");
+  const findings = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
+  await findings.getByRole("button").click();
+  const detail = page.getByRole("dialog", { name: "Finding details", exact: true });
+  await expect(detail.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(detail.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "Code snippet" })).toContainText("return orders.find(id)");
+  expect(writes).toHaveLength(0);
+});

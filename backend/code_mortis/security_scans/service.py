@@ -14,12 +14,19 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from code_mortis.api_tokens.provenance import TransientAuthorizationError
-from code_mortis.core.analysis import engine_snapshot, require_available_engine
+from code_mortis.core import source as git_source
+from code_mortis.core.analysis import (
+    engine_snapshot,
+    job_live,
+    require_available_engine,
+    require_execution_engine,
+)
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
 from code_mortis.core.shared_execution import RETIRED_MESSAGE, is_shared
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -44,6 +51,12 @@ from code_mortis.security_scans import engine as security_engine
 ACTIVE = {"queued", "running", "blocked"}
 STAGES = ("snapshot", "trivy", "analysis", "assessment", "verification", "report")
 RATING_POLICY = "highest-unresolved-severity/v1"
+
+
+def legacy_configuration(*args, **kwargs):
+    from code_mortis.integrations import ocr
+
+    return ocr.configuration(*args, **kwargs)
 
 
 def activity(db, action, *, scan=None, finding=None, actor=None, **detail):
@@ -260,13 +273,13 @@ def checkpoint(scan_id, key, state, **values):
     with transaction() as db:
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
         if not scan or scan.status != "running" or scan.cancel_requested:
-            raise ocr.ReviewStopped("Security scan is no longer running.")
+            raise ReviewStopped("Security scan is no longer running.")
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
             scan.cancel_requested = True
-            raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+            raise ReviewStopped(_mcp.REVOKED_MESSAGE)
         try:
             pat_denied = _pat.scan_revoked(db, scan, repository_id=scan.repository_id)
         except TransientAuthorizationError as exc:
@@ -276,7 +289,7 @@ def checkpoint(scan_id, key, state, **values):
             authorization_error, pat_denied = exc, False
         if pat_denied:
             scan.cancel_requested = True
-            raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
+            raise ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
@@ -344,7 +357,7 @@ def assessment_batch(rows, history, item, concurrency):
 def observe(db, scan, evidence, existing_id=None):
     scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan.id).with_for_update().execution_options(populate_existing=True))
     if scan.status != "running" or scan.cancel_requested:
-        raise ocr.ReviewStopped("Security scan is no longer authorized to record observations.")
+        raise ReviewStopped("Security scan is no longer authorized to record observations.")
     query = select(SecurityFinding).where(SecurityFinding.id == existing_id) if existing_id else select(SecurityFinding).where(
         SecurityFinding.repository_id == scan.repository_id, SecurityFinding.fingerprint == evidence["fingerprint"])
     finding = db.scalar(query.with_for_update().execution_options(populate_existing=True))
@@ -409,14 +422,14 @@ def dependency_advisory(evidence, packages, token, stopped, cache):
     if evidence.get("package_type") not in {"bun", "npm", "yarn", "pnpm"} or not re.fullmatch(r"CVE-\d{4}-\d{4,}", rule):
         return None
     if stopped():
-        raise ocr.ReviewStopped("Security scan stopped before advisory verification.")
+        raise ReviewStopped("Security scan stopped before advisory verification.")
     if rule not in cache:
         try:
             cache[rule] = (github.request("GET", f"/advisories?cve_id={rule}&type=reviewed&per_page=100", token), now().isoformat())
         except github.GitHubError as exc:
             cache[rule] = exc
     if stopped():
-        raise ocr.ReviewStopped("Security scan stopped during advisory verification.")
+        raise ReviewStopped("Security scan stopped during advisory verification.")
     if isinstance(cache[rule], github.GitHubError):
         raise ValueError("GitHub advisory metadata could not be verified; no dependency fix was established.") from cache[rule]
     rows, checked_at = cache[rule]
@@ -464,7 +477,7 @@ def deterministic_fix(item, old, trivy_result, *, advisory_lookup=None):
     original = evidence["source_sha"]
     current_path = item.renamed(original, path)
     original_source = item.read(path, original)
-    exists = bool(ocr.git(item.git, item.env, "ls-tree", item.sha, "--", current_path, stopped=item.stopped).strip())
+    exists = bool(git_source.git(item.git, item.env, "ls-tree", item.sha, "--", current_path, stopped=item.stopped).strip())
     current_source = item.read(current_path) if exists else None
     changed = current_source != original_source and bool(item.diff(original).strip())
     if not changed:
@@ -525,7 +538,12 @@ def perform(scan_id, claim):
         if not is_shared(scan.config.get("connection", {})):
             cancel(db, scan, reason=RETIRED_MESSAGE)
             return
-        require_available_engine(scan.config)
+        require_execution_engine(scan.config)
+        if engine_snapshot(scan.config)["analysis_engine"] == "mortis":
+            job_id, _, attempt = claim.rpartition(":")
+            job = db.get(Job, job_id) if attempt.isdigit() else None
+            if not attempt.isdigit() or not job_live(job, int(attempt), now()) or job.payload.get("scan_id") != scan_id:
+                raise ValueError("Mortis security analysis requires its live durable job attempt.")
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
             if execution == claim:
@@ -534,10 +552,11 @@ def perform(scan_id, claim):
             owner = db.get(Job, job_id) if attempt.isdigit() else None
             if owner and owner.status == "running" and owner.attempts == int(attempt) and owner.lease_until and owner.lease_until > now():
                 return
-            scan.status, scan.error, scan.finished_at = "partial", "Worker stopped; usage may have been consumed. Retry explicitly.", now()
-            interrupt_work(scan)
-            scan.report = report_data(db, scan, [scan.error])
-            return
+            if engine_snapshot(scan.config)["analysis_engine"] != "mortis":
+                scan.status, scan.error, scan.finished_at = "partial", "Worker stopped; usage may have been consumed. Retry explicitly.", now()
+                interrupt_work(scan)
+                scan.report = report_data(db, scan, [scan.error])
+                return
         repo, actor, connection = db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id)
         authorize(db, repo, actor, connection)
         if connection.kind != "api":
@@ -561,6 +580,7 @@ def perform(scan_id, claim):
         if scan.parent_id:
             parent = db.get(SecurityScan, scan.parent_id)
             saved = parent.progress.get("tasks", {})
+    mortis = engine_snapshot(config)["analysis_engine"] == "mortis"
     limits = config["limits"]
     concurrency = limits.get("concurrency", 1) if config["connection"]["kind"] == "api" else 1
     stop_workers = Event()
@@ -581,7 +601,10 @@ def perform(scan_id, claim):
             if _pat.scan_revoked(db, row, repository_id=row.repository_id, network=False):
                 row.cancel_requested = True
                 return True
-            authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
+            try:
+                authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
+            except (ValueError, runner_client.RunnerBlocked):
+                return True
             job_id, _, attempt = claim.rpartition(":")
             job = db.get(Job, job_id) if attempt.isdigit() else None
             if job:
@@ -620,9 +643,9 @@ def perform(scan_id, claim):
             from code_mortis.mcp import provenance as _mcp
 
             if _mcp.scan_revoked(db, row, repository_id=row.repository_id):
-                raise ocr.ReviewStopped(_mcp.REVOKED_MESSAGE)
+                raise ReviewStopped(_mcp.REVOKED_MESSAGE)
             if _pat.scan_revoked(db, row, repository_id=row.repository_id):
-                raise ocr.ReviewStopped(_pat.REVOKED_MESSAGE)
+                raise ReviewStopped(_pat.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
         if used is None:
@@ -633,14 +656,53 @@ def perform(scan_id, claim):
         if remaining is not None and remaining <= 0:
             raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": 0})
         checkpoint(scan_id, key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
+        usage = {}
         try:
+            def infer(context, *, schema, instructions, validator, budget, timeout, round):
+                from code_mortis.core.workflow_inference import execute
+
+                def authorized():
+                    if stopped():
+                        raise ReviewStopped("Security scan cancelled.")
+                    with transaction() as db:
+                        current = db.get(SecurityScan, scan_id)
+                        from code_mortis.api_tokens import provenance as _pat
+                        from code_mortis.mcp import provenance as _mcp
+
+                        if (_mcp.scan_revoked(db, current, repository_id=current.repository_id)
+                                or _pat.scan_revoked(db, current, repository_id=current.repository_id)):
+                            raise ReviewStopped("The originating security scan permission was revoked.")
+                        selected = db.get(Connection, current.connection_id)
+                        if (selected.secret != connection.secret or connection_snapshot(selected) != current_connection):
+                            raise ReviewStopped("The shared connection changed during the security scan.")
+                        authorize(db, db.get(Repository, current.repository_id), db.get(User, current.actor_id), selected)
+
+                return execute(config["connection"], credentials, context, instructions=instructions, schema=schema,
+                    validator=validator, claim=claim, stage="security", task_key=f"{key}:round:{round}", scan_id=scan_id,
+                    stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout)
+
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
-                                                **({"configuration_managed": True} if parallel else {}))
+                                                **({"configuration_managed": True} if parallel else {}),
+                                                **({"infer": infer} if mortis else {}))
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
         except TransientAuthorizationError:
+            raise
+        except ReviewStopped as exc:
+            # Revocation blocks results, but already consumed inference still belongs in history.
+            with transaction() as db:
+                row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
+                if row and row.progress.get("execution") == claim:
+                    tokens = getattr(exc, "usage", usage).get("tokens")
+                    tokens = tokens if type(tokens) is int and tokens >= 0 else None
+                    used = row.progress.get("tokens")
+                    tasks = dict(row.progress.get("tasks", {}))
+                    tasks[key] = {**tasks.get(key, {}), "status": "failed", "tokens": tokens,
+                                  "error": "Security inference stopped before result acceptance."}
+                    row.progress = {**row.progress, "tasks": tasks,
+                                    "tokens": used + tokens if used is not None and tokens is not None else None}
             raise
         except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
@@ -705,12 +767,12 @@ def perform(scan_id, claim):
             stage(scan_id, "analysis", "running", total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
 
             parallel = concurrency > 1 and len(code_paths) > 1
-            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
-                             if parallel else nullcontext())
+            configuration = (legacy_configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
+                             if parallel and not mortis else nullcontext())
             with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
                 for offset in range(0, len(code_paths), concurrency):
                     if stopped():
-                        raise ocr.ReviewStopped("Security scan cancelled.")
+                        raise ReviewStopped("Security scan cancelled.")
                     batch = code_paths[offset:offset + concurrency]
                     contexts = {path: {"assigned_path": path, "head_sha": item.sha, "diff": "",
                                 "sources": {"current": {path: item.source(path)}}} for path in batch}
@@ -749,12 +811,12 @@ def perform(scan_id, claim):
             stage(scan_id, "assessment", "running", total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
-            configuration = (ocr.configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
-                             if parallel else nullcontext())
+            configuration = (legacy_configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
+                             if parallel and not mortis else nullcontext())
             with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
                 while remaining:
                     if stopped():
-                        raise ocr.ReviewStopped("Security scan cancelled.")
+                        raise ReviewStopped("Security scan cancelled.")
                     with transaction() as db:
                         history = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
                             SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id))]
@@ -791,7 +853,7 @@ def perform(scan_id, claim):
                     if fatal:
                         raise fatal
                     if stopped():
-                        raise ocr.ReviewStopped("Security scan cancelled.")
+                        raise ReviewStopped("Security scan cancelled.")
                     with transaction() as db:
                         row = db.get(SecurityScan, scan_id)
                         authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
@@ -810,7 +872,7 @@ def perform(scan_id, claim):
                             if assessed["verdict"] != "confirmed":
                                 continue
                             proposal = candidate.proposal
-                            evidence = {**proposal, "kind": "code", "sources": ["ocr"], "source_sha": item.sha,
+                            evidence = {**proposal, "kind": "code", "sources": ["mortis" if mortis else "ocr"], "source_sha": item.sha,
                                         "source_hash": item.inventory[proposal["path"]]["hash"], "assessment": assessed,
                                         "fingerprint": digest(json.dumps(["code", proposal["path"], proposal["category"],
                                                                           proposal["evidence"][0]["quote"], proposal["title"]]))}
@@ -851,7 +913,7 @@ def perform(scan_id, claim):
                 row.status = "queued"
                 row.progress = {**row.progress, "execution": None}
         raise
-    except ocr.ReviewStopped:
+    except ReviewStopped:
         with transaction() as db:
             cancel(db, db.get(SecurityScan, scan_id))
     except Exception as exc:

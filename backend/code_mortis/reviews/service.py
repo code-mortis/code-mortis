@@ -7,16 +7,18 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from code_mortis.core.analysis import engine_snapshot, require_available_engine
+from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.review_results import fingerprint, report_tokens
 from code_mortis.core.security import digest, unseal
 from code_mortis.core.shared_execution import (
     cancel_retired_review,
     is_shared,
     require_shared,
 )
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Activity,
     Connection,
@@ -378,7 +380,7 @@ def perform_review(run_id: str, claim: str | None = None):
         if not is_shared(run.config.get("connection", {})):
             cancel_retired_review(db, run)
             return
-        require_available_engine(run.config)
+        require_execution_engine(run.config)
         prior_claim = run.progress.get("execution", "")
         if prior_claim and prior_claim != claim and ":" in prior_claim:
             job_id, attempt = prior_claim.rsplit(":", 1)
@@ -524,7 +526,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     if current.progress.get("execution") != claim or current.cancel_requested:
                         return
-                    pipeline.update(current, "ocr", result[0], tokens=ocr.report_tokens(result[1]))
+                    pipeline.update(current, "ocr", result[0], tokens=report_tokens(result[1]))
                     if pipeline.defer_assessment(db, current):
                         return
                     pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
@@ -555,7 +557,12 @@ def perform_review(run_id: str, claim: str | None = None):
                     current.progress = {**current.progress, "file_limit_checked": True, "file_limit_exceeded": limited is not None}
                     pipeline.enqueue_stages(db, current)
 
-        reviewer = mortis.review if run.config.get("analysis_engine") == "mortis" else ocr.review
+        if run.config.get("analysis_engine") == "mortis":
+            reviewer = mortis.review
+        else:
+            from code_mortis.integrations import ocr
+
+            reviewer = ocr.review
         status, report, comments = reviewer(
             *args,
             stopped=lambda: review_stopped(run_id, claim),
@@ -568,7 +575,7 @@ def perform_review(run_id: str, claim: str | None = None):
             graph_options=run.config.get("code_graph"),
             **({"claim": claim} if reviewer is mortis.review else {}),
         )
-    except ocr.ReviewStopped:
+    except ReviewStopped:
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             if run.progress.get("execution") != claim:
@@ -657,7 +664,7 @@ def save_analysis(run_id, claim, status, report, comments):
             return
         seen = set()
         for comment in comments:
-            key = ocr.fingerprint(comment)
+            key = fingerprint(comment)
             if key in seen:
                 continue
             seen.add(key)

@@ -13,12 +13,13 @@ from sqlalchemy.orm import Session
 
 from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import engine_snapshot, require_available_engine
+from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import clean_text, digest, unseal
 from code_mortis.core.shared_execution import is_shared, require_shared
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github, runner_client
 from code_mortis.models import (
     Connection,
     Finding,
@@ -259,7 +260,16 @@ def diagram_section(diagram):
     return "<details>\n<summary>Diagram</summary>\n\n```mermaid\n" + "\n".join(lines) + "\n```\n\n</details>"
 
 
+def source_adapter(config):
+    if engine_snapshot(config)["analysis_engine"] == "mortis":
+        return git_source
+    from code_mortis.integrations import ocr
+
+    return ocr
+
+
 def build_context(repo, env, run, stopped):
+    source = source_adapter(run.config)
     coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
     paths = sorted({item["path"] for item in coverage.get("selected", [])
                     if not file_policy.excluded(item["path"], file_policy.policy(run.config["settings"]))})
@@ -267,9 +277,9 @@ def build_context(repo, env, run, stopped):
         raise SummaryUnavailable("No reviewable changes were available to summarize.")
     for path in paths:
         ReviewComment.relative_path(path)
-    # Selected paths come from OCR's protected-path and repository exclusion filters.
-    merge_base = ocr.git(repo, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
-    paths = sorted(git_source.review_paths(repo, env, merge_base, run.head_sha, paths, run.config["settings"], stopped, git=ocr.git))
+    # Recheck admitted paths and both rename sides against the pinned revisions.
+    merge_base = source.git(repo, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
+    paths = sorted(git_source.review_paths(repo, env, merge_base, run.head_sha, paths, run.config["settings"], stopped, git=source.git))
     if not paths:
         raise SummaryUnavailable("No permitted reviewable changes were available to summarize.")
     ceiling = run.config["connection"].get("options", {}).get("prompt_token_ceiling", 58888)
@@ -284,7 +294,7 @@ def build_context(repo, env, run, stopped):
     per_file = min(12000, allowance // len(paths))
     excerpts = []
     for path in paths:
-        patch = ocr.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=3",
+        patch = source.git(repo, env, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=3",
                         f"{merge_base}..{run.head_sha}", "--", ":(literal)" + path, stopped=stopped)
         raw = clean_text(patch).encode()
         context["limited_context"] |= len(raw) > per_file
@@ -399,7 +409,7 @@ def perform_retry(payload):
         connection = db.get(Connection, payload["connection_id"])
         snapshot = payload["config"]["connection"]
         require_shared(snapshot)
-        require_available_engine(payload["config"])
+        require_execution_engine(payload["config"])
         if not connection or any(snapshot[key] != getattr(connection, key)
                                  for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
             raise SummaryUnavailable("The AI connection changed. Retry generation with the current settings.")
@@ -437,7 +447,7 @@ def perform_retry(payload):
 def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_job_id=None, config=None, actor_id=None, stage=None):
     require_shared(connection)
     if config is not None:
-        require_available_engine(config)
+        require_execution_engine(config)
     from code_mortis.reviews import pipeline
     from code_mortis.reviews.service import authorize_connection, execution_identity, review_stopped
 
@@ -461,7 +471,7 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
                            "error": "Summary unavailable because the review encountered an authentication or account usage restriction. Restore access before starting another review."}
             return
         config = config or run.config
-        require_available_engine(config)
+        require_execution_engine(config)
         from code_mortis.security_scans.service import connection_busy
 
         if config["connection"]["kind"] != "api" and connection_busy(db, config["connection"]["id"], run_id=run.id, job_id=retry_job_id):
@@ -485,21 +495,24 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
         else:
             cancelled = review_stopped(run_id, claim, stage=stage) if stage else review_stopped(run_id, claim)
         if cancelled:
-            raise ocr.ReviewStopped()
+            raise ReviewStopped()
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Summary generation reached its time limit.")
         return False
 
+    source = source_adapter(config)
+    mortis = engine_snapshot(config)["analysis_engine"] == "mortis"
     usage, context, result, error = {"tokens": 0}, {}, None, None
     try:
         stopped()
         report = run.report
         if retry_job_id or stage:
-            merge_base = ocr.git(repo_path, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
-            paths = ocr.git(repo_path, env, "diff", "--name-only", "--no-renames", "-z", f"{merge_base}..{run.head_sha}", stopped=stopped).strip("\0").split("\0")
+            merge_base = source.git(repo_path, env, "merge-base", run.base_sha, run.head_sha, stopped=stopped).strip()
+            paths = source.git(repo_path, env, "diff", "--name-only", "--no-renames", "-z", f"{merge_base}..{run.head_sha}", stopped=stopped).strip("\0").split("\0")
             for path in filter(None, paths):
                 ReviewComment.relative_path(path)
-            paths = verification.filter_context(repo_path, env, dict.fromkeys(filter(None, paths), "# scope preview\n"), options, stopped)
+            paths = verification.filter_context(repo_path, env, dict.fromkeys(filter(None, paths), "# scope preview\n"), options, stopped,
+                **({"base_sha": run.base_sha, "head_sha": run.head_sha} if mortis else {}))
             report = {"manifest": {"coverage": {"selected": [{"path": path} for path in sorted(paths)]}}}
         context = build_context(repo_path, env, SimpleNamespace(config=config, report=report,
                                 base_sha=run.base_sha, head_sha=run.head_sha), stopped)
@@ -518,11 +531,11 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
                 current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                 if (retry_stopped(db, current, retry_job_id, claim) if retry_job_id else
                         (not pipeline.owns(current, stage, claim) if stage else current.progress.get("execution") != claim) or current.cancel_requested):
-                    raise ocr.ReviewStopped()
+                    raise ReviewStopped()
                 pr = db.get(PullRequest, current.pr_id)
                 repo = db.get(Repository, pr.repository_id)
                 if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
-                    raise ocr.ReviewStopped()
+                    raise ReviewStopped()
                 selected = db.get(Connection, connection["id"])
                 if not selected or any(connection[key] != getattr(selected, key)
                                        for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
@@ -557,7 +570,20 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
             spent = {"tokens": None}
             usage = {"tokens": None}
             try:
-                if connection["kind"] == "api":
+                if mortis:
+                    def validate_summary(value, supplied):
+                        validated = validate_response(value, supplied)
+                        if supplied.get("diagram_warning"):
+                            context["diagram_warning"] = supplied["diagram_warning"]
+                        return validated
+
+                    result, spent = verification.mortis_verify(
+                        connection, credentials, request_context, allowance, remaining, stopped,
+                        run_id=run_id, claim=claim, stage="summary", task_key="summary", round=attempt,
+                        instructions=instructions, schema=schema, validator=validate_summary,
+                        authorize=authorize, effort=options["effort"],
+                    )
+                elif connection["kind"] == "api":
                     result, spent = verification.api_verify(
                         repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
                         instructions=instructions, schema=schema, validator=validate_response,
@@ -602,7 +628,8 @@ def generate(run_id, repo_path, env, connection, credentials, claim, *, retry_jo
     except Exception as exc:
         if isinstance(exc, (verification.VerificationOutputError, runner_client.RunnerBlocked)):
             usage = exc.usage
-        if isinstance(exc, ocr.ReviewStopped):
+        if isinstance(exc, ReviewStopped):
+            usage = getattr(exc, "usage", usage)
             error = "Summary generation was cancelled or superseded."
         elif isinstance(exc, TimeoutError):
             error = "Summary generation reached its time limit."

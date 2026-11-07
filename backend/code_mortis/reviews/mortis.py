@@ -143,14 +143,20 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             revisions={"base": base_sha, "head": head_sha, "merge_base": merge_base},
             versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": engine.PROMPT_VERSION,
                       "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION)},
-            settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]]},
+            settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
+                      "workflow_contract": "mortis-workflow/v1"},
             file_policy={**file_policy.policy(immutable_options), "digest": selection.policy_digest},
             selected=[{"path": item.path, "old_path": item.old_path, "status": item.status,
                        "blob_sha": item.blob_sha, "error": item.error,
                        "units": [{"key": unit.key, "input_hash": unit.input_hash, "start_line": unit.start_line,
                                   "end_line": unit.end_line} for unit in item.units]} for item in selection.selected],
-            exclusions=selection.exclusions, graph=graph, budgets={"analysis": immutable_options.get("token_budget")},
-            deadlines={"analysis": deadline} if deadline else {}, tasks=[batch.spec for batch in prepared])
+            exclusions=selection.exclusions, graph=graph,
+            budgets={"analysis": immutable_options.get("token_budget"),
+                     "assessment": immutable_options.get("assessment_token_budget"),
+                     "verification": immutable_options.get("verification_token_budget"),
+                     "summary": immutable_options.get("summary_token_budget", 60000)},
+            deadlines={stage: deadline for stage in ("analysis", "assessment", "verification")} if deadline else {},
+            tasks=[batch.spec for batch in prepared])
         if frozen_plan is not None:
             # Lost optional context cannot rewrite a request or erase already validated work.
             candidate = specification.model_dump(mode="json", exclude={"graph", "tasks"})
