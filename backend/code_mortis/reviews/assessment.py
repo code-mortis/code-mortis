@@ -608,7 +608,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                 remaining = max(0, int(deadline - now().timestamp())) if deadline is not None else None
                 context = graph_context.discovery(
                     context, run.config.get("code_graph"), repo_path, env, options, credentials, stopped,
-                    connection, instructions, output_schema(context),
+                    connection, instructions, output_schema(context), base_sha=run.base_sha,
                 )
                 request_context = review_context.sanitize(
                     {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})

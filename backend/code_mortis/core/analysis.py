@@ -30,7 +30,7 @@ from code_mortis.models import (
     ReviewRun,
     SecurityScan,
 )
-from code_mortis.schemas.analysis import PlanSpec
+from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
 
 def engine_snapshot(options):
@@ -43,7 +43,7 @@ def engine_snapshot(options):
     if "analysis_engine" in settings and settings["analysis_engine"] != selected:
         raise ValueError("The stored analysis engine snapshot does not match its settings.")
     return {"analysis_engine": selected, "engine_contract": "analysis-engine/v1",
-            "planner_version": "m1-foundation/v1"}
+            "planner_version": "mortis-pr-plan/v1" if selected == "mortis" else "m1-foundation/v1"}
 
 
 def require_available_engine(options):
@@ -107,6 +107,54 @@ def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
                               deadline_at=specification.deadlines.get(stage)))
     db.flush()
     return plan
+
+
+def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specification: TaskSpec) -> AnalysisTask:
+    """Append a bounded evidence round without rewriting the plan or its assigned scope."""
+    specification = TaskSpec.model_validate(specification.model_dump(mode="json"))
+    job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    parent = db.scalar(select(AnalysisTask).where(AnalysisTask.id == parent_task_id).with_for_update())
+    plan = db.get(AnalysisPlan, parent.plan_id) if parent else None
+    if not plan or plan.job_id != job_id or not owner_live(db, plan) or not job_live(job, job_attempt, now()):
+        raise ValueError("The evidence round no longer owns its review")
+    if (parent.status != "completed" or not parent.result or parent.result.get("kind") not in {"expansion", "feedback"}
+            or specification.stage != parent.stage or specification.scope != parent.scope
+            or specification.dependencies != [parent.key]):
+        raise ValueError("Evidence rounds must retain a completed parent's exact assignment")
+    if db.scalar(select(AnalysisAttempt.id).where(AnalysisAttempt.task_id == parent.id,
+                                                  AnalysisAttempt.usage_state == "unknown").limit(1)):
+        raise ValueError("Unknown consumption must be acknowledged before another evidence round")
+    limit = plan.snapshot["settings"].get("max_evidence_rounds", 0)
+    if type(limit) is not int or not 0 <= limit <= 4:
+        raise ValueError("Invalid evidence round limit")
+    root, depth, seen = parent, 1, set()
+    while root.dependencies:
+        if len(root.dependencies) != 1 or root.id in seen:
+            raise ValueError("Evidence rounds require a single immutable parent chain")
+        seen.add(root.id)
+        root = db.get(AnalysisTask, root.dependencies[0])
+        if root is None or root.plan_id != plan.id:
+            raise ValueError("Evidence rounds cannot cross plans")
+        depth += 1
+    if depth > limit or root.key not in {task["key"] for task in plan.snapshot["tasks"]}:
+        raise ValueError("The evidence round limit was reached")
+    prefix = f"{root.key}:round:{depth}:"
+    if not specification.key.startswith(prefix):
+        raise ValueError("The evidence round identity does not match its parent")
+    existing = list(db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id,
+                                                        AnalysisTask.key.startswith(prefix, autoescape=True))))
+    identity = fingerprint([plan.id, specification.key])
+    if existing:
+        task = existing[0]
+        if (len(existing) != 1 or task.id != identity or task.input_hash != specification.input_hash
+                or task.scope != specification.scope or task.dependencies != [parent.id]):
+            raise ValueError("An evidence selection cannot change after it is frozen")
+        return task
+    task = AnalysisTask(id=identity, plan_id=plan.id, key=specification.key, stage=parent.stage,
+                        input_hash=specification.input_hash, scope=specification.scope, dependencies=[parent.id])
+    db.add(task)
+    db.flush()
+    return task
 
 
 @dataclass(frozen=True)

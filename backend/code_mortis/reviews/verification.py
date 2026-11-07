@@ -898,7 +898,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise ocr.ReviewStopped(reason + " Fix verification stopped.")
                 context = graph_context.discovery(
                     context, run.config.get("code_graph"), repo_path, env, options, credentials, stopped,
-                    connection, INSTRUCTIONS + "\nLanguage: " + options["language"], output_schema(),
+                    connection, INSTRUCTIONS + "\nLanguage: " + options["language"], output_schema(), base_sha=run.base_sha,
                 )
                 request_context = review_context.sanitize(
                     {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})

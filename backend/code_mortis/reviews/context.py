@@ -3,6 +3,7 @@
 import copy
 from types import SimpleNamespace
 
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import digest
 
 TASK_CONTRACT = "review-task/v2"
@@ -22,7 +23,6 @@ def correctable(feedback):
 
 
 def sanitize(value, credentials, stopped=lambda: False, *, usage=None):
-    from code_mortis.integrations import ocr
     from code_mortis.security_scans import engine as security_engine
 
     values = credentials.setdefault("redaction_values", [])
@@ -31,7 +31,7 @@ def sanitize(value, credentials, stopped=lambda: False, *, usage=None):
 
     def redact(text):
         if stopped():
-            raise ocr.ReviewStopped("Review stopped before sanitization.")
+            raise ReviewStopped("Review stopped before sanitization.")
         return security_engine.redact_secrets(text, values, credentials.get("redaction_rules", []), stopped=stopped)
 
     try:

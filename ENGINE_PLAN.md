@@ -4,7 +4,7 @@ Date: 2026-11-07
 
 Status: approved implementation roadmap; phase delivery and acceptance remain pending.
 
-Milestone update (2026-11-07): M0 preparation, M1 foundation and M2 transport implementation are complete locally. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [frozen pilot](ENGINE_PILOT.md), [M1 verification](ENGINE_M1.md) and [M2 verification and remaining gates](ENGINE_M2.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Its live tool/schema smoke passed; other live providers, effective resource enforcement and the comparative pilot remain unverified. Mortis PR/scanner routing remains gated for M3/M4.
+Milestone update (2026-11-07): M0 preparation, M1 foundation, M2 transports and M3 PR analysis/code graph are implemented locally. See [the source/feature audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [frozen pilot](ENGINE_PILOT.md), [M1 verification](ENGINE_M1.md), [M2 verification](ENGINE_M2.md) and [M3 implementation, verification and M4 handoff](ENGINE_M3.md). The owner selected OpenCode Go / `muse-spark-1.3-contributor`, uncapped aggregate spending and local Docker. Its M2 live tool/schema smoke passed; M3 uses mocked provider/GitHub responses with real local Git, database and gateway execution. Other live providers, effective resource enforcement and the comparative pilot remain unverified. Public Mortis availability remains gated until full workflow parity and evaluation/canary acceptance.
 
 Source baseline inspected: `9277e5f` (`feat(code-graph): support configurable indexing limits`). Recheck the owning source when starting each phase; this baseline is evidence of inspected behavior, not a promise that the checkout has remained unchanged.
 
@@ -329,18 +329,20 @@ Exit: authorization, scope, budgets, restart/cancellation, and history preservat
 - [x] Verify atomic admission across concurrent requests and independent stage budgets. Connection ceiling eight, per-run limits, fair turns, OCR whole-capacity reservation, retained worker-loss admissions and independent stage accounting are covered with real PostgreSQL tests.
 - [x] Record actual-provider checks separately from mocked protocol fixtures, with an explicit consumption policy. Owner-approved uncapped OpenCode Go smoke passed tool round trip and structured output; the full pilot and other live providers remain unverified.
 
-[ENGINE_M2.md](ENGINE_M2.md) records implementation, tests, actual-provider evidence and remaining gates. The Go model supports automatic tool selection only; explicit unsupported choices fail without fallback. Mortis PR/scanner routing remains gated for M3/M4. Before deployment, rebuild locked dependencies, apply the additive migration and drain old workers; before M5, enforce the pilot's lower connection ceiling and resource profile.
+[ENGINE_M2.md](ENGINE_M2.md) records implementation, tests, actual-provider evidence and remaining gates. The Go model supports automatic tool selection only; explicit unsupported choices fail without fallback. M3 adds the internal PR execution adapter; public PR/scanner availability stays gated for M4 parity and M5/M6 acceptance. Before deployment, rebuild locked dependencies, apply the additive migration and drain old workers; before M5, enforce the pilot's lower connection ceiling and resource profile.
 
 Exit: no unsupported existing shared-connection feature and no silent fallback; actual integration gaps remain visible until verified.
 
 ### M3 — PR analysis and code graph
 
-- [ ] Implement deterministic selection, trusted-base rules, custom-rule compatibility, and before-inference file gating.
-- [ ] Implement batching, bounded splitting, source expansion, schema validation, and validated coverage.
-- [ ] Preserve sensitivity, effort, language, cancellation, supersession, progress, and terminal states.
-- [ ] Introduce engine-neutral graph context for shared API analysis and keep historical graph metadata readable.
-- [ ] Preserve exact revisions/policy digests, optional context bounds, graph failures, paused indexing, and independent Code MCP permissions.
-- [ ] Check renames, deleted files, mandatory/custom exclusions, documentation/configuration, oversized input, and unsupported parser languages.
+- [x] Implement deterministic selection, trusted-base rules, custom-rule compatibility, and before-inference file gating. The neutral planner freezes exact Git objects, rules, scope and unit identities; settings precedence, confined rule references and all-or-skip file limits are covered.
+- [x] Implement batching, bounded splitting, source expansion, schema validation, and validated coverage. Bounded concurrent execution uses M2 admission and immutable evidence rounds; only validated unit results count toward complete files. Successful candidates survive partial failures without marking incomplete files clean.
+- [x] Preserve sensitivity, effort, language, cancellation, supersession, progress, and terminal states. Requests preserve preferences; authorization/target fencing, deadlines, cumulative usage, capacity waits and replay are exercised through the real durable adapter with mocked external responses.
+- [x] Introduce engine-neutral graph context for shared API analysis and keep historical graph metadata readable. New `graph-context/v2` uses neutral source helpers; `graph-native/v1` history remains supported. The public engine gate stays closed until downstream parity.
+- [x] Preserve exact revisions/policy digests, optional context bounds, graph failures, paused indexing, and independent Code MCP permissions. Graph evidence remains optional and bounded; prompt omissions and lost evidence on resume are explicit, with completed work replayed without new inference or changed requests.
+- [x] Check renames, deleted files, mandatory/custom exclusions, documentation/configuration, oversized input, and unsupported parser languages. Scope tests include advanced-base excluded renames at both initial selection and evidence reads, lossless large-deletion splitting, API/native limit separation and graph-independent coverage.
+
+[ENGINE_M3.md](ENGINE_M3.md) records the delivered components, exact verification and remaining gates: 3,477 passing backend cases across three isolated shards, followed by 320 passing focused cases after the final packing refinement; Ruff and API regeneration pass. M4 must migrate assessment, verification, summaries and security, then prove public workflow parity. M5 owns real-provider quality/performance comparisons and fault-injection acceptance; M6 owns opt-in canary enablement. M3 does not establish live workflow parity or measured speed gains.
 
 Exit: every selected unit has a truthful outcome; graph availability cannot determine the review denominator or block ordinary review execution.
 
@@ -452,10 +454,10 @@ For each completed phase, append a dated record containing the source revision, 
 | M0 | Complete — 6/6 preparation items | [Source audit](ENGINE_M0.md), [protocol v1.1](ENGINE_EVAL_V1.md), [20-case synthetic pilot, adjudication and owner-selected profile](ENGINE_PILOT.md). Offline fixture/export checks pass; live behavior and broader quality acceptance are pending. |
 | M1 | Complete — local implementation and verification, 8/8 items | [Implementation, cutover procedure and verification](ENGINE_M1.md). Operational cutover remains unperformed. |
 | M2 | Complete — local implementation and verification, 5/5 items | [Transports, admission, final 536-case regression, live Go smoke and remaining gates](ENGINE_M2.md). Other live providers and production deployment remain unverified. |
-| M3 | Not started | Pending |
+| M3 | Complete — local implementation and verification, 6/6 items | [PR planner/executor, durable adapter, graph compatibility, regression evidence and M4 gaps](ENGINE_M3.md). Public routing remains gated; live workflow/quality/performance acceptance is pending. |
 | M4 | Not started | Pending |
 | M5 | Not started | Pending |
 | M6 | Not started | Pending |
 | M7 | Not started | Pending |
 
-Start M3 from ENGINE_M2.md for the transport/gateway contracts, verification evidence and unresolved integration/operational gates. Retain ENGINE_M1.md for foundation/cutover requirements, ENGINE_M0.md as the dated source/feature audit and ENGINE_PILOT.md as the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Before live comparisons, bind the actual saved endpoint and enforce the selected spending policy, lower pilot connection ceiling and M5 resource profile. Do not claim live compatibility, benchmark performance or quality from mocked evidence alone.
+Start M4 from ENGINE_M3.md for the PR planner/executor/adapter contracts, regression evidence and remaining workflow gates. Retain ENGINE_M2.md for gateway/admission and actual-provider limits, ENGINE_M1.md for foundation/cutover requirements, ENGINE_M0.md as the dated source/feature audit and ENGINE_PILOT.md as the frozen pilot/profile. Read AGENTS.md, this plan, PLAN.md, PRODUCT.md, and owning source before changes. Preserve shared-only execution, exclusions/limits, independent scanner policy, exact-revision graph compatibility, additive history migration and all retained features. Keep the public Mortis gate closed until full retained-workflow parity and explicit acceptance. Before live comparisons, bind the actual saved endpoint and enforce the selected spending policy, lower pilot connection ceiling and M5 resource profile. Do not claim live compatibility, benchmark performance or quality from mocked evidence alone.

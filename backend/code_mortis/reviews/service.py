@@ -33,7 +33,7 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import assessment, graph_context, pipeline, verification
+from code_mortis.reviews import assessment, graph_context, mortis, pipeline, verification
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings
 
@@ -144,7 +144,7 @@ def create_run(
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2"}
     config.update(engine_snapshot(options))
-    if graph := graph_context.configuration(db, repo, connection, actor):
+    if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
         config["code_graph"] = graph
     if options["model"]:
         config["connection"]["model"] = options["model"]
@@ -185,7 +185,7 @@ def create_run(
         config=config,
         connection_id=connection.id,
         owner_id=connection.owner_id,
-        engine="ocr" if connection.kind == "api" else connection.kind,
+        engine=config["analysis_engine"] if connection.kind == "api" else connection.kind,
         progress={"comment_requests": {request_key: True}} if request_key else {},
         summary={"status": "pending", "tokens": 0},
         stages={stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES},
@@ -453,7 +453,8 @@ def perform_review(run_id: str, claim: str | None = None):
         saved_review = None
         if run.progress.get("analysis_saved"):
             saved_review = (run.progress["analysis_status"], run.report, [])
-        if connection.kind == "api" and not saved_review and run.progress.get("analysis_started"):
+        if (connection.kind == "api" and run.config.get("analysis_engine", "ocr") == "ocr"
+                and not saved_review and run.progress.get("analysis_started")):
             # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
             run.failure_reason, run.error = "worker_stopped", "The review worker stopped before saving token usage. The remaining budget cannot be verified, so this run cannot resume. Start a new review."
             if pipeline.enabled(run):
@@ -554,7 +555,8 @@ def perform_review(run_id: str, claim: str | None = None):
                     current.progress = {**current.progress, "file_limit_checked": True, "file_limit_exceeded": limited is not None}
                     pipeline.enqueue_stages(db, current)
 
-        status, report, comments = ocr.review(
+        reviewer = mortis.review if run.config.get("analysis_engine") == "mortis" else ocr.review
+        status, report, comments = reviewer(
             *args,
             stopped=lambda: review_stopped(run_id, claim),
             run_id=run_id,
@@ -564,6 +566,7 @@ def perform_review(run_id: str, claim: str | None = None):
             after_review=after_review,
             before_analysis=before_analysis,
             graph_options=run.config.get("code_graph"),
+            **({"claim": claim} if reviewer is mortis.review else {}),
         )
     except ocr.ReviewStopped:
         with transaction() as db:

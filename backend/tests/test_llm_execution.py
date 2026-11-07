@@ -418,6 +418,83 @@ def test_gateway_detaches_nested_request_before_authorization_can_mutate_the_cal
     assert tickets[0].status == "released"
 
 
+def test_authority_revoked_during_validation_discards_result_but_records_usage(seed):
+    _, ids, values, _ = planned(seed)
+    revoked = False
+
+    def authorize():
+        if revoked:
+            raise PermissionError("Revoked while validating evidence")
+
+    def validate(response):
+        nonlocal revoked
+        revoked = True
+        return response.output
+
+    with pytest.raises(PermissionError, match="Revoked"):
+        execute(ids["a"], values["a"], lambda _: httpx.Response(200, json=result("openai")),
+                authorize=authorize, validate_result=validate)
+    tasks, attempts, tickets = rows()
+    assert tasks[0].result is None and attempts[0].usage_tokens == 12
+    assert tickets[0].status == "released"
+
+
+def test_cancellation_drains_validator_thread_before_releasing_capacity(seed):
+    _, ids, values, _ = planned(seed)
+    entered, release, finished = Event(), Event(), Event()
+
+    def validate(response):
+        entered.set()
+        assert release.wait(5), "The async loop must remain responsive during evidence validation"
+        with transaction() as db:
+            assert db.scalar(select(InferenceAdmission).where(InferenceAdmission.status == "active"))
+        finished.set()
+        return response.output
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json=result("openai"))), trust_env=False) as client:
+            pending = asyncio.create_task(llm.execute_task(ids["a"], "job", 1, values["a"], CREDENTIALS,
+                client=client, authorize=lambda: None, validate_result=validate))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                pending.cancel()
+                await asyncio.sleep(0)
+                assert not pending.done() and not finished.is_set()
+            finally:
+                release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert finished.is_set()
+
+    asyncio.run(run())
+    tasks, attempts, tickets = rows()
+    assert tasks[0].result is None and attempts[0].usage_tokens == 12
+    assert tickets[0].status == "released"
+
+
+def test_capacity_polling_can_use_local_checks_but_dispatch_and_acceptance_require_authority(seed):
+    _, ids, values, _ = planned(seed)
+    checks, wire = [], []
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda message: wire.append(message) or httpx.Response(200, json=result("openai"))), trust_env=False) as client:
+            async def dispatch():
+                return await llm.execute_task(ids["a"], "job", 1, values["a"], CREDENTIALS, client=client,
+                    authorize=lambda: checks.append("external"), authorize_admission=lambda: checks.append("local"),
+                    validate_result=lambda response: response.output)
+
+            with inference_admission.reserve_connection("connection", "legacy"):
+                for _ in range(3):
+                    assert await dispatch() is None
+                assert checks == ["local"] * 3 and not wire
+            assert (await dispatch()).output == {"ok": True}
+
+    asyncio.run(run())
+    assert checks == ["local"] * 4 + ["external"] * 2 and len(wire) == 1
+
+
 def test_repeated_cancellation_drains_blocked_claim_and_releases_its_reservation(monkeypatch):
     from types import SimpleNamespace
 

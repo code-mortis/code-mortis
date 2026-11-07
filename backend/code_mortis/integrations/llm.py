@@ -85,7 +85,7 @@ async def _claim(task_id, job_id, job_attempt, **kwargs):
 
 
 async def execute_task(task_id, job_id, job_attempt, request: Request, credentials, *, client,
-                       authorize, validate_result, stopped=lambda: False) -> Response | None:
+                       authorize, validate_result, stopped=lambda: False, authorize_admission=None) -> Response | None:
     """Execute an immutable task after fresh external authorization.
 
     None means admission/dependencies/budget require scheduler attention. The caller
@@ -102,7 +102,7 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
         try:
             if stopped() or time.monotonic() >= until:
                 raise InferenceError("cancelled", "Inference stopped before admission.", consumption_unknown=False)
-            await asyncio.to_thread(authorize)
+            await asyncio.to_thread(authorize_admission or authorize)
         except BaseException:
             await asyncio.to_thread(inference_admission.cancel_task_waiter, task_id, job_id, job_attempt)
             raise
@@ -133,13 +133,22 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
             dispatched = True
             response = await send(connection, credentials, request, client=client,
                                   stopped=lambda lost=lost: lost.is_set() or stopped(), timeout=until - time.monotonic())
-            await asyncio.to_thread(authorize)
             if stopped() or lost.is_set() or time.monotonic() >= until:
                 raise InferenceError("cancelled", "Inference stopped before result acceptance.",
                                      usage=response.usage, request_id=response.request_id)
-            result = validate_result(response)
+            validation = asyncio.create_task(asyncio.to_thread(validate_result, response))
+            try:
+                result = await asyncio.shield(validation)
+            except asyncio.CancelledError:
+                with suppress(Exception, asyncio.CancelledError):
+                    await llm_http._drain(validation)
+                raise
             if not isinstance(result, dict):
                 raise ValueError("Inference result validation must return a dictionary")
+            await asyncio.to_thread(authorize)
+            if stopped() or lost.is_set() or time.monotonic() >= until:
+                raise InferenceError("cancelled", "Inference stopped during result validation.",
+                                     usage=response.usage, request_id=response.request_id)
             accepted = await asyncio.to_thread(analysis.finish_task, lease, usage_tokens=response.usage.total_tokens,
                                                result=result, provider_request_id=response.request_id)
             if not accepted:
