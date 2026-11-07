@@ -253,6 +253,15 @@ def probe(root, engine):
     return observations
 
 
+def cgroup_peak_bytes():
+    for path in ("/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"):
+        try:
+            return int(Path(path).read_text())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 if __name__ == "__main__":
     engine, mode = sys.argv[1:]
     started = time.monotonic()
@@ -264,7 +273,7 @@ if __name__ == "__main__":
         result = {"graph": summarize(graph)}
     result.update(engine=engine, seconds=round(time.monotonic() - started, 4),
                   process_peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
-                  cgroup_peak_bytes=int(Path("/sys/fs/cgroup/memory.peak").read_text()),
+                  cgroup_peak_bytes=cgroup_peak_bytes(),
                   python=platform.python_version(), machine=platform.machine(),
                   packages={d.metadata["Name"]: d.version for d in importlib.metadata.distributions()})
     print(json.dumps(result, sort_keys=True))

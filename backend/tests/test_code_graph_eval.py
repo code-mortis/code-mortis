@@ -24,6 +24,34 @@ def test_direct_snapshot_isolates_unreadable_files(tmp_path, monkeypatch):
     assert [site["target"] for site in result["imports"]] == ["target.py"]
 
 
+@pytest.mark.parametrize(("v2", "v1", "expected"), [
+    ("4096\n", "8192\n", 4096),
+    (FileNotFoundError(), "8192\n", 8192),
+    (PermissionError(), "8192\n", 8192),
+    ("invalid", "8192\n", 8192),
+    (FileNotFoundError(), FileNotFoundError(), None),
+    (PermissionError(), PermissionError(), None),
+    ("invalid", "", None),
+])
+def test_cgroup_peak_handles_unavailable_counters(monkeypatch, v2, v1, expected):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    from code_graph_eval.evaluate import cgroup_peak_bytes
+
+    counters = {
+        Path("/sys/fs/cgroup/memory.peak"): v2,
+        Path("/sys/fs/cgroup/memory/memory.max_usage_in_bytes"): v1,
+    }
+
+    def read_text(path):
+        value = counters[path]
+        if isinstance(value, OSError):
+            raise value
+        return value
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert cgroup_peak_bytes() == expected
+
+
 @pytest.mark.parametrize(("script", "args", "error"), [
     ("check_pr_code_performance.py", [*PROBE_ARGS, "--samples", "0"], "--samples must be between 1 and 100"),
     ("check_pr_code_performance.py", [*PROBE_ARGS, "--samples", "101"], "--samples must be between 1 and 100"),
