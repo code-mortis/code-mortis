@@ -32,6 +32,23 @@ from code_mortis.models import (
 )
 from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
+OUTPUT_TOKEN_POLICY = "ocr-completion/v1"
+
+
+def output_token_limit(policy):
+    """Missing policy retains the original immutable 8,192-token requests."""
+    if policy is None:
+        return 8192
+    if policy == OUTPUT_TOKEN_POLICY:
+        return 16384
+    raise ValueError("The saved output-token policy is unsupported")
+
+
+def output_token_policy(snapshot=None):
+    policy = OUTPUT_TOKEN_POLICY if snapshot is None else snapshot["versions"].get("output_tokens")
+    output_token_limit(policy)
+    return policy
+
 
 def engine_snapshot(options):
     if not isinstance(options, dict) or not isinstance(options.get("settings", {}), dict):
@@ -82,7 +99,8 @@ def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
     if specification.scan_id and job.payload.get("scan_id") != specification.scan_id:
         raise ValueError("The plan security scan does not match its durable job")
     if specification.run_id:
-        run = db.get(ReviewRun, specification.run_id)
+        # Lock before the FK insert so concurrent stage plans cannot deadlock upgrading KEY SHARE locks.
+        run = db.scalar(select(ReviewRun).where(ReviewRun.id == specification.run_id).with_for_update())
         pr = db.get(PullRequest, run.pr_id) if run else None
         if (not pr or pr.repository_id != specification.repository_id
                 or specification.revisions.get("head") != run.head_sha
@@ -92,7 +110,7 @@ def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
         if specification.connection != expected:
             raise ValueError("The plan connection must match the immutable execution snapshot")
     if specification.scan_id:
-        scan = db.get(SecurityScan, specification.scan_id)
+        scan = db.scalar(select(SecurityScan).where(SecurityScan.id == specification.scan_id).with_for_update())
         if (not scan or scan.repository_id != specification.repository_id
                 or specification.revisions.get("head") != scan.head_sha):
             raise ValueError("The plan must match its security repository and pinned revision")

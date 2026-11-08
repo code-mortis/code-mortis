@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import timedelta
 from pathlib import Path
@@ -97,12 +98,15 @@ def validate_manifest(manifest, case_id, arm, *, live):
         manifest.get("publication") == "disabled_sandbox_adapter_only",
         "Publication must be disabled",
     )
-    require(
-        manifest.get("graph") == "off",
-        "This paired pilot supports only graph-off scope",
-    )
-    require(manifest.get("repetition") == 1, "The frozen pilot has one paired repetition")
-    require(manifest.get("cache") == "cold", "This worker requires a cold source workspace")
+    if profile == PARALLEL_PROFILE:
+        require(manifest.get("graph") in {"off", "on", "exact_revision_gap"}, "Unknown graph stratum")
+        require(manifest.get("cache") in {"cold", "warm"}, "Unknown source-cache stratum")
+        require(type(manifest.get("repetition")) is int and 1 <= manifest["repetition"] <= 100,
+                "Invalid paired repetition")
+    else:
+        require(manifest.get("graph") == "off", "This paired pilot supports only graph-off scope")
+        require(manifest.get("repetition") == 1, "The frozen pilot has one paired repetition")
+        require(manifest.get("cache") == "cold", "This worker requires a cold source workspace")
     connection = manifest.get("connection", {})
     require(
         connection.get("kind") == "api" and connection.get("owner_id") is None,
@@ -210,22 +214,28 @@ def validate_manifest(manifest, case_id, arm, *, live):
         conditions = manifest.get("conditions", {})
         require(conditions.get("execution_profile") == profile and conditions.get("queue") == QUEUE_PROFILE,
                 "Queued workflow conditions must freeze profile and queue")
+        require(all(conditions.get(key, default) == manifest[key] for key, default in
+                    (("graph", "off"), ("cache", "cold"), ("repetition", 1))),
+                "Graph/cache/repetition conditions differ from manifest")
         require(case["identity"].get("history_sha256") == fingerprint(history), "Historical input identity mismatch")
         require(case["identity"].get("conditions_sha256") == fingerprint({
             **conditions, "workload": case["workload"], "provider_options": provider_options(manifest, case),
         }), "Queued workflow condition identity mismatch")
     if history:
-        require(profile == PARALLEL_PROFILE and case["workload"] == "pr", "History requires the parallel PR profile")
+        require(profile == PARALLEL_PROFILE, "History requires the parallel profile")
         from code_mortis.schemas.common import ReviewComment
+        from code_mortis.schemas.security import SecurityProposal
 
         for item in history:
             require(set(item) == {"original_sha", "snapshot"}, "Unexpected historical finding fields")
             require(item["original_sha"] == case["base"]["commit"], "Historical source must be the frozen base revision")
             snapshot = item["snapshot"]
-            require(isinstance(snapshot, dict) and set(snapshot) == set(ReviewComment.model_fields), "Historical snapshot must be a complete review comment")
-            ReviewComment.model_validate(snapshot, strict=True)
+            contract = ReviewComment if case["workload"] == "pr" else SecurityProposal
+            require(isinstance(snapshot, dict) and set(snapshot) == set(contract.model_fields), "Historical snapshot must be complete")
+            contract.model_validate(snapshot, strict=True)
         require(len({fingerprint(item["snapshot"]) for item in history}) == len(history), "Duplicate historical findings")
-        require(manifest["settings"].get("auto_resolve") is True, "Historical verification must retain auto_resolve")
+        if case["workload"] == "pr":
+            require(manifest["settings"].get("auto_resolve") is True, "Historical verification must retain auto_resolve")
     if live:
         require(
             manifest.get("live_enabled") is True and manifest.get("authorization") == "owner_selected_pilot",
@@ -407,8 +417,15 @@ def checked_case(export, case, options):
         path = snapshot["path"]
         require(path in case["base"]["blobs"], "Historical finding source is absent from the frozen base")
         original = source.read_source(root, env, item["original_sha"], path, lambda: False)
-        require(1 <= snapshot["start_line"] <= snapshot["end_line"] <= len(original.splitlines()),
-                "Historical finding range is outside its original source")
+        ranges = [snapshot] if case["workload"] == "pr" else snapshot["evidence"]
+        for citation in ranges:
+            text = original if citation.get("path", path) == path else source.read_source(
+                root, env, item["original_sha"], citation["path"], lambda: False)
+            require(1 <= citation["start_line"] <= citation["end_line"] <= len(text.splitlines()),
+                    "Historical finding range is outside its original source")
+            if case["workload"] == "security":
+                require(citation["quote"] in "\n".join(text.splitlines()[citation["start_line"] - 1:citation["end_line"]]),
+                        "Historical security citation differs from its frozen source")
     if case["workload"] == "pr":
         plan = planning.plan_review(
             root,
@@ -450,6 +467,7 @@ class Measurements:
     def __init__(self, started=None):
         self.started = time.monotonic() if started is None else started
         self.phases = {}
+        self.internal_errors = []
         self.first_validated = None
         self.lock = Lock()
 
@@ -458,6 +476,12 @@ class Measurements:
             started = time.monotonic()
             try:
                 return function(*args, **kwargs)
+            except Exception as exc:
+                self.internal_errors.append({"type": type(exc).__name__, "phase": name,
+                    "cause_type": type(getattr(exc, "orig", exc.__cause__)).__name__,
+                    "frames": [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+                               for frame in traceback.extract_tb(exc.__traceback__) if "/code_mortis/" in frame.filename][-4:]})
+                raise
             finally:
                 with self.lock:
                     self.phases[name] = self.phases.get(name, 0) + (time.monotonic() - started) * 1000
@@ -501,6 +525,7 @@ class Measurements:
                 (planning, "plan_review", "planning"),
                 (assessment, "perform", "assessment"),
                 (verification, "perform", "verification"),
+                (verification, "mortis_verify", "verification_inference"),
                 (summary, "generate", "summary"),
             ):
                 stack.enter_context(patch.object(module, name, self.measure(phase, getattr(module, name))))
@@ -547,11 +572,10 @@ class SyntheticGitHub:
         return TOKEN
 
     def threads(self, token, name, number):
-        from sqlalchemy import select
-
         from code_mortis.core.db import transaction
         from code_mortis.models import AppConfig, Finding, PullRequest
         from code_mortis.reviews.service import marker
+        from sqlalchemy import select
 
         require((token, name, number) == (TOKEN, self.full_name, 1), "Synthetic thread identity mismatch")
         with transaction() as db:
@@ -671,7 +695,8 @@ class SyntheticGitHub:
         from code_mortis.security_scans.engine import Snapshot
 
         require(
-            (name, sha, previous_shas, token) == (self.full_name, self.case["head"]["commit"], [], TOKEN),
+            (name, sha, previous_shas, token) == (self.full_name, self.case["head"]["commit"],
+                [item["original_sha"] for item in self.case.get("historical_findings", [])], TOKEN),
             "Security snapshot identity mismatch",
         )
         require(not stopped(), "Evaluation stopped")
@@ -683,9 +708,27 @@ class SyntheticGitHub:
 
     @contextmanager
     def installed(self):
+        from code_mortis.code_graph import store
         from code_mortis.core import source
         from code_mortis.integrations import comparison, github, ocr
         from code_mortis.security_scans import engine
+
+        def read_token(db, installation_id, repository_id, **kwargs):
+            require(repository_id == self.repo_id, "Graph repository identity mismatch")
+            return self.token(db, installation_id, **kwargs)
+
+        def acquire(repository_id, name, sha, snapshot_id, token, stopped):
+            require((repository_id, name, token) == (self.repo_id, self.full_name, TOKEN),
+                    "Graph source identity mismatch")
+            require(sha in {self.case[side]["commit"] for side in ("base", "head")},
+                    "Graph requested an unfrozen revision")
+            require(not stopped(), "Evaluation graph stopped")
+            target = store.directory(repository_id)
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # The fixed neutral export is local; preserve production transport restrictions elsewhere.
+                store.git(self.root, "-c", "protocol.file.allow=always", "clone", "--bare", "--no-hardlinks", "--quiet", str(self.root), str(target))
+            store.git(target, "update-ref", store.reference(snapshot_id), sha)
 
         comparison.cached.cache_clear()
         command = ocr.command
@@ -709,6 +752,8 @@ class SyntheticGitHub:
                 (github, "request", self.request),
                 (github, "authorize_repo", self.authorize),
                 (github, "installation_token", self.token),
+                (github, "repository_read_token", read_token),
+                (store, "acquire", acquire),
                 (github, "threads", self.threads),
                 (source, "review_snapshot", self.review_snapshot),
                 (engine, "snapshot", self.security_snapshot),
@@ -720,8 +765,6 @@ class SyntheticGitHub:
 
 
 def create_attempt(manifest, case, arm, credentials, options, attempt_id):
-    from sqlalchemy import select
-
     from code_mortis.core.db import Base, now, transaction
     from code_mortis.core.security import seal, unseal
     from code_mortis.models import (
@@ -741,9 +784,10 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
     from code_mortis.reviews import assessment, context, pipeline, service
     from code_mortis.security_scans import engine as security_engine
     from code_mortis.security_scans.service import STAGES
+    from sqlalchemy import select
 
     parallel = execution_profile(manifest) == PARALLEL_PROFILE
-    require(not case.get("historical_findings") or options.get("auto_resolve") is True,
+    require(case["workload"] != "pr" or not case.get("historical_findings") or options.get("auto_resolve") is True,
             "Historical verification requires frozen auto_resolve settings")
 
     # A fresh database or our exact sentinel only. No schema reset, truncation or migrations here.
@@ -899,6 +943,26 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
                 )
             )
         db.flush()
+        if case["workload"] == "security" and case.get("historical_findings"):
+            from code_mortis.models import SecurityFinding, SecurityOccurrence
+            historical_id = str(uuid4())
+            db.add(SecurityScan(id=historical_id, repository_id=identity, actor_id=identity,
+                connection_id=connection.id, request_key=historical_id, branch="head",
+                head_sha=case["base"]["commit"], config=config, status="completed", finished_at=now()))
+            db.flush()
+            for item in case["historical_findings"]:
+                snapshot = item["snapshot"]
+                finding_id = str(uuid4())
+                evidence = {**snapshot, "kind": "code", "source_sha": item["original_sha"],
+                            "sources": [arm], "fingerprint": fingerprint(snapshot)}
+                db.add(SecurityFinding(id=finding_id, repository_id=identity,
+                    fingerprint=fingerprint(snapshot), state="open", kind="code", severity=snapshot["severity"],
+                    title=snapshot["title"], path=snapshot["path"], first_scan_id=historical_id,
+                    last_scan_id=historical_id, evidence=evidence))
+                db.flush()
+                db.add(SecurityOccurrence(scan_id=historical_id, finding_id=finding_id,
+                    outcome="observed", snapshot=copy.deepcopy(evidence)))
+        db.flush()
         key = "run_id" if case["workload"] == "pr" else "scan_id"
         db.add(
             Job(
@@ -934,8 +998,6 @@ def scored_finding(row, occurrence):
 
 
 def retained_result(case, attempt_id):
-    from sqlalchemy import select
-
     from code_mortis.core.db import transaction
     from code_mortis.models import (
         AnalysisAttempt,
@@ -953,6 +1015,7 @@ def retained_result(case, attempt_id):
         SecurityScan,
     )
     from code_mortis.reviews.analytics import run_tokens
+    from sqlalchemy import select
 
     with transaction() as db:
         run = db.get(ReviewRun if case["workload"] == "pr" else SecurityScan, attempt_id)
@@ -1083,7 +1146,7 @@ def queue_worker(bootstrap):
         finally:
             event.update(finished_ms=(time.monotonic() - bootstrap["started"]) * 1000,
                          first_validated_ms=measurements.first_validated, phases=measurements.phases,
-                         github_requests=adapter.calls[request_start:])
+                         github_requests=adapter.calls[request_start:], internal_errors=measurements.internal_errors)
             if scanner_state is not None:
                 event["scanner_guard"] = scanner_state
             encoded = canonical(event) + b"\n"
@@ -1097,19 +1160,19 @@ def queue_worker(bootstrap):
     with adapter.installed(), patch.object(jobs, "execute", execute):
         jobs.celery.worker_main([
             "worker", "--pool=prefork", "--concurrency=4", "--loglevel=WARNING",
-            "--queues=reviews,verification,summaries,events,security", "--without-gossip", "--without-mingle",
+            "--queues=" + ("security" if bootstrap["case"]["workload"] == "security" else "reviews,verification,summaries,events"),
+            "--without-gossip", "--without-mingle",
             "--hostname=eval-" + bootstrap["attempt_id"] + "@%h",
         ])
 
 
 def dispatch_attempt(attempt_id):
     """Scope the production dispatcher to this arm; retained side effects never reach Redis."""
-    from sqlalchemy import event
-    from sqlalchemy.orm import Session, with_loader_criteria
-
     from code_mortis import jobs
     from code_mortis.models import Job
     from code_mortis.reviews import pipeline
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session, with_loader_criteria
 
     allowed = {"review", "security_scan", "finalize_review", *pipeline.KINDS}
     scope = Job.kind.in_(allowed) & (
@@ -1128,11 +1191,10 @@ def dispatch_attempt(attempt_id):
 
 
 def execute_queued(manifest, case, export, attempt_id, repo_id, full_name, measurements):
-    from sqlalchemy import select
-
     from code_mortis.core.db import transaction
     from code_mortis.models import Job, ReviewRun, SecurityScan
     from code_mortis.reviews import pipeline
+    from sqlalchemy import select
 
     allowed = {"review", "security_scan", "finalize_review", *pipeline.KINDS}
     with tempfile.TemporaryDirectory(prefix="eval-queue-") as temporary:
@@ -1199,6 +1261,7 @@ def execute_queued(manifest, case, export, attempt_id, repo_id, full_name, measu
                 measurements.phases[phase] = measurements.phases.get(phase, 0) + duration
         return {"profile": PARALLEL_PROFILE, "queue": QUEUE_PROFILE, "events": events,
                 "queue_to_terminal_ms": terminal_ms, "includes_worker_boot": True,
+                "started_monotonic": measurements.started,
                 "dispatch_scope": "current_attempt_workflow_jobs_only",
                 "publication": "side_effect_jobs_fenced",
                 "scanner_guard": next((event["scanner_guard"] for event in reversed(events) if "scanner_guard" in event), None)}
@@ -1214,6 +1277,33 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
     measurements = Measurements()
     repo_id, full_name = create_attempt(manifest, case, arm, credentials, options, attempt_id)
     queued = execution_profile(manifest) == PARALLEL_PROFILE
+    graph_setup = None
+    adapter = SyntheticGitHub(case, repo_id, full_name, export / "repo")
+    if manifest.get("graph", "off") != "off":
+        from code_mortis import jobs
+        from code_mortis.code_graph import service as graphs
+        from code_mortis.models import CodeGraphSnapshot, Connection, Repository, User
+        from code_mortis.reviews import graph_context
+        started = time.monotonic()
+        with adapter.installed():
+            graphs.configure(repo_id, repo_id, enabled=True)
+            sha = case["head" if manifest["graph"] == "on" else "base"]["commit"]
+            snapshot_id = graphs.enqueue_snapshot(repo_id, sha)
+            with transaction() as db:
+                graph_job = db.get(CodeGraphSnapshot, snapshot_id).job_id
+            jobs.execute_job(graph_job)
+            with transaction() as db:
+                snapshot = db.get(CodeGraphSnapshot, snapshot_id)
+                require(snapshot.status in graphs.USABLE, "Evaluation graph failed to index")
+                if case["workload"] == "pr":
+                    run = db.get(ReviewRun, attempt_id)
+                    run.config = {**run.config, "code_graph": graph_context.configuration(db,
+                        db.get(Repository, repo_id), db.get(Connection, run.connection_id), db.get(User, repo_id),
+                        engine={"analysis_engine": arm})}
+                graph_setup = {"snapshot_id": snapshot_id, "indexed_commit": snapshot.commit_sha,
+                               "status": snapshot.status, "outside_queue_timing": True,
+                               "enrichment": "production_pr_adapter" if case["workload"] == "pr" else "not_applicable_security_has_no_graph_enrichment",
+                               "elapsed_ms": (time.monotonic() - started) * 1000}
     setup_ms = (time.monotonic() - measurements.started) * 1000
     if queued:
         measurements.started = time.monotonic()
@@ -1256,6 +1346,7 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
                 **measurements.phases,
             },
             "outcomes": outcomes,
+            "graph_setup": graph_setup,
             "github_adapter": {"publication": "forbidden", "requests": adapter.calls},
         }
     )
@@ -1273,10 +1364,10 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
 def cgroup_metrics():
     root = Path("/sys/fs/cgroup")
     result = {}
-    for name in ("cpu.stat", "memory.peak", "memory.current", "memory.events", "pids.current", "pids.events"):
+    for name in ("cpu.stat", "memory.peak", "memory.current", "memory.events", "memory.stat", "memory.pressure", "pids.current", "pids.peak", "pids.events"):
         try:
             raw = (root / name).read_text()[:4096].strip()
-            result[name] = (
+            result[name] = raw if name.endswith(".pressure") else (
                 int(raw)
                 if raw.isdigit()
                 else {key: int(value) for key, value in (line.split() for line in raw.splitlines())}
@@ -1288,10 +1379,9 @@ def cgroup_metrics():
 
 def captured_execute(manifest, case, export, arm, credentials, options, attempt_id, *, fake_provider=False):
     from capture import capture
-    from sqlalchemy import select
-
     from code_mortis.core.db import now, transaction
     from code_mortis.models import Job, ReviewRun, SecurityScan
+    from sqlalchemy import select
 
     declared = {**manifest["connection"], "options": provider_options(manifest, case)}
     credentials = copy.deepcopy(credentials)
@@ -1461,9 +1551,9 @@ def main():
         "case_id": case["case_id"],
         "workload": case["workload"],
         "arm": args.arm,
-        "repetition": 1,
-        "graph": "off",
-        "cache": "cold",
+        "repetition": manifest["repetition"],
+        "graph": manifest["graph"],
+        "cache": manifest["cache"],
         "case_digest": case["case_digest"],
         "identity": case["identity"],
         "manifest_sha256": fingerprint(manifest),

@@ -22,6 +22,7 @@ from code_mortis.schemas.inference import Message, Request, Tool, ToolCall
 VERSION = "mortis-pr/v1"
 PROMPT_VERSION = "mortis-pr-prompt/v1"
 SCHEMA_VERSION = "mortis-pr-result/v1"
+SOURCE_TOOL_POLICY = "remaining-rounds/v1"
 MAX_READ_BYTES = 64 * 1024
 MAX_SOURCE_BYTES = 20_000_000
 MAX_READ_LINES = 400
@@ -150,7 +151,8 @@ def _source(revision, path, start, end, text):
             "start_line": start, "end_line": end, "text": text}
 
 
-def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False):
+def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False,
+                    output_token_policy=analysis.OUTPUT_TOKEN_POLICY):
     """Freeze requests before persisting their task identities; optional graph never crowds out source."""
     batches = []
     pending = deque(plan.batches)
@@ -177,7 +179,7 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
         request = Request(instructions=INSTRUCTIONS,
                           messages=[Message(role="user", content=json.dumps(supplied, ensure_ascii=False))],
                           tools=[read_tool()], output_schema=output_schema(key, units),
-                          max_output_tokens=8192, effort=options["effort"], session_id=key)
+                          max_output_tokens=analysis.output_token_limit(output_token_policy), effort=options["effort"], session_id=key)
         omitted = []
         try:
             llm.reservation(connection, request)
@@ -349,7 +351,7 @@ def _restore_sources(result, *, repo, env, plan, batch, credentials, authorize, 
     return sources
 
 
-def _next_request(batch, sources, notices, *, repair=False, validation=None):
+def _next_request(batch, sources, notices, *, allow_source_reads=True, repair=False, validation=None):
     payload = {"supporting_sources": sources, "source_read_results": notices}
     if repair:
         payload["validation_feedback"] = (
@@ -359,7 +361,8 @@ def _next_request(batch, sources, notices, *, repair=False, validation=None):
         if validation is not None:
             payload["validation_diagnostics"] = validation
     return batch.request.model_copy(update={"messages": [batch.request.messages[0],
-        Message(role="user", content=json.dumps(payload, ensure_ascii=False))]})
+        Message(role="user", content=json.dumps(payload, ensure_ascii=False))],
+        "tools": batch.request.tools if allow_source_reads else []})
 
 
 def _followup_spec(batch, request, parent_key, round_number):
@@ -430,7 +433,8 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
 
 
 def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, authorize,
-           register_task, load_task, stopped=lambda: False, progress=lambda value: None, check_admission=None):
+           register_task, load_task, stopped=lambda: False, progress=lambda value: None, check_admission=None,
+           limit_source_tools=True):
     """Execute or replay immutable task rows. Callbacks own plan/Job fencing and durable append.
 
     load_task(key) returns {id,status,result,input_hash,usage_tokens,pending_reason};
@@ -567,7 +571,9 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                     if normalized.get("validation") is not None:
                         outcomes[unit.key]["validation"] = normalized["validation"]
                 break
-            request = _next_request(batch, supporting, notices, repair=normalized["kind"] == "feedback",
+            request = _next_request(batch, supporting, notices,
+                                    allow_source_reads=not limit_source_tools or expansions + repairs < ROUNDS[batch.options["effort"]],
+                                    repair=normalized["kind"] == "feedback",
                                     validation=normalized.get("validation"))
             request = request.model_copy(update={"session_id": session_id})
             try:

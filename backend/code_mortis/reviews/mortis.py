@@ -134,15 +134,22 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                 remaining -= record.get("reserved_bytes", 0)
                 if supporting:
                     graph_sources[item.path] = supporting
+        output_token_policy = analysis.output_token_policy(frozen_plan)
         prepared = engine.prepare_batches(selection, connection, immutable_options, credentials,
-                                           graph_by_path=graph_sources, stopped=cancelled)
+                                           graph_by_path=graph_sources, stopped=cancelled,
+                                           output_token_policy=output_token_policy)
         graph_omissions = {batch.key: batch.graph_omitted for batch in prepared if batch.graph_omitted}
         graph = {"options": graph_options, "selections": graph_records, "prompt_omissions": graph_omissions}
+        source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
+        if source_tool_policy not in {None, engine.SOURCE_TOOL_POLICY}:
+            raise ValueError("The saved source-tool policy is unsupported")
         specification = PlanSpec(repository_id=repository_id, run_id=run_id, initiator_id=actor_id,
             authorization=authority, trigger=trigger, connection=connection,
             revisions={"base": base_sha, "head": head_sha, "merge_base": merge_base},
             versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": engine.PROMPT_VERSION,
-                      "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION)},
+                      "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
+                      **({"source_tools": source_tool_policy} if source_tool_policy else {}),
+                      **({"output_tokens": output_token_policy} if output_token_policy else {})},
             settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
                       "workflow_contract": "mortis-workflow/v1"},
             file_policy={**file_policy.policy(immutable_options), "digest": selection.policy_digest},
@@ -242,7 +249,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
 
         result = engine.review(path, env, selection, prepared, job_id=job_id, job_attempt=job_attempt,
             credentials=credentials, authorize=authorize, register_task=register_task, load_task=load_task,
-            stopped=cancelled, progress=progress, check_admission=check_admission)
+            stopped=cancelled, progress=progress, check_admission=check_admission,
+            limit_source_tools=source_tool_policy is not None)
         authorize(check_deadline=False)
         if after_review:
             after_review(result, path, env, fetch_env)

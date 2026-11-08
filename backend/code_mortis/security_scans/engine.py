@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
-from code_mortis.core import process
+from code_mortis.core import analysis, process
 from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
@@ -576,7 +576,8 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
-        *, configuration_managed=False, infer=None, source_packing=None, select_packing=None):
+        *, configuration_managed=False, infer=None, source_packing=None, select_packing=None,
+        output_token_policy=analysis.OUTPUT_TOKEN_POLICY):
     require_shared(connection)
     deadline = time.monotonic() + timeout if timeout is not None else None
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
@@ -644,7 +645,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                     packed = review_context.sanitize(supplied_context(), credentials, stopped)
                     request = Request(instructions=review_context.sanitize(instructions, credentials, stopped),
                         messages=[Message(role="user", content=verification.evidence_bundle(packed))],
-                        output_schema=schema_for_transport(schema), max_output_tokens=8192, effort="high")
+                        output_schema=schema_for_transport(schema),
+                        max_output_tokens=analysis.output_token_limit(output_token_policy), effort="high")
                     required = llm.reservation(connection, request) + request.max_output_tokens
                     selected = source_packing is True or budget is None or required <= budget
             except (ValueError, verification.VerificationOutputError):

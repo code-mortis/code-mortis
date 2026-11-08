@@ -253,10 +253,11 @@ def test_partial_peer_checkpoint_replays_packed_result_after_remaining_budget_sh
         pass
 
     state = delayed_security_provider
-    state["usage"]["analysis", "alpha.py"] = 28_000
+    # Admit both enlarged response reservations, then leave the same 12,000-token replay remainder.
+    state["usage"]["analysis", "alpha.py"] = 48_000
     with transaction() as db:
         scan = db.get(SecurityScan, state["scan_id"])
-        scan.config = {**scan.config, "limits": {**scan.config["limits"], "token_budget": 40_000}}
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "token_budget": 60_000}}
     execute, requests, lost = workflow_inference.execute, [], []
 
     def interrupted(*args, **kwargs):
@@ -274,7 +275,7 @@ def test_partial_peer_checkpoint_replays_packed_result_after_remaining_budget_sh
         service.perform(state["scan_id"], state["claim"])
     with transaction() as db:
         scan = db.get(SecurityScan, state["scan_id"])
-        assert scan.progress["tokens"] == 28_000
+        assert scan.progress["tokens"] == 48_000
         assert scan.progress["tasks"]["analysis:alpha.py"]["status"] == "completed"
         assert scan.progress["tasks"]["analysis:beta.py"]["source_packing"] is True
         assert scan.progress["tasks"]["analysis:beta.py"]["status"] == "running"
@@ -287,7 +288,7 @@ def test_partial_peer_checkpoint_replays_packed_result_after_remaining_budget_sh
         task = scan.progress["tasks"]["analysis:beta.py"]
         assert task["status"] == "completed", scan.error
         assert task["source_packing"] is True and task["tokens"] == 12
-        assert scan.progress["tokens"] == 28_012
+        assert scan.progress["tokens"] == 48_012
         # Remaining capacity cannot admit fresh assessment work; replay never grants free inference.
         assert scan.status != "completed"
     assert len(requests) == 2 and requests[0] == requests[1]

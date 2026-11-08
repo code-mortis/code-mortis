@@ -52,16 +52,22 @@ def call(case, **kwargs):
                                       options.pop("context", {"source": "safe source"}), **options)
 
 
-def test_completed_result_replays_after_worker_restart_without_new_consumption(workflow):
-    assert call(workflow) == ({"ok": True}, {"tokens": 12})
+@pytest.mark.parametrize("legacy", [False, True])
+def test_completed_result_replays_after_worker_restart_without_new_consumption(workflow, monkeypatch, legacy):
+    with monkeypatch.context() as patcher:
+        if legacy:
+            patcher.setattr(workflow_inference.analysis, "output_token_policy", lambda snapshot=None: None)
+        assert call(workflow) == ({"ok": True}, {"tokens": 12})
+    assert workflow["wire"][0]["max_tokens"] == (8192 if legacy else 16384)
     with transaction() as db:
         db.get(Job, "mortis-job").attempts = 2
         run = db.get(ReviewRun, "mortis-run")
         run.progress = {**run.progress, "execution": "mortis-job:2"}
-    assert call(workflow, claim="mortis-job:2") == ({"ok": True}, {"tokens": 12})
+    assert call(workflow, claim="mortis-job:2", token_budget=0) == ({"ok": True}, {"tokens": 12})
     assert len(workflow["wire"]) == 1
     with transaction() as db:
         plan = db.scalar(select(AnalysisPlan))
+        assert plan.snapshot["versions"].get("output_tokens") == (None if legacy else workflow_inference.analysis.OUTPUT_TOKEN_POLICY)
         assert db.get(AnalysisBudget, (plan.id, "assessment")).charged_tokens == 12
         assert len(list(db.scalars(select(AnalysisAttempt)))) == 1
         assert "safe source" not in json.dumps(plan.snapshot)

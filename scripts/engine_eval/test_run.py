@@ -44,6 +44,14 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(first[index]["case_id"], first[index + 1]["case_id"])
                 self.assertEqual({first[index]["arm"], first[index + 1]["arm"]}, {"ocr", "mortis"})
 
+    def test_schedule_retains_versioned_graph_cache_and_repetition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, _, _ = self.inputs(Path(tmp))
+            manifest.update(schema="mortis-engine-workflow-run/v2", graph="exact_revision_gap", cache="warm", repetition=3)
+            planned = run.schedule(manifest)
+            self.assertTrue(all(row["graph"] == "exact_revision_gap" and row["cache"] == "warm"
+                                and row["repetition"] == 3 for row in planned))
+
     def test_inputs_refuse_secrets_truth_symlinks_mutable_images_and_implicit_live(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest, cases, credentials = self.inputs(Path(tmp))
@@ -90,6 +98,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(dry[dry.index("--memory") + 1], str(1024 * run.MIB))
         self.assertEqual(dry[dry.index("--memory-swap") + 1], str(1024 * run.MIB))
         self.assertEqual(dry[dry.index("--pids-limit") + 1], "128")
+
         self.assertTrue(all(arg.endswith(",readonly") for arg in dry if arg.startswith("type=bind")))
         self.assertFalse(any(arg in {"--privileged", "-v", "--publish", "-p"} for arg in dry))
         live = run.worker_command(**{**kwargs, "live": True})
@@ -103,6 +112,30 @@ class RunTests(unittest.TestCase):
         self.assertIn("CM_TRIVY_CACHE_DIR=/scanner-cache", cached)
         pr = run.worker_command(**{**kwargs, "scanner_cache": Path("/advisories"), "workload": "pr"})
         self.assertNotIn("CM_TRIVY_CACHE_DIR=/scanner-cache", pr)
+
+    def test_live_quality_track_cannot_claim_quiet_performance_or_change_original_pilot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, cases, credentials = self.inputs(root)
+            image = "sha256:" + "d" * 64
+            manifest.update(measurement_track="live_quality", performance_claim_allowed=False)
+            with self.assertRaisesRegex(ValueError, "Only versioned live-quality"):
+                run.validate_inputs(manifest, cases, credentials, image, live=False)
+            manifest.update(schema="mortis-engine-workflow-run/v2", execution_profile="parallel_queue_v2",
+                            queue={"pool": "prefork", "concurrency": 4, "dispatch_interval_seconds": 10})
+            manifest["cases"] = [manifest["cases"][0]]
+            manifest["cases"][0]["identity"]["history_sha256"] = run.fingerprint([])
+            for folder in cases.iterdir():
+                if folder.name != "pr-01":
+                    shutil.rmtree(folder)
+            manifest.update(live_enabled=True, authorization="owner_selected_pilot", isolation_checks_passed=True,
+                            worker_image_id=image, host_quiescence={"verified": False, "reason": "Quality only",
+                                "observed_at": "2026-11-08T00:00:00+00:00", "active_container_ids": ["synthetic"]})
+            with patch.object(run, "check_scanner_cache", return_value=manifest["scanner_snapshot"]):
+                run.validate_inputs(manifest, cases, credentials, image, live=True, scanner_cache=root / "scanner-cache")
+                manifest["performance_claim_allowed"] = True
+                with self.assertRaisesRegex(ValueError, "timings cannot support performance"):
+                    run.validate_inputs(manifest, cases, credentials, image, live=True, scanner_cache=root / "scanner-cache")
 
     def test_scanner_snapshot_identity_and_disk_bound_are_enforced(self):
         with tempfile.TemporaryDirectory() as tmp:

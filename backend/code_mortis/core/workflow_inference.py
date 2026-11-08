@@ -56,6 +56,12 @@ def schema_for_transport(schema):
     return schema
 
 
+def output_token_policy(job_id):
+    with transaction() as db:
+        plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
+        return analysis.output_token_policy(plan.snapshot if plan else None)
+
+
 def execute(connection, credentials, context, *, instructions, schema, validator, claim, stage, task_key,
             run_id=None, scan_id=None, repository_id=None, revisions=None, stopped=lambda: False,
             authorize=None, effort="medium", token_budget=None, timeout=None):
@@ -76,7 +82,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
     content = evidence_bundle(supplied) if "sources" in supplied and "diff" in supplied else json.dumps(supplied, ensure_ascii=False)
     request = Request(instructions=review_context.sanitize(instructions, credentials, stopped),
         messages=[Message(role="user", content=content)],
-        output_schema=schema_for_transport(schema), max_output_tokens=8192, effort=effort,
+        output_schema=schema_for_transport(schema), max_output_tokens=analysis.output_token_limit(None), effort=effort,
         session_id=analysis.fingerprint([job_id, stage, task_key]))
     key = f"workflow:{stage}:" + analysis.fingerprint(task_key)
 
@@ -175,6 +181,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
         db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         job, run, scan, repo, actor_id, trigger, config, target = owner(db)
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
+        token_policy = analysis.output_token_policy(plan.snapshot if plan else None)
         if plan is None:
             options = dict(config.get("settings", config.get("limits", {})))
             if scan:
@@ -197,7 +204,8 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             specification = PlanSpec(repository_id=repo.id, run_id=run_id, scan_id=scan_id,
                 initiator_id=actor_id, authorization={"actor_id": actor_id, "trigger": trigger}, trigger=trigger,
                 connection=connection, revisions=target,
-                versions={key: CONTRACT for key in ("engine", "planner", "prompt", "rules", "schema", "file_policy")},
+                versions={**{key: CONTRACT for key in ("engine", "planner", "prompt", "rules", "schema", "file_policy")},
+                          **({"output_tokens": token_policy} if token_policy else {})},
                 settings={**options, "workflow_contract": CONTRACT}, file_policy=policy,
                 selected=[], exclusions=[], graph={}, budgets=budgets,
                 deadlines={stage: deadline} if deadline else {}, tasks=[])
@@ -207,6 +215,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                 or {key: value for key, value in plan.snapshot["settings"].items()
                     if key not in {"workflow_contract", "max_evidence_rounds"}} != config.get("settings", config.get("limits", {}))):
             raise ValueError("The existing workflow plan has a different owner or immutable source")
+        request = request.model_copy(update={"max_output_tokens": analysis.output_token_limit(token_policy)})
         spec = TaskSpec(key=key, stage=stage, input_hash=llm.input_fingerprint(request),
                         scope=[{"identity": analysis.fingerprint(task_key), "context": analysis.fingerprint(supplied)}])
         task = analysis.workflow_task(db, plan.id, job_attempt, spec)

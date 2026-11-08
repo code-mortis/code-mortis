@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -68,10 +68,48 @@ def stratum(item):
     return "/".join(item[field] for field in ("workload", "graph", "cache"))
 
 
+def block_inference(protocol):
+    return protocol.get("performance_inference", {}).get("mode") == "fixed_matrix_blocks"
+
+
+def block_order(cases, protocol, block_ids):
+    """Freeze pair and arm order from identities, never from measured timings."""
+    rng = random.Random(protocol["performance_inference"]["order_seed"])
+    order = []
+    for repetition, block_id in enumerate(block_ids, 1):
+        pairs = [(case["case_id"], repetition, comparison["graph"], comparison["cache"])
+                 for case in sorted(cases.values(), key=lambda case: case["case_id"])
+                 for comparison in sorted(protocol["comparisons"], key=stratum)
+                 if case["workload"] == comparison["workload"]]
+        rng.shuffle(pairs)
+        for pair in pairs:
+            arms = list(ARMS)
+            rng.shuffle(arms)
+            order.extend((block_id, (*pair, arm)) for arm in arms)
+    return order
+
+
 def validate_protocol(protocol):
-    require(protocol.get("schema") == "mortis-engine-acceptance-protocol/v2", "Unsupported acceptance protocol")
+    require(protocol.get("schema") in {"mortis-engine-acceptance-protocol/v2", "mortis-engine-acceptance-protocol/v3"},
+            "Unsupported acceptance protocol")
+    if protocol["schema"] == "mortis-engine-acceptance-protocol/v3":
+        eligibility = protocol.get("quality_eligibility", {})
+        require(isinstance(eligibility, dict) and eligibility.get("mode") == "fully_executed_security_assessment_uncertainty"
+                and eligibility.get("owner_approved") is True and sha(eligibility.get("approval_sha256"))
+                and protocol.get("quality_acceptance", {}).get("mode") == "frozen_corpus",
+                "Prospective security assessment eligibility requires explicit owner approval and finite-corpus rules")
+    else:
+        require("quality_eligibility" not in protocol, "New eligibility requires protocol v3; legacy rules stay strict")
     require(protocol.get("repository_scope") == ["wilfredinni/code-mortis"], "Owner-selected representative scope is Code Mortis only")
     require(protocol.get("version") and protocol.get("approved_by"), "Protocol version/owner approval pending")
+    quality_rule = protocol.get("quality_acceptance", {})
+    require(quality_rule.get("mode", "population_confidence") in {"population_confidence", "frozen_corpus"},
+            "Unknown quality acceptance rule")
+    if quality_rule.get("mode") == "frozen_corpus":
+        require(quality_rule.get("owner_approved") is True
+                and quality_rule.get("population_confidence") == "descriptive_only"
+                and quality_rule.get("no_high_critical_loss") is True,
+                "Frozen-corpus acceptance needs explicit owner approval and unchanged severe-loss protection")
     experts = protocol.get("independent_reviewer_ids")
     require(isinstance(experts, list) and experts and all(isinstance(item, str) and item.strip() for item in experts)
             and len(set(experts)) == len(experts), "Freeze identities of actual independent acceptance reviewers")
@@ -91,13 +129,43 @@ def validate_protocol(protocol):
             and positive_int(bootstrap.get("resamples")) and bootstrap["resamples"] >= 1000
             and positive_int(bootstrap.get("minimum_families")) and bootstrap["minimum_families"] >= 20,
             "Freeze family bootstrap seed, >=1000 resamples, >=20 families and one-sided 95% bounds")
-    for sampling in ("sampling", "performance_sampling"):
+    design = protocol.get("performance_inference")
+    if design is not None:
+        require(block_inference(protocol)
+                and design.get("schema") == "mortis-engine-fixed-matrix-block-inference/v1"
+                and positive_int(design.get("blocks")) and design["blocks"] >= 20
+                and type(design.get("minimum_blocks")) is int and design["minimum_blocks"] >= 20
+                and design["blocks"] >= design["minimum_blocks"]
+                and type(design.get("order_seed")) is int
+                and design.get("case_weighting") == "equal_fixed_cases"
+                and design.get("profilewise_required") is True
+                and design.get("confidence_method") == "paired_block_percentile_bootstrap"
+                and design.get("scope") == "conditional_frozen_matrix"
+                and design.get("stopping_rule") == "fixed_n_no_early_acceptance"
+                and design.get("chosen_before_outputs") is True
+                and design.get("sample_size_rationale") and design.get("limitations"),
+                "Freeze independent paired blocks, fixed sample size, seed, profile gates and conditional confidence limits")
+        require(quality_rule.get("mode") == "frozen_corpus", "Block protocol requires owner-approved finite-corpus quality")
+        require({stratum(item) for item in protocol.get("quality_comparisons", [])}
+                == {"pr/off/cold", "security/off/cold"}
+                and len(protocol["quality_comparisons"]) == 2,
+                "Freeze separate once-per-case quality comparisons; graph/cache features need separate checks")
+    for sampling in (("quality_sampling", "performance_sampling") if block_inference(protocol)
+                     else ("sampling", "performance_sampling")):
         for workload in ("pr", "security"):
             sample = protocol.get(sampling, {}).get(workload, {})
             require(positive_int(sample.get("minimum_cases")) and positive_int(sample.get("repetitions")),
                     "Explicit quality/performance sample/repetition requirements pending")
             require(sample["repetitions"] >= 3 or sample.get("repetition_rationale"),
                     "Fewer than three paired repetitions require a frozen practical rationale")
+            if block_inference(protocol):
+                if sampling == "quality_sampling":
+                    require(positive_int(sample.get("minimum_families")) and sample["minimum_families"] >= 19
+                            and sample["minimum_cases"] >= 38 and sample["repetitions"] == 1,
+                            "Freeze >=38 quality cases and >=19 actual families per workload, evaluated once")
+                else:
+                    require(sample["minimum_cases"] >= 2 and sample["repetitions"] == design["blocks"],
+                            "Every fixed performance block must retain at least two profiles per workload")
     comparisons = protocol.get("comparisons", [])
     require(isinstance(comparisons, list) and comparisons, "Required comparisons pending")
     names = set()
@@ -112,6 +180,14 @@ def validate_protocol(protocol):
             margin = comparison.get("latency", {}).get(percentile, {})
             require(pilot.number(margin.get("absolute_ms")) and pilot.number(margin.get("relative_fraction"))
                     and margin.get("combine") in {"both", "either"}, "Explicit absolute/relative latency margins and combination pending")
+            if block_inference(protocol):
+                require(margin == {"absolute_ms": 1000 if percentile == "p50" else 2000,
+                                   "relative_fraction": .05 if percentile == "p50" else .1, "combine": "both"},
+                        "Block mode preserves both frozen absolute and relative latency caps")
+    if block_inference(protocol):
+        require(names == {f"{workload}/{graph}/{cache}" for workload in ("pr", "security")
+                          for graph in ("off", "on", "gap") for cache in ("cold", "warm")},
+                "Block mode requires all twelve workload/graph/cache cells")
     require(protocol.get("strata_rationale"), "Justify the prospective workload/graph/cache strata")
     for workload in ("pr", "security"):
         declared = [item for item in comparisons if item["workload"] == workload]
@@ -183,8 +259,10 @@ def validate_corpus(corpus, protocol):
     require(provenance.get("reviewed_cases_sha256") == fingerprint(reviewed), "Independent corpus review does not bind frozen truth/cases")
     for workload in ("pr", "security"):
         selected = [case for case in cases.values() if case["workload"] == workload]
-        require(len(selected) >= protocol["sampling"][workload]["minimum_cases"], "Insufficient frozen cases")
-        require(len({case["family_id"] for case in selected}) >= protocol["bootstrap"]["minimum_families"],
+        sample = protocol["quality_sampling" if block_inference(protocol) else "sampling"][workload]
+        require(len(selected) >= sample["minimum_cases"], "Insufficient frozen cases")
+        minimum_families = sample["minimum_families"] if block_inference(protocol) else protocol["bootstrap"]["minimum_families"]
+        require(len({case["family_id"] for case in selected}) >= minimum_families,
                 "Insufficient independent families")
         require(any(case["truth"]["expected"] == "clean" for case in selected)
                 and any(defect["severity"] == "critical" for case in selected for defect in case["truth"]["defects"]),
@@ -192,8 +270,9 @@ def validate_corpus(corpus, protocol):
     return cases
 
 
-def validate_schedule(schedule, cases, protocol, sampling=None):
-    sampling = sampling or protocol["sampling"]
+def validate_schedule(schedule, cases, protocol, sampling=None, comparisons=None):
+    sampling = sampling or protocol["quality_sampling" if block_inference(protocol) else "sampling"]
+    comparisons = comparisons if comparisons is not None else protocol["quality_comparisons" if block_inference(protocol) else "comparisons"]
     planned = {}
     for item in schedule:
         identity = (*pilot.key(item), item["arm"])
@@ -204,7 +283,7 @@ def validate_schedule(schedule, cases, protocol, sampling=None):
         planned[identity] = item
     expected = set()
     for case in cases.values():
-        for comparison in protocol["comparisons"]:
+        for comparison in comparisons:
             if comparison["workload"] != case["workload"]:
                 continue
             for repetition in range(1, sampling[case["workload"]]["repetitions"] + 1):
@@ -219,7 +298,9 @@ def validate_schedule(schedule, cases, protocol, sampling=None):
 
 
 def validate_performance_plan(plan, quality_cases, protocol):
-    require(isinstance(plan, dict) and plan.get("schema") == "mortis-engine-controlled-performance-plan/v2",
+    blocks = block_inference(protocol)
+    require(isinstance(plan, dict) and plan.get("schema") == ("mortis-engine-controlled-performance-plan/v3" if blocks
+                                                            else "mortis-engine-controlled-performance-plan/v2"),
             "Separate visible controlled-performance case plan required")
     require(positive_int(plan.get("analysis_concurrency")), "Freeze controlled security analysis concurrency")
     require(plan.get("response_fixture_sha256") == protocol["performance_measurement"]["response_fixture_sha256"]
@@ -232,7 +313,8 @@ def validate_performance_plan(plan, quality_cases, protocol):
     for case in cases.values():
         require(case.get("workload") in {"pr", "security"} and case.get("family_id") and sha(case.get("case_digest"))
                 and positive_int(case.get("expected_assigned_units"))
-                and set(case) == {"case_id", "family_id", "workload", "case_digest", "expected_assigned_units", "expected_work"},
+                and set(case) == ({"case_id", "family_id", "workload", "case_digest", "expected_assigned_units", "expected_work"}
+                                  | ({"profile_id"} if blocks else set())),
                 "Controlled performance cases need truth-free identities and frozen case behavior")
         work = case["expected_work"]
         require(set(work) == {"findings", "assessment_candidates", "historical_verification_targets", "source_files", "security_analysis_tasks"}
@@ -243,8 +325,20 @@ def validate_performance_plan(plan, quality_cases, protocol):
     for workload in ("pr", "security"):
         relevant = [case for case in cases.values() if case["workload"] == workload]
         require(len(relevant) >= protocol["performance_sampling"][workload]["minimum_cases"]
-                and len({case["family_id"] for case in relevant}) >= protocol["bootstrap"]["minimum_families"],
+                and (blocks or len({case["family_id"] for case in relevant}) >= protocol["bootstrap"]["minimum_families"]),
                 "Inadequate independent controlled-performance families/cases")
+        if blocks:
+            require(all(isinstance(case.get("profile_id"), str) and case["profile_id"].strip() for case in relevant)
+                    and len({case["profile_id"] for case in relevant}) == len(relevant),
+                    "Each workload needs distinct frozen profile identities for no-masking gates")
+            require(any(case["expected_work"]["source_files"] == 1
+                        and case["expected_work"]["findings"] == case["expected_work"]["assessment_candidates"]
+                        == case["expected_work"]["historical_verification_targets"] == 0 for case in relevant)
+                    and any(case["expected_work"]["source_files"] > 1
+                            and case["expected_work"]["findings"] > 0
+                            and case["expected_work"]["assessment_candidates"] > 0
+                            and case["expected_work"]["historical_verification_targets"] > 0 for case in relevant),
+                    "Block profiles must include a clean single-file case and a nonempty cross-file assessment/history case")
         require(any(case["expected_work"]["assessment_candidates"] > 0 for case in relevant)
                 and any(case["expected_work"]["historical_verification_targets"] > 0 for case in relevant)
                 and any(case["expected_work"]["source_files"] > 1 for case in relevant)
@@ -253,7 +347,16 @@ def validate_performance_plan(plan, quality_cases, protocol):
                 "Declared cases must include actual nontrivial assessment/history/cross-file and clean/single-file behavior")
     require(any(case["workload"] == "security" and case["expected_work"]["security_analysis_tasks"] > plan.get("analysis_concurrency", math.inf)
                 for case in cases.values()), "Designate security analysis larger than frozen concurrency")
-    return cases, validate_schedule(plan["schedule"], cases, protocol, protocol["performance_sampling"])
+    schedule = validate_schedule(plan["schedule"], cases, protocol, protocol["performance_sampling"], protocol["comparisons"])
+    if blocks:
+        block_ids = plan.get("block_ids")
+        require(isinstance(block_ids, list) and len(block_ids) == protocol["performance_inference"]["blocks"]
+                and all(isinstance(value, str) and value.strip() for value in block_ids)
+                and len(set(block_ids)) == len(block_ids), "Freeze unique complete performance block identities")
+        require([(item.get("block_id"), (*pilot.key(item), item["arm"])) for item in plan["schedule"]]
+                == block_order(cases, protocol, block_ids),
+                "Performance schedule must retain the complete seeded randomized paired block order")
+    return cases, schedule
 
 
 def freeze(protocol, corpus, schedule, performance_schedule=None, *, frozen_at=None):
@@ -288,7 +391,7 @@ def verify_seal(seal):
 
 
 def latency_bound(families, margin, quantile, bootstrap):
-    """Resample paired families; apply frozen materiality rule inside each draw."""
+    """Resample complete paired families or blocks; apply caps inside each draw."""
     def statistic(pairs):
         baseline = pilot.nearest_rank([pair[0] for pair in pairs], quantile)
         candidate = pilot.nearest_rank([pair[1] for pair in pairs], quantile)
@@ -310,12 +413,14 @@ def latency_bound(families, margin, quantile, bootstrap):
     excesses = [sample[2] for sample in samples]
     upper = pilot.nearest_rank(excesses, .95)
     reasons = []
-    if len(names) < bootstrap["minimum_families"]:
-        reasons.append("inadequate_independent_families")
+    blocks = bootstrap.get("unit") == "block"
+    if len(names) < bootstrap["minimum_blocks" if blocks else "minimum_families"]:
+        reasons.append("inadequate_independent_blocks" if blocks else "inadequate_independent_families")
     if len(set(excesses)) <= 1:
         reasons.append("degenerate_bootstrap")
     return {"status": "inconclusive" if reasons else "pass" if upper <= 0 else "not_established",
-            "reasons": reasons, "independent_families": len(names), "paired_observations": len(pairs),
+            "reasons": reasons, "independent_blocks" if blocks else "independent_families": len(names),
+            "paired_observations": len(pairs),
             "absolute_ms": point[0], "relative_fraction": point[1], "margin_excess_ms": point[2],
             "one_sided_95_upper_excess_ms": upper, "margin": margin,
             "stretch_point_met": point[1] <= (-.5 if quantile == .5 else -.3)}
@@ -352,6 +457,111 @@ def quality_bounds(rows, bootstrap):
     return result
 
 
+def security_assessment_uncertainty_evidence(attempt):
+    """Prove executed assessment abstentions; never change the retained product status."""
+    try:
+        require(attempt.get("workload") == "security" and attempt.get("status") == "partial", "Not a security partial")
+        coverage, stages = attempt["coverage"], attempt["stages"]
+        count = coverage["assigned_units"]
+        require(positive_int(count) and type(coverage["validated_units"]) is int
+                and coverage["validated_units"] == count, "Incomplete analysis coverage")
+        phases = {"snapshot", "trivy", "analysis", "assessment", "verification", "report"}
+        require(set(stages) == phases and all(isinstance(stage, dict) and not stage.get("error")
+                and stage.get("status") == ("partial" if name == "assessment" else "completed")
+                for name, stage in stages.items()), "Nonsemantic stage failure")
+        tasks = attempt["progress"]["tasks"]
+        require(isinstance(tasks, dict) and tasks and all(isinstance(key, str) and ":" in key
+                and key.split(":", 1)[0] in {"analysis", "assessment", "verification"}
+                and isinstance(task, dict) and task.get("status") == "completed"
+                and sha(task.get("input_hash")) and isinstance(task.get("result"), dict)
+                and type(task.get("tokens")) is int and task["tokens"] >= 0
+                and not task.get("error") and not task.get("error_code") and not task["result"].get("error")
+                and not task.get("validation_feedback")
+                for key, task in tasks.items()), "Missing, failed or unknown task")
+        grouped = {phase: {key.split(":", 1)[1]: task for key, task in tasks.items() if key.startswith(phase + ":")}
+                   for phase in ("analysis", "assessment", "verification")}
+        report = attempt["report"]
+        inventory = report["coverage"]["inventory"]
+        paths = {path for path, metadata in inventory.items() if metadata.get("code") is True}
+        require(len(paths) == count and set(grouped["analysis"]) == paths
+                and report["coverage"]["problems"] == [] and report["status"] == "partial",
+                "Missing source/checkpoint evidence")
+        proposals = []
+        for task in grouped["analysis"].values():
+            found = task["result"].get("findings")
+            require(isinstance(found, list) and all(isinstance(proposal, dict) and proposal for proposal in found),
+                    "Invalid analysis result")
+            proposals.extend(found)
+        assessed = list(grouped["assessment"].values())
+        require(set(grouped["assessment"]) == {str(i) for i in range(len(proposals))}
+                and Counter(map(fingerprint, proposals)) == Counter(fingerprint(task.get("proposal")) for task in assessed),
+                "Candidate disappeared, duplicated or changed")
+        require(all(task["result"].get("verdict") in {"confirmed", "rejected", "uncertain"} for task in assessed)
+                and all(task["result"].get("verdict") in {"fixed", "still_present"}
+                        for task in grouped["verification"].values()), "Invalid or uncertain verification result")
+        uncertain = [task for task in assessed if task["result"]["verdict"] == "uncertain"]
+        require(uncertain and all(not task.get("reused") for task in uncertain), "No fresh semantic abstention")
+        expected_counts = {"analysis": {"total": count, "files": count, "completed": count, "failed": 0, "candidates": len(proposals)},
+                           "assessment": {"total": len(proposals), "completed": len(proposals), "failed": 0},
+                           "verification": {"total": len(grouped["verification"]), "completed": len(grouped["verification"])}}
+        require(all(type(stages[phase].get(field)) is int and stages[phase][field] == value
+                    for phase, values in expected_counts.items() for field, value in values.items()), "Incomplete stage counts")
+        units = report["coverage"]["units"]
+        require(isinstance(units, list) and len(units) == len(tasks)
+                and {unit["task"]: {key: value for key, value in unit.items() if key != "task"} for unit in units}
+                == {key: {field: value for field, value in task.items() if field not in {"result", "proposal"}}
+                    for key, task in tasks.items()}, "Checkpoint/report inventory drift")
+        unsettled = report["unsettled_candidates"]
+        require(isinstance(unsettled, list) and Counter(map(fingerprint, unsettled))
+                == Counter(fingerprint({"proposal": task["proposal"], "assessment": task["result"]}) for task in uncertain),
+                "Uncertain candidate disappeared or changed")
+        problems = ["A proposed security finding requires additional verification."] * len(uncertain)
+        require(report["problems"] == problems and attempt.get("error") == "; ".join(problems)[:2000]
+                and attempt.get("outcomes") == [] and attempt.get("stop_pilot") is False
+                and not attempt["transport"].get("blocked_reason"), "Nonsemantic execution error")
+        jobs = attempt["workflow_jobs"]
+        require(isinstance(jobs, list) and jobs and attempt["job"] in jobs
+                and len({job["id"] for job in jobs}) == len(jobs)
+                and all(job.get("status") == "done" and not job.get("error") for job in jobs), "Unfinished workflow job")
+        fields = ("status", "coverage", "stages", "progress", "report", "error", "outcomes", "stop_pilot", "transport", "job", "workflow_jobs")
+        return {"schema": "mortis-security-assessment-execution-evidence/v1", "analysis_units": count,
+                "assessed_candidates": len(proposals), "uncertain_assessments": len(uncertain),
+                "operational_sha256": fingerprint({field: attempt[field] for field in fields})}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def quality_work_gaps(attempt, workload, scanner_sha, protocol):
+    gaps = pilot.required_work_gaps(attempt, workload, scanner_sha)
+    coverage = attempt.get("coverage", {})
+    if attempt.get("status") not in {"complete", "completed"} or coverage.get("validated_units") != coverage.get("assigned_units"):
+        gaps.append("incomplete_validated_coverage_or_terminal_status")
+    eligibility = protocol.get("quality_eligibility", {})
+    if (protocol.get("schema") == "mortis-engine-acceptance-protocol/v3" and workload == "security"
+        and eligibility.get("mode") == "fully_executed_security_assessment_uncertainty"
+        and eligibility.get("owner_approved") is True and sha(eligibility.get("approval_sha256"))):
+        proof = security_assessment_uncertainty_evidence(attempt)
+        accounting = consumption_evidence(attempt, protocol)
+        resource = attempt.get("resource_evidence")
+        resource = resource if isinstance(resource, dict) else {}
+        if (proof and attempt.get("semantic_uncertainty_evidence") == proof
+            and not accounting["unknown_fields"] and not accounting["proof_gaps"]
+            and not any(event.get("error_code") for event in attempt.get("provider_events", []))
+            and resource.get("within_limits") is True and sha(resource.get("artifact_sha256"))
+            and resource.get("profile_sha256") == protocol["execution_profile_sha256"]):
+            gaps = [gap for gap in gaps if gap not in {"stage_assessment_not_completed_or_missing",
+                                                     "incomplete_validated_coverage_or_terminal_status"}]
+    return gaps
+
+
+def quality_decision(bounds, protocol):
+    """A finite-corpus comparison does not establish population-wide parity."""
+    if protocol.get("quality_acceptance", {}).get("mode") != "frozen_corpus":
+        return all(bound["status"] == "pass" for bound in bounds.values())
+    return all(bound["mortis_minus_ocr"] is not None and bound["mortis_minus_ocr"] >= 0
+               for bound in bounds.values())
+
+
 def blind(results, corpus):
     """New packet schema; reuse the unchanged semantic-matching decision contract."""
     cases = {case["case_id"]: case for case in corpus["cases"]}
@@ -373,21 +583,27 @@ def blind(results, corpus):
 def controlled_performance(seal, results):
     if results is None:
         return {}, {"blockers": ["controlled_performance_results_pending"], "attempt_inventory": []}
-    cases, schedule = validate_performance_plan(seal["performance_schedule"], {}, seal["protocol"])
-    require(results.get("schema") == "mortis-engine-controlled-performance-results/v2"
+    protocol = seal["protocol"]
+    blocks = block_inference(protocol)
+    cases, schedule = validate_performance_plan(seal["performance_schedule"], {}, protocol)
+    require(results.get("schema") == ("mortis-engine-controlled-performance-results/v3" if blocks
+                                      else "mortis-engine-controlled-performance-results/v2")
             and results.get("seal_sha256") == fingerprint(seal)
             and results.get("measurement") == seal["protocol"]["performance_measurement"],
             "Live quality/provider-network timings cannot enter controlled engine performance")
     require(timestamp(results["started_at"]) >= timestamp(seal["frozen_at"]), "Controlled run predates freeze")
     groups, seen, seen_ids, blockers, inventory = defaultdict(lambda: defaultdict(list)), set(), set(), set(), []
-    pairs = defaultdict(dict)
+    pairs, valid_ids, observed_order = defaultdict(dict), set(), []
     for attempt in results["attempts"]:
         identity = (*pilot.key(attempt), attempt["arm"])
         require(identity in schedule and identity not in seen and isinstance(attempt.get("attempt_id"), str)
                 and attempt["attempt_id"].strip() and attempt["attempt_id"] not in seen_ids,
                 "Unknown/duplicate controlled-performance attempt")
         seen.add(identity)
+        observed_order.append(identity)
         seen_ids.add(attempt.get("attempt_id"))
+        if blocks:
+            require(attempt.get("block_id") == schedule[identity]["block_id"], "Controlled attempt block identity mismatch")
         case = cases[attempt["case_id"]]
         require(attempt.get("case_digest") == case["case_digest"] and attempt.get("identity") == schedule[identity]["identity"],
                 "Controlled fixture/pair identity drift")
@@ -446,26 +662,58 @@ def controlled_performance(seal, results):
                  and not (upstream.username or upstream.password or upstream.query or upstream.fragment))
         if not complete or not valid:
             blockers.add("controlled_required_work_timing_or_resource_evidence_incomplete")
+        accounting = consumption_evidence(attempt, protocol)
+        accounting_ok = not accounting["unknown_fields"] and not accounting["proof_gaps"]
+        if not accounting_ok:
+            blockers.add("controlled_unknown_consumption")
         inventory.append({"attempt_id": attempt.get("attempt_id"), "status": attempt.get("status"),
+                          "consumption": accounting,
+                          **({"block_id": attempt["block_id"], "profile_id": case["profile_id"],
+                              **{field: attempt[field] for field in ("case_id", "arm", "repetition", "graph", "cache")},
+                              "usage": attempt.get("usage"), "provider_events": attempt.get("provider_events"),
+                              "ledger": attempt.get("ledger")} if blocks else {}),
                           "coverage": coverage, "timing_ms": attempt.get("timing_ms", {}),
                           "resource_evidence": resource, "performance_evidence": measured,
                           "nontrivial_work_evidence": work, "required_work_gaps": gaps})
-        if complete and valid:
+        if complete and valid and accounting_ok:
             pairs[pilot.key(attempt)][attempt["arm"]] = attempt
+            valid_ids.add(identity)
     if seen != set(schedule):
         blockers.add("controlled_planned_attempts_missing")
+    complete_blocks = set()
+    if blocks:
+        ordered = list(schedule)
+        if observed_order != ordered[:len(observed_order)]:
+            blockers.add("controlled_seeded_block_order_mismatch")
+        else:
+            complete_blocks = {block_id for block_id in seal["performance_schedule"]["block_ids"]
+                               if all(key in valid_ids for key, item in schedule.items() if item["block_id"] == block_id)}
+        if len(complete_blocks) != protocol["performance_inference"]["blocks"]:
+            blockers.add("controlled_fixed_blocks_incomplete")
     for key, arms in pairs.items():
         if set(arms) == set(ARMS):
             case = cases[key[0]]
-            groups["/".join((case["workload"], key[2], key[3]))][case["family_id"]].append(
-                tuple(arms[arm]["timing_ms"]["terminal"] for arm in ARMS))
+            name = "/".join((case["workload"], key[2], key[3]))
+            unit = schedule[(*key, "ocr")]["block_id"] if blocks else case["family_id"]
+            if blocks and unit not in complete_blocks:
+                continue
+            timing = tuple(arms[arm]["timing_ms"]["terminal"] for arm in ARMS)
+            groups[name][unit].append(timing)
+            if blocks:
+                groups[name + "/profile/" + case["profile_id"]][unit].append(timing)
     return groups, {"blockers": sorted(blockers), "attempt_inventory": inventory,
                     "results_sha256": fingerprint(results),
+                    **({"resampling_unit": "block", "planned_blocks": protocol["performance_inference"]["blocks"],
+                        "complete_block_ids": sorted(complete_blocks), "scope": "conditional_frozen_matrix",
+                        "confidence": "Nominal one-sided 95% paired block percentile bootstrap; no exact finite-sample coverage guarantee",
+                        "limitations": protocol["performance_inference"]["limitations"]} if blocks else {}),
                     "measurement_note": "External provider latency excluded by local deterministic responses and zero configured delay; tiny local response processing/observer overhead remains included. Server wait is diagnostic, never subtracted from overlapping task durations."}
 
 
 def consumption_evidence(attempt, protocol):
-    usage = attempt.get("usage", {})
+    usage = attempt.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
     unknown = [field for field in protocol["required_usage_fields"] if not pilot.number(usage.get(field))]
     optional = [field for field in pilot.USAGE_FIELDS if field not in protocol["required_usage_fields"]]
     optional_unknown = [field for field in optional if usage.get(field) is None]
@@ -551,9 +799,7 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
         require(type(coverage.get("assigned_units")) is int and coverage["assigned_units"] == case["expected_assigned_units"]
                 and type(coverage.get("validated_units")) is int
                 and 0 <= coverage["validated_units"] <= coverage["assigned_units"], "Invalid frozen coverage denominator")
-        work_gaps = pilot.required_work_gaps(attempt, case["workload"], results.get("scanner_snapshot", {}).get("sha256"))
-        if attempt.get("status") not in {"complete", "completed"} or coverage["validated_units"] != coverage["assigned_units"]:
-            work_gaps.append("incomplete_validated_coverage_or_terminal_status")
+        work_gaps = quality_work_gaps(attempt, case["workload"], results.get("scanner_snapshot", {}).get("sha256"), protocol)
         if not pilot.number(attempt.get("timing_ms", {}).get("terminal")) or not attempt["timing_ms"]["terminal"]:
             work_gaps.append("missing_queue_to_terminal_duration")
         if attempt.get("timing_origin") != "queued":
@@ -571,7 +817,9 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
         if not resource_ok:
             blockers.add("resource_budget_deadline_evidence_missing_or_violated")
         attempts.append(attempt)
-        inventory.append({field: attempt.get(field) for field in ("attempt_id", "case_id", "arm", "repetition", "graph", "cache", "status", "timing_ms", "stages", "outcomes")})
+        inventory.append({**{field: attempt.get(field) for field in ("attempt_id", "case_id", "arm", "repetition", "graph", "cache", "status", "timing_ms", "stages", "outcomes")},
+                          **({"semantic_uncertainty_evidence": attempt.get("semantic_uncertainty_evidence")}
+                             if protocol["schema"] == "mortis-engine-acceptance-protocol/v3" else {})})
     missing = sorted(set(planned) - seen)
     if missing:
         blockers.add("missing_planned_attempts")
@@ -600,11 +848,14 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
     pairs = defaultdict(dict)
     for attempt in attempts:
         pairs[pilot.key(attempt)][attempt["arm"]] = attempt
-    for comparison in protocol["comparisons"]:
+    for comparison in protocol["quality_comparisons" if block_inference(protocol) else "comparisons"]:
         name = stratum(comparison)
         quality_rows = [row for row in rows if "/".join((row["workload"], *row["stratum"])) == name]
+        quality_bootstrap = protocol["bootstrap"]
+        if block_inference(protocol):
+            quality_bootstrap = {**quality_bootstrap, "minimum_families": protocol["quality_sampling"][comparison["workload"]]["minimum_families"]}
         quality[name] = {"arms": {arm: pilot.metrics([row for row in quality_rows if row["arm"] == arm]) for arm in ARMS},
-                         "bounds": quality_bounds(quality_rows, protocol["bootstrap"])}
+                         "bounds": quality_bounds(quality_rows, quality_bootstrap)}
         for key, arms in pairs.items():
             if "/".join((cases[key[0]]["workload"], key[2], key[3])) != name or set(arms) != set(ARMS):
                 continue
@@ -612,8 +863,18 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
                 values = [arms[arm].get("usage", {}).get(field) for arm in ARMS]
                 if all(pilot.number(value) for value in values) and values[1] > values[0]:
                     blockers.add("paired_provider_consumption_regression")
-        performance[name] = {percentile: latency_bound(controlled_groups.get(name, {}), comparison["latency"][percentile], quantile, protocol["bootstrap"])
-                             for percentile, quantile in (("p50", .5), ("p95", .95))}
+    for comparison in protocol["comparisons"]:
+        name = stratum(comparison)
+        names = [name]
+        performance_bootstrap = protocol["bootstrap"]
+        if block_inference(protocol):
+            names += [name + "/profile/" + case["profile_id"] for case in seal["performance_schedule"]["cases"]
+                      if case["workload"] == comparison["workload"]]
+            performance_bootstrap = {**protocol["bootstrap"], "unit": "block",
+                                     "minimum_blocks": protocol["performance_inference"]["blocks"]}
+        for group_name in names:
+            performance[group_name] = {percentile: latency_bound(controlled_groups.get(group_name, {}), comparison["latency"][percentile], quantile, performance_bootstrap)
+                                       for percentile, quantile in (("p50", .5), ("p95", .95))}
     for cap, metric in CAP_FIELDS.items():
         limit = protocol["spending"][cap]
         values = [attempt.get("usage", {}).get(metric) for attempt in attempts]
@@ -648,7 +909,10 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
             covered.update(decision["blind_id"] for decision in document["judgments"])
     if not expected_findings or covered != expected_findings:
         blockers.add("independent_review_pending")
-    if any(bound["status"] != "pass" for item in quality.values() for bound in item["bounds"].values()):
+    for item in quality.values():
+        item["acceptance_rule"] = protocol.get("quality_acceptance", {}).get("mode", "population_confidence")
+        item["comparison_passed"] = quality_decision(item["bounds"], protocol)
+    if not all(item["comparison_passed"] for item in quality.values()):
         blockers.add("quality_parity_not_established")
     if any(bound["status"] != "pass" for item in performance.values() for bound in item.values()):
         blockers.add("performance_nonregression_not_established")
@@ -661,7 +925,8 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
             "resources": resources, "consumption": consumption, "required_work_gaps": gaps,
             "attempt_inventory": inventory, "missing_planned_attempts": [list(item) for item in missing],
             "adoption_authorized": False, "limitations": ["Evidence hashes bind supplied records; independent custody and reviewer identities require external verification. Independent-agent signoff is owner-authorized and never constitutes human/external-expert review.",
-                                                           "Stretch speedups are descriptive and never acceptance prerequisites."]}
+                                                           "Stretch speedups are descriptive and never acceptance prerequisites.",
+                                                           "Frozen-corpus quality acceptance, when explicitly selected, is limited to the sealed cases; confidence bounds remain descriptive and broader validation belongs to M6."]}
 
 
 def main():

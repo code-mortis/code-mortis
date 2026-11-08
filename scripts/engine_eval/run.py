@@ -77,6 +77,10 @@ def validate_inputs(manifest, cases, credentials, image, *, live, scanner_cache=
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", image), "Worker image must be an immutable local image ID")
     workflow = manifest.get("schema") == "mortis-engine-workflow-run/v2"
     require(workflow or manifest.get("schema") == "mortis-engine-live-run/v1", "Unsupported run manifest")
+    quality_only = manifest.get("measurement_track") == "live_quality"
+    require(manifest.get("measurement_track") in {None, "live_quality"}, "Unknown measurement track")
+    require(not quality_only or (workflow and manifest.get("performance_claim_allowed") is False),
+            "Only versioned live-quality runs can omit quiescence; their timings cannot support performance")
     if workflow:
         require(manifest.get("execution_profile") == "parallel_queue_v2"
                 and manifest.get("queue") == {"pool": "prefork", "concurrency": 4, "dispatch_interval_seconds": 10},
@@ -85,8 +89,15 @@ def validate_inputs(manifest, cases, credentials, image, *, live, scanner_cache=
         require(manifest.get("execution_profile", "retained_sequential_v1") == "retained_sequential_v1"
                 and "queue" not in manifest, "Original pilot cannot change execution profile")
     require(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", manifest.get("run_id", "")), "Invalid run identity")
-    require(manifest.get("publication") == "disabled_sandbox_adapter_only" and manifest.get("graph") == "off", "Publication/graph policy mismatch")
-    require(manifest.get("cache") == "cold" and manifest.get("repetition") == 1, "Frozen pilot schedule mismatch")
+    require(manifest.get("publication") == "disabled_sandbox_adapter_only", "Publication policy mismatch")
+    if workflow:
+        require(manifest.get("graph") in {"off", "on", "exact_revision_gap"}, "Unknown graph stratum")
+        require(manifest.get("cache") in {"cold", "warm"}, "Unknown source-cache stratum")
+        require(type(manifest.get("repetition")) is int and 1 <= manifest["repetition"] <= 100,
+                "Invalid paired repetition")
+    else:
+        require(manifest.get("graph") == "off", "Publication/graph policy mismatch")
+        require(manifest.get("cache") == "cold" and manifest.get("repetition") == 1, "Frozen pilot schedule mismatch")
     require(manifest.get("effective_resources_sha256"), "Missing frozen resource identity")
     require(cases.is_dir() and not cases.is_symlink() and tree_bytes(cases) <= MAX_EXPORT, "Export exceeds frozen snapshot ceiling")
     if workflow:
@@ -129,8 +140,16 @@ def validate_inputs(manifest, cases, credentials, image, *, live, scanner_cache=
         require(manifest.get("live_enabled") is True and manifest.get("authorization") == "owner_selected_pilot" and manifest.get("isolation_checks_passed") is True, "Live run needs explicit authorization and passed isolation checks")
         require(manifest.get("worker_image_id") == image, "Live worker image differs from frozen manifest")
         quiescence = manifest.get("host_quiescence", {})
-        require(quiescence.get("verified") is True and isinstance(quiescence.get("verified_at"), str), "Live measurement requires dated host-quiescence verification")
-        require(datetime.fromisoformat(quiescence["verified_at"].replace("Z", "+00:00")).utcoffset() is not None, "Host-quiescence timestamp requires a timezone")
+        if quality_only:
+            require(quiescence.get("verified") is False and quiescence.get("reason")
+                    and isinstance(quiescence.get("observed_at"), str)
+                    and isinstance(quiescence.get("active_container_ids"), list),
+                    "Live-quality execution must disclose unverified quiescence and observed host workloads")
+            stamp = quiescence["observed_at"]
+        else:
+            require(quiescence.get("verified") is True and isinstance(quiescence.get("verified_at"), str), "Live measurement requires dated host-quiescence verification")
+            stamp = quiescence["verified_at"]
+        require(datetime.fromisoformat(stamp.replace("Z", "+00:00")).utcoffset() is not None, "Host observation timestamp requires a timezone")
 
 
 def schedule(manifest):
@@ -139,7 +158,7 @@ def schedule(manifest):
     for case in sorted(manifest["cases"], key=lambda row: row["case_id"]):
         arms = ["ocr", "mortis"]
         rng.shuffle(arms)
-        planned.extend({"case_id": case["case_id"], "arm": arm, "repetition": 1, "graph": "off", "cache": "cold"} for arm in arms)
+        planned.extend({"case_id": case["case_id"], "arm": arm, "repetition": manifest["repetition"], "graph": manifest["graph"], "cache": manifest["cache"]} for arm in arms)
     return planned
 
 
@@ -325,6 +344,7 @@ def run(manifest_path, cases, credentials, image, output, *, live=False, scanner
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     validate_inputs(manifest, cases, credentials, image, live=live, scanner_cache=scanner_cache)
+    quiet = manifest.get("measurement_track") != "live_quality"
     require(not output.exists(), "Output directory must be new; retained attempts cannot be overwritten")
     require(not output.is_relative_to(cases), "Output directory must remain outside source exports")
     require(shutil.disk_usage(output.parent).free >= 10 * 1024 * MIB, "Insufficient frozen working-disk headroom")
@@ -353,7 +373,7 @@ def run(manifest_path, cases, credentials, image, output, *, live=False, scanner
     try:
         for pinned in (image, PG_IMAGE, REDIS_IMAGE):
             require(json.loads(command(["image", "inspect", pinned]))[0]["Id"] == pinned, "Pinned local image identity mismatch")
-        if live:
+        if live and quiet:
             verify_quiescence(created)
         command(["network", "create", *([] if live else ["--internal"]), network])
         network_created = True
@@ -383,7 +403,7 @@ def run(manifest_path, cases, credentials, image, output, *, live=False, scanner
                 attempts[index] = placeholder(item, case, stopped)
                 continue
             require(tree_bytes(output) + tree_bytes(cases) + (tree_bytes(scanner_cache) if scanner_cache is not None else 0) <= MAX_WORK, "Evaluation working data including the shared scanner cache exceeded frozen 8GiB ceiling")
-            if live:
+            if live and quiet:
                 verify_quiescence(created)
             name = network + f"-arm-{index:02}"
             stem = output / f"{index:02}-{item['case_id']}-{item['arm']}"

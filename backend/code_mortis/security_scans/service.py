@@ -719,10 +719,14 @@ def perform(scan_id, claim):
                     validator=validator, claim=claim, stage="security", task_key=f"{key}:round:{round}", scan_id=scan_id,
                     stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout)
 
+            if mortis:
+                from code_mortis.core.workflow_inference import output_token_policy
+
+                token_policy = output_token_policy(claim.rsplit(":", 1)[0])
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
                                                 **({"configuration_managed": True} if parallel else {}),
-                                                **({"infer": infer, "source_packing": packing,
+                                                **({"infer": infer, "source_packing": packing, "output_token_policy": token_policy,
                                                     "select_packing": select_packing} if mortis else {}))
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)

@@ -12,6 +12,7 @@ import time
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -22,8 +23,22 @@ from test_llm_http import result as wire_result
 from code_mortis.core import inference_admission
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
-from code_mortis.models import AnalysisAttempt, AnalysisBudget, AnalysisTask, InferenceAdmission, Job
-from code_mortis.schemas.common import RepoSettings
+from code_mortis.models import (
+    AnalysisAttempt,
+    AnalysisBudget,
+    AnalysisPlan,
+    AnalysisTask,
+    Finding,
+    InferenceAdmission,
+    Job,
+    Repository,
+    ReviewRun,
+    SecurityScan,
+    User,
+)
+from code_mortis.reviews.context import source_id
+from code_mortis.schemas.common import RepoSettings, ReviewComment
+from code_mortis.schemas.security import SecurityScanInput
 
 
 def fault_worker(bootstrap_file, phase, marker_file):
@@ -44,6 +59,7 @@ def fault_worker(bootstrap_file, phase, marker_file):
 
     bootstrap = json.loads(Path(bootstrap_file).read_text())
     marker = Path(marker_file)
+    phase, target_stage = phase.split(":")
 
     def reached(task_id=None):
         if marker.exists():
@@ -57,14 +73,23 @@ def fault_worker(bootstrap_file, phase, marker_file):
     async def paused_send(connection, credentials, request, **kwargs):
         result = await send(connection, credentials, request, **kwargs)
         properties = request.output_schema.get("properties", {})
-        if phase == "after_response" and ("completed_units" in properties or "findings" in properties) and reached():
+        stage = ("analysis" if "completed_units" in properties or "findings" in properties else
+                 "verification" if "original_issue_present" in properties else
+                 "assessment" if "relationship" in properties else "summary")
+        if phase == "after_response" and stage == target_stage and reached():
             while True:
                 await asyncio.sleep(.05)
         return result
 
     def paused_finish(lease, **kwargs):
         accepted = finish(lease, **kwargs)
-        if phase == "after_ledger" and accepted and kwargs.get("result") is not None and reached(lease.task_id):
+        from code_mortis.core.db import transaction
+        from code_mortis.models import AnalysisTask
+
+        with transaction() as db:
+            task_stage = db.get(AnalysisTask, lease.task_id).stage
+            target = task_stage == target_stage or (task_stage == "security" and target_stage == "analysis")
+        if phase == "after_ledger" and target and accepted and kwargs.get("result") is not None and reached(lease.task_id):
             while True:
                 time.sleep(.05)
         return accepted
@@ -82,10 +107,12 @@ def fault_worker(bootstrap_file, phase, marker_file):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Physical Celery prefork fault checks require Linux fork semantics")
-@pytest.mark.parametrize("workload", ["pr", "security"])
+@pytest.mark.parametrize(("workload", "stage"), [
+    ("pr", "analysis"), ("security", "analysis"), ("pr", "assessment"), ("pr", "verification"),
+])
 @pytest.mark.parametrize("phase", ["after_response", "after_ledger"])
 def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
-    evaluation, queued_database, monkeypatch, tmp_path, workload, phase,  # noqa: F811
+    evaluation, queued_database, monkeypatch, tmp_path, workload, stage, phase,  # noqa: F811
 ):
     monkeypatch.syspath_prepend(str(ROOT / "scripts/engine_eval"))
     manifest, case, export = evaluation
@@ -109,6 +136,12 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
     options = RepoSettings(analysis_engine="mortis", concurrency=1, token_budget=200_000,
                            assessment_token_budget=200_000, verification_token_budget=200_000,
                            summary_token_budget=60_000, timeout_seconds=90).model_dump()
+    if stage == "verification":
+        options["auto_resolve"] = True
+        case["historical_findings"] = [{"original_sha": case["base"]["commit"], "snapshot": ReviewComment(
+            path="billing.py", content="Synthetic prior report requiring explicit rechecking.",
+            start_line=14, end_line=14, existing_code='    taxable = sum(amounts, Decimal("0"))',
+        ).model_dump()}]
     requests = []
 
     class Provider(BaseHTTPRequestHandler):
@@ -119,8 +152,30 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
                 supplied = json.loads(next(row["content"] for row in body["input"] if row.get("role") == "user"))
                 task = "analysis"
                 value = {"task_key": supplied["task_key"], "completed_units": [row["key"] for row in supplied["assigned_units"]], "findings": []}
+                if stage == "assessment":
+                    value["findings"] = [{
+                        "unit_key": supplied["assigned_units"][0]["key"], "path": "billing.py",
+                        "start_line": 14, "end_line": 14, "severity": "medium", "category": "correctness",
+                        "content": "Rounding each amount changes the aggregate tax.", "suggestion_code": "",
+                        "existing_code": "    taxes = ((amount * rate).quantize(CENT, rounding=ROUND_HALF_EVEN) for amount in amounts)",
+                        "trigger": "Several fractional tax amounts.", "consequence": "Incorrect rounded total.",
+                        "evidence": [{"source_id": next(row["source_id"] for row in supplied["citation_sources"] if row["path"] == "billing.py"),
+                                      "start_line": 14, "end_line": 14}],
+                    }]
             elif "findings" in properties:
                 task, value = "analysis", {"findings": [], "required_paths": []}
+            elif "original_issue_present" in properties:
+                task, value = "verification", {"verdict": "uncertain", "original_issue_present": False,
+                    "explanation": "The historical report does not establish a defect.",
+                    "change_explanation": "No supported fix conclusion.", "dismissal_recommended": True,
+                    "evidence": [], "required_sources": []}
+            elif "relationship" in properties:
+                task, value = "assessment", {"verdict": "confirmed", "relationship": "new", "finding_id": None,
+                    "explanation": "Rounding differs.", "cause": "Per amount rounding.",
+                    "trigger": "Fractional taxes.", "consequence": "Incorrect aggregate.",
+                    "history_explanation": "No prior report describes this.", "contradicts_prior": False,
+                    "changed_conditions": "", "suggestion_supported": False, "required_paths": [],
+                    "evidence": [{"source_id": source_id("current", "billing.py"), "start_line": 14, "end_line": 14}]}
             else:
                 assert "narrative" in properties
                 task, value = "summary", {"narrative": "Synthetic change.", "groups": [
@@ -140,7 +195,7 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
     serving = threading.Thread(target=server.serve_forever, daemon=True)
     serving.start()
     manifest["connection"]["base_url"] = f"http://127.0.0.1:{server.server_port}/v1"
-    identity = "fault-" + workload + "-" + phase
+    identity = "fault-" + ("sec" if workload == "security" else "pr") + "-" + stage + "-" + phase.removeprefix("after_")
     marker, launcher = tmp_path / "boundary.json", tmp_path / "fault_worker.py"
     launcher.write_text("import sys\nsys.path.insert(0, " + repr(str(ROOT / "scripts/engine_eval")) + ")\n"
                         + inspect.getsource(fault_worker) + "\nfault_worker(sys.argv[1], sys.argv[2], sys.argv[3])\n")
@@ -148,8 +203,10 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
 
     def launch(args, *positional, **kwargs):
         if len(args) > 2 and args[1] == str(Path(runtime.__file__).resolve()) and args[2] == "--queue-worker":
-            args = [args[0], str(launcher), args[3], phase, str(marker)]
-            process = popen(args, *positional, **kwargs)
+            args = [args[0], str(launcher), args[3], phase + ":" + stage, str(marker)]
+            log = marker.parent / "retained-worker.log"
+            with log.open("ab") as output:
+                process = popen(args, *positional, **{**kwargs, "stdout": output})
             workers.append(process)
             return process
         return popen(args, *positional, **kwargs)
@@ -169,8 +226,8 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
             parent = next(row for row in Path(f"/proc/{pid}/status").read_text().splitlines() if row.startswith("PPid:"))
             assert int(parent.split()[1]) == workers[0].pid, "Fault PID must be a real prefork child"
             with transaction() as db:
-                tasks = list(db.scalars(select(AnalysisTask)))
-                attempts = list(db.scalars(select(AnalysisAttempt)))
+                tasks = list(db.scalars(select(AnalysisTask).where(AnalysisTask.stage == ("security" if workload == "security" else stage))))
+                attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id.in_([row.id for row in tasks]))))
                 assert len(attempts) == 1 and len(tasks) == 1
                 task, attempt = tasks[0], attempts[0]
                 evidence.update(boundary=reached, task_before=runtime.row_data(task), attempt_before=runtime.row_data(attempt))
@@ -191,7 +248,10 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
                 assert inference_admission.release_connection(admission_id)
                 evidence["capacity_release_after_confirmed_death"] = True
             with transaction() as db:
-                db.get(Job, identity).lease_until = now() - timedelta(seconds=1)
+                run = db.get(ReviewRun, identity) if workload == "pr" else None
+                execution = run.stages.get(stage, {}).get("execution") if run and stage != "analysis" else None
+                job_id = execution.rsplit(":", 1)[0] if execution else identity
+                db.get(Job, job_id).lease_until = now() - timedelta(seconds=1)
         except BaseException as exc:
             controller_errors.append(exc)
             if workers and workers[0].poll() is None:
@@ -203,18 +263,53 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
     controller.start()
     try:
         result = runtime.execute(manifest, case, export, "mortis", {"api_key": "synthetic", "extra_headers": {}}, options, identity)
+        if workload == "security" and evidence.get("confirmed_sigkill"):
+            from code_mortis.security_scans import service
+
+            with transaction() as db:
+                parent = db.get(SecurityScan, identity)
+                parent_saved = runtime.row_data(parent)
+                repo_id = parent.repository_id
+                full_name = db.get(Repository, repo_id).full_name
+            adapter = runtime.SyntheticGitHub(case, repo_id, full_name, export / "repo")
+            with adapter.installed(), monkeypatch.context() as patcher:
+                # Mortis public admission stays gated; this is an explicitly requested internal retry.
+                patcher.setattr(service, "require_available_engine", lambda options: None)
+                with transaction() as db:
+                    parent = db.get(SecurityScan, identity)
+                    retry = service.create_scan(db, db.get(Repository, repo_id), db.get(User, parent.actor_id),
+                        SecurityScanInput(connection_id=parent.connection_id, request_key=identity + "-retry",
+                                          concurrency=1, token_budget=200_000, timeout_seconds=90), parent=parent)
+                    retry_id = retry.id
+                measurement = runtime.Measurements()
+                retry_queue = runtime.execute_queued(manifest, case, export, retry_id, repo_id, full_name, measurement)
+                with transaction() as db:
+                    retried = runtime.row_data(db.get(SecurityScan, retry_id))
+                    retried["workflow_jobs"] = [runtime.row_data(row) for row in db.scalars(select(Job).where(
+                        Job.payload["scan_id"].as_string() == retry_id))]
+                    retried["attempts"] = [runtime.row_data(row) for row in db.scalars(select(AnalysisAttempt)
+                        .join(AnalysisTask).join(AnalysisPlan).where(AnalysisPlan.scan_id == retry_id))]
+            evidence.update(explicit_retry=retried, explicit_retry_queue=retry_queue,
+                            parent_before_retry=parent_saved)
+            assert retried["status"] == "completed", retried
+            assert retried["stages"]["analysis"]["status"] == "completed"
+            assert retried["stages"]["analysis"]["files"] == len(case["selected_paths"])
+            with transaction() as db:
+                assert runtime.row_data(db.get(SecurityScan, identity)) == parent_saved
+                assert db.get(SecurityScan, retry_id).parent_id == identity
     finally:
         controller.join(timeout=35)
         server.shutdown()
         server.server_close()
         serving.join(timeout=5)
     evidence.update(result=result, provider_requests=requests, controller_errors=[str(error) for error in controller_errors])
+    evidence["worker_log"] = (marker.parent / "retained-worker.log").read_text() if workers else None
     if destination := os.environ.get("CM_WORKFLOW_FAULT_EVIDENCE_DIR"):
         with (Path(destination) / (identity + ".json")).open("x") as output:
             json.dump(evidence, output, sort_keys=True, indent=2, default=lambda value: value.isoformat())
     assert not controller_errors, controller_errors
     assert evidence["confirmed_sigkill"]
-    assert requests.count("analysis") == 1, evidence
+    assert requests.count(stage) == (2 if workload == "security" else 1), evidence
     with transaction() as db:
         attempt = db.get(AnalysisAttempt, evidence["attempt_before"]["id"])
         task = db.get(AnalysisTask, attempt.task_id)
@@ -224,17 +319,38 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
             assert task.result == evidence["task_before"]["result"] and task.status == "completed"
             assert attempt.usage_state == "known" and attempt.usage_tokens == 12
             assert budget.charged_tokens >= 12
-            if workload == "pr":
+            if workload == "pr" and stage == "analysis":
                 assert result["status"] == "completed" and result["summary"]["status"] == "completed"
                 assert result["coverage"]["validated_units"] == result["coverage"]["assigned_units"]
         else:
             assert task.result is None and task.status in {"running", "uncertain"}
             assert attempt.usage_tokens is None and attempt.usage_state in {"reserved", "unknown"}
             assert budget.charged_tokens >= attempt.reserved_tokens > 0
-            assert result["status"] != "completed"
+            if stage == "analysis":
+                assert result["status"] != "completed"
         if workload == "security":
             assert result["status"] == "partial" and "Security worker stopped" in result["error"]
-        assert not result["findings"] and not result["occurrences"]
+        if stage == "analysis":
+            assert not result["findings"] and not result["occurrences"]
+        else:
+            if stage == "assessment" and phase == "after_ledger":
+                assert result["stages"][stage]["status"] == "completed"
+                assert len(result["findings"]) == 1
+            else:
+                assert result["stages"][stage]["status"] in {"failed", "partial"}
+            if stage == "assessment" and phase == "after_response":
+                from code_mortis.reviews import assessment, checks
+
+                run = db.get(ReviewRun, identity)
+                counts = assessment.summary(db, run)
+                payload = checks.check_payload(run, 0)
+                assert run.status == "completed" and counts.failed == counts.incomplete == 1
+                assert payload["conclusion"] != "success"
+                published_view = SimpleNamespace(**(runtime.row_data(run) | {"publication": "no_new_comments"}))
+                terminal_check = checks.check_payload(published_view, 0)
+                assert terminal_check["conclusion"] == "neutral"
+                assert terminal_check["output"]["title"] == "Assessment incomplete"
+            assert all(row.status == "open" and row.desired_status is None for row in db.scalars(select(Finding)))
         assert all(row["kind"] not in {"publish", "resolve", "security_issue_publish"} for row in result.get("queue_measurement", {}).get("events", []))
         tickets = list(db.scalars(select(InferenceAdmission).where(InferenceAdmission.task_id == task.id)))
         assert len(tickets) == 1 and tickets[0].status == "released"

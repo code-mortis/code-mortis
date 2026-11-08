@@ -930,3 +930,44 @@ def test_optional_graph_is_omitted_before_subdividing_required_units():
     batches = prepared(value, graph=graph, connection={**CONNECTION, "options": {"prompt_token_ceiling": 12_000}})
     assert len(batches) == 1 and batches[0].error is None and batches[0].units == units
     assert batches[0].graph_omitted == ["one.py"]
+
+
+@pytest.mark.parametrize(("effort", "limit"), [("low", 1), ("medium", 2), ("high", 4)])
+@pytest.mark.parametrize("complete", [False, True])
+def test_final_evidence_request_withholds_unavailable_tools_without_faking_coverage(monkeypatch, complete, effort, limit):
+    install_source_reads(monkeypatch)
+    value = plan()
+    batches = prepared(value, options={**OPTIONS, "effort": effort})
+    terminal = final(batches[0])
+    if not complete:
+        terminal["completed_units"] = []
+    responses = [tool_response() for _ in range(limit)] + [response(terminal)]
+    result, ledger = run(monkeypatch, value, batches, responses)
+    assert [bool(request.tools) for request in ledger.calls] == [True] * limit + [False]
+    assert len(ledger.calls) == limit + 1 and len(ledger.appended) == limit
+    assert all(request.effort == effort and request.max_output_tokens == 16384 for request in ledger.calls)
+    supplied = json.loads(ledger.calls[-1].messages[-1].content)
+    assert len(supplied["supporting_sources"]) == limit
+    assert all(source == supplied["supporting_sources"][0] for source in supplied["supporting_sources"])
+    assert ledger.calls[-1].messages[0] == batches[0].request.messages[0]
+    coverage = result[1]["manifest"]["coverage"]
+    assert result[0] == ("completed" if complete else "failed")
+    assert len(coverage["completed"]) == int(complete)
+    assert len(coverage["failed"]) == int(not complete)
+    assert result[1]["summary"]["total_tokens"] == 10 * limit + 12
+
+
+def test_legacy_source_tool_policy_replays_unchanged_request_hashes(monkeypatch):
+    install_source_reads(monkeypatch)
+    value = plan()
+    batches = engine.prepare_batches(value, CONNECTION, OPTIONS, CREDENTIALS, output_token_policy=None)
+    responses = [tool_response(), tool_response(), response(final(batches[0]))]
+    ledger = Ledger(batches, responses)
+    monkeypatch.setattr(llm, "execute_task", ledger.execute)
+    monkeypatch.setattr(engine.inference_admission, "cancel_task_waiter", lambda *_args: None)
+    first = engine.review(None, {}, value, batches, job_id="job", job_attempt=1, credentials=dict(CREDENTIALS),
+        authorize=lambda: None, register_task=ledger.register, load_task=ledger.rows.get, limit_source_tools=False)
+    replay = engine.review(None, {}, value, batches, job_id="job", job_attempt=1, credentials=dict(CREDENTIALS),
+        authorize=lambda: None, register_task=ledger.register, load_task=ledger.rows.get, limit_source_tools=False)
+    assert first == replay and first[0] == "completed"
+    assert len(ledger.calls) == 3 and all(request.tools and request.max_output_tokens == 8192 for request in ledger.calls)

@@ -306,7 +306,8 @@ def test_source_expansion_uses_real_pinned_git_and_replays_saved_dynamic_round(s
 
 
 def test_two_batches_can_use_a_finite_budget_after_first_reservation_settles(scenario, monkeypatch):
-    settings(scenario, token_budget=18_000)
+    # Admit one 16,384-token response reservation, but require its settlement before the second.
+    settings(scenario, token_budget=30_000)
     reserve, blocked = analysis.claim_task, []
     def claim(*args, **kwargs):
         lease = reserve(*args, **kwargs)
@@ -331,7 +332,7 @@ def test_two_batches_can_use_a_finite_budget_after_first_reservation_settles(sce
     assert len(report["manifest"]["coverage"]["completed"]) == 2
     with transaction() as db:
         budget = db.scalar(select(AnalysisBudget).where(AnalysisBudget.stage == "analysis"))
-        assert budget.token_limit == 18_000 and budget.charged_tokens == 24
+        assert budget.token_limit == 30_000 and budget.charged_tokens == 24
         assert len(list(db.scalars(select(AnalysisAttempt)))) == 2
 
 
@@ -508,3 +509,24 @@ def test_small_prompt_ceiling_splits_required_source_and_diff_into_complete_batc
         assert len(frozen["tasks"]) == len(scenario["wire"])
         assert {entry["path"] for entry in frozen["selected"]} == {"app.py", "guide.md"}
         assert all(task.status == "completed" for task in db.scalars(select(AnalysisTask)))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, monkeypatch, legacy):
+    from code_mortis.reviews import engine
+
+    settings(scenario, effort="low")
+    scenario["expand"] = True
+    with monkeypatch.context() as patcher:
+        if legacy:
+            patcher.setattr(engine, "SOURCE_TOOL_POLICY", None)
+            patcher.setattr(engine.analysis, "output_token_policy", lambda snapshot=None: None)
+        first = review(scenario)
+    assert first[0] == "completed" and len(scenario["wire"]) == 2
+    with transaction() as db:
+        saved = db.scalar(select(AnalysisPlan)).snapshot
+        assert saved["versions"].get("source_tools") == (None if legacy else engine.SOURCE_TOOL_POLICY)
+        assert saved["versions"].get("output_tokens") == (None if legacy else engine.analysis.OUTPUT_TOKEN_POLICY)
+    assert all(request["max_tokens"] == (8192 if legacy else 16384) for request in scenario["wire"])
+    assert review(scenario) == first
+    assert len(scenario["wire"]) == 2

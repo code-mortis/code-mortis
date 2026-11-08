@@ -217,6 +217,27 @@ class AcceptanceTests(unittest.TestCase):
                 row["fp"] = 10
         self.assertEqual(acceptance.quality_bounds(rows, self.protocol["bootstrap"])["precision"]["status"], "not_established")
 
+    def test_owner_selected_frozen_corpus_accepts_exact_parity_without_population_claim(self):
+        protocol = copy.deepcopy(self.protocol)
+        protocol["quality_acceptance"] = {"mode": "frozen_corpus", "owner_approved": True,
+                                          "population_confidence": "descriptive_only", "no_high_critical_loss": True}
+        acceptance.validate_protocol(protocol)
+        rows = [{"family_id": str(i), "arm": arm, "tp": 1, "fp": 0, "fn": 0, "pending": 0,
+                 "defects": [], "clean": False, "assigned_units": 1, "validated_units": 1,
+                 "valid_citations": 1, "judged_citations": 1, "semantic_supported": 1, "judged_semantic": 1}
+                for i in range(20) for arm in acceptance.ARMS]
+        bounds = acceptance.quality_bounds(rows, protocol["bootstrap"])
+        self.assertTrue(all(bound["status"] == "inconclusive" for bound in bounds.values()))
+        self.assertTrue(acceptance.quality_decision(bounds, protocol))
+        self.assertFalse(acceptance.quality_decision(bounds, self.protocol))
+        bounds["precision"]["mortis_minus_ocr"] = -.001
+        self.assertFalse(acceptance.quality_decision(bounds, protocol))
+        bounds["precision"]["mortis_minus_ocr"] = None
+        self.assertFalse(acceptance.quality_decision(bounds, protocol))
+        protocol["quality_acceptance"]["owner_approved"] = False
+        with self.assertRaisesRegex(ValueError, "explicit owner approval"):
+            acceptance.validate_protocol(protocol)
+
     def test_actual_designated_external_expert_document_is_required(self):
         seal = self.seal()
         results = self.results(seal)
@@ -323,7 +344,6 @@ class AcceptanceTests(unittest.TestCase):
         result.update(schema="mortis-engine-controlled-performance-results/v2", measurement=seal["protocol"]["performance_measurement"],
                       scanner_snapshot={"sha256": "f" * 64})
         for attempt in result["attempts"]:
-            attempt.pop("ledger", None)
             plan = next(item for item in self.performance_plan["schedule"] if item["case_id"] == "perf-security-0"
                         and item["graph"] == "off" and item["cache"] == "cold" and item["repetition"] == 1 and item["arm"] == attempt["arm"])
             attempt.update(copy.deepcopy(plan))
@@ -343,7 +363,7 @@ class AcceptanceTests(unittest.TestCase):
             attempt["stages"]["assessment"].update(total=1, completed=1, failed=0)
             attempt["stages"]["verification"].update(total=1, completed=1)
             if attempt["arm"] == "mortis":
-                attempt["ledger"] = {"tasks": [{"id": "gateway-task", "stage": "security", "status": "completed"}]}
+                attempt["ledger"] = {"attempts": [], "tasks": [{"id": "gateway-task", "stage": "security", "status": "completed"}]}
         return result
 
     def test_security_counts_bind_shared_ocr_and_mortis_checkpoints(self):
@@ -352,7 +372,7 @@ class AcceptanceTests(unittest.TestCase):
         groups, report = acceptance.controlled_performance(seal, results)
         self.assertEqual(groups["security/off/cold"]["security-family-0"], [(1000, 1000)])
         self.assertNotIn("controlled_required_work_timing_or_resource_evidence_incomplete", report["blockers"])
-        self.assertNotIn("ledger", results["attempts"][0])
+        self.assertEqual(results["attempts"][0]["ledger"], {"attempts": [], "tasks": []})
         for mutate in (
             lambda a: a["progress"]["tasks"].pop("assessment:0"),
             lambda a: a["progress"]["tasks"]["analysis:source_0.py"].update(status="failed"),
@@ -519,6 +539,395 @@ class AcceptanceTests(unittest.TestCase):
             change(results)
             with self.assertRaises(ValueError):
                 acceptance.score(seal, results)
+
+    def block_inputs(self):
+        protocol = copy.deepcopy(self.protocol)
+        protocol["quality_acceptance"] = {"mode": "frozen_corpus", "owner_approved": True,
+                                          "population_confidence": "descriptive_only", "no_high_critical_loss": True}
+        protocol["quality_sampling"] = {w: {"minimum_cases": 38, "minimum_families": 19, "repetitions": 1,
+                                             "repetition_rationale": "Invented once-per-source accuracy protocol"}
+                                         for w in ("pr", "security")}
+        protocol["quality_comparisons"] = [{"workload": w, "graph": "off", "cache": "cold"} for w in ("pr", "security")]
+        protocol["performance_sampling"] = {w: {"minimum_cases": 2, "repetitions": 20} for w in ("pr", "security")}
+        protocol["performance_inference"] = {
+            "schema": "mortis-engine-fixed-matrix-block-inference/v1", "mode": "fixed_matrix_blocks",
+            "blocks": 20, "minimum_blocks": 20, "order_seed": 47, "case_weighting": "equal_fixed_cases",
+            "profilewise_required": True, "confidence_method": "paired_block_percentile_bootstrap",
+            "scope": "conditional_frozen_matrix", "stopping_rule": "fixed_n_no_early_acceptance",
+            "chosen_before_outputs": True, "sample_size_rationale": "Invented fixed test schedule",
+            "limitations": ["Nominal bootstrap only; p95 tail precision is not guaranteed"],
+        }
+        for comparison in protocol["comparisons"]:
+            comparison["latency"] = {name: {"absolute_ms": 1000 if name == "p50" else 2000,
+                                           "relative_fraction": .05 if name == "p50" else .1, "combine": "both"}
+                                     for name in ("p50", "p95")}
+        corpus = copy.deepcopy(self.corpus)
+        corpus["cases"] = [{**copy.deepcopy(self.corpus["cases"][i % 20 + (20 if w == "security" else 0)]),
+                            "case_id": f"{w}-sealed-{i}", "family_id": f"{w}-actual-family-{i % 19}"}
+                           for w in ("pr", "security") for i in range(38)]
+        corpus["provenance"]["reviewed_cases_sha256"] = acceptance.fingerprint([
+            {"case_id": case["case_id"], "case_digest": case["case_digest"], "truth_sha256": acceptance.fingerprint(case["truth"])}
+            for case in corpus["cases"]])
+        corpus["provenance_evidence_sha256"] = acceptance.fingerprint(corpus["provenance"])
+        schedule = [{"case_id": case["case_id"], "arm": arm, "repetition": 1, "graph": "off", "cache": "cold",
+                     "identity": dict.fromkeys(acceptance.IDENTITIES, "d" * 64)} for case in corpus["cases"] for arm in acceptance.ARMS]
+        plan = copy.deepcopy(self.performance_plan)
+        plan.update(schema="mortis-engine-controlled-performance-plan/v3", block_ids=[f"block-{i}" for i in range(20)])
+        plan["cases"] = [case for case in plan["cases"] if case["case_id"] in
+                         {"perf-pr-0", "perf-pr-2", "perf-security-0", "perf-security-2"}]
+        for case in plan["cases"]:
+            case["profile_id"] = "clean" if case["case_id"].endswith("-2") else "history"
+            case["family_id"] = "one-shared-source-family"
+        plan["schedule"] = [{"block_id": block_id, "case_id": key[0], "repetition": key[1], "graph": key[2],
+                             "cache": key[3], "arm": key[4], "identity": dict.fromkeys(acceptance.IDENTITIES, "d" * 64)}
+                            for block_id, key in acceptance.block_order({case["case_id"]: case for case in plan["cases"]}, protocol, plan["block_ids"])]
+        return protocol, corpus, schedule, plan
+
+    def block_results(self, seal):
+        cases = {case["case_id"]: case for case in seal["performance_schedule"]["cases"]}
+        attempts = []
+        for index, item in enumerate(seal["performance_schedule"]["schedule"]):
+            case = cases[item["case_id"]]
+            work = case["expected_work"]
+            paths = [f"source_{i}.py" for i in range(work["source_files"])]
+            tasks = {"analysis:" + path: {"status": "completed", "input_hash": "a" * 64, "result": {}} for path in paths}
+            tasks.update({f"{phase}:{i}": {"status": "completed", "input_hash": "a" * 64, "result": {}}
+                          for phase, count in (("assessment", work["assessment_candidates"]), ("verification", work["historical_verification_targets"]))
+                          for i in range(count)})
+            baseline = (1000 if case["profile_id"] == "clean" else 10000) + item["repetition"] * 31
+            attempts.append({**copy.deepcopy(item), "attempt_id": f"invented-block-{index}", "case_digest": case["case_digest"],
+                "status": "completed", "findings": [{"finding_id": "f"} for _ in range(work["findings"])],
+                "coverage": dict.fromkeys(("assigned_units", "validated_units"), work["source_files"]),
+                "timing_origin": "queued", "timing_ms": {"terminal": baseline if item["arm"] == "ocr" else baseline * .8},
+                "summary": {"status": "completed"}, "candidates": [{"status": "completed"} for _ in range(work["assessment_candidates"])],
+                "verification_selection": {"observed": True, "selected": work["historical_verification_targets"]},
+                "verification_targets": [{"status": "completed", "verdict": "still_present"} for _ in range(work["historical_verification_targets"])],
+                "progress": {"analysis_status": "completed", "tasks": tasks},
+                "stages": {**{name: {"status": "completed"} for name in ("snapshot", "trivy", "report")},
+                           "analysis": {"status": "completed", "files": work["source_files"], "completed": work["source_files"], "failed": 0},
+                           "assessment": {"status": "completed", "total": work["assessment_candidates"], "completed": work["assessment_candidates"], "failed": 0},
+                           "verification": {"status": "completed", "total": work["historical_verification_targets"], "completed": work["historical_verification_targets"]}},
+                "report": {"coverage": {"trivy": {"evaluation_snapshot": {"before": "f" * 64, "after": "f" * 64}}}},
+                "nontrivial_work_evidence": {**work, "source_paths": paths, "artifact_sha256": "e" * 64},
+                "transport": {"provider_mode": "controlled_synthetic_http", "declared_connection": {"base_url": "http://127.0.0.1:12345/v1"}},
+                "performance_evidence": {"measurement": seal["protocol"]["performance_measurement"], "artifact_sha256": "e" * 64},
+                "resource_evidence": {"profile_sha256": "a" * 64, "within_limits": True, "artifact_sha256": "e" * 64},
+                "usage": {"requests": 1, "tokens": 15, "input_tokens": 10, "output_tokens": 5},
+                "provider_events": [{"sequence": 1, "forwarded": True, "state": "finished", "consumption_unknown": False,
+                                     "input_tokens": 10, "output_tokens": 5, "total_tokens": 15}],
+                "ledger": {"tasks": [], "attempts": [{"status": "completed", "usage_state": "known", "usage_tokens": 15,
+                                                       "reserved_tokens": 0}] if item["arm"] == "mortis" else []}})
+        return {"schema": "mortis-engine-controlled-performance-results/v3", "seal_sha256": acceptance.fingerprint(seal),
+                "started_at": "2026-11-08T00:00:01+00:00", "measurement": seal["protocol"]["performance_measurement"],
+                "scanner_snapshot": {"sha256": "f" * 64}, "attempts": attempts}
+
+    def test_fixed_blocks_keep_quality_families_and_single_accuracy_comparison_separate(self):
+        protocol, corpus, schedule, plan = self.block_inputs()
+        seal = acceptance.freeze(protocol, corpus, schedule, plan, frozen_at="2026-11-08T00:00:00+00:00")
+        acceptance.verify_seal(seal)
+        self.assertEqual(len(schedule), 38 * 2 * 2)
+        self.assertEqual(len(plan["schedule"]), 960)
+        self.assertEqual(len({case["family_id"] for case in plan["cases"]}), 1)
+        self.assertEqual(len({case["family_id"] for case in corpus["cases"] if case["workload"] == "pr"}), 19)
+        with self.assertRaisesRegex(ValueError, "every frozen paired"):
+            acceptance.validate_schedule(schedule + [{**schedule[0], "graph": "on"}],
+                                         {case["case_id"]: case for case in corpus["cases"]}, protocol)
+
+    def test_actual_quality_family_floor_is_nineteen_in_validation_and_descriptive_bounds(self):
+        protocol, corpus, schedule, plan = self.block_inputs()
+        seal = acceptance.freeze(protocol, corpus, schedule, plan, frozen_at="2026-11-08T00:00:00+00:00")
+        live = self.results(seal)
+        template = live["attempts"][0]
+        cases = {case["case_id"]: case for case in corpus["cases"]}
+        live["attempts"] = [{**copy.deepcopy(template), **item, "attempt_id": f"invented-quality-{i}",
+                             "findings": [] if cases[item["case_id"]]["truth"]["expected"] == "clean" else template["findings"]}
+                            for i, item in enumerate(schedule)]
+        report = acceptance.score(seal, live, self.judgments(live, seal))
+        for comparison in report["quality"].values():
+            self.assertTrue(comparison["comparison_passed"])
+            for bound in comparison["bounds"].values():
+                self.assertEqual(bound["independent_families"], 19)
+                self.assertNotIn("inadequate_independent_families", bound["reasons"])
+        for case in corpus["cases"]:
+            if case["family_id"] == "pr-actual-family-18":
+                case["family_id"] = "pr-actual-family-0"
+        with self.assertRaisesRegex(ValueError, "Insufficient independent families"):
+            acceptance.validate_corpus(corpus, protocol)
+
+    def test_block_mode_cannot_drop_cells_relax_caps_stop_early_or_fake_source_families(self):
+        for mutate in (
+            lambda p: p["comparisons"].pop(),
+            lambda p: p["comparisons"][0]["latency"]["p50"].update(relative_fraction=.06),
+            lambda p: p["performance_inference"].update(blocks=19),
+            lambda p: p["performance_inference"].update(stopping_rule="until_pass"),
+            lambda p: p["performance_inference"].update(profilewise_required=False),
+            lambda p: p["quality_sampling"]["pr"].update(minimum_families=18),
+            lambda p: p["quality_sampling"]["pr"].update(repetitions=2),
+            lambda p: p["quality_comparisons"].append({"workload": "pr", "graph": "on", "cache": "warm"}),
+        ):
+            protocol, _, _, _ = self.block_inputs()
+            mutate(protocol)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                acceptance.validate_protocol(protocol)
+
+    def test_block_schedule_binds_unique_ids_complete_mixture_and_seeded_arm_order(self):
+        for mutate in (
+            lambda p: p["block_ids"].__setitem__(1, p["block_ids"][0]),
+            lambda p: p["schedule"].pop(),
+            lambda p: p["schedule"].__setitem__(slice(0, 2), p["schedule"][1::-1]),
+            lambda p: p["schedule"][0].update(block_id="invented-other-block"),
+            lambda p: p["cases"][0].update(profile_id=p["cases"][1]["profile_id"]),
+        ):
+            protocol, _, _, plan = self.block_inputs()
+            mutate(plan)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                acceptance.validate_performance_plan(plan, {}, protocol)
+
+    def test_block_resampling_preserves_all_profiles_and_never_uses_source_family_count(self):
+        seal = acceptance.freeze(*self.block_inputs(), frozen_at="2026-11-08T00:00:00+00:00")
+        results = self.block_results(seal)
+        groups, report = acceptance.controlled_performance(seal, results)
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual(len(report["complete_block_ids"]), 20)
+        self.assertEqual(len(groups), 36)
+        self.assertEqual(len(groups["pr/off/cold"]), 20)
+        self.assertTrue(all(len(pairs) == 2 for pairs in groups["pr/off/cold"].values()))
+        self.assertTrue(all(len(pairs) == 1 for pairs in groups["pr/off/cold/profile/clean"].values()))
+        bootstrap = {**self.protocol["bootstrap"], "unit": "block", "minimum_blocks": 20}
+        bound = acceptance.latency_bound(groups["pr/off/cold"], {"absolute_ms": 1000, "relative_fraction": .05, "combine": "both"}, .5, bootstrap)
+        self.assertEqual(bound["independent_blocks"], 20)
+        self.assertNotIn("independent_families", bound)
+
+    def test_missing_failed_or_invalid_attempt_invalidates_whole_block_and_retains_usage(self):
+        seal = acceptance.freeze(*self.block_inputs(), frozen_at="2026-11-08T00:00:00+00:00")
+        for mutate in (lambda r: r["attempts"].pop(),
+                       lambda r: r["attempts"][-1].update(status="failed"),
+                       lambda r: r["attempts"][-1]["resource_evidence"].update(within_limits=False),
+                       lambda r: r["attempts"][-1]["nontrivial_work_evidence"].update(assessment_candidates=999)):
+            results = self.block_results(seal)
+            mutate(results)
+            groups, report = acceptance.controlled_performance(seal, results)
+            self.assertIn("controlled_fixed_blocks_incomplete", report["blockers"])
+            self.assertEqual(len(report["complete_block_ids"]), 19)
+            self.assertNotIn("block-19", groups["pr/off/cold"])
+            self.assertEqual(report["attempt_inventory"][-1]["usage"]["tokens"], 15)
+            bound = acceptance.latency_bound(groups["pr/off/cold"], {"absolute_ms": 1000, "relative_fraction": .05, "combine": "both"}, .95,
+                                              {**self.protocol["bootstrap"], "unit": "block", "minimum_blocks": 20})
+            self.assertIn("inadequate_independent_blocks", bound["reasons"])
+
+    def test_duplicate_mislabelled_or_reordered_result_blocks_cannot_pass(self):
+        seal = acceptance.freeze(*self.block_inputs(), frozen_at="2026-11-08T00:00:00+00:00")
+        for mutate in (lambda r: r["attempts"].append(r["attempts"][0]),
+                       lambda r: r["attempts"][0].update(block_id="block-1")):
+            results = self.block_results(seal)
+            mutate(results)
+            with self.assertRaises(ValueError):
+                acceptance.controlled_performance(seal, results)
+        results = self.block_results(seal)
+        results["attempts"][:2] = results["attempts"][1::-1]
+        groups, report = acceptance.controlled_performance(seal, results)
+        self.assertEqual(groups, {})
+        self.assertIn("controlled_seeded_block_order_mismatch", report["blockers"])
+
+    def test_profile_regression_blocks_acceptance_even_when_pooled_percentiles_pass(self):
+        seal = acceptance.freeze(*self.block_inputs(), frozen_at="2026-11-08T00:00:00+00:00")
+        results = self.block_results(seal)
+        # Fast history cases compensate in the mixture while every clean case regresses.
+        for attempt in results["attempts"]:
+            if attempt["case_id"].startswith("perf-pr-") and attempt["arm"] == "mortis":
+                base = (1000 if attempt["case_id"] == "perf-pr-2" else 10000) + attempt["repetition"] * 31
+                attempt["timing_ms"]["terminal"] = base * (1.4 if attempt["case_id"] == "perf-pr-2" else .05)
+        live = self.results(seal)
+        live["attempts"] = []
+        report = acceptance.score(seal, live, performance_results=results)
+        self.assertEqual(set(report["quality"]), {"pr/off/cold", "security/off/cold"})
+        self.assertEqual(len(report["performance"]), 36)
+        self.assertEqual(report["performance"]["pr/off/cold"]["p50"]["status"], "pass")
+        self.assertEqual(report["performance"]["pr/off/cold"]["p95"]["status"], "pass")
+        self.assertEqual(report["performance"]["pr/off/cold/profile/clean"]["p95"]["status"], "not_established")
+        self.assertIn("performance_nonregression_not_established", report["blockers"])
+
+    def test_block_degeneracy_remains_inconclusive(self):
+        bootstrap = {**self.protocol["bootstrap"], "unit": "block", "minimum_blocks": 20}
+        result = acceptance.latency_bound({str(i): [(1000, 1000), (10000, 10000)] for i in range(20)},
+                                          {"absolute_ms": 1000, "relative_fraction": .05, "combine": "both"}, .95, bootstrap)
+        self.assertEqual(result["status"], "inconclusive")
+        self.assertIn("degenerate_bootstrap", result["reasons"])
+
+    def test_controlled_accounting_gaps_in_either_arm_invalidate_whole_block(self):
+        seal = acceptance.freeze(*self.block_inputs(), frozen_at="2026-11-08T00:00:00+00:00")
+        for arm in acceptance.ARMS:
+            for mutate in (lambda a: a.update(usage=None),
+                           lambda a: a["usage"].update(tokens=16),
+                           lambda a: a.pop("provider_events"),
+                           lambda a: a["provider_events"][0].update(state="started"),
+                           lambda a: a["provider_events"][0].update(consumption_unknown=True),
+                           lambda a: a.pop("ledger"),
+                           lambda a: a["ledger"].update(tasks=[{"status": "running"}])):
+                results = self.block_results(seal)
+                attempt = next(a for a in results["attempts"] if a["arm"] == arm)
+                block_id = attempt["block_id"]
+                mutate(attempt)
+                groups, report = acceptance.controlled_performance(seal, results)
+                self.assertIn("controlled_unknown_consumption", report["blockers"])
+                self.assertIn("controlled_fixed_blocks_incomplete", report["blockers"])
+                self.assertEqual(len(report["complete_block_ids"]), 19)
+                self.assertNotIn(block_id, groups["pr/off/cold"])
+
+
+    def semantic_protocol(self):
+        protocol = copy.deepcopy(self.protocol)
+        protocol.update(schema="mortis-engine-acceptance-protocol/v3", version="invented-semantic-eligibility/v1")
+        protocol["quality_acceptance"] = {"mode": "frozen_corpus", "owner_approved": True,
+                                          "population_confidence": "descriptive_only", "no_high_critical_loss": True}
+        protocol["quality_eligibility"] = {"mode": "fully_executed_security_assessment_uncertainty",
+                                            "owner_approved": True, "approval_sha256": "f" * 64}
+        return protocol
+
+    def semantic_attempt(self, seal, arm="ocr"):
+        item = next(item for item in self.schedule if item["case_id"] == "security-0" and item["arm"] == arm
+                    and item["graph"] == "off" and item["cache"] == "cold" and item["repetition"] == 1)
+        attempt = copy.deepcopy(self.results(seal)["attempts"][0])
+        proposal = {"path": "invented.py", "title": "Invented proposal"}
+        tasks = {"analysis:invented.py": {"status": "completed", "input_hash": "a" * 64, "tokens": 15,
+                                          "result": {"findings": [proposal]}},
+                 "assessment:0": {"status": "completed", "input_hash": "b" * 64, "tokens": 15, "proposal": proposal,
+                                  "result": {"verdict": "uncertain", "explanation": "Invented absent guard", "required_paths": []}}}
+        problems = ["A proposed security finding requires additional verification."]
+        stages = {name: {"status": "completed"} for name in ("snapshot", "trivy", "report")}
+        stages.update(analysis={"status": "completed", "total": 1, "files": 1, "completed": 1, "failed": 0, "candidates": 1},
+                      assessment={"status": "partial", "total": 1, "completed": 1, "failed": 0},
+                      verification={"status": "completed", "total": 0, "completed": 0})
+        report = {"status": "partial", "problems": problems,
+                  "unsettled_candidates": [{"proposal": proposal, "assessment": tasks["assessment:0"]["result"]}],
+                  "coverage": {"inventory": {"invented.py": {"code": True}}, "problems": [],
+                               "trivy": {"evaluation_snapshot": {"before": "f" * 64, "after": "f" * 64}},
+                               "units": [{"task": key, **{field: value for field, value in task.items() if field not in {"proposal", "result"}}}
+                                         for key, task in tasks.items()]}}
+        job = {"id": "invented-job-" + arm, "status": "done", "error": None}
+        attempt.update(item, attempt_id="invented-partial-" + arm, workload="security", status="partial", findings=[],
+                       error=problems[0], stages=stages, report=report, progress={"tasks": tasks}, outcomes=[], stop_pilot=False,
+                       transport={"blocked_reason": None}, job=job, workflow_jobs=[job],
+                       usage={"requests": 2, "tokens": 30, "input_tokens": 20, "output_tokens": 10},
+                       provider_events=[{"sequence": i, "forwarded": True, "state": "finished", "consumption_unknown": False,
+                                         "input_tokens": 10, "output_tokens": 5, "total_tokens": 15} for i in (1, 2)],
+                       ledger={"tasks": [{"status": "completed"}], "attempts": [
+                           {"status": "completed", "usage_state": "known", "usage_tokens": 15, "reserved_tokens": 0}
+                           for _ in range(2)] if arm == "mortis" else []})
+        attempt["semantic_uncertainty_evidence"] = acceptance.security_assessment_uncertainty_evidence(attempt)
+        return attempt
+
+    def test_semantic_eligibility_requires_new_schema_and_explicit_approval(self):
+        protocol = self.semantic_protocol()
+        acceptance.validate_protocol(protocol)
+        for mutate in (lambda p: p.update(schema="mortis-engine-acceptance-protocol/v2"),
+                       lambda p: p.pop("quality_eligibility"),
+                       lambda p: p["quality_eligibility"].update(owner_approved=False),
+                       lambda p: p["quality_eligibility"].update(approval_sha256=None),
+                       lambda p: p["quality_eligibility"].update(mode="allow_uncertain_verification")):
+            changed = copy.deepcopy(protocol)
+            mutate(changed)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                acceptance.validate_protocol(changed)
+
+    def test_executed_assessment_abstention_is_eligible_for_both_arms_without_status_override(self):
+        protocol = self.semantic_protocol()
+        seal = acceptance.freeze(protocol, self.corpus, self.schedule, self.performance_plan, frozen_at="2026-11-08T00:00:00+00:00")
+        for arm in acceptance.ARMS:
+            attempt = self.semantic_attempt(seal, arm)
+            before = copy.deepcopy(attempt)
+            self.assertIsNotNone(attempt["semantic_uncertainty_evidence"])
+            self.assertEqual(acceptance.quality_work_gaps(attempt, "security", "f" * 64, protocol), [])
+            self.assertEqual(attempt, before)
+            self.assertEqual(attempt["status"], "partial")
+            self.assertTrue(acceptance.quality_work_gaps(attempt, "security", "f" * 64, self.protocol))
+            attempt.pop("semantic_uncertainty_evidence")
+            self.assertTrue(acceptance.quality_work_gaps(attempt, "security", "f" * 64, protocol))
+
+    def test_semantic_eligibility_rejects_missing_failed_incomplete_work_and_errors(self):
+        seal = self.seal()
+        for mutate in (
+            lambda a: a.update(status="failed"), lambda a: a.update(workload="pr"),
+            lambda a: a["coverage"].update(validated_units=0),
+            lambda a: a["stages"]["analysis"].update(status="partial"),
+            lambda a: a["stages"]["assessment"].update(completed=0),
+            lambda a: a["progress"]["tasks"].pop("analysis:invented.py"),
+            lambda a: a["progress"]["tasks"]["analysis:invented.py"].update(status="failed"),
+            lambda a: a["progress"]["tasks"]["assessment:0"].update(status="running"),
+            lambda a: a["progress"]["tasks"]["assessment:0"].update(tokens=None),
+            lambda a: a["progress"]["tasks"]["assessment:0"].update(input_hash=None),
+            lambda a: a["progress"]["tasks"]["assessment:0"].update(error="Invented execution error"),
+            lambda a: a["progress"]["tasks"]["assessment:0"]["result"].update(error="Invented result error"),
+            lambda a: a["progress"]["tasks"].pop("assessment:0"),
+            lambda a: a["progress"]["tasks"]["assessment:0"].update(proposal={"path": "different.py"}),
+            lambda a: a["progress"]["tasks"]["analysis:invented.py"]["result"]["findings"].append({"path": "missing.py"}),
+            lambda a: a["report"].update(unsettled_candidates=[]),
+            lambda a: a["report"]["coverage"]["units"].pop(),
+            lambda a: a["report"]["coverage"].update(inventory={}),
+            lambda a: a["report"]["problems"].append("Invented timeout"),
+            lambda a: a.update(error="Invented timeout"),
+            lambda a: a["job"].update(status="running"),
+            lambda a: a.update(workflow_jobs=[]),
+            lambda a: a["transport"].update(blocked_reason="Invented failure"),
+            lambda a: a.update(stop_pilot=True), lambda a: a["outcomes"].append({"kind": "execution_error"}),
+        ):
+            attempt = self.semantic_attempt(seal)
+            mutate(attempt)
+            with self.subTest(mutate=mutate):
+                self.assertIsNone(acceptance.security_assessment_uncertainty_evidence(attempt))
+                self.assertTrue(acceptance.quality_work_gaps(attempt, "security", "f" * 64, self.semantic_protocol()))
+
+    def test_semantic_eligibility_does_not_waive_accounting_resources_scanner_or_proof(self):
+        seal = self.seal()
+        for mutate in (lambda a: a["usage"].update(tokens=None),
+                       lambda a: a["provider_events"][0].update(consumption_unknown=True),
+                       lambda a: a["provider_events"][0].update(error_code="provider_error"),
+                       lambda a: a.pop("ledger"),
+                       lambda a: a["ledger"].update(tasks=[{"status": "running"}]),
+                       lambda a: a["resource_evidence"].update(within_limits=False),
+                       lambda a: a["resource_evidence"].update(profile_sha256="b" * 64),
+                       lambda a: a["resource_evidence"].update(artifact_sha256=None),
+                       lambda a: a["semantic_uncertainty_evidence"].update(uncertain_assessments=999)):
+            attempt = self.semantic_attempt(seal)
+            mutate(attempt)
+            with self.subTest(mutate=mutate):
+                self.assertTrue(acceptance.quality_work_gaps(attempt, "security", "f" * 64, self.semantic_protocol()))
+        attempt = self.semantic_attempt(seal)
+        self.assertIn("scanner_snapshot_evidence_missing_or_changed",
+                      acceptance.quality_work_gaps(attempt, "security", "a" * 64, self.semantic_protocol()))
+
+    def test_uncertain_verification_is_never_part_of_assessment_exception(self):
+        attempt = self.semantic_attempt(self.seal())
+        attempt["stages"]["verification"]["status"] = "partial"
+        self.assertIsNone(acceptance.security_assessment_uncertainty_evidence(attempt))
+        gaps = acceptance.quality_work_gaps(attempt, "security", "f" * 64, self.semantic_protocol())
+        self.assertIn("stage_verification_not_completed_or_missing", gaps)
+        attempt["stages"]["verification"]["status"] = "completed"
+        attempt["progress"]["tasks"]["verification:invented"] = {"status": "completed", "input_hash": "c" * 64, "tokens": 15,
+                                                               "result": {"verdict": "uncertain"}}
+        self.assertIsNone(acceptance.security_assessment_uncertainty_evidence(attempt))
+
+    def test_eligible_partial_still_counts_quality_misses_and_mortis_severe_loss(self):
+        protocol = self.semantic_protocol()
+        seal = acceptance.freeze(protocol, self.corpus, self.schedule, self.performance_plan, frozen_at="2026-11-08T00:00:00+00:00")
+        results = self.results(seal)
+        results.update(scanner_snapshot={"sha256": "f" * 64}, attempts=[self.semantic_attempt(seal, arm) for arm in acceptance.ARMS])
+        report = acceptance.score(seal, results)
+        self.assertNotIn("incomplete_required_work", report["blockers"])
+        self.assertNotIn("unknown_consumption", report["blockers"])
+        self.assertIn("high_critical_loss", report["blockers"])
+        self.assertEqual(report["quality"]["security/off/cold"]["arms"]["mortis"]["fn"], 1)
+        self.assertEqual(report["attempt_inventory"][0]["status"], "partial")
+        self.assertEqual(report["acceptance"], "not_established")
+
+    def test_quality_assessment_exception_does_not_change_controlled_performance_completeness(self):
+        seal = acceptance.freeze(self.semantic_protocol(), self.corpus, self.schedule, self.performance_plan,
+                                 frozen_at="2026-11-08T00:00:00+00:00")
+        controlled = self.controlled_security(seal)
+        controlled["attempts"][0]["status"] = "partial"
+        groups, report = acceptance.controlled_performance(seal, controlled)
+        self.assertIn("controlled_required_work_timing_or_resource_evidence_incomplete", report["blockers"])
+        self.assertEqual(groups, {})
 
 
 if __name__ == "__main__":

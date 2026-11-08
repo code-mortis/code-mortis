@@ -72,6 +72,22 @@ def test_workflow_manifest_pins_history_and_full_execution_conditions(evaluation
         runtime.validate_manifest(manifest, case["case_id"], "mortis", live=False)
 
 
+@pytest.mark.parametrize("graph,cache,repetition", [("on", "warm", 2), ("exact_revision_gap", "cold", 3)])
+def test_workflow_strata_are_bound_to_conditions(evaluation, graph, cache, repetition):  # noqa: F811
+    manifest, case, _ = evaluation
+    parallel(manifest)
+    manifest.update(graph=graph, cache=cache, repetition=repetition)
+    case["identity"]["model_options_sha256"] = runtime.fingerprint({"extra_body": {"reasoning.effort": "medium"}})
+    case["identity"]["history_sha256"] = runtime.fingerprint([])
+    with pytest.raises(ValueError, match="conditions differ"):
+        runtime.validate_manifest(manifest, case["case_id"], "ocr", live=False)
+    manifest["conditions"].update(graph=graph, cache=cache, repetition=repetition)
+    case["identity"]["conditions_sha256"] = runtime.fingerprint({
+        **manifest["conditions"], "workload": "pr", "provider_options": runtime.provider_options(manifest, case),
+    })
+    assert runtime.validate_manifest(manifest, case["case_id"], "ocr", live=False) == case
+
+
 @pytest.mark.parametrize("workload", ["pr", "security"])
 def test_parallel_profile_seeds_queued_production_job(evaluation, workload):  # noqa: F811
     manifest, case, _ = evaluation
