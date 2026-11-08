@@ -33,10 +33,12 @@ from code_mortis.schemas.security import (
     SecurityFix,
     SecurityFixSelection,
 )
+from code_mortis.security_scans import policy
 
 POLICY = "code-mortis.security/v1"
 CITATION_CONTRACT = "source-selection/v1"
-TASK_CONTRACT = "security-task/v3"
+LEGACY_TASK_CONTRACT = "security-task/v3"
+TASK_CONTRACT = policy.TASK_CONTRACT
 SEVERITIES = {"low", "medium", "high", "critical"}
 EXCLUDED = {".git", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
 CODE_EXTENSIONS = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".rb",
@@ -577,7 +579,8 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, configuration_managed=False, infer=None, source_packing=None, select_packing=None,
-        output_token_policy=analysis.OUTPUT_TOKEN_POLICY):
+        output_token_policy=analysis.OUTPUT_TOKEN_POLICY, navigation=None, select_navigation=None,
+        record_sources=None):
     require_shared(connection)
     deadline = time.monotonic() + timeout if timeout is not None else None
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
@@ -602,6 +605,9 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                          "of a fix. Fixed requires original_issue_present, an actual source change, original/current citations, "
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
     }[task]
+    current_policy = context.get("task_contract") == TASK_CONTRACT
+    if current_policy:
+        instructions += " " + policy.instructions(task)
 
     def supplied_context(feedback=None):
         catalog = {}
@@ -614,8 +620,13 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
         for name in ("start_line", "end_line"):
             selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
-        return redacted_context(item, {**context, "citation_sources": catalog,
+        supplied = redacted_context(item, {**context, "citation_sources": catalog,
             **({"validation_feedback": feedback} if feedback else {})})
+        if current_policy:
+            from code_mortis.security_scans.payload import compact_evidence
+
+            supplied = compact_evidence(supplied)
+        return supplied
 
     def supporting_sources():
         paths = [path for path in context["available_paths"] if item.inventory[path].get("code")]
@@ -631,8 +642,27 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 return None
         return sources
 
+    if current_policy:
+        from code_mortis.security_scans.context import source_navigation
+
+        def navigation_stopped():
+            if deadline is not None and time.monotonic() >= deadline:
+                raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": 0}, "skipped")
+            return stopped()
+
+        try:
+            if navigation is None:
+                navigation = source_navigation(item, context["sources"]["current"], context["available_paths"], navigation_stopped)
+            navigation = redacted_context(item, navigation)
+            if select_navigation is not None:
+                navigation = select_navigation(navigation)
+        except ReviewStopped as exc:
+            exc.usage = {"tokens": 0}
+            raise
+        context["source_navigation"] = navigation
+
     # Pin the choice before dispatch: peer consumption or transient reads cannot change replay inputs.
-    if infer is not None and context.get("task_contract") == TASK_CONTRACT and task in {"analysis", "assessment"}:
+    if infer is not None and context.get("task_contract") in {LEGACY_TASK_CONTRACT, TASK_CONTRACT} and task in {"analysis", "assessment"}:
         original, sources, selected = context["sources"], None, False
         if source_packing is not False:
             try:
@@ -693,6 +723,12 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                     validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
                 except verification.ResultValidationError as exc:
                     problems.extend(exc.feedback["errors"])
+                else:
+                    if current_policy and not any(citation["revision"] == "current"
+                            and citation["path"] == supplied["assigned_path"] for citation in proposed["evidence"]):
+                        feedback = {"kind": "schema", "errors": [{"loc": ["findings", index, "evidence"],
+                            "msg": "A finding must cite the assigned current file; supporting source alone cannot establish its local cause."}]}
+                        raise verification.ResultValidationError("Security finding lacks assigned-file evidence.", feedback)
             if problems:
                 feedback = {"kind": "citation_selection", **problems[0], "errors": problems}
                 raise verification.ResultValidationError("Security citation selection is invalid. " + json.dumps(feedback), feedback)
@@ -737,7 +773,12 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
         try:
             request_context = supplied_context(feedback)
+            if current_policy and record_sources is not None:
+                record_sources(sorted(context["sources"]["current"]))
         except verification.VerificationOutputError as exc:
+            exc.usage = {"tokens": used}
+            raise
+        except ReviewStopped as exc:
             exc.usage = {"tokens": used}
             raise
         try:

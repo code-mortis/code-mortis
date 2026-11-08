@@ -142,7 +142,8 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
     config.update(engine_snapshot(parent.config if parent else repo.settings))
     if parent is None or "task_contract" in parent.config:
-        config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
+        config["task_contract"] = parent.config["task_contract"] if parent else (
+            security_engine.TASK_CONTRACT if config["analysis_engine"] == "mortis" else security_engine.LEGACY_TASK_CONTRACT)
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
     if not config["connection"]["model"]:
         raise ValueError("Choose a model before starting a security scan.")
@@ -317,8 +318,9 @@ def checkpoint(scan_id, key, state, **values):
             scan.cancel_requested = True
             raise ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
-        if "source_packing" in values and "source_packing" in tasks.get(key, {}):
-            values["source_packing"] = tasks[key]["source_packing"]
+        for field in ("source_packing", "source_navigation"):
+            if field in values and field in tasks.get(key, {}):
+                values[field] = tasks[key][field]
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
         if values.get("tokens") is None and "tokens" in values:
@@ -652,7 +654,9 @@ def perform(scan_id, claim):
         context = {**context, "language": config.get("language", "English"),
                    "task_contract": config.get("task_contract", "security-task/v2")}
         if task == "assessment":
-            context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS)
+            supplement = (security_engine.policy.instructions(task)
+                          if context["task_contract"] == security_engine.TASK_CONTRACT else "")
+            context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS + supplement)
         cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
         cached = saved.get(key, {})
@@ -666,6 +670,8 @@ def perform(scan_id, claim):
             checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
                        **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
                        **({"source_packing": cached["source_packing"]} if "source_packing" in cached else {}),
+                       **({"context_paths": cached["context_paths"]} if "context_paths" in cached else {}),
+                       **({"source_navigation": cached["source_navigation"]} if "source_navigation" in cached else {}),
                        **({"proposal": context["proposal"]} if task == "assessment" else {}))
             return cached["result"]
         with transaction() as db:
@@ -681,6 +687,11 @@ def perform(scan_id, claim):
             used = row.progress.get("tokens")
             packing = row.progress.get("tasks", {}).get(key, {}).get("source_packing",
                 saved.get(key, {}).get("source_packing"))
+            navigation = None
+            for prior in (row.progress.get("tasks", {}).get(key, {}), saved.get(key, {})):
+                if prior.get("input_hash") == identity and "source_navigation" in prior:
+                    navigation = prior["source_navigation"]
+                    break
         if used is None:
             raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
         remaining = None if limits["token_budget"] is None else limits["token_budget"] - used
@@ -695,6 +706,12 @@ def perform(scan_id, claim):
         try:
             def select_packing(value):
                 return checkpoint(scan_id, key, "running", source_packing=value)["source_packing"]
+
+            def select_navigation(value):
+                return checkpoint(scan_id, key, "running", source_navigation=value)["source_navigation"]
+
+            def record_sources(paths):
+                checkpoint(scan_id, key, "running", context_paths=paths)
 
             def infer(context, *, schema, instructions, validator, budget, timeout, round):
                 from code_mortis.core.workflow_inference import execute
@@ -727,7 +744,9 @@ def perform(scan_id, claim):
                                                 remaining, timeout(), stopped, uid(),
                                                 **({"configuration_managed": True} if parallel else {}),
                                                 **({"infer": infer, "source_packing": packing, "output_token_policy": token_policy,
-                                                    "select_packing": select_packing} if mortis else {}))
+                                                    "select_packing": select_packing, "navigation": navigation,
+                                                    "select_navigation": select_navigation, "record_sources": record_sources}
+                                                   if mortis else {}))
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
@@ -876,12 +895,19 @@ def perform(scan_id, claim):
                     with transaction() as db:
                         history = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
                             SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id))]
-                        used = db.get(SecurityScan, scan_id).progress.get("tokens")
+                        current_progress = db.get(SecurityScan, scan_id).progress
+                        used = current_progress.get("tokens")
                     batch = assessment_batch(remaining, history, item, concurrency)
-                    contexts = {candidate.id: {"proposal": candidate.proposal,
-                        "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
-                        "sources": {"current": {citation["path"]: item.source(citation["path"])
-                                   for citation in candidate.proposal["evidence"]}}} for candidate in batch}
+                    contexts = {}
+                    for candidate in batch:
+                        paths = list(dict.fromkeys(citation["path"] for citation in candidate.proposal["evidence"]))
+                        if mortis and config.get("task_contract") == security_engine.TASK_CONTRACT:
+                            analysis_task = current_progress.get("tasks", {}).get("analysis:" + candidate.proposal["path"], {})
+                            # Assess with the same source context, including guards not quoted in the allegation.
+                            paths = sorted(set(paths) | set(analysis_task.get("context_paths", [])))
+                        contexts[candidate.id] = {"proposal": candidate.proposal,
+                            "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
+                            "sources": {"current": {path: item.source(path) for path in paths}}}
                     needed = sum(task_input("assessment", contexts[row.id], f"assessment:{row.id}")[2] is None for row in batch)
                     if used is None:
                         raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
