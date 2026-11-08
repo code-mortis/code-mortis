@@ -117,6 +117,8 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
               "policy": security_engine.POLICY, "rating_policy": RATING_POLICY,
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
     config.update(engine_snapshot(parent.config if parent else repo.settings))
+    if parent is None or "task_contract" in parent.config:
+        config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
     if not config["connection"]["model"]:
         raise ValueError("Choose a model before starting a security scan.")
@@ -291,6 +293,8 @@ def checkpoint(scan_id, key, state, **values):
             scan.cancel_requested = True
             raise ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
+        if "source_packing" in values and "source_packing" in tasks.get(key, {}):
+            values["source_packing"] = tasks[key]["source_packing"]
         tasks[key] = {**tasks.get(key, {}), "status": state, **values}
         previous = scan.progress.get("tokens", 0)
         if values.get("tokens") is None and "tokens" in values:
@@ -300,6 +304,7 @@ def checkpoint(scan_id, key, state, **values):
         scan.progress = {**scan.progress, "tasks": tasks, "tokens": previous}
     if authorization_error is not None:
         raise authorization_error
+    return tasks[key]
 
 
 def stage(scan_id, name, status, **values):
@@ -620,7 +625,8 @@ def perform(scan_id, claim):
         return max(1, int(limits["timeout_seconds"] - (time.monotonic() - started))) if limits["timeout_seconds"] is not None else None
 
     def task_input(task, context, key):
-        context = {**context, "language": config.get("language", "English"), "task_contract": security_engine.TASK_CONTRACT}
+        context = {**context, "language": config.get("language", "English"),
+                   "task_contract": config.get("task_contract", "security-task/v2")}
         if task == "assessment":
             context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS)
         cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
@@ -635,6 +641,7 @@ def perform(scan_id, claim):
         if cached is not None:
             checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
                        **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
+                       **({"source_packing": cached["source_packing"]} if "source_packing" in cached else {}),
                        **({"proposal": context["proposal"]} if task == "assessment" else {}))
             return cached["result"]
         with transaction() as db:
@@ -648,16 +655,23 @@ def perform(scan_id, claim):
                 raise ReviewStopped(_pat.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
+            packing = row.progress.get("tasks", {}).get(key, {}).get("source_packing",
+                saved.get(key, {}).get("source_packing"))
         if used is None:
             raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
         remaining = None if limits["token_budget"] is None else limits["token_budget"] - used
         if allowance is not None:
             remaining = min(remaining, allowance)
-        if remaining is not None and remaining <= 0:
+        if remaining is not None and remaining <= 0 and not mortis:
             raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": 0})
+        if remaining is not None:
+            remaining = max(0, remaining)
         checkpoint(scan_id, key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
         usage = {}
         try:
+            def select_packing(value):
+                return checkpoint(scan_id, key, "running", source_packing=value)["source_packing"]
+
             def infer(context, *, schema, instructions, validator, budget, timeout, round):
                 from code_mortis.core.workflow_inference import execute
 
@@ -684,7 +698,8 @@ def perform(scan_id, claim):
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
                                                 **({"configuration_managed": True} if parallel else {}),
-                                                **({"infer": infer} if mortis else {}))
+                                                **({"infer": infer, "source_packing": packing,
+                                                    "select_packing": select_packing} if mortis else {}))
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result

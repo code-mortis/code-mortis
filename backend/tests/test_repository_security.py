@@ -278,7 +278,7 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
         tasks = {}
         for path in paths[1:]:
             context = {"assigned_path": path, "head_sha": SHA, "diff": "", "sources": {"current": {path: "safe"}},
-                "language": "English", "task_contract": "obsolete" if obsolete else "security-task/v2"}
+                "language": "English", "task_contract": "obsolete" if obsolete else config.get("task_contract", "security-task/v2")}
             tasks["analysis:" + path] = {"status": "completed", "tokens": 1,
                 "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}
         parent.status, parent.progress = "partial", {"tokens": 2, "tasks": tasks}
@@ -1915,9 +1915,10 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, securi
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Completed legacy analysis must be reused"))
     with transaction() as db:
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
-        config = {**parent.config, "limits": {"token_budget": None, "timeout_seconds": None}}
+        config = {key: value for key, value in parent.config.items() if key != "task_contract"}
+        config["limits"] = {"token_budget": None, "timeout_seconds": None}
         context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},
-                   "language": "English", "task_contract": security_engine.TASK_CONTRACT}
+                   "language": "English", "task_contract": "security-task/v2"}
         parent.config, parent.status = config, "partial"
         parent.progress = {"tokens": 12, "tasks": {"analysis:app.py": {"status": "completed", "tokens": 12,
             "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}}}
@@ -1926,6 +1927,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, securi
         retry = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid(),
             **({"concurrency": concurrency} if concurrency else {})), parent=parent)
         identity = retry.id
+        assert "task_contract" not in retry.config
         assert retry.config["limits"]["concurrency"] == (concurrency or 1)
     security.perform(identity, "test:1")
     with transaction() as db:

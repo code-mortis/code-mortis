@@ -21,9 +21,10 @@ from code_mortis.core.db import now
 from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import clean_text, digest, safe_repo_name
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import runner_client
+from code_mortis.integrations import llm, runner_client
 from code_mortis.reviews import verification
 from code_mortis.schemas.common import ReviewComment
+from code_mortis.schemas.inference import Message, Request
 from code_mortis.schemas.security import (
     SecurityAnalysis,
     SecurityAnalysisSelection,
@@ -35,7 +36,7 @@ from code_mortis.schemas.security import (
 
 POLICY = "code-mortis.security/v1"
 CITATION_CONTRACT = "source-selection/v1"
-TASK_CONTRACT = "security-task/v2"
+TASK_CONTRACT = "security-task/v3"
 SEVERITIES = {"low", "medium", "high", "critical"}
 EXCLUDED = {".git", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
 CODE_EXTENSIONS = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".rb",
@@ -575,8 +576,9 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
-        *, configuration_managed=False, infer=None):
+        *, configuration_managed=False, infer=None, source_packing=None, select_packing=None):
     require_shared(connection)
+    deadline = time.monotonic() + timeout if timeout is not None else None
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
         and PurePosixPath(path).name not in INSTRUCTION_FILES and redacted_context(item, path) == path)})
@@ -599,6 +601,67 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                          "of a fix. Fixed requires original_issue_present, an actual source change, original/current citations, "
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
     }[task]
+
+    def supplied_context(feedback=None):
+        catalog = {}
+        for revision, sources in sorted(context["sources"].items()):
+            for path, source in sorted(sources.items()):
+                reference = source_ids.setdefault((revision, path), f"source_{len(source_ids) + 1}")
+                catalog[reference] = {"revision": revision, "path": path, "line_count": len(source.splitlines())}
+        selection_schema = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
+        selection_schema["source_id"]["enum"] = list(catalog) or ["unavailable"]
+        selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
+        for name in ("start_line", "end_line"):
+            selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
+        return redacted_context(item, {**context, "citation_sources": catalog,
+            **({"validation_feedback": feedback} if feedback else {})})
+
+    def supporting_sources():
+        paths = [path for path in context["available_paths"] if item.inventory[path].get("code")]
+        sources = dict(context["sources"]["current"])
+        if len(set(paths) | set(sources)) > 16 or not any(path not in sources for path in paths):
+            return None
+        for path in paths:
+            if path not in sources:
+                if stopped():
+                    raise ReviewStopped("Security scan cancelled.")
+                sources[path] = item.source(path)
+            if sum(len(text.encode()) for text in sources.values()) > 32768:
+                return None
+        return sources
+
+    # Pin the choice before dispatch: peer consumption or transient reads cannot change replay inputs.
+    if infer is not None and context.get("task_contract") == TASK_CONTRACT and task in {"analysis", "assessment"}:
+        original, sources, selected = context["sources"], None, False
+        if source_packing is not False:
+            try:
+                sources = supporting_sources()
+                if sources is not None:
+                    from code_mortis.core.workflow_inference import schema_for_transport
+                    from code_mortis.reviews import context as review_context
+
+                    context["sources"] = {**original, "current": sources}
+                    packed = review_context.sanitize(supplied_context(), credentials, stopped)
+                    request = Request(instructions=review_context.sanitize(instructions, credentials, stopped),
+                        messages=[Message(role="user", content=verification.evidence_bundle(packed))],
+                        output_schema=schema_for_transport(schema), max_output_tokens=8192, effort="high")
+                    required = llm.reservation(connection, request) + request.max_output_tokens
+                    selected = source_packing is True or budget is None or required <= budget
+            except (ValueError, verification.VerificationOutputError):
+                if source_packing is True:
+                    raise
+            finally:
+                context["sources"] = original
+                source_ids.clear()
+        if source_packing is True and not selected:
+            raise verification.VerificationOutputError("The pinned security supporting source is unavailable.", {"tokens": 0})
+        if select_packing is not None:
+            selected = select_packing(selected)
+        if selected:
+            sources = sources if sources is not None else supporting_sources()
+            if sources is None:
+                raise verification.VerificationOutputError("The pinned security supporting source is unavailable.", {"tokens": 0})
+            context["sources"] = {**original, "current": sources}
 
     def validate(raw, supplied):
         try:
@@ -661,29 +724,17 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             {"tokens": used}, feedback={"kind": "evidence", "task": task, "required_paths": paths, "reason": reason},
         )
 
-    deadline = time.monotonic() + timeout if timeout is not None else None
     for attempt in range(4):
         if stopped():
             raise ReviewStopped("Security scan cancelled.")
-        remaining = None if budget is None else budget - used
-        if remaining is not None and remaining <= 0:
+        remaining = None if budget is None else max(0, budget - used)
+        if remaining is not None and remaining <= 0 and infer is None:
             raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": used}, "skipped")
         remaining_time = max(0, int(deadline - time.monotonic())) if deadline is not None else None
         if remaining_time is not None and remaining_time <= 0:
             raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
-        catalog = {}
-        for revision, sources in sorted(context["sources"].items()):
-            for path, source in sorted(sources.items()):
-                reference = source_ids.setdefault((revision, path), f"source_{len(source_ids) + 1}")
-                catalog[reference] = {"revision": revision, "path": path, "line_count": len(source.splitlines())}
-        selection_schema = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
-        selection_schema["source_id"]["enum"] = list(catalog) or ["unavailable"]
-        selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
-        for name in ("start_line", "end_line"):
-            selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
         try:
-            request_context = redacted_context(item, {**context, "citation_sources": catalog,
-                **({"validation_feedback": feedback} if feedback else {})})
+            request_context = supplied_context(feedback)
         except verification.VerificationOutputError as exc:
             exc.usage = {"tokens": used}
             raise

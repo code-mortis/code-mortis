@@ -655,7 +655,8 @@ def save_analysis(run_id, claim, status, report, comments):
         if status in {"failed", "skipped"}:
             run.publication = "not_applicable"
             if status == "failed":
-                run.error = "OCR did not complete the selected review scope. Inspect coverage and retry the review."
+                engine = "Mortis" if run.config.get("analysis_engine") == "mortis" else "OCR"
+                run.error = f"{engine} did not complete the selected review scope. Inspect coverage and retry the review."
         if assessment.enabled(run):
             for position, comment in enumerate(comments):
                 db.add(ReviewCandidate(run_id=run.id, position=position, snapshot=comment))

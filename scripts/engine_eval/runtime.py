@@ -650,6 +650,7 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
         User,
     )
     from code_mortis.reviews import assessment, context, service
+    from code_mortis.security_scans import engine as security_engine
     from code_mortis.security_scans.service import STAGES
 
     # A fresh database or our exact sentinel only. No schema reset, truncation or migrations here.
@@ -757,7 +758,8 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
                 "analysis_engine": arm,
                 "connection": config["connection"],
                 "limits": manifest["security_limits"],
-                "policy": __import__("code_mortis.security_scans.engine", fromlist=["POLICY"]).POLICY,
+                "policy": security_engine.POLICY,
+                "task_contract": security_engine.TASK_CONTRACT,
                 "rating_policy": "highest-unresolved-severity/v1",
                 "trivy_version": "0.76.0",
                 "language": options["language"],

@@ -195,6 +195,27 @@ def test_worker_credentials_never_accept_public_file(tmp_path, monkeypatch):
     assert runtime.read_credentials()["api_key"] == "synthetic-only"
 
 
+@pytest.mark.parametrize("arm", ["ocr", "mortis"])
+def test_worker_pins_current_contract_for_new_security_attempt(evaluation, arm):
+    from code_mortis.core.db import transaction
+    from code_mortis.models import SecurityScan
+    from code_mortis.schemas.common import RepoSettings
+    from code_mortis.security_scans import engine as security_engine
+
+    manifest, case, _ = evaluation
+    manifest["case_deadline_seconds"] = 1800
+    case["workload"] = "security"
+    attempt_id = "new-security-" + arm
+    runtime.create_attempt(
+        manifest, case, arm, {"api_key": "synthetic-only", "extra_headers": {}},
+        RepoSettings(analysis_engine=arm).model_dump(), attempt_id,
+    )
+    with transaction() as db:
+        scan = db.get(SecurityScan, attempt_id)
+        assert scan.config["analysis_engine"] == arm
+        assert scan.config["task_contract"] == security_engine.TASK_CONTRACT
+
+
 def test_worker_checks_review_scope_without_rejecting_internal_scan_preview(evaluation, monkeypatch):
     from code_mortis.integrations import ocr
 

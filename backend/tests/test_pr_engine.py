@@ -137,6 +137,32 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
     assert engine.validate_result(final(batch), batch, batch.sources, dict(CREDENTIALS))["comments"] == []
 
 
+@pytest.mark.parametrize("source_ending,code_ending,terminal_newline,matches", [
+    ("\r\n", "\r\n", True, False), ("\r\n", "\r\n", False, False),
+    ("\r\n", "\n", False, True), ("\r\n", "\n", True, True),
+    ("\n", "\n", True, True), ("\n", "\n", False, True),
+])
+def test_exact_source_code_uses_supplied_line_endings_and_terminal_newlines(source_ending, code_ending, terminal_newline, matches):
+    lines = ["def choose_port():", "    return 443"]
+    source = source_ending.join(lines) + source_ending
+    batch = prepared(plan([unit("ports.py", start=12, source=source)]))[0]
+    item = finding(batch)
+    item.update(end_line=13, existing_code=code_ending.join(lines) + (code_ending if terminal_newline else ""))
+    item["evidence"][0]["end_line"] = 13
+    # Preparation strips control characters, so even CRLF repositories supply LF source to the provider.
+    assert batch.sources[0]["text"] == "\n".join(lines) + "\n"
+    if not matches:
+        with pytest.raises(engine.ResultValidationError):
+            engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+        return
+    result = engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+    assert result["comments"][0]["existing_code"] == item["existing_code"]
+    item["existing_code"] = item["existing_code"].replace("443", "8443")
+    with pytest.raises(engine.ResultValidationError) as error:
+        engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+    assert error.value.issue["code"] == "existing_code_mismatch"
+
+
 def test_split_fragments_need_every_result_before_file_coverage(monkeypatch):
     one, two, other = unit(), unit(key="u2", start=2), unit("readme.md", key="u3")
     value = plan([one, two, other])
@@ -177,6 +203,137 @@ def test_one_schema_repair_is_bounded_and_never_counts_invalid_result(monkeypatc
     assert len(ledger.calls) == 2 and len(ledger.appended) == 1
     assert "validation_feedback" in ledger.calls[1].messages[1].content
     assert all("Incorrect" not in json.dumps(row["result"]) for row in ledger.rows.values())
+    validation = ledger.rows[batches[0].key]["result"]["validation"]
+    assert validation["issues"][0]["code"] == "assigned_coverage"
+    assert json.loads(ledger.calls[1].messages[1].content)["validation_diagnostics"] == validation
+    assert result[1]["units"][0]["validation"] == validation
+
+
+@pytest.mark.parametrize("case,code,field", [
+    ("identity", "task_identity", ["task_key"]),
+    ("coverage", "assigned_coverage", ["completed_units"]),
+    ("duplicate", "assigned_coverage", ["completed_units"]),
+    ("unit", "finding_scope", ["findings", 0]),
+    ("path", "finding_scope", ["findings", 0]),
+    ("range", "finding_scope", ["findings", 0]),
+    ("trigger", "empty_explanation", ["findings", 0, "trigger"]),
+    ("consequence", "empty_explanation", ["findings", 0, "consequence"]),
+    ("source", "unavailable_citation", ["findings", 0, "evidence", 0]),
+    ("source_range", "unavailable_citation", ["findings", 0, "evidence", 0]),
+    ("blank_source", "empty_citation", ["findings", 0, "evidence", 0]),
+    ("local_source", "missing_local_citation", ["findings", 0, "evidence"]),
+    ("code", "existing_code_mismatch", ["findings", 0, "existing_code"]),
+    ("missing", "schema_missing", ["findings", 0, "trigger"]),
+    ("type", "schema_int_type", ["findings", 0, "start_line"]),
+    ("extra", "schema_extra_forbidden", ["findings", 0, "unexpected_field"]),
+    ("unsafe_path", "schema_value_error", ["findings", 0, "path"]),
+    ("ordered_lines", "schema_value_error", ["findings", 0]),
+    ("ordered_evidence", "schema_value_error", ["findings", 0, "evidence", 0]),
+])
+def test_independent_development_contract_rejections_have_safe_precise_diagnostics(case, code, field):
+    # Synthetic development source, independent of the frozen evaluation corpus.
+    batch = prepared(plan([unit("ports.py", source="def parse_port(raw):\n\n    return int(raw)\n")]))[0]
+    value = final(batch, [finding(batch)])
+    item, evidence = value["findings"][0], value["findings"][0]["evidence"][0]
+    secret = "fixture-key PRIVATE_RESPONSE_MARKER"
+    if case == "identity":
+        value["task_key"] = secret
+    elif case == "coverage":
+        value["completed_units"] = []
+    elif case == "duplicate":
+        value["completed_units"] *= 2
+    elif case == "unit":
+        item["unit_key"] = secret
+    elif case == "path":
+        item["path"] = "foreign.py"
+    elif case == "range":
+        item["end_line"] = 4
+    elif case in {"trigger", "consequence"}:
+        item[case] = "   "
+    elif case == "source":
+        evidence["source_id"] = secret
+    elif case == "source_range":
+        evidence["end_line"] = 4
+    elif case in {"blank_source", "local_source"}:
+        evidence["start_line"] = evidence["end_line"] = 2 if case == "blank_source" else 3
+    elif case == "code":
+        item["existing_code"] = secret
+    elif case == "missing":
+        del item["trigger"]
+    elif case == "type":
+        item["start_line"] = secret
+    elif case == "extra":
+        item[secret] = secret
+    elif case == "unsafe_path":
+        item["path"] = "../" + secret
+    elif case == "ordered_lines":
+        item.update(start_line=2, end_line=1)
+    else:
+        evidence.update(start_line=2, end_line=1)
+    with pytest.raises(ValueError) as error:
+        engine.validate_result(value, batch, batch.sources, dict(CREDENTIALS))
+    diagnostics = engine._validation_feedback(error.value)
+    assert diagnostics["issues"][0]["code"] == code
+    assert diagnostics["issues"][0]["field"] == field
+    assert not diagnostics["truncated"]
+    assert "fixture-key" not in json.dumps(diagnostics) and "PRIVATE_RESPONSE_MARKER" not in json.dumps(diagnostics)
+
+
+def test_schema_diagnostics_are_bounded_even_for_many_hostile_extra_fields(monkeypatch):
+    value, batches = plan(), prepared()
+    invalid = final(batches[0]) | {f"fixture-key-{index}-" + "x" * 1000: "PRIVATE_RESPONSE_MARKER" for index in range(30)}
+    result, ledger = run(monkeypatch, value, batches, [response(invalid), response(invalid)])
+    diagnostics = ledger.rows[batches[0].key]["result"]["validation"]
+    assert diagnostics["truncated"] and len(diagnostics["issues"]) == 8
+    stored = json.dumps([row["result"] for row in ledger.rows.values()])
+    assert len(stored) < 5000 and "fixture-key" not in stored and "PRIVATE_RESPONSE_MARKER" not in stored
+    assert result[0] == "failed" and len(ledger.calls) == 2
+    fallback = engine._validation_feedback(ValueError("fixture-key PRIVATE_EXCEPTION_MARKER"))
+    assert fallback["issues"][0]["code"] == "invalid_result"
+    assert "PRIVATE_EXCEPTION_MARKER" not in json.dumps(fallback)
+
+
+def test_repair_can_complete_without_persisting_rejected_provider_text_and_replays(monkeypatch):
+    value, batches = plan(), prepared()
+    invalid = final(batches[0], [finding(batches[0])])
+    invalid["findings"][0]["existing_code"] = "fixture-key PRIVATE_RESPONSE_MARKER"
+    result, ledger = run(monkeypatch, value, batches, [response(invalid), response(final(batches[0]))])
+    assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 24
+    repair = json.loads(ledger.calls[1].messages[1].content)
+    assert repair["validation_diagnostics"]["issues"][0]["code"] == "existing_code_mismatch"
+    assert "PRIVATE_RESPONSE_MARKER" not in json.dumps([repair, ledger.rows])
+    again, ledger = run(monkeypatch, value, batches, [], ledger=ledger)
+    assert again == result and len(ledger.calls) == 2 and len(ledger.appended) == 1
+
+
+def test_legacy_feedback_replays_its_already_settled_repair_without_replacing_inputs(monkeypatch):
+    value, batches = plan(), prepared()
+    batch = batches[0]
+    ledger = Ledger(batches, [])
+    ledger.rows[batch.key].update(status="completed", result={"kind": "feedback", "code": "invalid_result"}, usage_tokens=7)
+    # Freeze the pre-diagnostics repair exactly as historical task rows did.
+    payload = {"supporting_sources": [], "source_read_results": [], "validation_feedback": (
+        "The preceding result did not satisfy the required task identity, complete assigned coverage, "
+        "finding scope or exact source evidence. Return a complete valid result using the supplied schema.")}
+    request = batch.request.model_copy(update={"messages": [batch.request.messages[0],
+        engine.Message(role="user", content=json.dumps(payload, ensure_ascii=False))]})
+    spec = engine._followup_spec(batch, request, batch.key, 1)
+    ledger.register(spec, request, parent_key=batch.key)
+    ledger.rows[spec.key].update(status="completed", result=engine.validate_result(final(batch), batch,
+                                batch.sources, dict(CREDENTIALS)), usage_tokens=13)
+    ledger.appended.clear()
+    result, ledger = run(monkeypatch, value, batches, [], ledger=ledger)
+    assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 20
+    assert not ledger.calls and not ledger.appended
+
+
+def test_unknown_usage_feedback_retains_diagnostics_without_automatic_repair(monkeypatch):
+    value, batches = plan(), prepared()
+    result, ledger = run(monkeypatch, value, batches, [response(final(batches[0]) | {"completed_units": []}, tokens=None)])
+    assert result[0] == "failed" and result[1]["summary"]["total_tokens"] is None
+    assert result[1]["units"][0]["error"] == "usage_unknown"
+    assert result[1]["units"][0]["validation"]["issues"][0]["code"] == "assigned_coverage"
+    assert len(ledger.calls) == 1 and not ledger.appended
 
 
 @pytest.mark.parametrize("code, tokens", [("malformed_response", 12), ("transport_error", None)])
@@ -262,6 +419,54 @@ def test_source_tool_rejects_unsafe_paths_and_unbounded_ranges(monkeypatch, argu
     with pytest.raises(ValueError):
         engine.read_sources([ToolCall(id="call", name="read_source", arguments=arguments)], repo=None, env={},
             plan=plan(), options=OPTIONS, credentials=dict(CREDENTIALS), authorize=lambda: None, stopped=lambda: False)
+
+
+@pytest.mark.parametrize("case,code,field", [
+    ("name", "source_tool", ["tool_calls", 0, "name"]),
+    ("arguments", "source_arguments", ["tool_calls", 0, "arguments"]),
+    ("path_type", "source_path", ["tool_calls", 0, "arguments", "path"]),
+    ("path", "source_path", ["tool_calls", 0, "arguments", "path"]),
+    ("range", "source_range", ["tool_calls", 0, "arguments"]),
+    ("count", "source_call_limit", ["tool_calls"]),
+])
+def test_invalid_tool_requests_provide_actionable_bounded_repair_context(monkeypatch, case, code, field):
+    install_source_reads(monkeypatch)
+    value, batches = plan(), prepared()
+    output = tool_response()
+    call = output.tool_calls[0]
+    if case == "name":
+        call.name = "fixture-key PRIVATE_TOOL_MARKER"
+    elif case == "arguments":
+        call.arguments["fixture-key PRIVATE_TOOL_MARKER"] = "PRIVATE_TOOL_MARKER"
+    elif case == "path_type":
+        call.arguments["path"] = ["fixture-key PRIVATE_TOOL_MARKER"]
+    elif case == "path":
+        call.arguments["path"] = "../fixture-key PRIVATE_TOOL_MARKER"
+    elif case == "range":
+        call.arguments["end_line"] = 500
+    else:
+        output.tool_calls *= 11
+    result, ledger = run(monkeypatch, value, batches, [output, response(final(batches[0]))])
+    diagnostics = ledger.rows[batches[0].key]["result"]["validation"]
+    assert diagnostics["issues"][0]["code"] == code and diagnostics["issues"][0]["field"] == field
+    assert result[0] == "completed" and len(ledger.calls) == 2
+    assert json.loads(ledger.calls[1].messages[1].content)["validation_diagnostics"] == diagnostics
+    assert "PRIVATE_TOOL_MARKER" not in json.dumps([ledger.rows, ledger.calls[1].model_dump()])
+
+
+def test_revocation_during_tool_validation_is_not_accepted_as_repair_feedback(monkeypatch):
+    install_source_reads(monkeypatch)
+    value, batches = plan(), prepared()
+    ledger = Ledger(batches, [tool_response()])
+    monkeypatch.setattr(llm, "execute_task", ledger.execute)
+
+    def revoked():
+        raise ValueError("fixture-key PRIVATE_AUTH_MARKER")
+
+    with pytest.raises(PermissionError, match="authorization"):
+        engine.review(None, {}, value, batches, job_id="job", job_attempt=1, credentials=dict(CREDENTIALS),
+            authorize=revoked, register_task=ledger.register, load_task=ledger.rows.get)
+    assert ledger.rows[batches[0].key]["result"] is None and not ledger.appended
 
 
 def test_resumed_expansion_refuses_changed_blob(monkeypatch):
@@ -383,12 +588,14 @@ def test_source_authorization_failure_cannot_be_normalized_into_schema_feedback(
             credentials=dict(CREDENTIALS), authorize=revoked, stopped=lambda: False)
 
 
-def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch):
+@pytest.mark.parametrize("repair", [False, True])
+def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair):
     import httpx
     from sqlalchemy import select
     from test_analysis_foundation import planned as plan_gateway
     from test_llm_http import result as wire_result
 
+    from code_mortis.core import analysis
     from code_mortis.core.db import transaction
     from code_mortis.integrations import llm_http
     from code_mortis.models import AnalysisAttempt, AnalysisTask, InferenceAdmission
@@ -400,12 +607,16 @@ def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch):
     batch = batches[0]
     plan_id, identities = plan_gateway(seed, connection=snapshot,
         revisions={"base": value.base_sha, "head": value.head_sha, "merge_base": value.merge_base},
-        tasks=[batch.spec.model_dump(mode="json")], budgets={"analysis": 100_000}, settings={"concurrency": 1})
+        tasks=[batch.spec.model_dump(mode="json")], budgets={"analysis": 100_000},
+        settings={"concurrency": 1, "max_evidence_rounds": 2})
     wire, checks = [], []
 
     def handler(message):
         wire.append(json.loads(message.content))
-        return httpx.Response(200, json=wire_result("openai", content=json.dumps(final(batch, [finding(batch)]))))
+        output = final(batch, [finding(batch)])
+        if repair and len(wire) == 1:
+            output["findings"][0]["existing_code"] = "fixture-key PRIVATE_WIRE_MARKER"
+        return httpx.Response(200, json=wire_result("openai", content=json.dumps(output)))
 
     def load(key):
         with transaction() as db:
@@ -415,19 +626,36 @@ def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch):
             return {"id": task.id, "status": task.status, "result": task.result,
                     "input_hash": task.input_hash, "usage_tokens": attempt.usage_tokens if attempt else None}
 
+    def register(spec, request, *, parent_key):
+        assert spec.input_hash == llm.input_fingerprint(request)
+        with transaction() as db:
+            task = analysis.append_task(db, "analysis-job", 1, identities[parent_key], spec)
+            identities[spec.key] = task.id
+            return task.id
+
     monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
     result = engine.review(None, {}, value, batches, job_id="analysis-job", job_attempt=1,
         credentials=dict(CREDENTIALS), authorize=lambda: checks.append(True),
-        register_task=lambda *_args, **_kwargs: pytest.fail("Final result needs no source expansion"), load_task=load)
-    assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 12
+        register_task=register, load_task=load)
+    calls = 2 if repair else 1
+    assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 12 * calls
     assert len(result[2]) == 1 and result[2][0]["evidence"][0]["quote"] == "value = 1"
-    assert len(wire) == 1 and wire[0]["model"] == snapshot["model"] and len(checks) == 3
+    assert len(wire) == calls and wire[0]["model"] == snapshot["model"] and len(checks) == 3 * calls
     with transaction() as db:
         task = db.get(AnalysisTask, identities[batch.key])
-        assert task.plan_id == plan_id and task.result["kind"] == "final" and task.status == "completed"
+        assert task.plan_id == plan_id and task.result["kind"] == ("feedback" if repair else "final") and task.status == "completed"
+        if repair:
+            assert task.result["validation"]["issues"][0]["code"] == "existing_code_mismatch"
+            assert "PRIVATE_WIRE_MARKER" not in json.dumps(task.result)
+            children = [child for child in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id))
+                        if child.dependencies == [task.id]]
+            assert len(children) == 1 and children[0].result["kind"] == "final"
         ticket = db.scalar(select(InferenceAdmission).where(InferenceAdmission.task_id == task.id))
         assert ticket.status == "released"
+    replay = engine.review(None, {}, value, batches, job_id="analysis-job", job_attempt=1,
+        credentials=dict(CREDENTIALS), authorize=lambda: None, register_task=register, load_task=load)
+    assert replay == result and len(wire) == calls
 
 
 def test_file_limit_preserves_existing_manifest_waiver_contract_and_no_dispatch(monkeypatch):

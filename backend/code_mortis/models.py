@@ -328,7 +328,7 @@ class Finding(Base):
     path: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     severity: Mapped[str] = mapped_column(String(20), default="medium")
-    category: Mapped[str] = mapped_column(String(30), default="other")
+    category: Mapped[str] = mapped_column(String(50), default="other")
     start_line: Mapped[int] = mapped_column(Integer)
     end_line: Mapped[int] = mapped_column(Integer)
     existing_code: Mapped[str] = mapped_column(Text, default="")

@@ -40,6 +40,21 @@ from code_mortis.schemas.inference import ToolCall
 CREDENTIALS = {"api_key": "synthetic-provider-value", "extra_headers": {}}
 
 
+@pytest.mark.parametrize(("selected", "label"), [("mortis", "Mortis"), ("ocr", "OCR")])
+def test_failed_analysis_names_selected_engine(scenario, selected, label):
+    from code_mortis.reviews.service import save_analysis
+
+    with transaction() as db:
+        run = db.get(ReviewRun, "mortis-run")
+        run.config = {**run.config, "analysis_engine": selected}
+    save_analysis("mortis-run", "mortis-job:1", "failed", {"errors": ["invalid_result"]}, [])
+    with transaction() as db:
+        run = db.get(ReviewRun, "mortis-run")
+        assert run.error == f"{label} did not complete the selected review scope. Inspect coverage and retry the review."
+        assert run.publication == "not_applicable"
+        assert run.progress["analysis_status"] == "failed"
+
+
 @pytest.fixture
 def scenario(seed, tmp_path, monkeypatch):
     root = tmp_path / "fixture"

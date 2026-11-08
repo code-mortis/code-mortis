@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, ValidationError, model_validator
 
 from code_mortis.core import analysis, inference_admission
 from code_mortis.core import source as git_source
@@ -67,6 +67,33 @@ class BatchResult(StrictModel):
     task_key: str
     completed_units: list[str] = Field(max_length=500)
     findings: list[EngineFinding] = Field(max_length=500)
+
+
+class ResultValidationError(ValueError):
+    def __init__(self, code, field, message):
+        super().__init__(message)
+        self.issue = {"code": code, "field": field, "message": message}
+
+
+def _validation_feedback(exc):
+    """Persist contract diagnostics, never provider values, extra-field names or exception text."""
+    if isinstance(exc, ResultValidationError):
+        return {"issues": [exc.issue], "truncated": False}
+    if isinstance(exc, ValidationError):
+        fields = set(BatchResult.model_fields) | set(EngineFinding.model_fields) | set(EvidenceSelection.model_fields)
+        codes = {"missing", "extra_forbidden", "string_type", "int_type", "list_type", "dict_type",
+                 "model_type", "literal_error", "greater_than_equal", "less_than_equal", "too_long",
+                 "too_short", "string_too_long", "string_too_short", "value_error"}
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        issues = [{"code": "schema_" + (error["type"] if error["type"] in codes else "invalid"),
+                   "field": [part if isinstance(part, int) or part in fields else "unexpected_field"
+                             for part in error["loc"][:8]],
+                   "message": "Use the required field types, bounds and values in the supplied result schema."}
+                  for error in errors[:8]]
+        return {"issues": issues, "truncated": len(errors) > 8}
+    return {"issues": [{"code": "invalid_result", "field": [],
+                        "message": "Return a complete result satisfying the supplied schema and exact source evidence."}],
+            "truncated": False}
 
 
 def output_schema(task_key, units):
@@ -195,37 +222,48 @@ def validate_result(data, batch, sources, credentials, stopped=lambda: False):
     """Build citation quotes ourselves; model claims never establish coverage or evidence."""
     value = BatchResult.model_validate(data, strict=True)
     units = {unit.key: unit for unit in batch.units}
-    if (value.task_key != batch.key or len(value.completed_units) != len(set(value.completed_units))
-            or set(value.completed_units) != set(units)):
-        raise ValueError("Assigned units were not completed exactly once")
+    if value.task_key != batch.key:
+        raise ResultValidationError("task_identity", ["task_key"], "Return the exact assigned task_key.")
+    if len(value.completed_units) != len(set(value.completed_units)) or set(value.completed_units) != set(units):
+        raise ResultValidationError("assigned_coverage", ["completed_units"],
+                                    "Include every assigned unit exactly once in completed_units.")
     comments = []
-    for finding in value.findings:
+    for index, finding in enumerate(value.findings):
+        field = ["findings", index]
         unit = units.get(finding.unit_key)
         if (not unit or finding.path != unit.path or finding.start_line < unit.start_line
-                or finding.end_line > unit.end_line or not finding.trigger.strip() or not finding.consequence.strip()):
-            raise ValueError("Finding is outside its assigned source unit")
+                or finding.end_line > unit.end_line):
+            raise ResultValidationError("finding_scope", field,
+                                        "Finding unit_key, path and line range must match its assigned source unit.")
+        for name in ("trigger", "consequence"):
+            if not getattr(finding, name).strip():
+                raise ResultValidationError("empty_explanation", [*field, name], "Provide a nonblank trigger and consequence.")
         citations = []
-        for evidence in finding.evidence:
+        for evidence_index, evidence in enumerate(finding.evidence):
+            evidence_field = [*field, "evidence", evidence_index]
             source = next((source for source in sources if source["source_id"] == evidence.source_id
                            and source["start_line"] <= evidence.start_line <= evidence.end_line <= source["end_line"]), None)
             if source is None:
-                raise ValueError("Finding cites unavailable source or lines")
+                raise ResultValidationError("unavailable_citation", evidence_field,
+                                            "Select source_id and line bounds from the supplied citation sources.")
             lines = source["text"].splitlines()
             quote = "\n".join(lines[evidence.start_line - source["start_line"]:evidence.end_line - source["start_line"] + 1])
             if not quote.strip():
-                raise ValueError("Finding evidence cannot be empty")
+                raise ResultValidationError("empty_citation", evidence_field, "Select a nonblank source range.")
             citations.append({"revision": source["revision"], "path": source["path"],
                               "start_line": evidence.start_line, "end_line": evidence.end_line, "quote": quote})
         if not any(citation["path"] == unit.path and citation["revision"] == unit.source_sha
                    and citation["start_line"] <= finding.end_line and citation["end_line"] >= finding.start_line
                    for citation in citations):
-            raise ValueError("Finding needs evidence at its assigned location")
+            raise ResultValidationError("missing_local_citation", [*field, "evidence"],
+                                        "Include evidence overlapping the finding lines at its assigned path and revision.")
         assigned = next(source for source in sources if source["path"] == unit.path
                         and source["revision"] == unit.source_sha and source["start_line"] == unit.start_line)
         local_start, local_end = finding.start_line - unit.start_line, finding.end_line - unit.start_line + 1
-        code = "\n".join(assigned["text"].splitlines()[local_start:local_end])
-        if not finding.existing_code.strip() or finding.existing_code not in code:
-            raise ValueError("Existing code must match the assigned finding lines")
+        if not finding.existing_code.strip() or not context.quote_matches(
+                assigned["text"], local_start + 1, local_end, finding.existing_code):
+            raise ResultValidationError("existing_code_mismatch", [*field, "existing_code"],
+                                        "Copy nonblank existing_code exactly from the supplied finding lines.")
         comment = finding.model_dump(exclude={"unit_key"})
         comment.update(source_sha=unit.source_sha, inline_line=finding.end_line if finding.end_line in _diff_lines(unit.patch) else None)
         comment["evidence"] = citations
@@ -244,17 +282,26 @@ def read_sources(calls, *, repo, env, plan, options, credentials, authorize, sto
             raise PermissionError("Supporting evidence authorization was revoked") from exc
 
     if not 1 <= len(calls) <= 10:
-        raise ValueError("At most ten supporting source reads are allowed per round")
+        raise ResultValidationError("source_call_limit", ["tool_calls"], "Request one to ten source reads per round.")
     selections, sources, size = [], [], 0
-    for call in calls:
-        if call.name != "read_source" or set(call.arguments) != {"path", "start_line", "end_line"}:
-            raise ValueError("Unsupported source expansion tool")
+    for index, call in enumerate(calls):
+        field = ["tool_calls", index]
+        if call.name != "read_source":
+            raise ResultValidationError("source_tool", [*field, "name"], "Use only the read_source tool.")
+        if set(call.arguments) != {"path", "start_line", "end_line"}:
+            raise ResultValidationError("source_arguments", [*field, "arguments"],
+                                        "Provide exactly path, start_line and end_line as read_source arguments.")
         path, start, end = (call.arguments[key] for key in ("path", "start_line", "end_line"))
         if not isinstance(path, str):
-            raise ValueError("Source path must be a string")
-        git_source.repository_path(path)
+            raise ResultValidationError("source_path", [*field, "arguments", "path"], "Source path must be a canonical relative string.")
+        try:
+            git_source.repository_path(path)
+        except ValueError as exc:
+            raise ResultValidationError("source_path", [*field, "arguments", "path"],
+                                        "Source path must stay inside the repository and be canonical.") from exc
         if type(start) is not int or type(end) is not int or start < 1 or end < start or end - start + 1 > MAX_READ_LINES:
-            raise ValueError("Supporting source range exceeds the read limit")
+            raise ResultValidationError("source_range", [*field, "arguments"],
+                                        "Use integer line bounds with 1 <= start_line <= end_line and at most 400 lines.")
         check_access()
         permitted = path in planning.allowed_context(repo, env, plan.base_sha, plan.head_sha, [path],
                                                     options, stopped, rules=plan.rules)
@@ -302,13 +349,15 @@ def _restore_sources(result, *, repo, env, plan, batch, credentials, authorize, 
     return sources
 
 
-def _next_request(batch, sources, notices, *, repair=False):
+def _next_request(batch, sources, notices, *, repair=False, validation=None):
     payload = {"supporting_sources": sources, "source_read_results": notices}
     if repair:
         payload["validation_feedback"] = (
             "The preceding result did not satisfy the required task identity, complete assigned coverage, "
             "finding scope or exact source evidence. Return a complete valid result using the supplied schema."
         )
+        if validation is not None:
+            payload["validation_diagnostics"] = validation
     return batch.request.model_copy(update={"messages": [batch.request.messages[0],
         Message(role="user", content=json.dumps(payload, ensure_ascii=False))]})
 
@@ -445,8 +494,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                             options=batch.options, credentials=credentials, authorize=authorize, stopped=stopped)
                         return result
                     return validate_result(response.output, batch, sources, credentials, stopped)
-                except ValueError:
-                    return {"kind": "feedback", "code": "invalid_result"}
+                except ValueError as exc:
+                    return {"kind": "feedback", "code": "invalid_result", "validation": _validation_feedback(exc)}
 
             if normalized is None:
                 try:
@@ -499,6 +548,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             if usage is None:
                 for unit in batch.units:
                     outcomes[unit.key] = {"status": "failed", "error": "usage_unknown"}
+                    if normalized.get("validation") is not None:
+                        outcomes[unit.key]["validation"] = normalized["validation"]
                 break
             if normalized["kind"] == "expansion":
                 expansions += 1
@@ -513,8 +564,11 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             else:
                 for unit in batch.units:
                     outcomes[unit.key] = {"status": "failed", "error": normalized.get("code", "invalid_result")}
+                    if normalized.get("validation") is not None:
+                        outcomes[unit.key]["validation"] = normalized["validation"]
                 break
-            request = _next_request(batch, supporting, notices, repair=normalized["kind"] == "feedback")
+            request = _next_request(batch, supporting, notices, repair=normalized["kind"] == "feedback",
+                                    validation=normalized.get("validation"))
             request = request.model_copy(update={"session_id": session_id})
             try:
                 llm.reservation(batch.connection, request)
