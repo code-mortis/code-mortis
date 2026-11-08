@@ -1,0 +1,337 @@
+{
+  "schema": "mortis-engine-acceptance-protocol/v2",
+  "version": "2026-11-08.draft",
+  "status": "pending_heldout_sampling_resources_designated_reviewers_and_controlled_fixture_binding",
+  "approved_by": "owner_delegated_engineering_judgment_2026-11-08",
+  "materiality": {
+    "baseline_calibration_sha256": "6b3cc51a2f911c2af8f63839ce01553f4374f03502846d0c013a0d0bab4152d5",
+    "materiality_decision_sha256": "2adbb5a18e5799297a70393f0168edf9ecd04c5ba5333c77553cd426fac358a9",
+    "calibration_kind": "controlled_ocr_engine_overhead",
+    "rationale": "Owner-delegated engineering caps frozen before paired Mortis diagnostic outputs: BOTH p50 <= OCR +1000ms and <=1.05*OCR; BOTH p95 <= OCR +2000ms and <=1.10*OCR, independently for PR/security and each declared stratum. Separate five-repetition OCR-only quiet-Docker calibration observed PR p50 20.180s (spread 0.327s), security p50 5.647s (spread 0.653s). Noise requires more independent paired evidence rather than wider margins; an additional 10s dispatcher tick is a meaningful regression. Calibration has only one visible family per workload and is not acceptance. No existing pilot ratio determined these caps.",
+    "selected_before_acceptance": true
+  },
+  "bootstrap": {
+    "resamples": 10000,
+    "seed": 20261108,
+    "confidence": 0.95,
+    "minimum_families": 20,
+    "minimum_families_source": "Inherited from unchanged scripts/engine_eval/scoring_protocol.json bootstrap.minimum_families; repetitions are clustered by family_id"
+  },
+  "sampling": {
+    "pr": {
+      "minimum_cases": null,
+      "repetitions": 3,
+      "repetition_rationale": null
+    },
+    "security": {
+      "minimum_cases": null,
+      "repetitions": 3,
+      "repetition_rationale": null
+    }
+  },
+  "strata_rationale": null,
+  "comparisons": [
+    {
+      "workload": "pr",
+      "graph": "off",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "pr",
+      "graph": "off",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "pr",
+      "graph": "on",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "pr",
+      "graph": "on",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "pr",
+      "graph": "gap",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "pr",
+      "graph": "gap",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "off",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "off",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "on",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "on",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "gap",
+      "cache": "cold",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    },
+    {
+      "workload": "security",
+      "graph": "gap",
+      "cache": "warm",
+      "latency": {
+        "p50": {
+          "absolute_ms": 1000,
+          "relative_fraction": 0.05,
+          "combine": "both"
+        },
+        "p95": {
+          "absolute_ms": 2000,
+          "relative_fraction": 0.1,
+          "combine": "both"
+        }
+      }
+    }
+  ],
+  "execution_profile_sha256": null,
+  "required_reliability_checks": [
+    "authorization",
+    "cancellation",
+    "changed_head",
+    "combined_capacity",
+    "coverage",
+    "duplicate_delivery",
+    "endpoint_restrictions",
+    "full_workflow_recovery",
+    "immutable_history",
+    "no_duplicate_publication",
+    "no_fallback",
+    "no_silent_resolution",
+    "production_code_paths",
+    "provider_failure",
+    "resource_headroom",
+    "retained_features",
+    "revocation",
+    "secret_handling",
+    "uncertain_consumption",
+    "uncertain_publication",
+    "worker_loss"
+  ],
+  "required_corpus_strata": [
+    "clean",
+    "critical_defects",
+    "cross_file",
+    "default_parallel_pr",
+    "documentation_config",
+    "excluded_source",
+    "graph_gaps",
+    "historical_defects",
+    "historical_verification",
+    "large_changes",
+    "missing_evidence",
+    "other_languages",
+    "overlapping_workloads",
+    "renames_deletions",
+    "security_above_concurrency",
+    "unsupported_formats"
+  ],
+  "quality_rule": "Unchanged: point precision/recall differences and one-sided 95% family lower bounds >= 0; undefined, no-event, tiny or degenerate samples are inconclusive; all confirmed high/critical defects preserved; unresolved judgments block acceptance.",
+  "latency_rule": "For each declared controlled workload/graph/cache cell and percentile, bootstrap paired independent families. Per draw, both=max(absolute_excess_ms,relative_excess_ms), either=min(...); require one-sided 95% upper excess<=0 with adequate nondegenerate evidence. Live chosen-provider quality timings are descriptive only. Cells/percentiles never compensate; never subtract sums of overlapping provider calls.",
+  "consumption_rule": "Freeze required request, total, input and output token counts; compare paired requests and total tokens, including all failures/retries. Preserve complete forwarded provider-event and durable ledger inventories: unfinished/unknown dispatch, inconsistent/missing token counts and unknown/reserved ledger usage block acceptance even when top-level totals look known. Optional invoice USD, cache and reasoning breakdowns remain descriptive unknowns when unreported; never replace them with zero or claim measured billing. Every declared finite cap additionally requires a known observable metric and remains enforced; the owner-selected current aggregate policy is explicitly uncapped, with no USD cap. Effective stage/resource/deadline limits remain bound separately by the frozen execution profile.",
+  "stretch_targets": {
+    "p50_relative_reduction": 0.5,
+    "p95_relative_reduction": 0.3,
+    "required_for_acceptance": false
+  },
+  "authorization": "Prospective draft only. Numerical engine-overhead margins are predeclared from separate OCR-only calibration, not an acceptance result. Missing sample sizes, reviewer identities, fixture/profile hashes and heldout evidence still prevent freeze. No provider calls or public adoption authorized.",
+  "repository_scope": [
+    "wilfredinni/code-mortis"
+  ],
+  "independent_reviewer_ids": null,
+  "allowed_signoff_kinds": [
+    "independent_agent"
+  ],
+  "signoff_authority": "Owner explicitly selected agent signoff. Fresh designated reviewers must be outside implementation and truth authoring, arm-blinded, and cover the entire packet through actual bound judgment documents. Never label agent review as human/external-expert review.",
+  "performance_measurement": {
+    "mode": "deterministic_local_provider",
+    "metric": "queue_to_terminal_ms",
+    "endpoint_scope": "loopback_only",
+    "configured_provider_delay_ms": 0,
+    "response_fixture_sha256": null,
+    "limitations": "External provider latency excluded by deterministic local responses and zero configured delay. Tiny local synthetic response processing, loopback round trips and observer overhead remain included; measured server wait is retained diagnostically, never subtracted from overlapping provider duration sums."
+  },
+  "performance_sampling": {
+    "pr": {
+      "minimum_cases": null,
+      "repetitions": 3,
+      "repetition_rationale": null
+    },
+    "security": {
+      "minimum_cases": null,
+      "repetitions": 3,
+      "repetition_rationale": null
+    }
+  },
+  "performance_fixture_rule": "Separate visible truth-free performance plan, cases and paired schedule; no heldout quality truth enters performance workers. Freeze expected_work counts per case (findings, assessment_candidates, historical_verification_targets, source_files, security_analysis_tasks). Include clean/single-file cases and designated nonempty assessment/history/cross-file cases in each workload, with a security case larger than frozen analysis_concurrency. Validate each measured case against its own declared counts and retained outcomes/tasks; do not force clean cases to produce findings. Pin semantically equivalent arm-specific response fixtures and unchanged effective limits.",
+  "required_usage_fields": [
+    "requests",
+    "tokens",
+    "input_tokens",
+    "output_tokens"
+  ],
+  "comparison_usage_fields": [
+    "requests",
+    "tokens"
+  ],
+  "spending": {
+    "mode": "explicit_owner_uncapped",
+    "aggregate_request_cap": null,
+    "aggregate_token_cap": null,
+    "aggregate_usd_cap": null,
+    "stop_on_unknown_usage": true
+  },
+  "billing_limitation": "This selected-provider prospective acceptance protocol rejects any nonnull aggregate_usd_cap because no observed invoice/billing binding exists; adding a numeric top-level cost claim cannot make such a cap enforceable. This is an evaluation-protocol limitation, not removal of production budget/cap features. Owner-selected aggregate request/token/USD caps remain explicitly null here; finite request/token limits and frozen per-stage/resource/deadline limits still fail closed on missing metrics or excess."
+}

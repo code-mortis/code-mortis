@@ -75,19 +75,37 @@ def tree_bytes(root):
 
 def validate_inputs(manifest, cases, credentials, image, *, live, scanner_cache=None):
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", image), "Worker image must be an immutable local image ID")
-    require(manifest.get("schema") == "mortis-engine-live-run/v1", "Unsupported run manifest")
+    workflow = manifest.get("schema") == "mortis-engine-workflow-run/v2"
+    require(workflow or manifest.get("schema") == "mortis-engine-live-run/v1", "Unsupported run manifest")
+    if workflow:
+        require(manifest.get("execution_profile") == "parallel_queue_v2"
+                and manifest.get("queue") == {"pool": "prefork", "concurrency": 4, "dispatch_interval_seconds": 10},
+                "Workflow run requires the frozen parallel queue profile")
+    else:
+        require(manifest.get("execution_profile", "retained_sequential_v1") == "retained_sequential_v1"
+                and "queue" not in manifest, "Original pilot cannot change execution profile")
     require(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", manifest.get("run_id", "")), "Invalid run identity")
     require(manifest.get("publication") == "disabled_sandbox_adapter_only" and manifest.get("graph") == "off", "Publication/graph policy mismatch")
     require(manifest.get("cache") == "cold" and manifest.get("repetition") == 1, "Frozen pilot schedule mismatch")
     require(manifest.get("effective_resources_sha256"), "Missing frozen resource identity")
     require(cases.is_dir() and not cases.is_symlink() and tree_bytes(cases) <= MAX_EXPORT, "Export exceeds frozen snapshot ceiling")
-    expected = [f"pr-{i:02}" for i in range(1, 13)] + [f"sec-{i:02}" for i in range(1, 9)]
-    require(sorted(row["case_id"] for row in manifest["cases"]) == expected, "Run manifest must retain all 20 frozen cases")
+    if workflow:
+        expected = sorted(row["case_id"] for row in manifest["cases"])
+        require(0 < len(expected) <= 1000 and len(set(expected)) == len(expected)
+                and all(re.fullmatch(r"(?:pr|sec)-\d{2,4}", value) for value in expected),
+                "Workflow cohort requires unique bounded case identities")
+    else:
+        expected = [f"pr-{i:02}" for i in range(1, 13)] + [f"sec-{i:02}" for i in range(1, 9)]
+        require(sorted(row["case_id"] for row in manifest["cases"]) == expected, "Run manifest must retain all 20 frozen cases")
     require(sorted(path.name for path in cases.iterdir()) == expected, "Export contains missing or unexpected case inputs")
     for row in manifest["cases"]:
         folder = cases / row["case_id"]
         require(folder.is_dir() and {path.name for path in folder.iterdir()} == {"repo", "context.json", "change.diff"}, "Export must contain only source Git, context and diff; scorer truth is forbidden")
         require(row.get("evaluation_track") in {"quality_microcase", "reliability_fixture"}, "Unknown evaluation track")
+        if workflow:
+            require(row.get("evaluation_track") == "quality_microcase", "Workflow fault injection uses the separate adapter")
+            require(row.get("identity", {}).get("history_sha256") == fingerprint(row.get("historical_findings", [])),
+                    "Workflow history differs from frozen pair identity")
     def reject_private(value):
         if isinstance(value, dict):
             require(not {"truth", "oracle", "defects", "control", "api_key", "extra_headers"} & value.keys(), "Private scorer/credential content in worker manifest")
@@ -422,7 +440,8 @@ def run(manifest_path, cases, credentials, image, output, *, live=False, scanner
                 except (OSError, ValueError, KeyError, TypeError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
                     preserve_database = True
                     recovery = {"exported": False, "error_type": type(exc).__name__, "consumption_complete": False, "database_container_preserved": postgres, "network_preserved": network, "reason": "Manual evidence recovery required before removing the disposable database"}
-            write_new(output / "results.json", {"schema": "mortis-engine-eval-results/v1", "corpus_digest": manifest["corpus_digest"], "protocol_sha256": manifest["protocol_sha256"], "run_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "scanner_snapshot": manifest.get("scanner_snapshot"), "planned_attempts": planned, "attempts": attempts, "stopped_reason": stopped, "live": live, "recovered_ledger": recovery})
+            result_schema = "mortis-engine-workflow-results/v2" if manifest["schema"] == "mortis-engine-workflow-run/v2" else "mortis-engine-eval-results/v1"
+            write_new(output / "results.json", {"schema": result_schema, "corpus_digest": manifest["corpus_digest"], "protocol_sha256": manifest["protocol_sha256"], "run_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "scanner_snapshot": manifest.get("scanner_snapshot"), "planned_attempts": planned, "attempts": attempts, "stopped_reason": stopped, "live": live, "recovered_ledger": recovery})
         finally:
             for name in reversed(created):
                 if preserve_database and name == postgres:

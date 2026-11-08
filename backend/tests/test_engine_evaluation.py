@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -132,6 +133,19 @@ def test_worker_rejects_changed_source_before_inference(evaluation):
     case["head"]["blobs"][case["selected_paths"][0]]["sha256"] = "0" * 64
     with pytest.raises(ValueError, match="blob inventory"):
         runtime.checked_case(exported, case, RepoSettings().model_dump())
+
+
+def test_worker_hashes_binary_revision_assets_without_treating_them_as_source(evaluation):
+    from code_mortis.core.process import child_environment
+
+    _, _, exported = evaluation
+    content = b"\x00\xff\x80binary asset\r\n"
+    root, env = exported / "repo", child_environment()
+    blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                   cwd=root, env=env, input=content).decode().strip()
+    assert runtime.blob_inventory(root, env, blob) == {
+        "git_blob": blob, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+    }
 
 
 def test_worker_rejects_scope_mismatch_before_inference(evaluation):

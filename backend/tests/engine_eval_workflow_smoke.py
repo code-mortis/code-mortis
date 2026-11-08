@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from runtime import captured_execute, fingerprint, validate_environment
+from runtime import PARALLEL_PROFILE, QUEUE_PROFILE, captured_execute, fingerprint, validate_environment
 
 from code_mortis.reviews.context import source_id
 from code_mortis.schemas.common import RepoSettings
@@ -45,6 +45,11 @@ def git(root, *args):
 
 def main():
     security = "--security" in sys.argv
+    parallel = "--parallel" in sys.argv
+    calibration = "--calibrate-baseline" in sys.argv
+    paired = "--controlled-pairs" in sys.argv
+    assert not (calibration and paired), "Calibration and paired diagnostics use separate frozen runs"
+    assert not (calibration or paired) or parallel, "Controlled measurements require the production queue profile"
     validate_environment()
     command.upgrade(Config("alembic.ini"), "head")
     observed = []
@@ -293,6 +298,8 @@ def main():
                 "provider_reasoning_by_workload": {"pr": "medium", "security": "high"},
                 "case_deadline_seconds": 1800,
             }
+            if parallel:
+                manifest.update(execution_profile=PARALLEL_PROFILE, queue=dict(QUEUE_PROFILE))
             if security:
                 manifest["scanner_snapshot"] = json.loads(Path("/snapshot.json").read_text())
                 manifest["security_limits"] = {
@@ -300,7 +307,13 @@ def main():
                     "token_budget": None,
                     "concurrency": 4,
                 }
-            for arm in ("ocr", "mortis"):
+            schedule = [(1, "ocr"), (1, "mortis")]
+            if calibration:
+                schedule = [(repetition, "ocr") for repetition in range(1, 6)]
+            elif paired:
+                schedule = [(repetition, arm) for repetition in range(1, 6)
+                            for arm in (("ocr", "mortis") if repetition % 2 else ("mortis", "ocr"))]
+            for repetition, arm in schedule:
                 start = len(observed)
                 options = RepoSettings(
                     analysis_engine=arm,
@@ -346,17 +359,21 @@ def main():
                 records.append(
                     {
                         "arm": arm,
+                        "repetition": repetition,
                         "status": result["status"],
                         "coverage": result["coverage"],
                         "findings": len(result["findings"]),
                         "requests": result["usage"]["requests"],
                         "tokens": result["usage"]["tokens"],
                         "phases": phases,
+                        "timing_ms": result["timing_ms"],
+                        "queue_measurement": result.get("queue_measurement"),
+                        "provider_mode": result["transport"].get("provider_mode", "controlled_local_synthetic"),
                     }
                 )
             server.rate_limited = not security
             retry_records = []
-            for arm in () if security else ("ocr", "mortis"):
+            for arm in () if security or calibration or paired else ("ocr", "mortis"):
                 before = len(observed)
                 options = RepoSettings(
                     analysis_engine=arm,
@@ -394,9 +411,14 @@ def main():
         print(
             json.dumps(
                 {
-                    "scope": "offline_full_security_workflow"
-                    if security
-                    else "offline_full_sequential_workflow",
+                    "scope": "offline_full_security_workflow" if security else
+                    "offline_full_parallel_workflow" if parallel else "offline_full_sequential_workflow",
+                    "execution_profile": PARALLEL_PROFILE if parallel else "retained_sequential_v1",
+                    "performance_acceptance": False,
+                    "baseline_calibration": calibration,
+                    "controlled_pairs": paired,
+                    "configured_provider_delay_ms": 0,
+                    "limitations": "One visible synthetic workflow; host quiescence must be established separately. No heldout quality, graph, historical verification or acceptance claim.",
                     "external_calls": 0,
                     "arms": records,
                     "known_zero_429_probe": retry_records,

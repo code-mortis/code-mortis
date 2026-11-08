@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,25 @@ class RunTests(unittest.TestCase):
             credentials.chmod(0o600)
             (cases / "pr-01" / "repo" / "outside").symlink_to(credentials)
             with self.assertRaises(ValueError):
+                run.validate_inputs(manifest, cases, credentials, image, live=False)
+
+    def test_parallel_cohort_is_versioned_and_history_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, cases, credentials = self.inputs(Path(tmp))
+            image = "sha256:" + "d" * 64
+            manifest.update(execution_profile="parallel_queue_v2",
+                            queue={"pool": "prefork", "concurrency": 4, "dispatch_interval_seconds": 10})
+            with self.assertRaisesRegex(ValueError, "Original pilot"):
+                run.validate_inputs(manifest, cases, credentials, image, live=False)
+            manifest["schema"] = "mortis-engine-workflow-run/v2"
+            manifest["cases"] = [manifest["cases"][0]]
+            manifest["cases"][0]["identity"]["history_sha256"] = run.fingerprint([])
+            for folder in cases.iterdir():
+                if folder.name != "pr-01":
+                    shutil.rmtree(folder)
+            run.validate_inputs(manifest, cases, credentials, image, live=False)
+            manifest["cases"][0]["historical_findings"] = [{"original_sha": "changed"}]
+            with self.assertRaisesRegex(ValueError, "history differs"):
                 run.validate_inputs(manifest, cases, credentials, image, live=False)
 
     def test_worker_commands_enforce_isolation_resources_and_secret_separation(self):

@@ -13,7 +13,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -25,8 +28,22 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 SCHEMA = "mortis-engine-live-run/v1"
+WORKFLOW_SCHEMA = "mortis-engine-workflow-run/v2"
 TOKEN = "synthetic-evaluation-github-token"
 MAX_PROVIDER_EVENTS = 256
+PARALLEL_PROFILE = "parallel_queue_v2"
+LEGACY_PROFILE = "retained_sequential_v1"
+QUEUE_PROFILE = {"pool": "prefork", "concurrency": 4, "dispatch_interval_seconds": 10}
+
+
+def execution_profile(manifest):
+    profile = manifest.get("execution_profile", LEGACY_PROFILE)
+    require(profile in {LEGACY_PROFILE, PARALLEL_PROFILE}, "Unknown execution profile")
+    if profile == PARALLEL_PROFILE:
+        require(manifest.get("queue") == QUEUE_PROFILE, "Parallel queue resource/settings mismatch")
+    else:
+        require("queue" not in manifest, "Legacy timings cannot include queue settings")
+    return profile
 
 
 def canonical(value):
@@ -50,7 +67,9 @@ def require(condition, message):
 
 def validate_manifest(manifest, case_id, arm, *, live):
     """Fail before importing database/model code or opening provider credentials."""
-    require(manifest.get("schema") == SCHEMA, "Unsupported runtime manifest")
+    profile = execution_profile(manifest)
+    require(manifest.get("schema") == (WORKFLOW_SCHEMA if profile == PARALLEL_PROFILE else SCHEMA),
+            "Runtime schema/execution profile mismatch")
     require(
         not set(manifest) & {"truth", "oracle", "defects", "control", "adjudication"},
         "Scorer-only content cannot enter the execution worker",
@@ -164,6 +183,7 @@ def validate_manifest(manifest, case_id, arm, *, live):
             "identity",
             "evaluation_track",
             "scanner_inventory_paths",
+            "historical_findings",
         },
         "Runtime case contains unexpected or scorer-only fields",
     )
@@ -172,7 +192,8 @@ def validate_manifest(manifest, case_id, arm, *, live):
         "Reliability fixtures must use the separate injection harness",
     )
     require(case.get("workload") in {"pr", "security"}, "Unknown case workload")
-    require(re.fullmatch(r"(?:pr|sec)-\d{2}", case_id), "Invalid synthetic case identity")
+    pattern = r"(?:pr|sec)-\d{2,4}" if profile == PARALLEL_PROFILE else r"(?:pr|sec)-\d{2}"
+    require(re.fullmatch(pattern, case_id), "Invalid synthetic case identity")
     require(
         len(set(case["selected_paths"])) == len(case["selected_paths"]),
         "Duplicate selected paths",
@@ -181,6 +202,30 @@ def validate_manifest(manifest, case_id, arm, *, live):
         case["expected_assigned_units"] == len(case["selected_paths"]),
         "Invalid frozen coverage denominator",
     )
+    history = case.get("historical_findings", [])
+    require(isinstance(history, list) and len(history) <= 100, "Invalid historical finding inventory")
+    if profile == PARALLEL_PROFILE:
+        require(isinstance(manifest.get("cases"), list) and 1 <= len(manifest["cases"]) <= 1000,
+                "Queued workflow cohort must contain 1–1000 cases")
+        conditions = manifest.get("conditions", {})
+        require(conditions.get("execution_profile") == profile and conditions.get("queue") == QUEUE_PROFILE,
+                "Queued workflow conditions must freeze profile and queue")
+        require(case["identity"].get("history_sha256") == fingerprint(history), "Historical input identity mismatch")
+        require(case["identity"].get("conditions_sha256") == fingerprint({
+            **conditions, "workload": case["workload"], "provider_options": provider_options(manifest, case),
+        }), "Queued workflow condition identity mismatch")
+    if history:
+        require(profile == PARALLEL_PROFILE and case["workload"] == "pr", "History requires the parallel PR profile")
+        from code_mortis.schemas.common import ReviewComment
+
+        for item in history:
+            require(set(item) == {"original_sha", "snapshot"}, "Unexpected historical finding fields")
+            require(item["original_sha"] == case["base"]["commit"], "Historical source must be the frozen base revision")
+            snapshot = item["snapshot"]
+            require(isinstance(snapshot, dict) and set(snapshot) == set(ReviewComment.model_fields), "Historical snapshot must be a complete review comment")
+            ReviewComment.model_validate(snapshot, strict=True)
+        require(len({fingerprint(item["snapshot"]) for item in history}) == len(history), "Duplicate historical findings")
+        require(manifest["settings"].get("auto_resolve") is True, "Historical verification must retain auto_resolve")
     if live:
         require(
             manifest.get("live_enabled") is True and manifest.get("authorization") == "owner_selected_pilot",
@@ -248,6 +293,26 @@ def provider_options(manifest, case):
         "Effective provider model options mismatch",
     )
     return options
+
+
+def blob_inventory(root, env, blob):
+    """Hash inert Git bytes; excluded binary assets still belong to revision identity."""
+    from code_mortis.core import source
+
+    require(re.fullmatch(r"[0-9a-f]{40}", blob), "Invalid Git blob identity")
+    size = int(source.git(root, env, "cat-file", "-s", blob).strip())
+    require(0 <= size <= 512 * 1024 * 1024, "Blob exceeds the export size ceiling")
+    digest, observed = hashlib.sha256(), 0
+    with tempfile.TemporaryFile() as output:
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "cat-file", "blob", blob],
+                       cwd=root, env=env, stdout=output, stderr=subprocess.DEVNULL,
+                       check=True, timeout=180)
+        require(output.tell() == size, "Git blob size mismatch")
+        output.seek(0)
+        while chunk := output.read(65536):
+            digest.update(chunk)
+            observed += len(chunk)
+    return {"git_blob": blob, "sha256": digest.hexdigest(), "bytes": observed}
 
 
 def checked_case(export, case, options):
@@ -326,12 +391,7 @@ def checked_case(export, case, options):
                 mode in {"100644", "100755"} and kind == "blob",
                 "Synthetic source must be regular files",
             )
-            body = source.read_source(root, env, revision["commit"], path, lambda: False).encode()
-            actual[path] = {
-                "git_blob": blob,
-                "sha256": hashlib.sha256(body).hexdigest(),
-                "bytes": len(body),
-            }
+            actual[path] = blob_inventory(root, env, blob)
         require(actual == revision["blobs"], "Git blob inventory mismatch")
     require(
         source.git(root, env, "merge-base", case["base"]["commit"], case["head"]["commit"]).strip()
@@ -342,6 +402,13 @@ def checked_case(export, case, options):
         hashlib.sha256((export / "change.diff").read_bytes()).hexdigest() == case["diff_sha256"],
         "Diff identity mismatch",
     )
+    for item in case.get("historical_findings", []):
+        snapshot = item["snapshot"]
+        path = snapshot["path"]
+        require(path in case["base"]["blobs"], "Historical finding source is absent from the frozen base")
+        original = source.read_source(root, env, item["original_sha"], path, lambda: False)
+        require(1 <= snapshot["start_line"] <= snapshot["end_line"] <= len(original.splitlines()),
+                "Historical finding range is outside its original source")
     if case["workload"] == "pr":
         plan = planning.plan_review(
             root,
@@ -380,8 +447,8 @@ def checked_case(export, case, options):
 class Measurements:
     """Time the first persisted terminal task output, independently of coverage or truth."""
 
-    def __init__(self):
-        self.started = time.monotonic()
+    def __init__(self, started=None):
+        self.started = time.monotonic() if started is None else started
         self.phases = {}
         self.first_validated = None
         self.lock = Lock()
@@ -475,9 +542,28 @@ class SyntheticGitHub:
             "permissions": {"pull": True, "push": True},
         }
 
-    def token(self, db, installation_id):
+    def token(self, db, installation_id, **kwargs):
         require(installation_id == self.repo_id, "Synthetic installation mismatch")
         return TOKEN
+
+    def threads(self, token, name, number):
+        from sqlalchemy import select
+
+        from code_mortis.core.db import transaction
+        from code_mortis.models import AppConfig, Finding, PullRequest
+        from code_mortis.reviews.service import marker
+
+        require((token, name, number) == (TOKEN, self.full_name, 1), "Synthetic thread identity mismatch")
+        with transaction() as db:
+            bot = db.get(AppConfig, 1).github_slug + "[bot]"
+            rows = list(db.scalars(select(Finding).join(PullRequest).where(PullRequest.repository_id == self.repo_id)))
+            return [{
+                "id": row.thread_id, "isResolved": False, "isOutdated": True, "resolvedBy": None,
+                "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+                    "databaseId": row.comment_id, "body": marker("finding", row.id),
+                    "author": {"login": bot}, "updatedAt": "2026-11-08T00:00:00Z",
+                }]},
+            } for row in rows if row.thread_id]
 
     def request(self, method, path, token, **kwargs):
         from code_mortis.core import source
@@ -623,6 +709,7 @@ class SyntheticGitHub:
                 (github, "request", self.request),
                 (github, "authorize_repo", self.authorize),
                 (github, "installation_token", self.token),
+                (github, "threads", self.threads),
                 (source, "review_snapshot", self.review_snapshot),
                 (engine, "snapshot", self.security_snapshot),
             ):
@@ -640,18 +727,24 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
     from code_mortis.models import (
         AppConfig,
         Connection,
+        Finding,
         Installation,
         Job,
         Membership,
+        Occurrence,
         PullRequest,
         Repository,
         ReviewRun,
         SecurityScan,
         User,
     )
-    from code_mortis.reviews import assessment, context, service
+    from code_mortis.reviews import assessment, context, pipeline, service
     from code_mortis.security_scans import engine as security_engine
     from code_mortis.security_scans.service import STAGES
+
+    parallel = execution_profile(manifest) == PARALLEL_PROFILE
+    require(not case.get("historical_findings") or options.get("auto_resolve") is True,
+            "Historical verification requires frozen auto_resolve settings")
 
     # A fresh database or our exact sentinel only. No schema reset, truncation or migrations here.
     with transaction() as db:
@@ -684,7 +777,7 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
             "Attempt already exists; failed attempts are never overwritten",
         )
         identity = int(hashlib.sha256(attempt_id.encode()).hexdigest()[:14], 16)
-        full_name = "mortis-eval/" + case["case_id"] + "-" + attempt_id[:8]
+        full_name = "mortis-eval/" + case["case_id"] + "-" + (attempt_id if parallel else attempt_id[:8])
         db.add(User(id=identity, login="eval-" + attempt_id, role="admin"))
         db.add(Membership(github_id=identity, login="eval-" + attempt_id, role="admin"))
         db.add(Installation(id=identity, account="mortis-eval"))
@@ -721,6 +814,8 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
             "assessment_policy": assessment.POLICY_VERSION,
             "task_contract": context.TASK_CONTRACT,
         }
+        if parallel:
+            config["pipeline_version"] = 2
         if case["workload"] == "pr":
             db.add(
                 PullRequest(
@@ -749,10 +844,35 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
                     head_sha=case["head"]["commit"],
                     config=config,
                     summary={"status": "pending", "tokens": 0},
+                    stages={stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES} if parallel else {},
                     check_enabled=False,
                     check_pending=False,
                 )
             )
+            db.flush()
+            if case.get("historical_findings"):
+                historical_id = str(uuid4())
+                db.add(ReviewRun(
+                    id=historical_id, pr_id=attempt_id, actor_id=identity, trigger="manual",
+                    dedup_key=historical_id, engine=arm, connection_id=connection.id,
+                    base_sha=case["base"]["commit"], head_sha=case["base"]["commit"],
+                    config=config, status="completed", publication="published", finished_at=now(),
+                    check_enabled=False, check_pending=False,
+                ))
+                db.flush()
+                for index, item in enumerate(case["historical_findings"]):
+                    snapshot = item["snapshot"]
+                    finding_id = str(uuid4())
+                    db.add(Finding(
+                        id=finding_id, pr_id=attempt_id, fingerprint=fingerprint(snapshot),
+                        path=snapshot["path"], content=snapshot["content"], severity=snapshot["severity"],
+                        category=snapshot["category"], start_line=snapshot["start_line"], end_line=snapshot["end_line"],
+                        existing_code=snapshot["existing_code"], suggestion=snapshot["suggestion_code"],
+                        thread_id="eval-" + finding_id, comment_id=index + 1,
+                        last_seen_run_id=historical_id, publication_run_id=historical_id,
+                    ))
+                    db.flush()
+                    db.add(Occurrence(run_id=historical_id, finding_id=finding_id, snapshot=snapshot))
         else:
             config = {
                 "analysis_engine": arm,
@@ -785,9 +905,9 @@ def create_attempt(manifest, case, arm, credentials, options, attempt_id):
                 id=attempt_id,
                 kind="review" if key == "run_id" else "security_scan",
                 payload={key: attempt_id},
-                status="running",
-                attempts=1,
-                lease_until=now() + timedelta(seconds=manifest["case_deadline_seconds"] + 300),
+                status="queued" if parallel else "running",
+                attempts=0 if parallel else 1,
+                lease_until=None if parallel else now() + timedelta(seconds=manifest["case_deadline_seconds"] + 300),
             )
         )
     return identity, full_name
@@ -836,7 +956,8 @@ def retained_result(case, attempt_id):
 
     with transaction() as db:
         run = db.get(ReviewRun if case["workload"] == "pr" else SecurityScan, attempt_id)
-        plans = list(db.scalars(select(AnalysisPlan).where(AnalysisPlan.job_id == attempt_id)))
+        scope = AnalysisPlan.run_id if case["workload"] == "pr" else AnalysisPlan.scan_id
+        plans = list(db.scalars(select(AnalysisPlan).where(scope == attempt_id)))
         tasks = list(db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id.in_([p.id for p in plans]))))
         attempts = list(
             db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id.in_([t.id for t in tasks])))
@@ -920,8 +1041,167 @@ def retained_result(case, attempt_id):
                 "budgets": [row_data(b) for b in budgets],
             },
             "job": row_data(db.get(Job, attempt_id)),
+            "workflow_jobs": [row_data(row) for row in db.scalars(select(Job).where(
+                (Job.payload["run_id"].as_string() == attempt_id)
+                | (Job.payload["scan_id"].as_string() == attempt_id)
+                | (Job.id == attempt_id)
+                | (Job.payload["verification_id"].as_string().in_([row["id"] for row in verification_targets or []]))
+            ))],
             "occurrences": [row_data(row) for row in occurrences],
         }
+
+
+def queue_worker(bootstrap):
+    """Run real prefork Celery deliveries with only acquisition/publication adapted."""
+    validate_environment()
+    from code_mortis import jobs
+    from code_mortis.reviews import pipeline
+
+    adapter = SyntheticGitHub(bootstrap["case"], bootstrap["repo_id"], bootstrap["full_name"], Path(bootstrap["root"]))
+    execute_job = jobs.execute
+    allowed = {"review", "security_scan", "finalize_review", *pipeline.KINDS}
+
+    def execute(kind, payload):
+        # Retain side-effect jobs in PostgreSQL without running publication or synchronization.
+        if kind not in allowed:
+            raise ValueError("Evaluation publication/synchronization is forbidden")
+        require(payload.get("run_id", payload.get("scan_id")) == bootstrap["attempt_id"],
+                "Queue delivery belongs to another evaluation attempt")
+        measurements = Measurements(bootstrap["started"])
+        request_start = len(adapter.calls)
+        event = {"job_id": payload.get("_job_id"), "kind": kind,
+                 "started_ms": (time.monotonic() - bootstrap["started"]) * 1000}
+        scanner_guard = nullcontext(None)
+        if kind == "security_scan":
+            from scanner_preflight import guard_scanner
+
+            scanner_guard = guard_scanner(bootstrap["scanner_snapshot"], Path(bootstrap["scanner_cache"]))
+        scanner_state = None
+        try:
+            with scanner_guard as scanner_state, measurements.installed():
+                return execute_job(kind, payload)
+        finally:
+            event.update(finished_ms=(time.monotonic() - bootstrap["started"]) * 1000,
+                         first_validated_ms=measurements.first_validated, phases=measurements.phases,
+                         github_requests=adapter.calls[request_start:])
+            if scanner_state is not None:
+                event["scanner_guard"] = scanner_state
+            encoded = canonical(event) + b"\n"
+            require(len(encoded) <= 4096, "Queue measurement event exceeds bound")
+            descriptor = os.open(bootstrap["events"], os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(descriptor, encoded)
+            finally:
+                os.close(descriptor)
+
+    with adapter.installed(), patch.object(jobs, "execute", execute):
+        jobs.celery.worker_main([
+            "worker", "--pool=prefork", "--concurrency=4", "--loglevel=WARNING",
+            "--queues=reviews,verification,summaries,events,security", "--without-gossip", "--without-mingle",
+            "--hostname=eval-" + bootstrap["attempt_id"] + "@%h",
+        ])
+
+
+def dispatch_attempt(attempt_id):
+    """Scope the production dispatcher to this arm; retained side effects never reach Redis."""
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session, with_loader_criteria
+
+    from code_mortis import jobs
+    from code_mortis.models import Job
+    from code_mortis.reviews import pipeline
+
+    allowed = {"review", "security_scan", "finalize_review", *pipeline.KINDS}
+    scope = Job.kind.in_(allowed) & (
+        (Job.payload["run_id"].as_string() == attempt_id) | (Job.payload["scan_id"].as_string() == attempt_id)
+    )
+
+    def scoped(execution):
+        if execution.is_select:
+            execution.statement = execution.statement.options(with_loader_criteria(Job, scope, include_aliases=True))
+
+    event.listen(Session, "do_orm_execute", scoped)
+    try:
+        jobs.dispatch()
+    finally:
+        event.remove(Session, "do_orm_execute", scoped)
+
+
+def execute_queued(manifest, case, export, attempt_id, repo_id, full_name, measurements):
+    from sqlalchemy import select
+
+    from code_mortis.core.db import transaction
+    from code_mortis.models import Job, ReviewRun, SecurityScan
+    from code_mortis.reviews import pipeline
+
+    allowed = {"review", "security_scan", "finalize_review", *pipeline.KINDS}
+    with tempfile.TemporaryDirectory(prefix="eval-queue-") as temporary:
+        folder = Path(temporary)
+        bootstrap = {"case": case, "repo_id": repo_id, "full_name": full_name,
+                     "root": str((export / "repo").resolve()), "attempt_id": attempt_id,
+                     "started": measurements.started, "events": str(folder / "events.jsonl")}
+        if case["workload"] == "security":
+            from code_mortis.core.config import settings
+
+            require(manifest.get("scanner_snapshot", {}).get("schema") == "mortis-engine-scanner-snapshot/v1",
+                    "Queued security workflow requires its frozen scanner snapshot")
+            bootstrap.update(scanner_snapshot=manifest["scanner_snapshot"], scanner_cache=str(settings().trivy_cache_dir))
+        (folder / "bootstrap.json").write_bytes(canonical(bootstrap))
+        with (folder / "worker.log").open("wb") as output:
+            worker = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--queue-worker", str(folder / "bootstrap.json")],
+                                      stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                next_dispatch = 0
+                while True:
+                    require(worker.poll() is None, "Evaluation Celery worker exited before terminal completion")
+                    require((folder / "worker.log").stat().st_size <= 4 * 1024 * 1024,
+                            "Evaluation Celery worker log exceeds its retained-output bound")
+                    require(time.monotonic() - measurements.started < manifest["case_deadline_seconds"],
+                            "Evaluation queued workflow exceeded its frozen deadline")
+                    if time.monotonic() >= next_dispatch:
+                        dispatch_attempt(attempt_id)
+                        next_dispatch = time.monotonic() + QUEUE_PROFILE["dispatch_interval_seconds"]
+                    with transaction() as db:
+                        row = db.get(ReviewRun if case["workload"] == "pr" else SecurityScan, attempt_id)
+                        pending = db.scalar(select(Job.id).where(
+                            Job.kind.in_(allowed), Job.status.in_(["queued", "running"]),
+                            (Job.payload["run_id"].as_string() == attempt_id)
+                            | (Job.payload["scan_id"].as_string() == attempt_id),
+                        ).limit(1))
+                        if row.status not in {"queued", "running", "blocked"} and not pending:
+                            terminal_ms = (time.monotonic() - measurements.started) * 1000
+                            break
+                    time.sleep(0.05)
+            finally:
+                try:
+                    os.killpg(worker.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    worker.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    os.killpg(worker.pid, signal.SIGKILL)
+                    worker.wait(timeout=5)
+                # A crashed Celery parent can leave children behind; never return with live inference.
+                try:
+                    os.killpg(worker.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        events = []
+        if (folder / "events.jsonl").exists():
+            require((folder / "events.jsonl").stat().st_size <= 4 * 1024 * 1024, "Queue measurement log exceeds bound")
+            events = [json.loads(line) for line in (folder / "events.jsonl").read_text().splitlines()]
+        for event in events:
+            first = event["first_validated_ms"]
+            if first is not None and (measurements.first_validated is None or first < measurements.first_validated):
+                measurements.first_validated = first
+            for phase, duration in event["phases"].items():
+                measurements.phases[phase] = measurements.phases.get(phase, 0) + duration
+        return {"profile": PARALLEL_PROFILE, "queue": QUEUE_PROFILE, "events": events,
+                "queue_to_terminal_ms": terminal_ms, "includes_worker_boot": True,
+                "dispatch_scope": "current_attempt_workflow_jobs_only",
+                "publication": "side_effect_jobs_fenced",
+                "scanner_guard": next((event["scanner_guard"] for event in reversed(events) if "scanner_guard" in event), None)}
 
 
 def execute(manifest, case, export, arm, credentials, options, attempt_id):
@@ -933,12 +1213,19 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
 
     measurements = Measurements()
     repo_id, full_name = create_attempt(manifest, case, arm, credentials, options, attempt_id)
+    queued = execution_profile(manifest) == PARALLEL_PROFILE
+    setup_ms = (time.monotonic() - measurements.started) * 1000
+    if queued:
+        measurements.started = time.monotonic()
     adapter = SyntheticGitHub(case, repo_id, full_name, export / "repo")
     settings().work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     outcomes = []
+    queue_result = None
     with adapter.installed(), measurements.installed():
         try:
-            if case["workload"] == "pr":
+            if queued:
+                queue_result = execute_queued(manifest, case, export, attempt_id, repo_id, full_name, measurements)
+            elif case["workload"] == "pr":
                 service.perform_review(attempt_id, attempt_id + ":1")
             else:
                 security_service.perform(attempt_id, attempt_id + ":1")
@@ -956,14 +1243,15 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
         with transaction() as db:
             job = db.get(Job, attempt_id)
             row = db.get(ReviewRun if case["workload"] == "pr" else SecurityScan, attempt_id)
-            job.status = "completed" if row.status in {"completed", "partial", "skipped"} else "failed"
-            # Publication/resolve jobs are retained but fenced; no scheduler runs in this worker.
+            if not queued:
+                job.status = "completed" if row.status in {"completed", "partial", "skipped"} else "failed"
+            # Evaluation adapters fence publication and resolution; queue profiles retain durable jobs.
         result = retained_result(case, attempt_id)
     elapsed = (time.monotonic() - measurements.started) * 1000
     result.update(
         {
             "timing_ms": {
-                "terminal": elapsed,
+                "terminal": queue_result["queue_to_terminal_ms"] if queue_result else elapsed,
                 "first_validated": measurements.first_validated,
                 **measurements.phases,
             },
@@ -971,6 +1259,14 @@ def execute(manifest, case, export, arm, credentials, options, attempt_id):
             "github_adapter": {"publication": "forbidden", "requests": adapter.calls},
         }
     )
+    if queued:
+        result["execution_profile"] = PARALLEL_PROFILE
+        result["timing_ms"]["fixture_setup"] = setup_ms
+        result["queue_measurement"] = queue_result
+        if queue_result:
+            result["github_adapter"]["requests"] = [row for event in queue_result["events"] for row in event["github_requests"]]
+        if queue_result is None:
+            result["stop_pilot"] = True
     return result
 
 
@@ -995,7 +1291,7 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
     from sqlalchemy import select
 
     from code_mortis.core.db import now, transaction
-    from code_mortis.models import Job
+    from code_mortis.models import Job, ReviewRun, SecurityScan
 
     declared = {**manifest["connection"], "options": provider_options(manifest, case)}
     credentials = copy.deepcopy(credentials)
@@ -1014,10 +1310,15 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
         def retain_event(event):
             with transaction() as db:
                 job = db.scalar(select(Job).where(Job.id == attempt_id).with_for_update())
-                require(
-                    job and job.status == "running" and job.attempts == 1 and job.lease_until > now(),
-                    "Provider capture no longer owns the live evaluation job",
-                )
+                if execution_profile(manifest) == PARALLEL_PROFILE:
+                    row = db.get(ReviewRun if case["workload"] == "pr" else SecurityScan, attempt_id)
+                    require(job and row and row.status in {"queued", "running"} and not row.cancel_requested,
+                            "Provider capture no longer owns the live queued evaluation workflow")
+                else:
+                    require(
+                        job and job.status == "running" and job.attempts == 1 and job.lease_until > now(),
+                        "Provider capture no longer owns the live evaluation job",
+                    )
                 events = {row["sequence"]: row for row in job.payload.get("provider_events", [])}
                 require(
                     event["sequence"] in events or len(events) < MAX_PROVIDER_EVENTS,
@@ -1031,7 +1332,7 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
         # A private per-attempt row prevents credentials/session/history reuse across paired arms.
         effective["connection"] = {**declared, "id": attempt_id, "base_url": recorder.base_url}
         scanner_guard = nullcontext(None)
-        if case["workload"] == "security":
+        if case["workload"] == "security" and execution_profile(manifest) != PARALLEL_PROFILE:
             from scanner_preflight import guard_scanner
 
             require(
@@ -1041,6 +1342,10 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
             scanner_guard = guard_scanner(manifest["scanner_snapshot"], Path("/scanner-cache"))
         with scanner_guard as scanner_state:
             result = execute(effective, case, export, arm, credentials, options, attempt_id)
+        if case["workload"] == "security" and execution_profile(manifest) == PARALLEL_PROFILE:
+            scanner_state = (result.get("queue_measurement") or {}).get("scanner_guard") or {
+                "validated": False, "error": "MissingWorkerScannerGuard",
+            }
         scanner_failed = scanner_state is not None and (
             not scanner_state["validated"] or scanner_state["error"]
         )
@@ -1053,12 +1358,15 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
         events = list(recorder.events)
         result["provider_events"] = events
         result["transport"] = {
+            "provider_mode": "controlled_synthetic_http" if fake_provider else "live",
             "declared_connection": declared,
             "effective_base_url": recorder.base_url,
             "session_scope": "attempt",
             "blocked_reason": recorder.blocked_reason,
             "event_limit": MAX_PROVIDER_EVENTS,
         }
+        if execution_profile(manifest) == PARALLEL_PROFILE:
+            result["transport"]["physical_concurrency"] = {"limit": 4, "peak": recorder._peak}
         keys = (
             "input_tokens",
             "output_tokens",
@@ -1084,7 +1392,7 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
             )
             result["stop_pilot"] = True
         else:
-            result["stop_pilot"] = bool(scanner_failed) or any(
+            result["stop_pilot"] = result.get("stop_pilot", False) or bool(scanner_failed) or any(
                 row.get("consumption_unknown") for row in events
             )
         result["timing_ms"]["provider_sum"] = sum(
@@ -1095,6 +1403,9 @@ def captured_execute(manifest, case, export, arm, credentials, options, attempt_
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--queue-worker":
+        queue_worker(json.loads(Path(sys.argv[2]).read_text()))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--case", type=Path, required=True)
