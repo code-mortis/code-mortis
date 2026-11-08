@@ -8,7 +8,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from code_mortis.integrations import llm_http
+from code_mortis.integrations import llm, llm_http
 from code_mortis.schemas.inference import Message, Request, Tool, ToolCall
 
 PROTOCOLS = ["openai", "openai-responses", "anthropic"]
@@ -61,11 +61,39 @@ def test_structured_response_and_exact_wire_model(protocol):
     assert body["stream"] is False
     assert body[{"openai": "max_tokens", "openai-responses": "max_output_tokens",
                  "anthropic": "max_tokens"}[protocol]] == 256
+    assert ("prompt_cache_key" in body) is (protocol == "openai-responses")
     response = llm_http.decode_response(protocol, result(protocol), task)
     assert response.output == {"ok": True}
     assert response.usage.total_tokens == 12
     assert response.request_id == "request-fixture"
     assert response.finish_reason == "complete"
+
+
+@pytest.mark.parametrize("session_id", ["stable-session", "a" * 200])
+def test_responses_cache_affinity_survives_tool_rounds_and_separates_sessions(session_id):
+    saved = connection("openai-responses")
+    task = request(session_id=session_id, tools=[Tool(name="read_evidence", parameters=SCHEMA)])
+    first = llm_http.encode_request("openai-responses", saved, task)
+    call = ToolCall(id="call-1", name="read_evidence", arguments={"ok": True})
+    response = llm_http.decode_response("openai-responses", result("openai-responses", call=call), task)
+    followup = task.model_copy(update={"messages": [*task.messages,
+        Message(role="assistant", content=response.content, tool_calls=response.tool_calls,
+                provider_data=response.provider_data),
+        Message(role="tool", tool_call_id=call.id, content='{"data":"bounded"}')]})
+    assert len(first["prompt_cache_key"]) == 64
+    assert llm_http.encode_request("openai-responses", saved, followup)["prompt_cache_key"] == first["prompt_cache_key"]
+    other = task.model_copy(update={"session_id": session_id[:-1] + "b"})
+    assert llm_http.encode_request("openai-responses", saved, other)["prompt_cache_key"] != first["prompt_cache_key"]
+    assert llm.input_fingerprint(task) == llm.input_fingerprint(other)
+    assert llm.reservation(saved, task) == llm.reservation(saved, other)
+    encoded_size = len(json.dumps(first, ensure_ascii=False, separators=(",", ":")).encode())
+    assert llm.reservation(saved, task) == encoded_size + 1024 + 64 * (len(task.messages) + len(task.tools))
+
+
+@pytest.mark.parametrize("cache_key", ["explicit-operator-affinity", None])
+def test_responses_cache_affinity_preserves_explicit_override(cache_key):
+    saved = connection("openai-responses", extra_body={"prompt_cache_key": cache_key})
+    assert llm_http.encode_request("openai-responses", saved, request())["prompt_cache_key"] == cache_key
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)

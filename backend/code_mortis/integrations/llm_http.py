@@ -14,7 +14,7 @@ import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from code_mortis.core.security import clean_text, safe_endpoint
+from code_mortis.core.security import clean_text, digest, safe_endpoint
 from code_mortis.schemas.inference import Request, Response, ToolCall, Usage
 
 MAX_RESPONSE_BYTES = 20_000_000
@@ -204,7 +204,8 @@ def encode_request(protocol: str, connection: dict, request: Request) -> dict:
                 inputs.extend({"type": "function_call", "call_id": call.id, "name": call.name,
                                "arguments": json.dumps(call.arguments)} for call in message.tool_calls)
         body.update(input=inputs, instructions=request.instructions,
-                    max_output_tokens=request.max_output_tokens, store=False)
+                    max_output_tokens=request.max_output_tokens, store=False,
+                    prompt_cache_key=digest(request.session_id))
         if request.tools:
             body["include"] = ["reasoning.encrypted_content"]
         if request.tools:

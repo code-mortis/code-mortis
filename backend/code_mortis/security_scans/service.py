@@ -3,7 +3,7 @@
 import json
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from threading import Event
@@ -57,6 +57,30 @@ def legacy_configuration(*args, **kwargs):
     from code_mortis.integrations import ocr
 
     return ocr.configuration(*args, **kwargs)
+
+
+def rolling_analysis(paths, concurrency, submit, stopped, stop_workers):
+    paths, pending = iter(paths), {}
+    try:
+        while True:
+            while len(pending) < concurrency and not stop_workers.is_set():
+                if stopped():
+                    raise ReviewStopped("Security scan cancelled.")
+                path = next(paths, None)
+                if path is None:
+                    break
+                pending[submit(path)] = path
+            if not pending:
+                return
+            ready, _ = wait(pending, return_when=FIRST_COMPLETED)
+            # Consume every ready result before refilling; unknown usage stops new work.
+            for future in ready:
+                yield pending.pop(future), future
+    except BaseException:
+        stop_workers.set()
+        for future in pending:
+            future.cancel()
+        raise
 
 
 def activity(db, action, *, scan=None, finding=None, actor=None, **detail):
@@ -785,23 +809,36 @@ def perform(scan_id, claim):
             configuration = (legacy_configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
                              if parallel and not mortis else nullcontext())
             with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
-                for offset in range(0, len(code_paths), concurrency):
+                rolling = mortis and parallel and limits["token_budget"] is None
+                batches = [code_paths] if rolling else [code_paths[offset:offset + concurrency]
+                                                      for offset in range(0, len(code_paths), concurrency)]
+                for batch in batches:
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
-                    batch = code_paths[offset:offset + concurrency]
-                    contexts = {path: {"assigned_path": path, "head_sha": item.sha, "diff": "",
-                                "sources": {"current": {path: item.source(path)}}} for path in batch}
-                    needed = sum(task_input("analysis", contexts[path], "analysis:" + path)[2] is None for path in batch)
-                    with transaction() as db:
-                        used = db.get(SecurityScan, scan_id).progress.get("tokens")
-                    if used is None:
-                        raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
-                    allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
-                    pending = {pool.submit(ai, item, "analysis", contexts[path], "analysis:" + path, allowance,
-                                           parallel=parallel): path for path in batch}
+                    if rolling:
+                        def submit(path):
+                            with transaction() as db:
+                                if db.get(SecurityScan, scan_id).progress.get("tokens") is None:
+                                    raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
+                            context = {"assigned_path": path, "head_sha": item.sha, "diff": "",
+                                       "sources": {"current": {path: item.source(path)}}}
+                            return pool.submit(ai, item, "analysis", context, "analysis:" + path, parallel=True)
+
+                        pending = rolling_analysis(batch, concurrency, submit, stopped, stop_workers)
+                    else:
+                        contexts = {path: {"assigned_path": path, "head_sha": item.sha, "diff": "",
+                                    "sources": {"current": {path: item.source(path)}}} for path in batch}
+                        needed = sum(task_input("analysis", contexts[path], "analysis:" + path)[2] is None for path in batch)
+                        with transaction() as db:
+                            used = db.get(SecurityScan, scan_id).progress.get("tokens")
+                        if used is None:
+                            raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
+                        allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
+                        futures = {pool.submit(ai, item, "analysis", contexts[path], "analysis:" + path, allowance,
+                                               parallel=parallel): path for path in batch}
+                        pending = ((futures[future], future) for future in as_completed(futures))
                     results, fatal = {}, None
-                    for future in as_completed(pending):
-                        path = pending[future]
+                    for path, future in pending:
                         try:
                             results[path] = future.result()
                             completed += 1

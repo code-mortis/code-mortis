@@ -1,6 +1,6 @@
 # M5 — evaluation and reliability evidence
 
-M5 is in progress: the corrected second feasibility run completes all Mortis quality cases and recovers the first pilot's missed high-severity PR defect, but **acceptance has not passed**. Latency targets remain unmet, and the visible synthetic pilot cannot establish representative quality or reliability. This record retains both runs, distinguishing local tests, actual provider results and remaining acceptance work. Public Mortis availability remains closed; this milestone does not authorize M6 adoption.
+M5 is in progress: the third feasibility run completes all 34 quality arms, with both engines finding all frozen PR/security defects, but **acceptance has not passed**. PR p50 is lower than OCR in this run; security p50 remains slower, and the overall latency targets remain unmet. The visible synthetic pilot cannot establish representative quality, reliability or causal speed gains. This record retains all three runs, distinguishing local tests, actual provider results and remaining acceptance work. Public Mortis availability remains closed; this milestone does not authorize M6 adoption.
 
 ## Frozen pilot and execution amendments
 
@@ -162,9 +162,62 @@ Second-run artifacts are retained separately under `data/engine-eval/m5-20261107
 
 Replay the final score without provider calls by changing the earlier command's paths to this directory and using `judgments-pr-v2.json`. All sources, scopes and scoring rules remain frozen; **M5/M6 acceptance remains closed**.
 
+## Median investigation and third pilot — 2026-11-08
+
+The metadata-only audit read timing, usage, task keys and ledger timestamps from the retained runs, without reading prompts, finding bodies or truth. In pilot 02, Mortis PR calls account for a median **96.8%** of workflow time. Median local task overhead beyond provider duration is about **150 ms analysis, 97 ms assessment and 65 ms summary**; security task overhead is about **223 ms**, with Trivy taking a median **2.814 s**. Parallel provider-duration sums can exceed wall time, so their residual is not pure local overhead. Repeated request encoding measured only **2.485 ms median** on an independent 32 KiB synthetic input. Neither encoding nor ledger bookkeeping explains multi-second variation.
+
+The frozen scorer's ratio of arm percentiles and the median of per-case paired differences are different statistics. Pilot 02 PR arm medians are 41.972 s / 37.704 s (ratio **1.1132×**), but the median of the 11 matched Mortis-minus-OCR differences is **+0.035 s**, with median paired ratio **1.001×**. The five complete security pairs have median difference **+5.337 s** and paired ratio **1.173×**. Including the partial OCR security case changes that to +7.694 s across six pairs; it is not eligible for completed-work latency. The original scorer and thresholds remain unchanged. One repetition per case cannot establish the cause of provider variation: similar output-token counts produced very different times between runs.
+
+Two source-supported changes preserve all required work:
+
+- Responses requests now include a stable 64-character digest of their existing session ID as `prompt_cache_key`. Explicit connection overrides, including null, remain honored; other protocols are unchanged. This restores an affinity hint present in the pinned OCR Responses adapter without copying its code or prompts. Request-size reservation includes the new field; replay input identity, model, reasoning, strict schemas, endpoint validation and retry policy are unchanged. This is an optimization hypothesis, not proof of faster inference: all three prior Mortis PR continuation requests already hit cache (84.80% of their input tokens), despite the missing hint. Security rounds retain distinct task-derived sessions; this does not create cross-round affinity there.
+- Parallel Mortis security analysis with **unlimited** token budgets now starts another file when a slot becomes free. At most the configured number of futures is submitted at once; completed results are consumed before refilling, and observed fatal/unknown usage stops replacements while started work drains. New submissions recheck persisted usage; existing authorization, cancellation, durable claims, replay checkpoints and inventory-order candidate collection remain. Finite-budget and OCR waves retain their allowance behavior. Assessment/history and verification ordering are unchanged. The tiny pilot has at most two files per case, so it cannot demonstrate the eliminated multi-wave idle time.
+
+The existing default PR pipeline already starts summary work alongside analysis. Its verification-to-assessment barrier protects history consistency and was retained. No required stage was dropped, reasoning effort reduced, strict schema relaxed, or graph/exclusion rule changed. Global HTTP-client reuse across separate `asyncio.run` loops and skipped DNS checks were rejected as unsafe shortcuts; no dependency or configuration option was added.
+
+| Third-run preparation check | Verified result |
+| --- | --- |
+| Responses transport, execution and connection tests | **144 pass**: `test_llm_http.py` (95), `test_llm_execution.py` and `test_llm_connections.py` (49). Stable tool-round keys, 200-character sessions, distinct keys, explicit overrides, reservation accounting and unchanged replay fingerprints are covered. |
+| Security/PR/workflow/graph/evaluator/admission regression | **853 pass, four subtests pass, 130.46 s** across 14 focused modules. The four new event-controlled scheduling tests prove refill before the slowest file finishes, bounded submission, deterministic collection and stop/cancellation behavior. Existing SQLAlchemy deprecation warnings remain. |
+| Static and independent review | Focused Ruff and `git diff --check` pass. A separate Sol 6.1 high review found no new correctness/security issue. No API/UI/schema change. |
+| Final-image preflight | **150** copied source/dependency/runtime files match; **34** quality arm inputs validate offline; six fault slots stay unsupported. Disposable migration/resource checks, real pinned OCR, real Trivy and both fake-provider full-workflow smokes pass. |
+| Selected-provider protocol | Real OpenCode Go automatic tool call, encrypted reasoning replay/tool-result acknowledgment and strict structured output pass: **three requests / 2,067 reported tokens**. Separate from pilot scoring. Initial probe setup lacked required runtime settings and failed before dispatch; network-disabled reproduction confirmed the three missing settings, with no provider call. |
+
+The immutable third image is `sha256:d97b774f48da1bb027148ffea8a1b5b5bb658df8e191266d301fcfe278d6599a`. Source inventory SHA-256 is `06f07f66ed27cb4f7ffea544b7df721bc6ffc6af3b40f27a667618f0dff9857e`; resource proof SHA-256 is `13fa0f851cd2160625f1d6556d78529ee685da4b3da48c22542475cbcfe09646`. Product changes are pinned by source bytes on top of `efbe361`; the corpus, scorer, model, reasoning, scanner snapshot, resource ceilings and sequential compatibility profile remain unchanged. The new run is `mortis-m5-20261108-pilot-03`. All **40** outcomes are retained: **34 completed quality arms and six unsupported fault-fixture slots**. All **135 requests returned HTTP 200**, with **660,170 reported tokens**, zero unknown provider events and zero unknown ledger attempts/reservations. The Mortis ledger subtotal **164,119** overlaps capture and is not another charge. Three pilots total **416 requests / 2,037,967 reported tokens**; the new three-request/2,067-token synthetic protocol check is separate. Actual dollars, remaining allowance, cache-write usage, region and stable underlying model revision remain unknown.
+
+Two fresh Sol 6.1 high agents independently adjudicated the arm-blinded packet: **26 matches, zero false positives and zero uncertain findings**. Both engines confirm all eight PR and five security defects, including every frozen high-severity defect. Both cover all 13 PR and seven security units. This verifies this run's observed quality; the tiny, implementer-visible, agent-adjudicated sample remains insufficient for representative parity acceptance.
+
+| Workload / engine | Completed quality runs | Validated units | Confirmed defects | Requests | Reported tokens |
+| --- | --- | --- | --- | --- | --- |
+| PR / OCR | 11/11 | 13/13 | 8/8 | 77 | 418,797 |
+| PR / Mortis | 11/11 | 13/13 | 8/8 | 31 | 109,418 |
+| Security / OCR | 6/6 | 7/7 | 5/5 | 13 | 77,254 |
+| Security / Mortis | 6/6 | 7/7 | 5/5 | 14 | 54,701 |
+
+The following uses the **frozen nearest-rank percentile rule** on complete pairs (11 PR, six security), with zero pair-identity mismatches:
+
+| Workload / percentile | OCR | Mortis | Mortis/OCR | Observed difference | Point target |
+| --- | --- | --- | --- | --- | --- |
+| PR p50 | 34.218 s | 30.444 s | **0.8897×** | **11.0% lower** | ≤0.50× — not met |
+| PR p95 | 86.491 s | 62.053 s | **0.7174×** | **28.3% lower** | ≤0.70× — not met |
+| Security p50 | 33.983 s | 36.959 s | **1.0876×** | **8.8% higher** | ≤0.50× — not met |
+| Security p95 | 98.763 s | 66.650 s | **0.6749×** | **32.5% lower** | ≤0.70× — point target met only |
+
+Family-bootstrap one-sided 95% upper ratios remain inconclusive: PR **1.5686× / 0.9332×**, security **2.6124× / 1.1147×** for p50/p95. With six or 11 cases, nearest-rank p95 is the maximum. For six security pairs, nearest-rank p50 selects the third observation; the ordinary arithmetic medians are instead **36.378 s OCR / 40.090 s Mortis**. Separately, median per-case paired differences are **−6.490 s PR / −4.024 s security**, and median paired ratios are **0.6967× / 0.9681×**. These statistics answer different questions; none replaces the frozen acceptance method. The scorer remains inconclusive and forbids a speedup claim.
+
+Provider request time still dominates: per-attempt median provider-duration/terminal ratios are **95.94% PR / 91.02% security**. No retained timing separates queueing, prefill, reasoning, generation or transport. Local ledger residuals remain roughly 151/93/67 ms for PR analysis/assessment/summary and 228 ms for security. Both security arms contain overlapping calls, so summed durations are not pure wall time. Lower total request counts and changing output/throughput remain observations, not causal proof of either patch.
+
+**Cache-affinity benefit is unproven.** Mortis PR reports zero cache-read tokens across 31 requests, including its one continuation; prior pilot 02 had three continuations, all with cache hits. Its median output/reasoning tokens increase while p50 falls, illustrating provider variability. Security cache-read/input rises to 7.74%, but distinct per-round sessions and one uncontrolled run prevent attribution. A controlled cache experiment is still needed. The bounded rolling scheduler is proven to refill idle slots by independent event-controlled tests; this at-most-two-file pilot cannot measure that larger-scan benefit.
+
+PR peak memory is **227,782,656 bytes**; security again reaches **1 GiB**, with memory-limit pressure and **zero OOM kills**. All 16 originally running containers were restored after **22 min 38.1 s**. The task-created provider credential was deleted, and retained artifacts were checked against its actual secret bytes with no leak found. Disposable evaluation containers/networks were removed. After confirming no active local jobs, nine affected development services were refreshed without migrations; an immediate API startup check was premature, and the subsequent readiness check returned **200**, with all 16 services running. This is local development only; no production deployment, GitHub publication or public Mortis enablement occurred.
+
+Third-run artifacts are retained under `data/engine-eval/m5-20261108-pilot-03/`: the metadata-only investigation and cache audits, changed source/tests, image/source/resource proofs, preflight, synthetic protocol checks (including the zero-dispatch setup failure), full `live-03/results.json` and recovered ledger, blinded judgments, frozen score, pause/restoration and local-refresh records, plus a final SHA-256 inventory. `live-manifest.json` SHA-256 is `9ce9938bc135b02555f1862ca4b0905fb311c8f4a46115fcadd7485710cb75cf`. The scorer SHA-256 remains `b7f7a0673101ba90731b7c48c78d64888c1de9f8aa07bc6cb8002d9d36c70d05`; no corpus, truth or threshold changed. Replay scoring with the earlier command's paths changed to this directory and `judgments-pr.json` / `judgments-security.json`.
+
+**M5 acceptance and M6 adoption remain closed.** Security median latency is unresolved, the overall point targets fail, and the unchanged missing acceptance strata remain open.
+
 ## Remaining acceptance work
 
-- Continue latency work against independent development fixtures: the bounded source round trips are removed in the observed outlier, but median and p95 targets still fail. Investigate assessment/model-call time and the existing parallel pipeline without dropping required assessment, verification, summaries or source checks. Retain both completed pilots; no selective rerun, prompt tuning on their truth or weakened gate is permitted.
+- Continue provider-bound latency investigation with independent fixtures and controlled, repeated measurements. Security p50 remains slower and the overall targets fail. Measure the existing default parallel pipeline and scans larger than their concurrency window without dropping assessment, verification, summaries or source checks. Cache-affinity efficacy is unproven; do not credit the hint for observed gains. Retain all three pilots; no selective rerun, prompt tuning on their truth or weakened gate is permitted.
 - Prepare and seal independent representative held-out cases before inspecting their outputs. Broader targets remain 100 PR and 40 security cases, historical and critical defects, large changes, other languages and independent expert adjudication.
 - Exercise the default parallel review pipeline and retained historical verification workflows in the live comparison.
 - Extend real process-kill coverage to full PR/security pipelines, prefork workers and mixed workloads. Live paid-provider kills, real-account permission/head/cancellation/publication failure recovery and automatic reclamation of quarantined admissions remain unverified.
