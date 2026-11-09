@@ -88,6 +88,15 @@ Local dev uses `docker compose --env-file .env.dev -f compose.dev.yaml`, a separ
 - Browser tests run against the production build with mocked application APIs. Evaluator regressions have offline tests in `scripts/engine_eval/`; keep synthetic test evidence separate from retained pilot records.
 - Mocked tests, worker startup and local checks do **not** establish real provider integration, hosted CI success or engine acceptance. Report those boundaries separately. Scoped adoption does not turn missing or failed milestone gates into passes.
 
+## Codex delegation
+
+For substantial development tasks in Codex, delegate implementation and relevant independent review to the project agents in `.codex/agents/`, following the coordination rules in `.codex/config.toml`. Handle small, self-contained changes directly.
+
+- Use `implementer` for the complete change, including affected callers and regression tests; use `explorer` first only when code mapping is needed.
+- After implementation, use `workflow_reviewer` for lifecycle, inference, persistence or migration changes; `security_reviewer` for authorization and trust boundaries; and `contract_ui_reviewer` for API/frontend changes. Select only the relevant reviewers.
+- Return confirmed fixes to the implementation owner, then use `verification_runner` to check the final state. Keep one writer per file and one owner of shared database-backed tests across agents and worktrees.
+- The main agent remains responsible for scope, integration, evaluating findings and the final report. Subagents complete their assignment without recursively delegating. Delegation does not authorize publication, issue/thread resolution, deployment or paid evaluations.
+
 ## Graphify for local development
 
 Use the repo-local skill at `.agents/skills/graphify/SKILL.md` for graph builds and semantic refreshes. In Codex, invoke it with `$graphify`.
