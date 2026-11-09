@@ -644,11 +644,13 @@ def controlled_performance(seal, results):
                     or observed != expected or any(type(value) is not int for value in observed)):
                 gaps.append("security_work_counters_do_not_match_retained_outcomes")
         coverage = attempt.get("coverage", {})
+        timing = attempt.get("timing_ms")
+        terminal = timing.get("terminal") if isinstance(timing, dict) else None
         complete = (attempt.get("status") in {"complete", "completed"}
                     and type(coverage.get("assigned_units")) is int and coverage["assigned_units"] == case["expected_assigned_units"]
                     and type(coverage.get("validated_units")) is int and coverage["validated_units"] == coverage["assigned_units"]
                     and not gaps and attempt.get("timing_origin") == "queued"
-                    and pilot.number(attempt.get("timing_ms", {}).get("terminal")) and attempt["timing_ms"]["terminal"] > 0)
+                    and pilot.number(terminal) and terminal > 0)
         resource = attempt.get("resource_evidence", {})
         measured = attempt.get("performance_evidence", {})
         transport = attempt.get("transport", {})
@@ -800,7 +802,9 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
                 and type(coverage.get("validated_units")) is int
                 and 0 <= coverage["validated_units"] <= coverage["assigned_units"], "Invalid frozen coverage denominator")
         work_gaps = quality_work_gaps(attempt, case["workload"], results.get("scanner_snapshot", {}).get("sha256"), protocol)
-        if not pilot.number(attempt.get("timing_ms", {}).get("terminal")) or not attempt["timing_ms"]["terminal"]:
+        timing = attempt.get("timing_ms")
+        terminal = timing.get("terminal") if isinstance(timing, dict) else None
+        if not pilot.number(terminal) or not terminal:
             work_gaps.append("missing_queue_to_terminal_duration")
         if attempt.get("timing_origin") != "queued":
             work_gaps.append("queue_time_not_included")
@@ -859,8 +863,9 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
         for key, arms in pairs.items():
             if "/".join((cases[key[0]]["workload"], key[2], key[3])) != name or set(arms) != set(ARMS):
                 continue
+            usages = [arms[arm].get("usage") for arm in ARMS]
             for field in protocol["comparison_usage_fields"]:
-                values = [arms[arm].get("usage", {}).get(field) for arm in ARMS]
+                values = [usage.get(field) if isinstance(usage, dict) else None for usage in usages]
                 if all(pilot.number(value) for value in values) and values[1] > values[0]:
                     blockers.add("paired_provider_consumption_regression")
     for comparison in protocol["comparisons"]:
@@ -877,7 +882,8 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
                                        for percentile, quantile in (("p50", .5), ("p95", .95))}
     for cap, metric in CAP_FIELDS.items():
         limit = protocol["spending"][cap]
-        values = [attempt.get("usage", {}).get(metric) for attempt in attempts]
+        values = [attempt["usage"].get(metric) if isinstance(attempt.get("usage"), dict) else None
+                  for attempt in attempts]
         if limit is not None and (not all(pilot.number(value) for value in values) or sum(values) > limit):
             blockers.add("finite_spending_cap_unknown_or_exceeded")
     checks = evidence.get("checks", {})

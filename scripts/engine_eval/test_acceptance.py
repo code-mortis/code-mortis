@@ -322,6 +322,30 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate controlled"):
             acceptance.controlled_performance(seal, controlled)
 
+    def test_malformed_timing_and_usage_are_unknown_not_scoring_errors(self):
+        seal = self.seal()
+        for field, blocker in (("timing_ms", "incomplete_required_work"), ("usage", "unknown_consumption")):
+            for malformed in (None, [], "invalid", 1, True):
+                with self.subTest(field=field, malformed=malformed):
+                    results = self.results(seal)
+                    results["attempts"][0][field] = malformed
+                    report = acceptance.score(seal, results, self.judgments(results, seal))
+                    self.assertIn(blocker, report["blockers"])
+                    self.assertEqual(report["acceptance"], "not_established")
+
+    def test_malformed_controlled_timing_and_usage_exclude_the_pair(self):
+        seal = self.seal()
+        for field, blocker in (("timing_ms", "controlled_required_work_timing_or_resource_evidence_incomplete"),
+                               ("usage", "controlled_unknown_consumption")):
+            for malformed in (None, [], "invalid", 1, True):
+                with self.subTest(field=field, malformed=malformed):
+                    results = self.controlled_security(seal)
+                    self.assertTrue(acceptance.controlled_performance(seal, results)[0])
+                    results["attempts"][0][field] = malformed
+                    groups, report = acceptance.controlled_performance(seal, results)
+                    self.assertIn(blocker, report["blockers"])
+                    self.assertFalse(groups)
+
     def test_declared_clean_single_file_controlled_case_is_valid(self):
         seal = self.seal()
         controlled = self.results(seal)
