@@ -71,6 +71,7 @@ test("date presets and custom ranges preserve local calendar boundaries", () => 
 test("date range arrow opens and closes choices without typing", async ({ page }, info) => {
   await mock(page);
   await page.goto("/analytics");
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   const period = page.getByRole("combobox", { name: "Date range", exact: true });
   const trigger = page.locator('button[aria-label="Show options"]');
   const toggle = () => info.project.name === "mobile" ? trigger.tap() : trigger.click();

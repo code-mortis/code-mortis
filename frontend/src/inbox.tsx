@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, type Schema } from "./api";
-import { Empty, ErrorNotice, Loading } from "./components/common";
+import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
 import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
@@ -74,13 +74,10 @@ export function Inbox({ admin }: { admin: boolean }) {
   if (legacy) return <Navigate to={`/repositories?${raw}`} replace />;
   const emptyTitle = data?.registered_total ? "No matching pull requests" : "Your inbox is empty";
   return <>
-    <header className="mb-6">
-      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-        <h1 data-pull-list-focus tabIndex={-1} className="text-2xl font-semibold tracking-tight sm:text-3xl">Inbox</h1>
-        <span role="status" aria-live="polite" className="text-sm tabular-nums text-muted-foreground">{data ? <>{data.total}<span className="sr-only"> pull {data.total === 1 ? "request" : "requests"} · {data.repository_count} {data.repository_count === 1 ? "repository" : "repositories"}</span></> : query.error ? "Pull requests unavailable" : "Loading pull requests…"}{query.isPlaceholderData && <span className="sr-only"> · Updating pull requests…</span>}</span>
-      </div>
-      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Pull requests across your repositories.</p>
-    </header>
+    <PageTitle title="Inbox" headingProps={{ tabIndex: -1, ...{ "data-pull-list-focus": true } }}
+      titleMeta={<span role="status" aria-live="polite" className="text-sm tabular-nums text-muted-foreground">{data ? <>{data.total}<span className="sr-only"> pull {data.total === 1 ? "request" : "requests"} · {data.repository_count} {data.repository_count === 1 ? "repository" : "repositories"}</span></> : query.error ? "Pull requests unavailable" : "Loading pull requests…"}{query.isPlaceholderData && <span className="sr-only"> · Updating pull requests…</span>}</span>}>
+      Pull requests across your repositories.
+    </PageTitle>
     <div className="mb-6"><InboxFilters params={params} data={data} onChange={change} onSearch={search} /></div>
     {query.error && !data && <div className="mb-4 space-y-2"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry inbox</Button></div>}
     {query.isPending && <Loading />}

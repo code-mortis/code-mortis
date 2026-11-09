@@ -146,10 +146,7 @@ export function SecurityOverview({ user }: { user: User }) {
   const { query, items: rows, denied, pagination } = usePagedList<SecurityRepo>(`/security/repositories?${request}`);
   const data = query.data;
   return <>
-    <header className="mb-6">
-      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Security</h1>
-      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Scan default branches, inspect supported findings, and verify fixes.</p>
-    </header>
+    <PageTitle title="Security">Scan default branches, inspect supported findings, and verify fixes.</PageTitle>
     {denied ? <ErrorNotice error={query.error} /> : <>
       <div className="mb-6"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
         onSearch={(value) => change("search", value)} onChange={change} filters={[
@@ -278,7 +275,6 @@ const findingViews = [
 ] as const;
 type FindingState = typeof findingViews[number]["state"];
 const findingTabValues = findingViews.map((view) => view.value);
-const findingTabsClass = "max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto";
 
 function useLegacyFindingTabs(scan = false) {
   const [params, setParams] = useSearchParams();
@@ -339,7 +335,7 @@ export function SecurityRepository({ user }: { user: User }) {
         {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
       </div>
     </section>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Repository security" className={findingTabsClass}>
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
       {findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} state={view.state} /></TabsContent>)}
@@ -525,7 +521,7 @@ export function SecurityScan({ user }: { user: User }) {
     {engine === "Open Code Review" && <p role="status" className="mb-4 text-sm text-muted-foreground">This historical scan used Open Code Review, which is retired. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
     <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />
-    <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}>
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Security scan" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><div className="space-y-6">
@@ -728,11 +724,11 @@ function FindingHistory({ findingId }: { findingId: string }) {
 function SecurityEvidence({ title, evidence, commit }: { title: string; evidence: Record<string, unknown>; commit: string }) {
   return <>
     <section className="space-y-3"><h3 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{title}</h3><Markdown>{text(evidence.explanation)}</Markdown></section>
-    {text(evidence.trigger) && <section className="space-y-3"><h3 className="text-sm font-semibold">Trigger</h3><Markdown>{text(evidence.trigger)}</Markdown></section>}
-    {text(evidence.impact) && <section className="space-y-3"><h3 className="text-sm font-semibold">Impact</h3><Markdown>{text(evidence.impact)}</Markdown></section>}
+    {text(evidence.trigger) && <section className="space-y-3"><h3 className="text-sm font-semibold">When it happens</h3><Markdown>{text(evidence.trigger)}</Markdown></section>}
+    {text(evidence.impact) && <section className="space-y-3"><h3 className="text-sm font-semibold">Why it matters</h3><Markdown>{text(evidence.impact)}</Markdown></section>}
     {entries(evidence.evidence).map((citation, index) => <section key={index} className="space-y-3"><p className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{text(citation.path)}:{count(citation.start_line)}–{count(citation.end_line)}</p><Code path={text(citation.path)} startLine={Number(citation.start_line)}>{text(citation.quote)}</Code></section>)}
-    <section className="space-y-3"><h3 className="text-sm font-semibold">Remediation</h3><Markdown>{text(evidence.remediation)}</Markdown></section>
-    <section className="space-y-3"><h3 className="text-sm font-semibold">Verification</h3><Markdown>{text(evidence.verification)}</Markdown></section>
+    <section className="space-y-3"><h3 className="text-sm font-semibold">How to fix it</h3><Markdown>{text(evidence.remediation)}</Markdown></section>
+    <section className="space-y-3"><h3 className="text-sm font-semibold">How to verify the fix</h3><p className="text-xs leading-relaxed text-muted-foreground">Suggested checks to run after making the change.</p><Markdown>{text(evidence.verification)}</Markdown></section>
     <p className="text-xs leading-relaxed text-muted-foreground">Evidence saved at <span className="font-mono">{commit.slice(0, 7)}</span>. Each scan keeps its original observations; absence from a later scan does not prove a fix.</p>
   </>;
 }
@@ -764,13 +760,14 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
   const sourcePath = tab === "snapshot" && snapshot ? text(snapshot.path) || finding.path : finding.path;
   const sourceCommit = tab === "snapshot" && snapshot ? headSha ?? text(object(snapshot.evidence).source_sha) : text(evidence.source_sha);
   const sourceUrl = `https://github.com/${repo.full_name}/blob/${sourceCommit}/${sourcePath.split("/").map(encodeURIComponent).join("/")}`;
-  const path = text(snapshot?.path) || finding.path;
+  const selectedEvidence = tab === "snapshot" && snapshot ? snapshot : finding;
+  const path = sourcePath;
   const slash = path.lastIndexOf("/");
   const StatusIcon = finding.state === "resolved" ? CircleCheck : finding.state === "false_positive" ? CircleSlash : CircleDot;
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="shrink-0 space-y-3 px-6 pb-5">
       <div className="flex min-w-0 items-center gap-2.5"><FileCode2 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><p className="min-w-0 break-words font-mono text-xs [overflow-wrap:anywhere]"><span className="text-muted-foreground">{path.slice(0, slash + 1)}</span><span className="font-medium">{path.slice(slash + 1)}</span></p></div>
-      <div className="flex flex-wrap items-center gap-2"><SecurityStatus value={text(snapshot?.severity) || finding.severity} /><FindingCategory value={text(snapshot?.kind) || finding.kind} /></div>
+      <div className="flex flex-wrap items-center gap-2"><SecurityStatus value={text(selectedEvidence.severity) || "unknown"} /><FindingCategory value={text(selectedEvidence.kind) || "unknown"} /></div>
     </div>
     <div className="grid shrink-0 grid-cols-[18px_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border-y bg-muted/50 px-6 py-4 sm:grid-cols-[18px_minmax(0,1fr)_auto]" data-slot="security-finding-status">
       <StatusIcon className={`mt-0.5 size-[18px] ${finding.state === "resolved" ? "text-emerald-800 dark:text-emerald-300" : "text-muted-foreground"}`} aria-hidden="true" />
@@ -778,12 +775,13 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
       <Button variant="link" size="sm" className="col-start-2 min-h-11 justify-self-start px-0 text-xs sm:col-start-auto sm:min-h-8" onClick={() => { setTab("activity"); activityTab.current?.focus(); }}>View activity</Button>
     </div>
     <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
-      <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>{snapshot && <TabsTrigger value="snapshot">At this scan</TabsTrigger>}<TabsTrigger value="evidence">{snapshot ? "Current status" : "Evidence"}</TabsTrigger><TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{(detail.activity_count ?? detail.activity.length) + (detail.observation_count ?? detail.observations.length)}</span></TabsTrigger></TabsList></div>
+      <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>{snapshot && <TabsTrigger value="snapshot">Saved evidence</TabsTrigger>}<TabsTrigger value="evidence">{snapshot ? "Current finding" : "Evidence"}</TabsTrigger><TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{(detail.activity_count ?? detail.activity.length) + (detail.observation_count ?? detail.observations.length)}</span></TabsTrigger></TabsList></div>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="finding-scroll">
-        {snapshot && <TabsContent value="snapshot" className="space-y-6"><div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></span><SecurityStatus value={text(snapshot.state) || "unknown"} /><span>Scan result: {label(text(snapshot.outcome) || "unknown")}</span></div>
+        {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs leading-relaxed text-muted-foreground">Evidence recorded by this scan. Current status is shown above.</p><div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>Saved at <span className="font-mono">{headSha?.slice(0, 7)}</span></span><SecurityStatus value={text(snapshot.state) || "unknown"} /><span>Scan result: {label(text(snapshot.outcome) || "unknown")}</span></div>
           {text(object(snapshot.verification).explanation) && <section aria-label="Fix verification" className="space-y-3"><h3 className="text-sm font-semibold">Fix verification</h3><Markdown>{text(object(snapshot.verification).explanation)}</Markdown></section>}
           <SecurityEvidence title={text(snapshot.title)} evidence={object(snapshot.evidence)} commit={headSha ?? text(object(snapshot.evidence).source_sha)} /></TabsContent>}
         <TabsContent value="evidence" className="space-y-6">
+          {snapshot && <p className="text-xs leading-relaxed text-muted-foreground">Current finding details. Saved evidence stays unchanged when this finding changes.</p>}
           <SecurityEvidence title={finding.title} evidence={evidence} commit={text(evidence.source_sha)} />
         </TabsContent>
         <TabsContent value="activity" className="space-y-6">
@@ -802,13 +800,13 @@ function FindingContents({ detail, snapshot, headSha }: { detail: Schema["Securi
           {canWrite && hasIssue && !issue.number && (!issue.started || ["failed", "uncertain"].includes(text(issue.sync_status))) && ["open", "accepted_risk"].includes(finding.state) && <Button className="min-h-11 flex-1 sm:min-h-9 sm:flex-none" onClick={() => setIssueOpen(true)}>Review issue again</Button>}
           {canWrite && hasIssue && ["failed", "uncertain"].includes(text(issue.sync_status)) && <Button variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/github-issue/sync` })}>Retry issue synchronization</Button>}
           {canWrite && !!issue.number && !!issue.operation_id && ["failed", "uncertain"].includes(text(issue.sync_status)) && <Button variant="outline" className="min-h-11 h-auto whitespace-normal sm:min-h-9" onClick={() => setSyncApprovalOpen(true)}>Review sync approval</Button>}
-          {canWrite ? <Button variant="outline" className="min-h-11 sm:min-h-9" aria-expanded={triaging} onClick={() => setTriaging(!triaging)}>Triage</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
+          {canWrite ? <Button variant="outline" className="min-h-11 sm:min-h-9" aria-expanded={triaging} onClick={() => setTriaging(!triaging)}>Change status</Button> : <SheetClose asChild><Button variant="outline" className="min-h-11 sm:min-h-9">Close</Button></SheetClose>}
         </div>
       </div>
       {canWrite && triaging && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); action.mutate({ path: `/security/findings/${finding.id}`, method: "PATCH", body: { state, reason, version: finding.version } }, { onSuccess: () => { setReason(""); setTriaging(false); } }); }}>
         <Field label="Decision">{(id) => <select id={id} className="h-9 w-full rounded-md border border-input bg-card px-3 text-base md:text-sm" value={state} onChange={(event) => setState(event.target.value as typeof state)}><option value="false_positive">False positive</option><option value="accepted_risk">Accept risk</option><option value="open">Reopen finding</option></select>}</Field>
         <Field label="Reason">{(id) => <Textarea id={id} autoFocus required value={reason} maxLength={4000} onChange={(event) => setReason(event.target.value)} />}</Field>
-        <p className="text-xs leading-relaxed text-muted-foreground">False positives do not affect the current grade; accepted risks still count. Triage updates the repository grade immediately. Saved scan grades stay unchanged.</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">False positives do not affect the current grade; accepted risks still count. Changing status updates the repository grade immediately. Saved scan grades stay unchanged.</p>
         <Button type="submit" variant="outline" className="min-h-11 sm:min-h-9" disabled={action.isPending || !reason.trim()}>Save decision</Button>
         {finding.kind === "secret" && ["open", "accepted_risk"].includes(finding.state) && <div className="space-y-3 border-t pt-4"><p className="text-sm">Removing a secret does not revoke it. Confirm rotation or revocation before a clean rescan can close this finding.</p>{finding.rotation ? <p className="text-xs text-muted-foreground">Rotation acknowledged. A successful rescan must still verify removal.</p> : <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal sm:min-h-9" disabled={action.isPending || !reason.trim()} onClick={() => action.mutate({ path: `/security/findings/${finding.id}/rotation`, body: { reason, version: finding.version } })}>I rotated or revoked this credential</Button>}</div>}
       </form>}

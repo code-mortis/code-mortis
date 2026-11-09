@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
-from code_mortis.core import analysis, process
+from code_mortis.core import analysis, file_policy, process
 from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
@@ -33,7 +33,7 @@ from code_mortis.schemas.security import (
     SecurityFix,
     SecurityFixSelection,
 )
-from code_mortis.security_scans import policy
+from code_mortis.security_scans import payload, policy
 
 POLICY = "code-mortis.security/v1"
 CITATION_CONTRACT = "source-selection/v1"
@@ -170,6 +170,8 @@ class Snapshot:
     def source(self, path, sha=None):
         if any(part in PROTECTED for part in PurePosixPath(path).parts) or PurePosixPath(path).name in INSTRUCTION_FILES:
             raise ValueError("Repository agent instructions and MCP configuration are not supplied to AI.")
+        if file_policy.excluded(path):
+            raise ValueError("This source is excluded by repository policy.")
         text = self.redact(self.read(path, sha))
         lines = text.splitlines()
         for start, end in self.secret_lines.get(path, []):
@@ -209,6 +211,7 @@ class Snapshot:
             self.inventory[path] = {"sha": blob, "hash": digest(source), "lines": len(source.splitlines()),
                                     "code": (PurePosixPath(path).suffix.lower() in CODE_EXTENSIONS
                                              or PurePosixPath(path).name.lower() in {"dockerfile", "containerfile"})
+                                    and not file_policy.excluded(path)
                                     and not any(p in PROTECTED for p in PurePosixPath(path).parts)
                                     and PurePosixPath(path).name not in INSTRUCTION_FILES}
             name = PurePosixPath(path).name
@@ -218,9 +221,24 @@ class Snapshot:
             elif not self.inventory[path]["code"]:
                 self.excluded.append({"path": path, "reason": "No AI analysis for this file type or protected instruction path; Trivy may inspect it as data"})
 
-    def diff(self, original):
+    def diff(self, original, *, model_context=False):
+        scope = []
+        if model_context:
+            changed = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                                     "--name-only", "-z", original, self.sha, stopped=self.stopped)
+            paths = {relative_path(path) for path in changed.split("\0") if path}
+            if not paths:
+                return ""
+            self.renamed(original, next(iter(paths)))
+            for before, after in self.renames[original].items():
+                if file_policy.excluded(before) or file_policy.excluded(after):
+                    paths.difference_update((before, after))
+            paths = sorted(path for path in paths if not file_policy.excluded(path))
+            if not paths:
+                return ""
+            scope = ["--", *(f":(literal){path}" for path in paths)]
         return self.redact(git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
-                                   original, self.sha, stopped=self.stopped))
+                                   original, self.sha, *scope, stopped=self.stopped))
 
     def renamed(self, original, path):
         if original in self.renames:
@@ -583,9 +601,13 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         record_sources=None):
     require_shared(connection)
     deadline = time.monotonic() + timeout if timeout is not None else None
+    denied = payload.excluded_source_paths({"sources": context.get("sources", {}), "assigned_path": context.get("assigned_path")})
+    if denied:
+        redacted_context(item, denied, structural=True)
+        raise verification.VerificationOutputError("Security source is excluded by repository policy; this task was withheld.",
+            {"tokens": 0}, feedback={"kind": "context_limit", "reason": "Required source is excluded by repository policy"})
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
-        if not any(part in PROTECTED for part in PurePosixPath(path).parts)
-        and PurePosixPath(path).name not in INSTRUCTION_FILES and redacted_context(item, path) == path)})
+        if not file_policy.excluded(path) and redacted_context(item, path) == path)})
     model, selection_model = {"analysis": (SecurityAnalysis, SecurityAnalysisSelection),
         "assessment": (SecurityAssessment, SecurityAssessmentSelection), "verification": (SecurityFix, SecurityFixSelection)}[task]
     schema = model_schema(selection_model)
@@ -623,9 +645,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         supplied = redacted_context(item, {**context, "citation_sources": catalog,
             **({"validation_feedback": feedback} if feedback else {})})
         if current_policy:
-            from code_mortis.security_scans.payload import compact_evidence
-
-            supplied = compact_evidence(supplied)
+            supplied = payload.compact_evidence(supplied)
         return supplied
 
     def supporting_sources():
@@ -656,6 +676,9 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             navigation = redacted_context(item, navigation)
             if select_navigation is not None:
                 navigation = select_navigation(navigation)
+            if payload.excluded_source_paths(navigation):
+                raise verification.VerificationOutputError("Saved security navigation includes excluded source; retry the security scan.",
+                    {"tokens": 0}, feedback={"kind": "context_limit", "reason": "Saved source navigation violates repository policy"})
         except ReviewStopped as exc:
             exc.usage = {"tokens": 0}
             raise

@@ -29,6 +29,7 @@ const tabsListVariants = cva(
       variant: {
         default: "bg-muted",
         line: "gap-1 bg-transparent",
+        page: "w-full flex-wrap justify-start gap-x-5 gap-y-0 rounded-none border-b bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-auto",
       },
     },
     defaultVariants: {
@@ -65,6 +66,7 @@ function TabsTrigger({
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-[state=active]:bg-transparent dark:group-data-[variant=line]/tabs-list:data-[state=active]:border-transparent dark:group-data-[variant=line]/tabs-list:data-[state=active]:bg-transparent",
         "data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:border-muted-foreground/40 dark:data-[state=active]:bg-muted-foreground/20 dark:data-[state=active]:text-foreground dark:data-[state=active]:[&_.text-muted-foreground]:text-foreground/90",
         "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-[-5px] group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-[state=active]:after:opacity-100",
+        "group-data-[variant=page]/tabs-list:h-11 group-data-[variant=page]/tabs-list:flex-none group-data-[variant=page]/tabs-list:rounded-none group-data-[variant=page]/tabs-list:border-0 group-data-[variant=page]/tabs-list:bg-transparent group-data-[variant=page]/tabs-list:px-0 group-data-[variant=page]/tabs-list:text-muted-foreground group-data-[variant=page]/tabs-list:hover:text-foreground group-data-[variant=page]/tabs-list:data-[state=active]:text-foreground group-data-[variant=page]/tabs-list:after:bottom-0 group-data-[variant=page]/tabs-list:data-[state=active]:after:opacity-100 dark:group-data-[variant=page]/tabs-list:data-[state=active]:bg-transparent",
         className,
       )}
       {...props}

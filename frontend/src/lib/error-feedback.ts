@@ -29,6 +29,9 @@ export function errorFeedback(error: unknown) {
   }
   const delivery = resultDeliveryFeedback(raw);
   if (delivery) return { ...delivery, details: raw };
+  if (/Inference request exceeds the connection prompt token ceiling/i.test(message)) {
+    return explain("AI prompt limit reached", "The evidence for one or more checks exceeded the connection's prompt limit. Those checks remain unverified. Technical details identify the affected work.");
+  }
   if (/Required security evidence|Required supporting source cannot be supplied safely|AI requested evidence it already received|Security analysis could not settle its required evidence/i.test(message)) {
     return explain("Supporting evidence unavailable", message.includes("unavailable or exceeds its limit")
       ? "Supporting source could not be supplied. This older record did not save the requested path or distinguish missing source from an evidence limit."

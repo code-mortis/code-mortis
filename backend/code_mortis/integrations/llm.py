@@ -98,11 +98,21 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
     request = Request.model_validate(request.model_dump(mode="python"))
     connection, deadline = await asyncio.to_thread(_inputs, task_id, job_id, request)
     estimate = reservation(connection, request)
-    until = time.monotonic() + connection.get("options", {}).get("timeout_sec", 120)
-    if dispatch_deadline is not None:
-        until = min(until, dispatch_deadline)
+    request_timeout = connection.get("options", {}).get("timeout_sec", 120)
+    until = time.monotonic() + request_timeout
+    timeout_message = (f"AI request timed out. Active limit: the AI connection's per-request timeout ({request_timeout:g} seconds). "
+                       "Configure timeout_sec in Settings > AI connections > Advanced. Overall workflow time limits are separate.")
+    if dispatch_deadline is not None and dispatch_deadline < until:
+        until = dispatch_deadline
+        timeout_message = (f"AI request timed out. Active limit: the workflow inference deadline ({round(timeout, 1):g} seconds available for this request). "
+                           "Start a new run with a larger workflow time limit.")
     if deadline:
-        until = min(until, time.monotonic() + max(0, (deadline - now()).total_seconds()))
+        remaining = max(0, (deadline - now()).total_seconds())
+        stage_deadline = time.monotonic() + remaining
+        if stage_deadline < until:
+            until = stage_deadline
+            timeout_message = (f"AI request timed out. Active limit: the saved stage deadline ({round(remaining, 1):g} seconds remained when this request started). "
+                               "Start a new run with a larger stage or workflow time limit.")
     for attempt in range(3):
         try:
             if stopped() or time.monotonic() >= until:
@@ -161,6 +171,8 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
                                      usage=response.usage, request_id=response.request_id)
             return response
         except InferenceError as exc:
+            if exc.code == "timeout":
+                exc.args = (timeout_message,)
             usage = exc.usage.total_tokens
             if usage is None and not exc.consumption_unknown:
                 usage = 0

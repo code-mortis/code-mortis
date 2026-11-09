@@ -11,6 +11,9 @@ for (const [raw, title] of [
   ['Required security evidence could not be supplied: guard.py. The 100-source-file evidence limit was reached; this is separate from time and token budgets.', "Supporting evidence unavailable"],
   ['AI token usage is unknown; response={"internal":"output"}', "AI usage could not be verified"],
   ['Security token budget exhausted.', "AI limit reached"],
+  ['Inference request exceeds the connection prompt token ceiling', "AI prompt limit reached"],
+  ['Fix verification remains uncertain for Missing source validation permits untrusted input (app.py): Inference request exceeds the connection prompt token ceiling', "AI prompt limit reached"],
+  ['Fix verification remains uncertain for a previously reported issue (apps/users/views.py): Inference request exceeds the connection prompt token ceiling; '.repeat(5).trim(), "AI prompt limit reached"],
   ['OCR returned an invalid verification verdict; response={"invalid":true}', "AI response could not be used"],
   ['OCR returned an invalid structured result; response={"invalid":true}', "AI response could not be used"],
   ['TypeError: fetch failed ECONNREFUSED', "Connection failed"],
@@ -43,6 +46,7 @@ test("shared errors preserve actionable messages and separate technical suffixes
     "Your session has expired. Sign in with GitHub again.",
     "The request contains invalid JSON. Check quotes, commas, and braces.",
     "Settings / token budget: Enter a value no greater than 5,000,000.",
+    "AI request timed out. Active limit: the AI connection's per-request timeout (120 seconds). Configure timeout_sec in Settings > AI connections > Advanced. Overall workflow time limits are separate.",
   ]) expect(errorFeedback(message)).toEqual({ title: undefined, message, details: "" });
   const raw = 'The scanner could not refresh its database. Technical details: {"exit_code":1}';
   expect(errorFeedback(raw)).toEqual({ title: undefined, message: "The scanner could not refresh its database.", details: raw });

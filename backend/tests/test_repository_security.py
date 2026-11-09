@@ -19,8 +19,9 @@ from code_mortis.core import workflow_inference
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.errors import RunnerBlocked
 from code_mortis.core.security import digest
-from code_mortis.integrations import github
+from code_mortis.integrations import github, llm
 from code_mortis.models import (
+    Connection,
     ConnectionGrant,
     Job,
     Membership,
@@ -31,6 +32,7 @@ from code_mortis.models import (
     SecurityScan,
     User,
 )
+from code_mortis.schemas.inference import Message, Request
 from code_mortis.schemas.security import SecurityScanInput
 from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans import issues as security_issues
@@ -244,7 +246,7 @@ def test_unmapped_directory_failure_is_explicitly_incomplete(tmp_path):
 
 def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
     item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, renamed=lambda sha, path: path,
-        diff=lambda sha: "changed", read=lambda path, sha=None: "unsafe" if sha else "unsafe\nunrelated change")
+        diff=lambda sha, **kwargs: "changed", read=lambda path, sha=None: "unsafe" if sha else "unsafe\nunrelated change")
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "100644 blob object\tmain.tf")
     old = {"path": "main.tf", "evidence": {"kind": "infrastructure", "source_sha": OLD,
         "rule_id": "fixture", "resource": "group.unsafe"}}
@@ -255,7 +257,10 @@ def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
 
 @pytest.mark.parametrize("concurrency", [1, 3])
 @pytest.mark.parametrize("obsolete", [False, True])
-def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, security_github, monkeypatch, tmp_path, concurrency, obsolete):
+@pytest.mark.parametrize("denied_context", [None, "context_paths", "source_navigation", "unproven_packing", "proven_packing"])
+def test_security_retry_reuses_cached_remainder_at_exhausted_budget(
+    seed, security_github, monkeypatch, tmp_path, concurrency, obsolete, denied_context,
+):
     paths = ["fresh.py", "cached.py", "cached2.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
@@ -265,6 +270,8 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
     calls = []
 
     def ask(*args, **kwargs):
+        assert kwargs.get("source_packing") is None
+        assert kwargs.get("navigation") is None
         calls.append((args[4]["assigned_path"], args[5]))
         return {"findings": [], "required_paths": []}, {"tokens": 1000}
 
@@ -279,12 +286,19 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
                 "language": "English", "task_contract": "obsolete" if obsolete else config.get("task_contract", "security-task/v2")}
             tasks["analysis:" + path] = {"status": "completed", "tokens": 1,
                 "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}
+            if denied_context in {"unproven_packing", "proven_packing"}:
+                tasks["analysis:" + path]["source_packing"] = True
+                if denied_context == "proven_packing":
+                    tasks["analysis:" + path]["context_paths"] = [path]
+            elif denied_context:
+                tasks["analysis:" + path].update(source_packing=True, **{
+                    denied_context: [path, "uv.lock"] if denied_context == "context_paths" else {"hints": [{"path": "uv.lock"}]}})
         parent.status, parent.progress = "partial", {"tokens": 2, "tasks": tasks}
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()), parent=parent).id
     perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
-        if obsolete:
+        if obsolete or denied_context in {"context_paths", "source_navigation", "unproven_packing"}:
             assert not any(task.get("reused") for task in scan.progress["tasks"].values())
         else:
             assert scan.status == "completed", scan.error
@@ -1055,7 +1069,7 @@ def test_independent_resolution_preserves_global_guards_and_finding_versions(see
 
 def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "regular file")
-    item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha=None: "unsafe", diff=lambda sha: "",
+    item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha=None: "unsafe", diff=lambda sha, **kwargs: "",
                            git=None, env={}, sha=SHA, stopped=lambda: False)
     old = {"evidence": {"kind": "dependency", "source_sha": OLD}, "path": "requirements.txt"}
     assert security.deterministic_fix(item, old, {"targets": {}})["verdict"] == "uncertain"
@@ -1369,7 +1383,8 @@ def test_snapshot_never_follows_symlinks_or_executes_hooks(tmp_path):
 def test_snapshot_analyzes_astro_without_loading_protected_generated_or_documentation_files(tmp_path, monkeypatch):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     paths = ["src/page.astro", "src/App.vue", "src/App.svelte", "src/generated.generated.astro",
-             ".agents/skill/page.astro", "README.md", "src/content/docs/article.mdx", "public/index.html"]
+             ".agents/skill/page.astro", "README.md", "src/content/docs/article.mdx", "public/index.html",
+             "src/credentials.py", "agents.md", ".env"]
     source = "<script>throw new Error('repository code must never execute')</script>\n"
     entries = "\0".join(f"100644 blob {'c' * 40} {len(source)}\t{path}" for path in paths)
     monkeypatch.setattr(security_engine.git_source, "git", lambda *args, **kwargs: entries)
@@ -1380,6 +1395,87 @@ def test_snapshot_analyzes_astro_without_loading_protected_generated_or_document
     assert {row["path"] for row in item.excluded} == set(paths[3:])
     with pytest.raises(ValueError, match="agent instructions"):
         item.source(".agents/skill/page.astro")
+
+
+def test_model_verification_diff_fits_prompt_without_excluded_files_or_losing_evidence(tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False)
+    item.git.mkdir()
+
+    def git(*args):
+        return security_engine.git_source.git(item.git, item.env, *args)
+
+    git("init", "--quiet")
+    sources = {"app.py": "unsafe()\n", "caller.py": "old_caller()\n", "deleted.py": "deleted_helper()\n",
+        'café "name".py': "old_unicode()\n", "uv.lock": "original_lock\n", "AGENTS.md": "old_agent\n",
+        "renamed.lock": "excluded_rename_from_lock()\n", "before.py": "excluded_rename_to_secret()\n"}
+    for path, source in sources.items():
+        (item.git / path).write_text(source)
+    (item.git / "image.png").write_bytes(b"\0old image")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "original")
+    original = git("rev-parse", "HEAD").strip()
+    (item.git / "app.py").write_text("safe()\n")
+    (item.git / "caller.py").write_text("guarded_caller()\n")
+    (item.git / 'café "name".py').write_text("new_unicode()\n")
+    (item.git / "uv.lock").write_text("EXCLUDED_LOCK_DATA\n" * 30_000)
+    (item.git / "AGENTS.md").write_text("EXCLUDED_AGENT_DATA\n")
+    (item.git / "deleted.py").unlink()
+    (item.git / "renamed.lock").rename(item.git / "renamed.py")
+    (item.git / "before.py").rename(item.git / "secret.py")
+    (item.git / "image.png").write_bytes(b"\0new image")
+    git("add", "-A")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "current")
+    item.sha = git("rev-parse", "HEAD").strip()
+    item.populate()
+    raw, filtered = item.diff(original), item.diff(original, model_context=True)
+    assert len(raw.encode()) > 500_000 and "EXCLUDED_LOCK_DATA" in raw
+    assert all(value not in filtered for value in ("EXCLUDED_LOCK_DATA", "EXCLUDED_AGENT_DATA", "image.png",
+        "excluded_rename_from_lock", "excluded_rename_to_secret", "renamed.py", "before.py"))
+    assert all(value in filtered for value in ("unsafe()", "safe()", "guarded_caller()", "deleted_helper()", "new_unicode()"))
+    context = {"finding": {"path": "app.py", "title": "Synthetic"}, "task_contract": security_engine.TASK_CONTRACT,
+        "original_sha": original, "head_sha": item.sha, "diff": raw,
+        "sources": {"original": {"app.py": item.source("app.py", original)}, "current": {"app.py": item.source("app.py")}}}
+    connection = {"id": "connection", "kind": "api", "protocol": "openai", "model": "test",
+                  "options": {"prompt_token_ceiling": 500_000}}
+    reservations, supplied = [], []
+
+    def infer(value, **kwargs):
+        request = Request(instructions=kwargs["instructions"], messages=[Message(role="user",
+            content=security_engine.verification.evidence_bundle(value))],
+            output_schema=workflow_inference.schema_for_transport(kwargs["schema"]), max_output_tokens=16384, effort="high")
+        reservations.append(llm.reservation(connection, request))
+        supplied.append(value)
+        evidence = [{"source_id": reference, "start_line": 1, "end_line": 1}
+                    for reference in value["citation_sources"]]
+        return kwargs["validator"]({"verdict": "fixed", "original_issue_present": True, "explanation": "Original defect checked.",
+            "change_explanation": "The guard changed.", "evidence": evidence, "required_paths": []}, value), {"tokens": 12}
+
+    with pytest.raises(ValueError, match="prompt token ceiling"):
+        security_engine.ask(item, connection, {}, "verification", context, None, 60, lambda: False, "raw", infer=infer)
+    result, usage = security_engine.ask(item, connection, {}, "verification", {**context, "diff": filtered},
+        None, 60, lambda: False, "filtered", infer=infer)
+    assert result["verdict"] == "fixed" and usage == {"tokens": 12}
+    assert len(reservations) == 1 and reservations[0] < 500_000
+    assert supplied[0]["sources"] == context["sources"] and supplied[0]["diff"] == filtered
+
+
+@pytest.mark.parametrize("names", ["uv.lock\0AGENTS.md\0", "../outside.py\0", "bad\npath.py\0"])
+def test_model_diff_never_falls_back_to_unfiltered_paths(tmp_path, monkeypatch, names):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+
+    def git(*args, **kwargs):
+        if "--name-only" in args:
+            return names
+        if "--name-status" in args:
+            return "M\0uv.lock\0M\0AGENTS.md\0"
+        pytest.fail("Excluded or unsafe paths reached the source diff")
+
+    monkeypatch.setattr(security_engine.git_source, "git", git)
+    if names.startswith("uv.lock"):
+        assert item.diff(OLD, model_context=True) == ""
+    else:
+        with pytest.raises(ValueError, match="path"):
+            item.diff(OLD, model_context=True)
 
 
 def test_scanner_environment_excludes_all_application_and_provider_credentials(tmp_path, monkeypatch):
@@ -1589,7 +1685,7 @@ def test_security_stage_status_only_reflects_its_own_results(
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1}
                                      for path in ["app.py", "bad.py"]},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
-        renamed=lambda sha, path: path, diff=lambda sha: "", redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
+        renamed=lambda sha, path: path, diff=lambda sha, **kwargs: "", redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
     proposal = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1815,7 +1911,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
     paths = ["app.py", "other.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
-        renamed=lambda sha, path: path, diff=lambda sha: "source changed", redact=lambda text: text,
+        renamed=lambda sha, path: path, diff=lambda sha, **kwargs: "source changed", redact=lambda text: text,
         sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     proposals = [{"title": path, "category": "test", "severity": "low", "path": path,
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1871,8 +1967,88 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
         assert all(finding.state == "open" for finding in db.scalars(select(SecurityFinding)))
 
 
+@pytest.mark.parametrize("context_changed", [False, True])
+@pytest.mark.parametrize("original_timeout", [None, 45])
+def test_security_retry_changes_request_timeout_without_losing_completed_work(
+    seed, security_github, monkeypatch, tmp_path, original_timeout, context_changed,
+):
+    sources = {"done.py": "safe", "failed.py": "safe"}
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(source), "lines": 1}
+        for path, source in sources.items()}, excluded=[], problems=[], secret_values=[], secret_lines={},
+        source=lambda path, sha=None: sources[path], redact=lambda text: text,
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
+    calls, retrying = [], False
+
+    def ask(item, connection, credentials, task, context, *args, **kwargs):
+        assert task == "analysis"
+        calls.append(context["assigned_path"])
+        if not retrying and context["assigned_path"] == "failed.py":
+            raise security.verification.VerificationOutputError("The inference request exceeded its deadline.", {"tokens": None})
+        assert connection["options"].get("timeout_sec") == (900 if retrying else original_timeout)
+        return {"findings": [], "required_paths": []}, {"tokens": 7}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        connection = db.get(Connection, "connection")
+        connection.options = {**connection.options, **({"timeout_sec": original_timeout} if original_timeout else {})}
+        parent_id = security.create_scan(db, seed["repo"], seed["user"],
+            SecurityScanInput(connection_id="connection", request_key=uid())).id
+    perform_security(parent_id, "test:1")
+    with transaction() as db:
+        parent = db.get(SecurityScan, parent_id)
+        assert parent.status == "failed" and parent.progress["tokens"] is None
+        assert parent.progress["tasks"]["analysis:done.py"]["status"] == "completed"
+        original = deepcopy((parent.config, parent.progress, parent.report))
+        connection = db.get(Connection, "connection")
+        connection.options = {**connection.options, "timeout_sec": 900}
+        retry_id = security.create_scan(db, seed["repo"], seed["user"],
+            SecurityScanInput(connection_id="connection", request_key=uid()), parent=parent).id
+    if context_changed:
+        sources["done.py"] = "changed"
+        item.inventory["done.py"]["hash"] = digest("changed")
+    calls.clear()
+    retrying = True
+    perform_security(retry_id, "retry:1")
+    with transaction() as db:
+        retry, parent = db.get(SecurityScan, retry_id), db.get(SecurityScan, parent_id)
+        assert retry.status == "completed", retry.error
+        assert retry.config["connection"]["options"]["timeout_sec"] == 900
+        assert calls == (["done.py", "failed.py"] if context_changed else ["failed.py"])
+        assert retry.progress["tokens"] == 7 * len(calls)
+        assert bool(retry.progress["tasks"]["analysis:done.py"].get("reused")) != context_changed
+        assert parent.status == "failed" and (parent.config, parent.progress, parent.report) == original
+
+
+@pytest.mark.parametrize("change", ["extra_body", "retry_codes", "model", "base_url", "timeout_seconds", "token_budget", "language"])
+def test_security_timeout_retry_still_rejects_other_configuration_changes(seed, security_github, change):
+    with transaction() as db:
+        parent = security.create_scan(db, seed["repo"], seed["user"],
+            SecurityScanInput(connection_id="connection", request_key=uid()))
+        parent.status = "failed"
+        original = deepcopy(parent.config)
+        connection = db.get(Connection, "connection")
+        connection.options = {**connection.options, "timeout_sec": 900}
+        body = {"connection_id": "connection", "request_key": uid()}
+        if change in {"extra_body", "retry_codes"}:
+            connection.options = {**connection.options, change: {"temperature": 0} if change == "extra_body" else [429]}
+        elif change in {"model", "base_url"}:
+            setattr(connection, change, "different-model" if change == "model" else "https://other.example.com/v1")
+        elif change == "language":
+            seed["repo"].settings = {**seed["repo"].settings, "language": "Spanish"}
+        else:
+            body[change] = 60 if change == "timeout_seconds" else 1000
+        with pytest.raises(HTTPException, match="Retry must use the original"):
+            security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body), parent=parent)
+        assert parent.config == original
+
+
 @pytest.mark.parametrize("concurrency", [None, 3])
-def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, security_github, monkeypatch, tmp_path, concurrency):
+@pytest.mark.parametrize("timeout_changed", [False, True])
+def test_legacy_security_retry_preserves_completed_file_checkpoints(
+    seed, security_github, monkeypatch, tmp_path, concurrency, timeout_changed,
+):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("safe"), "lines": 1}},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
         sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
@@ -1895,6 +2071,9 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, securi
             "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}}}
         with pytest.raises(security.HTTPException, match="Retry must use the original"):
             security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid(), token_budget=1000), parent=parent)
+        if timeout_changed:
+            connection = db.get(Connection, "connection")
+            connection.options = {**connection.options, "timeout_sec": 900}
         retry = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid(),
             **({"concurrency": concurrency} if concurrency else {})), parent=parent)
         identity = retry.id
@@ -2922,7 +3101,7 @@ def test_secret_resolution_requires_rotation_and_repository_wide_removal(monkeyp
                 "identity": security_engine.secure_digest("fixture\0" + material)}
     old = {"path": "secret.txt", "evidence": evidence, "rotation": {"identity": evidence["identity"]} if acknowledged else None}
     item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, inventory={"elsewhere.txt": {}},
-        renamed=lambda sha, path: path, diff=lambda sha: "removed", read=lambda path, sha=None: material if sha or present else "safe")
+        renamed=lambda sha, path: path, diff=lambda sha, **kwargs: "removed", read=lambda path, sha=None: material if sha or present else "safe")
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "")
     assert security.deterministic_fix(item, old, {"targets": {}})["verdict"] == outcome
 

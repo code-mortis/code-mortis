@@ -772,6 +772,76 @@ test("ignored run status keeps restoration navigation outside the live region", 
   await expect(page.getByRole("region", { name: "Ignored pull request" })).toBeVisible();
 });
 
+test("workspace pages keep one visible heading and let keyboard users skip navigation", async ({ page }, info) => {
+  await mock(page);
+  for (const [name, path, heading] of [
+    ["repository", "/repositories/22", "acme/payments"],
+    ["pull", "/pulls/pr", `#${pr.number} ${pr.title}`],
+    ["run", "/runs/run", "Review run"],
+    ["settings", "/settings", "Settings"],
+    ["repository-settings", "/repositories/22/settings", "Repository configuration"],
+  ]) {
+    await page.goto(path);
+    await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toHaveText(heading);
+    await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.getByText("Loading workspace…", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => document.fonts.ready);
+    await noOverflow(page);
+    await page.screenshot({ path: `../.impeccable/review/cohesive-${name}-${info.project.name}.png`, fullPage: true, animations: "disabled" });
+  }
+  await page.getByRole("link", { name: "Skip to content", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("main")).toBeFocused();
+});
+
+test("skip navigation preserves the filtered repository return context", async ({ page }) => {
+  await mock(page);
+  await page.goto("/repositories/22?q=148&author=maria&findings=open");
+  const pull = page.getByRole("link", { name: /Add retry handling/ });
+  await expect(pull).toBeVisible();
+  const repositoryUrl = page.url();
+  const repositoryPath = new URL(repositoryUrl).pathname + new URL(repositoryUrl).search;
+  await pull.click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(`#${pr.number} ${pr.title}`);
+  const detailUrl = page.url();
+  const state = await page.evaluate(() => history.state);
+  expect(state.usr.repository).toBe(repositoryPath);
+  await page.getByRole("link", { name: "Skip to content", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("main")).toBeFocused();
+  expect(page.url()).toBe(detailUrl);
+  expect(await page.evaluate(() => history.state)).toEqual(state);
+  const back = await breadcrumbAncestor(page, repo.full_name);
+  await expect(back).toHaveAttribute("href", repositoryPath);
+  await back.click();
+  await expect(page).toHaveURL(repositoryUrl);
+  await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+});
+
+test("primary page tabs stay keyboard accessible when they wrap", async ({ page }, info) => {
+  await mock(page);
+  for (const [path, label] of [["/pulls/pr", "Pull request views"], ["/runs/run", "Review run views"]]) {
+    await page.goto(path);
+    const tabs = page.getByRole("tablist", { name: label });
+    const findings = tabs.getByRole("tab", { name: /^Findings/ });
+    await findings.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(tabs.getByRole("tab", { name: /^Resolved/ })).toBeFocused();
+    await expect(page).toHaveURL(/tab=resolved/);
+    await page.reload();
+    await expect(tabs.getByRole("tab", { name: /^Resolved/ })).toHaveAttribute("aria-selected", "true");
+    await tabs.getByRole("tab", { name: /^Resolved/ }).focus();
+    await page.keyboard.press("Home");
+    await expect(findings).toBeFocused();
+    await expect(findings).toHaveAttribute("aria-selected", "true");
+    const targets = await tabs.getByRole("tab").evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height));
+    expect(targets.every((height) => height >= 44)).toBe(true);
+    await noOverflow(page);
+  }
+  await page.getByRole("button", { name: "Switch to dark mode" }).click();
+  await page.screenshot({ path: `../.impeccable/review/cohesive-run-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
+});
+
 test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
   await mock(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
@@ -2588,8 +2658,16 @@ test("finding code shows a unified diff and safe Markdown highlighting in both t
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
     await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
+    const highlightsFillCodeArea = await patch.evaluate((element) => {
+      const right = element.getBoundingClientRect().left + element.clientLeft + element.clientWidth
+        - parseFloat(getComputedStyle(element).paddingRight);
+      return [...element.querySelectorAll(".hljs-addition, .hljs-deletion")]
+        .every((line) => line.getBoundingClientRect().right >= right - 1);
+    });
+    expect(highlightsFillCodeArea).toBe(true);
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/code-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
+    await patch.screenshot({ path: `../.impeccable/review/diff-width-${colorScheme}-${info.project.name}.png`, animations: "disabled" });
   }
 });
 
@@ -2716,9 +2794,9 @@ test("run tabs and independent finding and assessment filters survive shared URL
   await expect(page.getByRole("button", { name: "Edit Type: Bug", exact: true })).toBeVisible();
   await findingCards.click();
   const findingSheet = page.getByRole("dialog", { name: "Finding details" });
-  await findingSheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await findingSheet.getByRole("tab", { name: "Current finding", exact: true }).click();
   await page.reload();
-  await expect(findingSheet.getByRole("tab", { name: "Current status", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(findingSheet.getByRole("tab", { name: "Current finding", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
   for (const name of ["Resolved", "Coverage", "Details", "Assessment"]) {
     await page.getByRole("tab", { name: new RegExp(`^${name}`) }).click();
@@ -2763,7 +2841,7 @@ test("run resolved tab preserves verification history and a finding's current st
   await expect(tab).toHaveAttribute("aria-selected", "true");
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByText("open", { exact: true })).toBeVisible();
-  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
   await sheet.getByRole("button", { name: "View verification", exact: true }).click();
   await expect(sheet).toContainText("The retry loop now stops after three attempts.");
@@ -2777,10 +2855,10 @@ test("run resolved tab preserves verification history and a finding's current st
   await card.focus();
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
   await page.reload();
-  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(sheet).toContainText("Original evidence preserved from the earlier review.");
   await page.keyboard.press("Escape");
   await expect(tab).toBeFocused();
@@ -3024,7 +3102,7 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
   await expect(saved).not.toContainText("Sync needs attention");
   await noOverflow(page);
   await saved.press("Enter");
-  await expect(page.getByRole("dialog", { name: "Finding details" }).getByRole("tab", { name: "At this run" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("dialog", { name: "Finding details" }).getByRole("tab", { name: "Saved evidence" })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
   await expect(saved).toBeFocused();
   expect(requests).toEqual([]);
@@ -3197,10 +3275,10 @@ test("review run workspace filters saved findings and separates original evidenc
     run: { status: "completed", publication: "published", publication_error: null, check_pending: false, check_error: null, check_status: "completed", check_conclusion: "success", finished_at: "2026-10-05T13:37:36Z",
       progress: { verification: { selected: 13, completed: 7, resolved: 3, pending: 0, still_present: 2, uncertain: 8, skipped: 0, failed: 6 } },
       report: { manifest: { coverage: { selected: [{ path: "src/retry.ts" }, { path: "src/config.ts" }], completed: [{ path: "src/retry.ts" }], reused: [{ path: "src/config.ts" }], failed: [], waived: [] } } } },
-    occurrences, finding: { status: "resolved", content: "Current evidence has been updated after the fix." },
+    occurrences, finding: { status: "resolved", path: "src/current.ts", severity: "low", category: "performance", content: "Current evidence has been updated after the fix." },
   });
   await page.goto("/runs/run");
-  await expect(page.getByRole("heading", { name: "Review run completed", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
   await expect(page.locator("main header")).toContainText("17m 36s");
   await expect(page.getByText("The review results were published on GitHub.", { exact: true })).toHaveCount(0);
@@ -3268,13 +3346,22 @@ test("review run workspace filters saved findings and separates original evidenc
   const row = list.getByRole("button", { name: /retry loop has no upper bound/ });
   await row.press("Enter");
   const sheet = page.getByRole("dialog", { name: "Finding details" });
-  await expect(sheet.getByRole("tab", { name: "At this run" })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence" })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByText("handler-1.ts", { exact: true }).first()).toBeVisible();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
   await expect(sheet).toContainText(finding.content);
   await expect(sheet.getByRole("region", { name: "Suggested change diff" })).toBeVisible();
-  await sheet.getByRole("tab", { name: "Current status" }).click();
+  await sheet.getByRole("tab", { name: "Current finding" }).click();
+  await expect(sheet.getByText("current.ts", { exact: true }).first()).toBeVisible();
+  await expect(sheet.getByText("low", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
   await expect(sheet).toContainText("Current evidence has been updated after the fix.");
   await expect(sheet.getByText("resolved", { exact: true })).toBeVisible();
-  await sheet.getByRole("tab", { name: "At this run" }).click();
+  await page.screenshot({ path: `../.impeccable/review/cohesive-pr-current-finding-${info.project.name}.png`, animations: "disabled" });
+  await sheet.getByRole("tab", { name: "Saved evidence" }).click();
+  await expect(sheet.getByText("handler-1.ts", { exact: true }).first()).toBeVisible();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("resolved", { exact: true })).toBeVisible();
   await expect(sheet).toContainText(finding.content);
   await expect(sheet.getByText("Current evidence has been updated after the fix.")).toHaveCount(0);
   await noOverflow(page);
@@ -4486,16 +4573,16 @@ test("saved finding evidence remains readable when current status cannot be load
   await page.goto("/runs/run");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
-  await expect(sheet.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(sheet).toContainText(finding.content);
   await expect(sheet.getByRole("region", { name: "Suggested change diff" })).toBeVisible();
   await expect(sheet.getByRole("alert")).toContainText("Current finding unavailable");
   await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toHaveCount(0);
-  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
   await expect(sheet).toContainText("Current evidence could not be loaded.");
   await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
   await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
-  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await sheet.getByRole("tab", { name: "Saved evidence", exact: true }).click();
   await expect(sheet).toContainText(finding.content);
   await noOverflow(page);
 });
@@ -4509,7 +4596,7 @@ test("current finding header waits for current evidence instead of showing the s
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByText("high", { exact: true })).toBeVisible();
-  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
   await expect(sheet.getByRole("status")).toContainText("Loading workspace");
   await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
   await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
@@ -4517,7 +4604,7 @@ test("current finding header waits for current evidence instead of showing the s
   await expect(sheet.getByText("low", { exact: true })).toBeVisible();
   await expect(sheet.getByText("Performance", { exact: true })).toBeVisible();
   await expect(sheet).toContainText("current.ts");
-  await sheet.getByRole("tab", { name: "At this run", exact: true }).click();
+  await sheet.getByRole("tab", { name: "Saved evidence", exact: true }).click();
   await expect(sheet.getByText("high", { exact: true })).toBeVisible();
 });
 
@@ -4726,7 +4813,7 @@ test("candidate assessment separates withheld claims from repeated findings", as
   await repeated.click();
   await sheet.getByRole("button", { name: "Open finding" }).click();
   const linked = page.getByRole("dialog", { name: "Finding details" });
-  await expect(linked.getByRole("tab", { name: "At this run" })).toHaveAttribute("data-state", "active");
+  await expect(linked.getByRole("tab", { name: "Saved evidence" })).toHaveAttribute("data-state", "active");
   await expect(linked.getByRole("button", { name: "Back to assessment" })).toBeFocused();
   await linked.getByRole("button", { name: "Back to assessment" }).click();
   await expect(sheet.getByRole("tab", { name: "Assessment", exact: true })).toBeFocused();
@@ -5212,7 +5299,7 @@ test("assessment sheet preserves polling, full evidence, and focus on narrow scr
   expect(listReads).toBeGreaterThan(1);
   currentRun.status = "completed";
   await page.clock.fastForward(5000);
-  await expect(page.locator("main h1")).toHaveText("Review run completed");
+  await expect(page.locator("main h1")).toHaveText("Review run");
   const settledReads = { list: listReads, detail: detailReads };
   await page.clock.runFor(10_000);
   expect({ list: listReads, detail: detailReads }).toEqual(settledReads);
@@ -6491,8 +6578,8 @@ test("settings sections retain URLs and adapt to the workspace width in both the
     const nav = await navigation.boundingBox();
     const content = await page.getByRole("region", { name: "Team", exact: true }).boundingBox();
     if (width >= 1024) {
-      expect(nav!.width).toBe(176);
-      expect(content!.x - nav!.x - nav!.width).toBe(24);
+      expect(nav!.width).toBe(192);
+      expect(content!.x - nav!.x - nav!.width).toBe(32);
     } else expect(content!.y).toBeGreaterThan(nav!.y + nav!.height);
     await page.screenshot({ path: `../.impeccable/review/settings-breakpoint-${width}.png`, fullPage: true });
   }

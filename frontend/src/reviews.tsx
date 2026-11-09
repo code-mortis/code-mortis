@@ -75,6 +75,7 @@ import {
   ExternalLink,
   Field,
   Loading,
+  PageTitle,
   Markdown,
   Status,
   words,
@@ -159,27 +160,22 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const Visibility = selected?.private ? LockKeyhole : Globe;
   const repositoryNameStart = (selected?.full_name.lastIndexOf("/") ?? -1) + 1;
   return <>
-    <header className="mb-6 min-w-0">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 basis-80">
-          <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
-            {selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
-          </h1>
-          {selected ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
-            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-            <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
-          </div> : <p className="mt-1 text-sm text-muted-foreground">Follow each pull request from first review to final resolution.</p>}
-        </div>
-        {selected && <div className="flex shrink-0 flex-wrap gap-2">
+    <div className="mb-6 min-w-0">
+      <PageTitle className="mb-0" title={selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
+        actions={selected && <>
           <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
             onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
           })}>
             <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
           </Button>
           {admin && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
-        </div>}
-      </div>
+        </>}>
+        {selected ? <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
+          <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
+          <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+        </div> : "Follow each pull request from first review to final resolution."}
+      </PageTitle>
       {selected && <section aria-label="Review configuration" className="mt-6 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex items-center gap-2"><span className="text-muted-foreground">Reviews</span><Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Enabled" : "Paused"} /></div>
@@ -189,7 +185,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
           </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
         </div>
       </section>}
-    </header>
+    </div>
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
     {requested && !selected && <Empty title="Repository unavailable">
       This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
@@ -376,19 +372,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    <header className="mb-6 min-w-0">
-      <div>
-        <h1 ref={heading} tabIndex={-1} className="break-words text-2xl font-semibold tracking-tight sm:text-3xl [overflow-wrap:anywhere]">
-          <span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}
-        </h1>
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+    <div className="mb-6 min-w-0">
+      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <Status value={pr.state} />
           <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound aria-hidden="true" className="size-3.5 shrink-0" /><span className="break-words [overflow-wrap:anywhere]">@{pr.author}</span></span>
           {pr.draft && <span>Draft</span>}
           <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1"><GitBranch aria-hidden="true" className="size-3.5 shrink-0" /><code className="min-w-0 break-words [overflow-wrap:anywhere]">{pr.head_ref}</code><span>·</span><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></span>
           <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
         </div>
-      </div>
+      </PageTitle>
       <section aria-label="Latest review" className="mt-6 border-t pt-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="min-w-0 space-y-2">
@@ -412,11 +405,11 @@ export function PullDetail({ admin }: { admin: boolean }) {
         </div>
         {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
-    </header>
+    </div>
     <ErrorNotice error={action.error || query.error} />
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList className="mb-4 max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">
+      <TabsList variant="page" aria-label="Pull request views" className="mb-4">
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
@@ -529,13 +522,13 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
       </div>
       <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
         <div className="shrink-0 px-6 pt-5"><TabsList aria-label="Finding information" className={snapshot ? "max-w-full [&>button]:px-2 [&>button]:text-xs sm:[&>button]:text-sm" : ""}>
-          {snapshot && <TabsTrigger value="snapshot">At this run</TabsTrigger>}
-          <TabsTrigger value="evidence">{snapshot ? "Current status" : "Evidence"}</TabsTrigger>
+          {snapshot && <TabsTrigger value="snapshot">Saved evidence</TabsTrigger>}
+          <TabsTrigger value="evidence">{snapshot ? "Current finding" : "Evidence"}</TabsTrigger>
           <TabsTrigger ref={activityTab} value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data ? activities.length : "…"}</span></TabsTrigger>
         </TabsList></div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6" data-slot="finding-scroll">
-          {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs text-muted-foreground">{headSha ? <>Saved at <span className="font-mono">{headSha.slice(0, 7)}</span></> : "Source revision was not recorded."}</p><FindingEvidence evidence={snapshot} /></TabsContent>}
-          <TabsContent value="evidence" className="space-y-6">{f ? <FindingEvidence evidence={f} /> : query.isPending ? <Loading /> : <p className="text-sm text-muted-foreground">Current evidence could not be loaded.</p>}</TabsContent>
+          {snapshot && <TabsContent value="snapshot" className="space-y-6"><p className="text-xs leading-relaxed text-muted-foreground">Evidence recorded by this review. Current status is shown above. {headSha ? <>Saved at <span className="font-mono">{headSha.slice(0, 7)}</span>.</> : "Source revision was not recorded."}</p><FindingEvidence evidence={snapshot} /></TabsContent>}
+          <TabsContent value="evidence" className="space-y-6">{snapshot && <p className="text-xs leading-relaxed text-muted-foreground">Current finding details. Saved evidence stays unchanged when this finding changes.</p>}{f ? <FindingEvidence evidence={f} /> : query.isPending ? <Loading /> : <p className="text-sm text-muted-foreground">Current evidence could not be loaded.</p>}</TabsContent>
           <TabsContent value="activity" className="space-y-6">
           {query.isPending && <Loading />}
           {!query.isPending && !query.data && <p className="text-sm text-muted-foreground">Activity could not be loaded.</p>}
@@ -607,7 +600,7 @@ function FindingPanel({ id, canWrite, snapshot, headSha }: {
 
 function FindingEvidence({ evidence }: { evidence: Schema["FindingOut"] | Schema["OccurrenceOut"]["snapshot"] }) {
   return <>
-    <section className="space-y-3"><h3 className="text-sm font-semibold">Explanation</h3><Markdown>{String(evidence.content ?? "")}</Markdown></section>
+    <section className="space-y-3"><h3 className="text-sm font-semibold">What we found</h3><Markdown>{String(evidence.content ?? "")}</Markdown></section>
     <CodeComparison original={String(evidence.existing_code ?? "")} suggested={String(evidence.suggestion ?? "")} path={String(evidence.path ?? "")} startLine={Number(evidence.start_line)} />
     <p className="flex items-center gap-2 text-xs leading-relaxed text-muted-foreground"><History className="size-3.5 shrink-0" aria-hidden="true" />Each review keeps its original evidence.</p>
   </>;
@@ -919,23 +912,19 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   return <>
     {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used {engine}. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
-    <header className="mb-6 min-w-0">
-      <div>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
-          {can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
+    <div className="mb-6 min-w-0">
+      <PageTitle className="mb-0" title="Review run" titleMeta={<Status value={run.status} />} actions={can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
-          </div>}
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+          </div>}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
           <span>{words(run.trigger)}</span>
           <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
         </div>
         <RunMetrics run={run} tokens={detail.total_tokens} />
-      </div>
+      </PageTitle>
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
@@ -968,12 +957,12 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
-    </header>
+    </div>
     <ErrorNotice error={action.error || error} />
     <ErrorNotice error={run.error} />
     <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
-      <TabsList className="mb-4 grid w-full grid-cols-2 sm:flex sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto">
+      <TabsList variant="page" aria-label="Review run views" className="mb-4">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={resolvedTab} value="resolved">Resolved <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.resolved ?? 0}</span></TabsTrigger>
         <TabsTrigger ref={assessmentTab} value="assessment">Assessment {assessment && <span className="text-xs font-normal tabular-nums text-muted-foreground">{assessment.candidates}</span>}</TabsTrigger>

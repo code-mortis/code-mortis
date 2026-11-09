@@ -9,7 +9,7 @@ import { Textarea } from "./components/ui/textarea";
 import { Switch } from "./components/ui/switch";
 import { Badge } from "./components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
-import { date, Empty, ErrorNotice, Field, Loading, Status } from "./components/common";
+import { date, Empty, ErrorNotice, Field, Loading, PageTitle, Status } from "./components/common";
 
 const domainLabels = { reviews: "Reviews", security: "Security", code: "Code" } as const;
 type McpDomain = keyof typeof domainLabels;
@@ -547,7 +547,7 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
   if (!requestId) {
     return (
       <div className="mx-auto max-w-2xl">
-        <h1 className="text-3xl font-semibold tracking-tight">Agent authorization</h1>
+        <PageTitle title="Agent authorization" />
         <div className="mt-4"><ErrorNotice error={new Error("This authorization link is missing its request. Return to the agent and start again.")} /></div>
       </div>
     );
@@ -576,8 +576,7 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
   }
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-3xl font-semibold tracking-tight">Authorize this agent?</h1>
-      <p className="mt-1 text-sm text-muted-foreground">Signing in does not approve the agent. Choose exactly what it may access.</p>
+      <PageTitle title="Authorize this agent?">Signing in does not approve the agent. Choose exactly what it may access.</PageTitle>
       <div className="mt-4"><ErrorNotice error={preview.error} /></div>
       {preview.isPending ? <Loading /> : data ? (
         <div className="mt-6 space-y-6">
@@ -679,8 +678,7 @@ function McpApprovalRequest({ id }: { id: string }) {
   const settled = decided ?? (data?.approved_at != null ? true : data?.denied_at != null ? false : null);
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-3xl font-semibold tracking-tight">Review this action</h1>
-      <p className="mt-1 text-sm text-muted-foreground">The agent waits until you approve the exact arguments below.</p>
+      <PageTitle title="Review this action">The agent waits until you approve the exact arguments below.</PageTitle>
       <div className="mt-4"><ErrorNotice error={approval.error} /></div>
       {approval.isPending ? <Loading /> : data ? (
         <div className="mt-6 space-y-6">

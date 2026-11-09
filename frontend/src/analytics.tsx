@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { CalendarIcon, RefreshCw } from "lucide-react";
 import { useApi, type Schema } from "./api";
-import { Empty, ErrorNotice, Loading } from "./components/common";
+import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
 import { AnalyticsNumber, AnalyticsPanel, BreakdownChart, DataTable, TrendChart } from "./components/analytics-charts";
 import { normalizeOrdering } from "./lib/ordering";
 import { FilterBar } from "./components/filter-bar";
@@ -111,7 +111,7 @@ export default function Analytics() {
     : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
-    <h1 className="sr-only">Analytics</h1>
+    <PageTitle title="Analytics">Understand review activity, security findings, and reported usage.</PageTitle>
     <div role="group" aria-label="Analytics filters">
       <FilterBar filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
@@ -121,7 +121,7 @@ export default function Analytics() {
       <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
       </FilterBar>
     </div>
-    <Tabs value={tab} onValueChange={setTab}><TabsList className="max-w-full flex-wrap group-data-[orientation=horizontal]/tabs:h-auto">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Analytics views">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
       <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{{
         overview: "Review activity, findings, and resolution for the selected repositories and period.",

@@ -38,7 +38,7 @@ def request():
                    output_schema=SCHEMA, max_output_tokens=32)
 
 
-def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budgets=None, options=None):
+def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budgets=None, options=None, deadlines=None):
     requests = requests or {"a": request()}
     stages = stages or {key: "analysis" for key in requests}
     with transaction() as db:
@@ -52,6 +52,7 @@ def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budge
         plan = analysis.persist_plan(db, job, specification(
             connection=snapshot, settings={"concurrency": concurrency},
             budgets=budgets or {stage: 10_000 for stage in stages.values()},
+            deadlines=deadlines or {},
             tasks=[{"key": key, "stage": stages[key], "input_hash": llm.input_fingerprint(value), "scope": []}
                    for key, value in requests.items()]))
         ids = {row.key: row.id for row in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id))}
@@ -59,11 +60,11 @@ def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budge
 
 
 def execute(identity, value, handler, *, job="job", authorize=lambda: None,
-            validate_result=lambda response: response.output, stopped=lambda: False):
+            validate_result=lambda response: response.output, stopped=lambda: False, timeout=None):
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False) as client:
             return await llm.execute_task(identity, job, 1, value, CREDENTIALS, client=client, authorize=authorize,
-                                          validate_result=validate_result, stopped=stopped)
+                                          validate_result=validate_result, stopped=stopped, timeout=timeout)
     return asyncio.run(run())
 
 
@@ -348,19 +349,71 @@ def test_only_known_zero_consumption_rate_limits_retry_and_stop_after_three(seed
     assert tasks[0].status == ("completed" if recover else "failed")
 
 
-def test_ambiguous_provider_timeout_is_never_automatically_retried(seed):
-    _, ids, values, _ = planned(seed)
+@pytest.mark.parametrize(("options", "limit"), [({}, 120), ({"timeout_sec": 900}, 900)])
+@pytest.mark.parametrize("source", ["connection", "workflow", "stage"])
+@pytest.mark.parametrize("failure", ["httpx", "deadline"])
+def test_timeout_names_limiting_deadline_and_never_retries_unknown_usage(seed, monkeypatch, options, limit, source, failure):
+    started = now()
+    plan, ids, values, snapshot = planned(seed, options=options,
+        deadlines={"analysis": started + timedelta(seconds=20)} if source == "stage" else None)
+    monkeypatch.setattr(llm, "now", lambda: started)
     wire = []
 
     def handler(message):
         wire.append(True)
         raise httpx.ReadTimeout("fixture timeout", request=message)
 
+    original = llm_http.InferenceError("timeout", "The inference request exceeded its deadline.",
+        request_id="timeout-fixture", status_code=200, retry_after=7)
+    if failure == "deadline":
+        async def send(*args, **kwargs):
+            wire.append(True)
+            raise original
+
+        monkeypatch.setattr(llm, "send", send)
     with pytest.raises(llm_http.InferenceError) as caught:
-        execute(ids["a"], values["a"], handler)
+        execute(ids["a"], values["a"], handler, timeout=30 if source in {"workflow", "stage"} else None)
     assert caught.value.code == "timeout" and len(wire) == 1
+    assert caught.value.consumption_unknown and not caught.value.retryable
+    if source == "connection":
+        assert f"per-request timeout ({limit} seconds)" in str(caught.value)
+        assert "Settings > AI connections > Advanced" in str(caught.value) and "timeout_sec" in str(caught.value)
+    elif source == "workflow":
+        assert "workflow inference deadline" in str(caught.value) and "30 seconds" in str(caught.value)
+        assert "Start a new run" in str(caught.value) and "timeout_sec" not in str(caught.value)
+    else:
+        assert "saved stage deadline" in str(caught.value) and "20 seconds" in str(caught.value)
+        assert "Start a new run" in str(caught.value) and "timeout_sec" not in str(caught.value)
+    if failure == "deadline":
+        assert caught.value is original and caught.value.request_id == "timeout-fixture"
+        assert caught.value.status_code == 200 and caught.value.retry_after == 7
     tasks, attempts, tickets = rows()
-    assert tasks[0].status == "uncertain" and attempts[0].usage_state == "unknown"
+    assert len(attempts) == 1 and attempts[0].error_code == "timeout"
+    assert tasks[0].status == "uncertain" and attempts[0].usage_state == "unknown" and attempts[0].usage_tokens is None
+    assert tickets[0].status == "released"
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan, "analysis")).charged_tokens == llm.reservation(snapshot, values["a"]) + 32
+
+
+def test_local_transport_deadline_names_request_limit_and_closes_response(seed, monkeypatch):
+    _, ids, values, _ = planned(seed)
+    clock, closed = [0.0], []
+    monkeypatch.setattr(llm_http, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    class WaitingBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            clock[0] = 121
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        async def aclose(self):
+            closed.append(True)
+
+    with pytest.raises(llm_http.InferenceError, match="per-request timeout \\(120 seconds\\)") as caught:
+        execute(ids["a"], values["a"], lambda _: httpx.Response(200, stream=WaitingBody()))
+    assert caught.value.code == "timeout" and closed == [True]
+    tasks, attempts, tickets = rows()
+    assert len(attempts) == 1 and attempts[0].usage_state == "unknown" and tasks[0].status == "uncertain"
     assert tickets[0].status == "released"
 
 
