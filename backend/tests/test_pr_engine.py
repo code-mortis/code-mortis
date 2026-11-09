@@ -30,9 +30,10 @@ def plan(units=None):
          for path in sorted({u.path for u in units})], [], units, [units])
 
 
-def prepared(value=None, *, options=None, graph=None, connection=None):
+def prepared(value=None, *, options=None, graph=None, connection=None, source_code_policy=engine.SOURCE_CODE_POLICY):
     value = value or plan()
-    return engine.prepare_batches(value, connection or CONNECTION, options or OPTIONS, dict(CREDENTIALS), graph_by_path=graph)
+    return engine.prepare_batches(value, connection or CONNECTION, options or OPTIONS, dict(CREDENTIALS),
+                                  graph_by_path=graph, source_code_policy=source_code_policy)
 
 
 def final(batch, findings=None):
@@ -43,7 +44,8 @@ def finding(batch):
     value = batch.units[0]
     return {"unit_key": value.key, "path": value.path, "content": "Incorrect value", "start_line": value.start_line,
             "end_line": value.start_line, "category": "correctness", "severity": "medium",
-            "existing_code": value.source.splitlines()[0], "suggestion_code": "value = 0", "trigger": "Request reads value",
+            **({"existing_code": value.source.splitlines()[0]} if batch.source_code_policy is None else {}),
+            "suggestion_code": "value = 0", "trigger": "Request reads value",
             "consequence": "Wrong response", "evidence": [{"source_id": batch.sources[0]["source_id"],
                 "start_line": value.start_line, "end_line": value.start_line}]}
 
@@ -137,6 +139,47 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
     assert engine.validate_result(final(batch), batch, batch.sources, dict(CREDENTIALS))["comments"] == []
 
 
+def test_selected_code_is_built_from_exact_redacted_fragment_without_model_quotes():
+    batch = prepared(plan([unit(start=12, source="def value():\n    return 'fixture-key'\n")]))[0]
+    item = finding(batch)
+    item.update(start_line=13, end_line=13)
+    item["evidence"][0].update(start_line=13, end_line=13)
+    schema = batch.request.output_schema["$defs"]["EngineFinding"]
+    assert "existing_code" not in schema["properties"] and "existing_code" not in schema["required"]
+    result = engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+    comment = result["comments"][0]
+    assert comment["existing_code"] == batch.sources[0]["text"].splitlines()[1]
+    assert comment["existing_code"] == comment["evidence"][0]["quote"]
+    assert "fixture-key" not in json.dumps(result)
+
+
+def test_selected_code_contract_finishes_nine_files_after_all_source_rounds(monkeypatch):
+    install_source_reads(monkeypatch)
+    value = plan([unit(f"file-{i}.py", key=f"unit-{i}") for i in range(9)])
+    batches = prepared(value)
+    result, ledger = run(monkeypatch, value, batches, [tool_response(), tool_response(),
+        response(final(batches[0], [finding(batches[0])]))])
+    assert result[0] == "completed" and len(result[1]["manifest"]["coverage"]["completed"]) == 9
+    assert result[2][0]["existing_code"] == "value = 1"
+    assert len(ledger.calls) == 3 and not ledger.calls[-1].tools
+
+
+def test_initial_file_progress_precedes_first_inference(monkeypatch):
+    value, batches = plan(), prepared()
+    ledger = Ledger(batches, [response(final(batches[0]))])
+    updates = []
+
+    async def execute(*args, **kwargs):
+        assert updates[0]["selected"] == 1 and updates[0]["completed"] == 0
+        assert updates[0]["items"] == {"app.py": {"status": "running"}}
+        return await ledger.execute(*args, **kwargs)
+
+    monkeypatch.setattr(llm, "execute_task", execute)
+    result = engine.review(None, {}, value, batches, job_id="job", job_attempt=1, credentials=dict(CREDENTIALS),
+        authorize=lambda: None, register_task=ledger.register, load_task=ledger.rows.get, progress=updates.append)
+    assert result[0] == "completed" and updates[-1]["completed"] == 1
+
+
 @pytest.mark.parametrize("source_ending,code_ending,terminal_newline,matches", [
     ("\r\n", "\r\n", True, False), ("\r\n", "\r\n", False, False),
     ("\r\n", "\n", False, True), ("\r\n", "\n", True, True),
@@ -145,7 +188,7 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
 def test_exact_source_code_uses_supplied_line_endings_and_terminal_newlines(source_ending, code_ending, terminal_newline, matches):
     lines = ["def choose_port():", "    return 443"]
     source = source_ending.join(lines) + source_ending
-    batch = prepared(plan([unit("ports.py", start=12, source=source)]))[0]
+    batch = prepared(plan([unit("ports.py", start=12, source=source)]), source_code_policy=None)[0]
     item = finding(batch)
     item.update(end_line=13, existing_code=code_ending.join(lines) + (code_ending if terminal_newline else ""))
     item["evidence"][0]["end_line"] = 13
@@ -222,7 +265,7 @@ def test_one_schema_repair_is_bounded_and_never_counts_invalid_result(monkeypatc
     ("source_range", "unavailable_citation", ["findings", 0, "evidence", 0]),
     ("blank_source", "empty_citation", ["findings", 0, "evidence", 0]),
     ("local_source", "missing_local_citation", ["findings", 0, "evidence"]),
-    ("code", "existing_code_mismatch", ["findings", 0, "existing_code"]),
+    ("code", "unexpected_code_quote", ["findings", 0, "existing_code"]),
     ("missing", "schema_missing", ["findings", 0, "trigger"]),
     ("type", "schema_int_type", ["findings", 0, "start_line"]),
     ("extra", "schema_extra_forbidden", ["findings", 0, "unexpected_field"]),
@@ -300,7 +343,7 @@ def test_repair_can_complete_without_persisting_rejected_provider_text_and_repla
     result, ledger = run(monkeypatch, value, batches, [response(invalid), response(final(batches[0]))])
     assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 24
     repair = json.loads(ledger.calls[1].messages[1].content)
-    assert repair["validation_diagnostics"]["issues"][0]["code"] == "existing_code_mismatch"
+    assert repair["validation_diagnostics"]["issues"][0]["code"] == "unexpected_code_quote"
     assert "PRIVATE_RESPONSE_MARKER" not in json.dumps([repair, ledger.rows])
     again, ledger = run(monkeypatch, value, batches, [], ledger=ledger)
     assert again == result and len(ledger.calls) == 2 and len(ledger.appended) == 1
@@ -589,7 +632,8 @@ def test_source_authorization_failure_cannot_be_normalized_into_schema_feedback(
 
 
 @pytest.mark.parametrize("repair", [False, True])
-def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair):
+@pytest.mark.parametrize("source_code_policy", [None, engine.SOURCE_CODE_POLICY])
+def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair, source_code_policy):
     import httpx
     from sqlalchemy import select
     from test_analysis_foundation import planned as plan_gateway
@@ -603,7 +647,7 @@ def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair
 
     value = plan()
     snapshot = connection_snapshot(seed["connection"])
-    batches = prepared(value, connection=snapshot)
+    batches = prepared(value, connection=snapshot, source_code_policy=source_code_policy)
     batch = batches[0]
     plan_id, identities = plan_gateway(seed, connection=snapshot,
         revisions={"base": value.base_sha, "head": value.head_sha, "merge_base": value.merge_base},
@@ -615,7 +659,10 @@ def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair
         wire.append(json.loads(message.content))
         output = final(batch, [finding(batch)])
         if repair and len(wire) == 1:
-            output["findings"][0]["existing_code"] = "fixture-key PRIVATE_WIRE_MARKER"
+            if source_code_policy:
+                output["findings"][0]["evidence"][0]["source_id"] = "fixture-key PRIVATE_WIRE_MARKER"
+            else:
+                output["findings"][0]["existing_code"] = "fixture-key PRIVATE_WIRE_MARKER"
         return httpx.Response(200, json=wire_result("openai", content=json.dumps(output)))
 
     def load(key):
@@ -646,7 +693,8 @@ def test_gateway_plan_admission_and_validated_coverage(seed, monkeypatch, repair
         task = db.get(AnalysisTask, identities[batch.key])
         assert task.plan_id == plan_id and task.result["kind"] == ("feedback" if repair else "final") and task.status == "completed"
         if repair:
-            assert task.result["validation"]["issues"][0]["code"] == "existing_code_mismatch"
+            assert task.result["validation"]["issues"][0]["code"] == (
+                "unavailable_citation" if source_code_policy else "existing_code_mismatch")
             assert "PRIVATE_WIRE_MARKER" not in json.dumps(task.result)
             children = [child for child in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id))
                         if child.dependencies == [task.id]]

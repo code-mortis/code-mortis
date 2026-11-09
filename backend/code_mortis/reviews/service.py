@@ -144,6 +144,8 @@ def create_run(
     config = {"connection": connection_snapshot(connection), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2"}
+    # Freeze a bounded PR request timeout; old snapshots retain their original 120-second default.
+    config["connection"]["options"] = {"timeout_sec": 300, **config["connection"]["options"]}
     config.update(engine_snapshot(options))
     if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
         config["code_graph"] = graph

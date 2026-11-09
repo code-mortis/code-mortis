@@ -119,6 +119,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         limited = engine._report(selection, [], {}, tokens=0)[1] if selection.limit_reason else None
         if before_analysis:
             before_analysis(limited)
+        if not selection.limit_reason:
+            progress({"phase": "analysis", "selected": len(selection.selected), "completed": 0, "failed": 0})
         graph_records, graph_sources, remaining = {}, {}, graph_context.MAX_RUN_BYTES
         if graph_options and not selection.limit_reason:
             for item in selection.selected:
@@ -135,9 +137,10 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                 if supporting:
                     graph_sources[item.path] = supporting
         output_token_policy = analysis.output_token_policy(frozen_plan)
+        source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
         prepared = engine.prepare_batches(selection, connection, immutable_options, credentials,
                                            graph_by_path=graph_sources, stopped=cancelled,
-                                           output_token_policy=output_token_policy)
+                                           output_token_policy=output_token_policy, source_code_policy=source_code_policy)
         graph_omissions = {batch.key: batch.graph_omitted for batch in prepared if batch.graph_omitted}
         graph = {"options": graph_options, "selections": graph_records, "prompt_omissions": graph_omissions}
         source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
@@ -149,6 +152,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": engine.PROMPT_VERSION,
                       "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
                       **({"source_tools": source_tool_policy} if source_tool_policy else {}),
+                      **({"source_code": source_code_policy} if source_code_policy else {}),
                       **({"output_tokens": output_token_policy} if output_token_policy else {})},
             settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
                       "workflow_contract": "mortis-workflow/v1"},

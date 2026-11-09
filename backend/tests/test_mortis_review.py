@@ -31,7 +31,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import graph_context, mortis, planning
+from code_mortis.reviews import engine, graph_context, mortis, planning
 from code_mortis.reviews.service import connection_snapshot
 from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, blob_sha
 from code_mortis.schemas.common import RepoSettings
@@ -124,10 +124,13 @@ def scenario(seed, tmp_path, monkeypatch):
             if unit:
                 findings = [{"unit_key": unit["key"], "path": "app.py", "start_line": 2, "end_line": 2,
                     "severity": "medium", "category": "correctness", "content": "The limit returns zero.",
-                    "existing_code": "    return 0", "suggestion_code": "    return 1",
+                    "suggestion_code": "    return 1",
                     "trigger": "A caller asks for the permitted limit.", "consequence": "No work can be allocated.",
                     "evidence": [{"source_id": next(source["source_id"] for source in supplied["citation_sources"]
                                                    if source["path"] == "app.py"), "start_line": 2, "end_line": 2}]}]
+                properties = body["response_format"]["json_schema"]["schema"]["$defs"]["EngineFinding"]["properties"]
+                if "existing_code" in properties:
+                    findings[0]["existing_code"] = "    return 0"
         if state["after_wire"]:
             state["after_wire"]()
         if state["expand"] and len(state["wire"]) == 1:
@@ -170,6 +173,8 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
     assert {entry["path"] for entry in coverage["selected"]} == {"app.py", "guide.md"}
     assert coverage["completed"] == coverage["selected"] and not coverage["failed"]
     assert len(comments) == 1 and comments[0]["source_sha"] == scenario["head"]
+    assert comments[0]["existing_code"] == "    return 0"
+    assert scenario["progress"][0] == {"phase": "analysis", "selected": 2, "completed": 0, "failed": 0}
     assert comments[0]["evidence"] == [{"revision": scenario["head"], "path": "app.py", "start_line": 2,
                                          "end_line": 2, "quote": "    return 0"}]
     assert len(scenario["wire"]) == 1 and scenario["wire"][0]["model"] == scenario["connection"]["model"]
@@ -177,6 +182,7 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
     with transaction() as db:
         plan = db.scalar(select(AnalysisPlan))
         assert plan.run_id == "mortis-run" and plan.job_id == "mortis-job"
+        assert plan.snapshot["versions"]["source_code"] == engine.SOURCE_CODE_POLICY
         assert plan.snapshot["revisions"] == {"base": scenario["base"], "head": scenario["head"], "merge_base": scenario["base"]}
         assert {entry["path"] for entry in plan.snapshot["selected"]} == {"app.py", "guide.md"}
         assert any(entry["path"] == ".env" for entry in plan.snapshot["exclusions"])
@@ -192,6 +198,20 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
     with transaction() as db:
         assert db.scalar(select(AnalysisPlan)).snapshot == frozen
         assert len(list(db.scalars(select(AnalysisAttempt)))) == 1
+
+
+def test_legacy_source_code_plan_replays_without_rewriting_contract(scenario, monkeypatch):
+    with monkeypatch.context() as legacy:
+        legacy.setattr(engine, "SOURCE_CODE_POLICY", None)
+        original = review(scenario)
+    assert original[0] == "completed"
+    with transaction() as db:
+        frozen = copy.deepcopy(db.scalar(select(AnalysisPlan)).snapshot)
+        assert "source_code" not in frozen["versions"]
+    assert review(scenario) == original
+    assert len(scenario["wire"]) == 1
+    with transaction() as db:
+        assert db.scalar(select(AnalysisPlan)).snapshot == frozen
 
 
 def test_file_limit_keeps_waived_denominator_and_never_dispatches(scenario):

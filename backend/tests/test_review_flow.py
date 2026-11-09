@@ -384,6 +384,9 @@ def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(see
     monkeypatch.setattr("code_mortis.api.routers.connections.safe_endpoint", lambda value: value)
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     first = client.post("/api/v1/pulls/pr/runs", json={}).json()
+    assert first["config"]["connection"]["options"] == {"timeout_sec": 300}
+    with transaction() as db:
+        assert db.get(Connection, "connection").options == {}
     body = {
         "name": "Test model", "provider": "openai", "protocol": "openai", "model": "test-model",
         "base_url": "https://example.com/v1", "options": {"timeout_sec": 30, "prompt_token_ceiling": 200000},
@@ -398,7 +401,7 @@ def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(see
     body["options"]["prompt_token_ceiling"] = 100000
     assert client.put("/api/v1/connections/connection", json=body).status_code == 200
     with transaction() as db:
-        assert db.get(ReviewRun, first["id"]).config["connection"]["options"] == {}
+        assert db.get(ReviewRun, first["id"]).config["connection"]["options"] == {"timeout_sec": 300}
         assert db.get(ReviewRun, second["id"]).config["connection"]["options"]["prompt_token_ceiling"] == 200000
         assert json.loads(unseal(db.get(Connection, "connection").secret))["api_key"] == "provider-secret"
 

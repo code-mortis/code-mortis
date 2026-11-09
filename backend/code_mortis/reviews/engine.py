@@ -23,6 +23,7 @@ VERSION = "mortis-pr/v1"
 PROMPT_VERSION = "mortis-pr-prompt/v1"
 SCHEMA_VERSION = "mortis-pr-result/v1"
 SOURCE_TOOL_POLICY = "remaining-rounds/v1"
+SOURCE_CODE_POLICY = "selected-lines/v1"
 MAX_READ_BYTES = 64 * 1024
 MAX_SOURCE_BYTES = 20_000_000
 MAX_READ_LINES = 400
@@ -97,8 +98,10 @@ def _validation_feedback(exc):
             "truncated": False}
 
 
-def output_schema(task_key, units):
+def output_schema(task_key, units, *, source_code_policy=SOURCE_CODE_POLICY):
     schema = BatchResult.model_json_schema()
+    if source_code_policy:
+        schema["$defs"]["EngineFinding"]["properties"].pop("existing_code")
 
     def required(value):
         if isinstance(value, dict):
@@ -119,8 +122,11 @@ def output_schema(task_key, units):
     return schema
 
 
-def read_tool():
-    return Tool(name="read_source", description="Read permitted source at the pinned PR head; no execution.",
+def read_tool(*, source_code_policy=SOURCE_CODE_POLICY):
+    description = "Read permitted source at the pinned PR head; no execution."
+    if source_code_policy:
+        description += " Request at most 400 lines per read and ten reads per round."
+    return Tool(name="read_source", description=description,
                 parameters={"type": "object", "additionalProperties": False, "required": ["path", "start_line", "end_line"],
                     "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 2000},
                         "start_line": {"type": "integer", "minimum": 1},
@@ -137,6 +143,7 @@ class PreparedBatch:
     connection: dict
     graph_omitted: list[str] = field(default_factory=list)
     error: str | None = None
+    source_code_policy: str | None = SOURCE_CODE_POLICY
 
     @property
     def spec(self):
@@ -152,8 +159,10 @@ def _source(revision, path, start, end, text):
 
 
 def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False,
-                    output_token_policy=analysis.OUTPUT_TOKEN_POLICY):
+                    output_token_policy=analysis.OUTPUT_TOKEN_POLICY, source_code_policy=SOURCE_CODE_POLICY):
     """Freeze requests before persisting their task identities; optional graph never crowds out source."""
+    if source_code_policy not in {None, SOURCE_CODE_POLICY}:
+        raise ValueError("The saved source-code policy is unsupported")
     batches = []
     pending = deque(plan.batches)
     while pending:
@@ -176,9 +185,16 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
         payload["citation_sources"] = [{key: value for key, value in source.items() if key != "text"}
                                        for source in sources]
         supplied = context.sanitize(payload, credentials, stopped)
-        request = Request(instructions=INSTRUCTIONS,
+        instructions = INSTRUCTIONS
+        if source_code_policy:
+            instructions += (
+                " Select precise finding start_line/end_line bounds; do not return existing_code. "
+                "Mortis constructs existing_code from those verified source lines, just like evidence quotes."
+            )
+        request = Request(instructions=instructions,
                           messages=[Message(role="user", content=json.dumps(supplied, ensure_ascii=False))],
-                          tools=[read_tool()], output_schema=output_schema(key, units),
+                          tools=[read_tool(source_code_policy=source_code_policy)],
+                          output_schema=output_schema(key, units, source_code_policy=source_code_policy),
                           max_output_tokens=analysis.output_token_limit(output_token_policy), effort=options["effort"], session_id=key)
         omitted = []
         try:
@@ -201,7 +217,8 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
             error = "required_context_limit"
         # Store exactly the redacted source sent to the provider, including optional graph source.
         sources = context.sanitize(sources, credentials, stopped)
-        batches.append(PreparedBatch(key, units, request, sources, dict(options), dict(connection), omitted, error))
+        batches.append(PreparedBatch(key, units, request, sources, dict(options), dict(connection), omitted, error,
+                                     source_code_policy))
     return batches
 
 
@@ -262,7 +279,14 @@ def validate_result(data, batch, sources, credentials, stopped=lambda: False):
         assigned = next(source for source in sources if source["path"] == unit.path
                         and source["revision"] == unit.source_sha and source["start_line"] == unit.start_line)
         local_start, local_end = finding.start_line - unit.start_line, finding.end_line - unit.start_line + 1
-        if not finding.existing_code.strip() or not context.quote_matches(
+        if batch.source_code_policy:
+            if "existing_code" in finding.model_fields_set:
+                raise ResultValidationError("unexpected_code_quote", [*field, "existing_code"],
+                                            "Select finding line bounds; omit existing_code, which Mortis constructs.")
+            finding.existing_code = "\n".join(assigned["text"].splitlines()[local_start:local_end])
+            if not finding.existing_code.strip():
+                raise ResultValidationError("empty_finding_source", field, "Select nonblank finding source lines.")
+        elif not finding.existing_code.strip() or not context.quote_matches(
                 assigned["text"], local_start + 1, local_end, finding.existing_code):
             raise ResultValidationError("existing_code_mismatch", [*field, "existing_code"],
                                         "Copy nonblank existing_code exactly from the supplied finding lines.")
@@ -605,6 +629,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 "selected_units": sum(len(batch.units) for batch in prepared)})
 
     async def execute():
+        await save_progress()
         queue = asyncio.Queue()
         for batch in prepared:
             queue.put_nowait(batch)

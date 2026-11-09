@@ -3,6 +3,7 @@
 import asyncio
 from datetime import timedelta
 from threading import Event
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ from code_mortis.models import (
     Job,
 )
 from code_mortis.reviews.service import connection_snapshot
-from code_mortis.schemas.inference import Message, Request
+from code_mortis.schemas.inference import Message, Request, Response, Usage
 
 CREDENTIALS = {"api_key": "fixture-only-key", "extra_headers": {}}
 
@@ -73,8 +74,9 @@ def rows():
 
 
 @pytest.mark.parametrize("known_usage", [True, False])
-def test_valid_result_persists_known_or_retained_unknown_usage(seed, known_usage):
-    plan, ids, values, snapshot = planned(seed, requests={"a": request(), "b": request()})
+@pytest.mark.parametrize("budget", [10_000, None])
+def test_valid_result_persists_known_or_retained_unknown_usage(seed, known_usage, budget):
+    plan, ids, values, snapshot = planned(seed, requests={"a": request(), "b": request()}, budgets={"analysis": budget})
     wire, authorities = [], []
 
     def handler(message):
@@ -359,6 +361,32 @@ def test_ambiguous_provider_timeout_is_never_automatically_retried(seed):
     assert caught.value.code == "timeout" and len(wire) == 1
     tasks, attempts, tickets = rows()
     assert tasks[0].status == "uncertain" and attempts[0].usage_state == "unknown"
+    assert tickets[0].status == "released"
+
+
+@pytest.mark.parametrize(("options", "expected"), [({"timeout_sec": 300}, 300), ({"timeout_sec": 45}, 45), ({}, 120)])
+def test_request_snapshot_timeout_preserves_legacy_and_explicit_limits(seed, monkeypatch, options, expected):
+    _, ids, values, _ = planned(seed, options=options)
+    with transaction() as db:
+        assert db.get(Connection, "connection").options == options
+    clock, durations = [0.0], []
+    monkeypatch.setattr(llm, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def send(*args, timeout, **kwargs):
+        durations.append(timeout)
+        clock[0] += 121
+        return Response(output={"ok": True}, usage=Usage(total_tokens=12))
+
+    monkeypatch.setattr(llm, "send", send)
+    if expected > 121:
+        assert execute(ids["a"], values["a"], lambda _: pytest.fail("No provider calls")).output == {"ok": True}
+    else:
+        with pytest.raises(llm_http.InferenceError) as caught:
+            execute(ids["a"], values["a"], lambda _: pytest.fail("No provider calls"))
+        assert caught.value.code == "cancelled"
+    assert durations == [expected]
+    _, attempts, tickets = rows()
+    assert attempts[0].usage_tokens == 12 and attempts[0].usage_state == "known"
     assert tickets[0].status == "released"
 
 
