@@ -87,8 +87,8 @@ def draft_models(body: ModelDiscoveryInput, db: DB, user: SESSION_ADMIN):
 
 def save_connection(db: Session, body: ConnectionInput, connection: Connection | None = None, owner_id=None):
     require_shared(body)
-    if connection:
-        require_shared(connection)
+    if connection and connection.kind != "api":
+        raise HTTPException(410, RETIRED_MESSAGE)
     if connection and connection.kind != body.kind:
         raise HTTPException(422, "Create a new connection to change its type.")
     old = json.loads(unseal(connection.secret)) if connection else {}

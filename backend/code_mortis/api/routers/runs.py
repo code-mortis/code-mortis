@@ -147,7 +147,10 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
                     .execution_options(populate_existing=True))
     if run.config.get("connection", {}).get("kind") != "api":
         raise HTTPException(410, RETIRED_MESSAGE)
-    require_execution_engine(run.config)
+    try:
+        require_execution_engine(run.config)
+    except ValueError as exc:
+        raise HTTPException(410, str(exc)) from exc
     candidate = db.get(ReviewCandidate, candidate_id)
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")
@@ -231,7 +234,10 @@ def retry_review(run_id: str, db: DB, user: USER):
         )
     from code_mortis.reviews.service import authorize_connection, execution_identity
 
-    require_execution_engine(run.config)
+    try:
+        require_execution_engine(run.config)
+    except ValueError as exc:
+        raise HTTPException(410, str(exc)) from exc
     connection = db.get(Connection, run.connection_id)
     if not connection or (connection.owner_id and connection.owner_id != user.id):
         raise HTTPException(403, "Only the connection owner can resume this review.")

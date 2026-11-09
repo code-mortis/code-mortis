@@ -40,6 +40,13 @@ def test_native_and_unknown_admission_never_reach_runner(seed, client, github_st
     assert client.get("/api/v1/connections/retired/auth").status_code == 410
     assert client.put("/api/v1/connections/retired/grants/22", json={"automatic": True}).status_code == 410
     assert client.post("/api/v1/connections/retired/console-ticket").status_code == 410
+    response = client.put("/api/v1/connections/retired", json={
+        "kind": "api", "provider": "openai", "protocol": "openai", "name": "Replacement", "model": "new-model",
+    })
+    assert response.status_code == 410 and response.json()["detail"] == RETIRED_MESSAGE
+    with transaction() as db:
+        connection = db.get(Connection, "retired")
+        assert (connection.kind, connection.name, connection.model, connection.secret) == (kind, "Historical account", "old-model", "")
     assert [row["id"] for row in client.get("/api/v1/connections").json()] == ["connection"]
 
 
