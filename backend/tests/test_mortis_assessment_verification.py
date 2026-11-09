@@ -147,7 +147,7 @@ def test_mortis_assessment_preserves_evidence_expansion_and_identity(pipeline, m
 
 
 @pytest.mark.parametrize("recovered", [False, True])
-def test_mortis_verification_retains_explicit_resolution_evidence(verification_scenario, monkeypatch, recovered):  # noqa: F811
+def test_mortis_verification_retains_resolution_evidence_or_interrupted_reservation(verification_scenario, monkeypatch, recovered):  # noqa: F811
     from code_mortis.core import workflow_inference
 
     run_id, claim = verification_scenario["run"], "verification-owner"
@@ -183,6 +183,11 @@ def test_mortis_verification_retains_explicit_resolution_evidence(verification_s
     verification.perform(run_id, Path("/tmp/repo"), {}, {}, connection, {}, claim)
     with transaction() as db:
         row = db.scalar(select(FindingVerification))
+        if recovered:
+            assert row.status == "failed" and row.verdict == "uncertain"
+            assert row.usage == {"tokens": None, "reserved_tokens": 1000}
+            assert row.resolution == "not_applicable" and not calls
+            return
         assert row.status == "completed", row.error
         assert row.usage == {"tokens": 37}
         assert row.verdict == "fixed" and row.resolution == "pending"

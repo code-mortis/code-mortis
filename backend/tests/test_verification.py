@@ -819,18 +819,32 @@ def test_resume_reuses_review_and_saved_verification(scenario):
     assert scenario["calls"] == calls and saved()[0].id == row.id
 
 
-def test_interrupted_verification_reservation_is_not_reissued(scenario, monkeypatch):
+@pytest.mark.parametrize("usage", [{"tokens": None, "reserved_tokens": 199900}, {"tokens": 199900}, {"tokens": None}])
+@pytest.mark.parametrize("parallel", [False, True])
+def test_interrupted_verification_reservation_is_not_reissued(scenario, monkeypatch, usage, parallel):
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
+        if parallel:
+            run.config = {**run.config, "pipeline_version": 2,
+                          "settings": {**run.config["settings"], "max_files": None}}
+            run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
         verification.prepare(db, run, db.get(Repository, 22), "token")
         db.flush()
         row = db.scalar(select(FindingVerification))
-        row.status, row.usage = "running", {"tokens": None, "reserved_tokens": 199900}
-    def unknown_attempt(*args, **kwargs):
-        raise verification.VerificationOutputError("The durable attempt has unknown usage; further inference is blocked.", {"tokens": None})
-    monkeypatch.setattr(verification, "mortis_verify", unknown_attempt)
-    row, finding, _ = perform(scenario)
+        if not parallel:
+            row.status, row.usage = "running", copy.deepcopy(usage)
+    monkeypatch.setattr(verification, "mortis_verify", lambda *a, **k: pytest.fail("Interrupted inference was reissued"))
+    perform_review(scenario["run"])
+    if parallel:
+        with transaction() as db:
+            row = db.scalar(select(FindingVerification))
+            row.status, row.usage = "running", copy.deepcopy(usage)
+            job_id = db.scalar(select(Job.id).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == scenario["run"]))
+            assert job_id is not None
+        jobs.execute_job.run(job_id)
+    row, finding, _ = saved()
     assert row.status == "failed" and row.verdict == "uncertain"
+    assert row.usage == usage and "reserved budget cannot be reused" in row.error
     assert finding.status == "open" and scenario["calls"] == ["review"]
 
 

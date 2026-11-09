@@ -522,7 +522,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 continue
             # A vanished worker may have spent its entire reservation. Never repeat unknown paid work.
             if row.status == "running":
-                row.usage = {"tokens": 0}
+                finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
+                continue
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             finding = db.get(Finding, row.finding_id)
