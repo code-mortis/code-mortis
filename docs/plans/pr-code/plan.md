@@ -2,7 +2,7 @@
 
 Status: **implemented and verified locally**, 2026-10-29. This is the requested evolution of the browser Impact tab after code-graph Phase 4. Graph indexing, internal retrieval and Code MCP remain separate consumers; code-graph Phase 5 operational readiness remains open.
 
-This document preserves the agreed scope, implementation order and completion evidence for future sessions. The user authorized implementation with “inicia” on 2026-10-29. This does not authorize model calls, indexing, reviews, commits, pushes or deployment. Read [AGENTS.md](../AGENTS.md), [PRODUCT.md](../PRODUCT.md), [DESIGN.md](../DESIGN.md), [architecture](architecture.md) and the [Phase 4 report](code-graph-phase4.md) before implementing.
+This document preserves the agreed scope, implementation order and completion evidence for future sessions. The user authorized implementation with “inicia” on 2026-10-29. This does not authorize model calls, indexing, reviews, commits, pushes or deployment. Read [AGENTS.md](../../../AGENTS.md), [Product](../../product.md), [Design system](../../design.md), [architecture](../../architecture.md) and the [Phase 4 report](../code-graph/phase-4.md) before implementing.
 
 ## Outcome and reference
 
@@ -16,11 +16,11 @@ Use that task flow within Code Mortis's existing visual system. The initial deli
 
 | Area | Current source and boundary |
 | --- | --- |
-| PR UI | [reviews.tsx](../frontend/src/reviews.tsx), [CodeGraphExplorer](../frontend/src/components/code-graph-explorer.tsx). Preserve PR actions, other tabs, finding sheets and return navigation. |
-| Controls and rendering | Shared `FilterBar`, `SearchSelect`, `Status`, `Tooltip`, `Pagination` and [Code](../frontend/src/components/code.tsx). `CodeComparison` currently compares original/suggested snippets; it is not a complete PR-diff viewer. |
-| Comparison | [code_graph/explorer.py](../backend/code_mortis/code_graph/explorer.py) authorizes exact saved PR base/head reads and validates immutable GitHub comparisons. Its metadata cache retains paths only, caps comparisons at 300 files and represents renames as removal/addition. Its overview currently stops when indexing is disabled. |
-| Summary | [SummaryGroup / SummaryResult](../backend/code_mortis/schemas/common.py) and [reviews/summary.py](../backend/code_mortis/reviews/summary.py). Completed results already store titles, descriptions and exact inventory paths in `ReviewRun.summary`; they do not contain per-explanation line anchors. |
-| Evidence | [models.py](../backend/code_mortis/models.py): `ReviewRun` records base/head; `Occurrence` records immutable snapshots; `Finding` records current resolution. The current PR findings search is a substring search over mutable finding fields, not an exact-path/revision occurrence lookup. |
+| PR UI | [reviews.tsx](../../../frontend/src/reviews.tsx), [CodeGraphExplorer](../../../frontend/src/components/code-graph-explorer.tsx). Preserve PR actions, other tabs, finding sheets and return navigation. |
+| Controls and rendering | Shared `FilterBar`, `SearchSelect`, `Status`, `Tooltip`, `Pagination` and [Code](../../../frontend/src/components/code.tsx). `CodeComparison` currently compares original/suggested snippets; it is not a complete PR-diff viewer. |
+| Comparison | [code_graph/explorer.py](../../../backend/code_mortis/code_graph/explorer.py) authorizes exact saved PR base/head reads and validates immutable GitHub comparisons. Its metadata cache retains paths only, caps comparisons at 300 files and represents renames as removal/addition. Its overview currently stops when indexing is disabled. |
+| Summary | [SummaryGroup / SummaryResult](../../../backend/code_mortis/schemas/common.py) and [reviews/summary.py](../../../backend/code_mortis/reviews/summary.py). Completed results already store titles, descriptions and exact inventory paths in `ReviewRun.summary`; they do not contain per-explanation line anchors. |
+| Evidence | [models.py](../../../backend/code_mortis/models.py): `ReviewRun` records base/head; `Occurrence` records immutable snapshots; `Finding` records current resolution. The current PR findings search is a substring search over mutable finding fields, not an exact-path/revision occurrence lookup. |
 | Graph | Existing browser graph query/index routes and bounded retrieval. Keep their repository opt-in, parser limits, source checks and independent MCP permissions. |
 
 ## Product and interaction decisions
@@ -79,18 +79,18 @@ Contract limits: 8 MiB decoded GitHub JSON, 20-second elapsed stream budget chec
 - [x] Browser: mouse/keyboard/touch, group/file search and clear, reload/back/legacy URLs, exact diff anchors and historical evidence, stale response cancellation, access loss, loading/error/empty/large-file states, and working source/related navigation. Check header/list/empty-state alignment at desktop and intermediate widths and page overflow on mobile in light/dark themes.
 - [x] Run appropriate backend checks and Ruff; export OpenAPI and regenerate `api.generated.ts`; run the frontend production build and focused Impact/Code plus neighboring PR tests. Broaden only for changes or unresolved failures that justify it.
 - [x] Inspect a real authorized local PR separately from mocks. Measure first file load, repeated file/group navigation, payload size and browser responsiveness on representative and bounded-large comparisons. Record conditions and limitations; do not infer performance from mocked tests. Verify the diff works with graph unavailable without changing the user's repository opt-in just to create the condition.
-- [x] Update PRODUCT.md, DESIGN.md, operations/acceptance and the Phase 4 handoff to describe the delivered behavior. Preserve historical evidence and the graph Phase 2 experimental boundary. Refresh Graphify after final code/docs. Reload only affected local services safely, if required, and verify existing records/grants remain intact.
+- [x] Update docs/product.md, docs/design.md, operations/acceptance and the Phase 4 handoff to describe the delivered behavior. Preserve historical evidence and the graph Phase 2 experimental boundary. Refresh Graphify after final code/docs. Reload only affected local services safely, if required, and verify existing records/grants remain intact.
 
 ## Deferred work
 
 - Newly generated guided tours and explanation-to-hunk/line anchors. These need a separate schema, evidence validation, model budget and evaluation; existing summary groups are file-level only.
-- Automatic reviewed-file indicators, file navigation and finding indicators are delivered in the [high-priority review workflow](pr-code-review-workflow-plan.md). The user replaced the originally proposed personal checklist with checks from validated saved review coverage. Step-level tour progress, new chat tools, third-party comment ingestion, general editor features, repository-wide tree browsing and an unbounded full-PR renderer remain deferred.
+- Automatic reviewed-file indicators, file navigation and finding indicators are delivered in the [high-priority review workflow](review-workflow.md). The user replaced the originally proposed personal checklist with checks from validated saved review coverage. Step-level tour progress, new chat tools, third-party comment ingestion, general editor features, repository-wide tree browsing and an unbounded full-PR renderer remain deferred.
 - New parser capabilities, symbol call graphs, graph rebuilds, embeddings, MCP scope/tool changes, provider experiments, commits/pushes and production release work.
 
 ## Completion and next-session handoff
 
 The delivery is done when an authorized reviewer can open Code with no usable graph, inspect an available PR diff, navigate matching stored change groups and findings with truthful revision provenance, and optionally follow indexed relationships. Missing evidence stays explicit. No automatic inference or indexing is introduced. Checks B–D require observed evidence and stay open until that evidence exists.
 
-All checkpoints A–D are complete locally. Read [the delivery report](pr-code.md) for exact contract decisions, implementation paths, test boundaries, real browser samples, resource limits and preserved records. Checks do not imply a full-suite rerun, hosted CI, production deployment, quality improvement or eight-GB capacity acceptance.
+All checkpoints A–D are complete locally. Read [the delivery report](../../pr-code.md) for exact contract decisions, implementation paths, test boundaries, real browser samples, resource limits and preserved records. Checks do not imply a full-suite rerun, hosted CI, production deployment, quality improvement or eight-GB capacity acceptance.
 
-The requested [PR Code performance follow-up](pr-code-performance-plan.md) now takes priority for this browser surface. Its implementation and local acceptance are complete, with measured results and cache/security limits recorded there. Graph Phase 5 remains separate. The generated tour and other deferred work remain deferred; no further model invocation is authorized by this delivery.
+The requested [PR Code performance follow-up](performance.md) now takes priority for this browser surface. Its implementation and local acceptance are complete, with measured results and cache/security limits recorded there. Graph Phase 5 remains separate. The generated tour and other deferred work remain deferred; no further model invocation is authorized by this delivery.

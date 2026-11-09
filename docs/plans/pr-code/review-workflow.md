@@ -11,7 +11,7 @@ Status: **complete locally**, 2026-10-29. Implementation was authorized after pl
 
 The reference was [Greptile Noodle PR #285](https://app.greptile.com/noodle/github/wilfredinni/noodle/-/pull-2/285), inspected on 2026-10-29. It inspired navigation and indicators; Code Mortis's final semantics follow the user's corrections and its validated coverage invariant.
 
-Read [AGENTS.md](../AGENTS.md), [PRODUCT.md](../PRODUCT.md), [DESIGN.md](../DESIGN.md), [PR Code delivery](pr-code.md) and the [performance plan](pr-code-performance-plan.md) before changing this surface. Use Ponytail and Impeccable and preserve existing tokens, comboboxes, filters and evidence sheets. No commit, push, production deployment, model/review/index workload or permission changes are included.
+Read [AGENTS.md](../../../AGENTS.md), [Product](../../product.md), [Design system](../../design.md), [PR Code delivery](../../pr-code.md) and the [performance plan](performance.md) before changing this surface. Use Ponytail and Impeccable and preserve existing tokens, comboboxes, filters and evidence sheets. No commit, push, production deployment, model/review/index workload or permission changes are included.
 
 ## Decisions and implementation
 
@@ -92,7 +92,7 @@ Final corrected implementation: **158 selected backend tests passed** (`test_pr_
 - Real local PR #34: **46 of 62 reviewed**, checks visible on eligible rows and **zero Reviewed checkboxes**. The recorded **922px** viewport / **501–906px** diff bounds describe the subsequently reverted height experiment. Its dedicated sizing test was removed; the original 70vh maximum is restored. Browser checks cover light/dark and 390/1024/1440px, filters, missing access, incomplete counts and existing source-age eviction.
 - Local HMR is restored; all 14 local services are running with configured health checks healthy. The new table/route from the superseded manual prototype is absent, and Alembic remains at the pre-feature revision. Final Graphify refresh covers source and these delivery documents.
 
-Reproducible timing command: run `scripts/check_pr_code_performance.py` inside the existing API environment with the authorized login, PR ID and path, using `--samples 5` for 20 warm reads plus four initial samples. Evidence contains only durations/counts/bounds, not source or credentials: [backend](evidence/pr-code-workflow-backend.json), [browser](evidence/pr-code-workflow-browser.json), [live UI bounds](evidence/pr-code-workflow-ui.json). Earlier manual-progress results are superseded.
+Reproducible timing command: run `scripts/check_pr_code_performance.py` inside the existing API environment with the authorized login, PR ID and path, using `--samples 5` for 20 warm reads plus four initial samples. Evidence contains only durations/counts/bounds, not source or credentials: [backend](../../evidence/pr-code-workflow-backend.json), [browser](../../evidence/pr-code-workflow-browser.json), [live UI bounds](../../evidence/pr-code-workflow-ui.json). Earlier manual-progress results are superseded.
 
 The scheduler was drained before restarting the API and six affected workers. Before/after full hashes matched for **52 PRs, 180 runs, one graph configuration, 11 snapshots and four MCP grants**, with zero active jobs. Routine graph-configuration refreshes before the drain were not caused by this feature. The manual-progress prototype was subsequently retired locally; existing review history and grants were not recreated.
 

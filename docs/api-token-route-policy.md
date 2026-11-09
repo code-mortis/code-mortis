@@ -1,6 +1,6 @@
 # Personal API token route policy
 
-Proposed policy for baseline `7155dff`, exported directly from the local FastAPI application. Companion to [the implementation plan](api-tokens-plan.md). This is a planning inventory, not an active authorization configuration.
+Proposed policy for baseline `7155dff`, exported directly from the local FastAPI application. Companion to [the implementation plan](plans/api-tokens.md). This is a planning inventory, not an active authorization configuration.
 
 The baseline has 111 HTTP operations, of which 52 are proposed for PAT access. Browser session access to these operations retains its current checks. Every PAT operation also enforces current membership, selected repositories, live GitHub permissions, owner/administrator rules, and operation-specific state checks. Permissions grant access to an operation, not an exemption from its existing checks.
 

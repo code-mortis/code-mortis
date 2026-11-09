@@ -22,7 +22,7 @@ Limits are 100 results, depth two, 500 visited files, ten source files and 64 Ki
 
 ## Storage measurement
 
-[Recorded measurements](evidence/code-graph-phase1-storage.json) use the exact Phase 0 source-manifest digests and commits. A disposable PostgreSQL schema receives validated facts through the current ORM models. Reported database sizes include graph tables, TOAST and indexes; the empty table/index sizes are also recorded. WAL is the cluster LSN increase during the insertion transaction and may include background writes. These are one-snapshot measurements, not retention-growth projections or a memory benchmark.
+[Recorded measurements](../../evidence/code-graph-phase1-storage.json) use the exact Phase 0 source-manifest digests and commits. A disposable PostgreSQL schema receives validated facts through the current ORM models. Reported database sizes include graph tables, TOAST and indexes; the empty table/index sizes are also recorded. WAL is the cluster LSN increase during the insertion transaction and may include background writes. These are one-snapshot measurements, not retention-growth projections or a memory benchmark.
 
 | Recorded corpus | Source files / bytes | Graph tables + indexes | Of which indexes | Insert WAL | Retained full shallow Git commit |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -40,7 +40,7 @@ uv run python ../scripts/code_graph_eval/storage.py \
   --output ../docs/evidence/code-graph-phase1-storage.json
 ```
 
-The harness reads local Git objects without checkout, source execution or network access, uses only the isolated `mortis_test` database, and removes its temporary schema and Git stores. It makes no model calls. Operator upgrade, paired database/Git backups, cleanup and disabling procedures remain in [operations](operations.md#optional-code-graph-parser).
+The harness reads local Git objects without checkout, source execution or network access, uses only the isolated `mortis_test` database, and removes its temporary schema and Git stores. It makes no model calls. Operator upgrade, paired database/Git backups, cleanup and disabling procedures remain in [operations](../../operations.md#optional-code-graph-parser).
 
 ## Validation and boundaries
 
@@ -49,6 +49,6 @@ Commands: `cd backend && uv run python -m pytest -q`; final selection `uv run py
 - Focused API tests cover default-off activation, preserving settings, explicit retry/cancel, head/policy changes, partial/stale readiness, access loss, expired attempts and existing MCP/PAT denial. Retrieval tests cover repository/revision/version isolation, exclusion filtering, cycles, limits, missing source and exact citations.
 - Frontend production build passed. The complete Playwright suite passed **1,392 tests, two skipped Sentry-envelope cases**; the 24-case repository-settings selection passed on desktop/mobile and includes keyboard controls, failed requests, draft preservation and save navigation. Light/dark captures were inspected; Impeccable's independent reviewer returned `ship`, and its documenter found no new design-system decisions.
 - The full backend suite passed **2,834 tests** (637 existing deprecation warnings), before the final explicit re-enable refinement; the final selection passed **807 tests**, including all 151 graph cases, repository authorization and Noodle route contracts, and covers that refinement. Ruff and `git diff --check` pass. OpenAPI and frontend types are regenerated from the shared contracts.
-- [Development evidence](evidence/code-graph-phase1de-development.json): additive migration `20261026_graph_readiness`, rebuilt application image, drained/restarted affected workers and scheduler, 13 running services, five responding workers, API readiness and frontend module delivery, zero restart loops, and a validated synthetic extraction through the real private worker-to-parser transport. Existing record counts are preserved and graph opt-ins/snapshots remain zero.
+- [Development evidence](../../evidence/code-graph-phase1de-development.json): additive migration `20261026_graph_readiness`, rebuilt application image, drained/restarted affected workers and scheduler, 13 running services, five responding workers, API readiness and frontend module delivery, zero restart loops, and a validated synthetic extraction through the real private worker-to-parser transport. Existing record counts are preserved and graph opt-ins/snapshots remain zero.
 
 No live GitHub source acquisition, authenticated real-account graph run, hosted CI, production deployment, paid review, review-quality/token comparison or full-stack 8 GB test was performed. Existing parser-isolation evidence is recorded separately in Phase 1B; this phase's smoke check does not repeat its memory-exhaustion and deadline experiments.

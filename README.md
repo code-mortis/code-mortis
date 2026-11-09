@@ -4,6 +4,8 @@ Self-hosted GitHub pull request reviews and security scans powered by Mortis Eng
 
 Shared API connections are the only execution mode. Historical OCR and subscription results remain available. Mortis is enabled for this personal installation by an explicit early-adoption decision; this does not approve the pending M5 evidence. See [acceptance evidence](docs/acceptance.md) for implemented behavior, local checks and integrations still awaiting real accounts.
 
+The [documentation index](docs/README.md) links the product, developer and operations guides, implementation plans and engine milestone records.
+
 ## Run your instance
 
 Requires Docker Compose and Python 3.12 or newer to generate configuration. Production needs a public HTTPS origin. No personal GitHub bot account is required.

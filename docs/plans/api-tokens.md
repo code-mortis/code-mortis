@@ -1,6 +1,6 @@
 # Personal API tokens implementation plan
 
-Status: implemented locally with automated checks passing. Real-account Settings-to-Noodle acceptance and production deployment remain pending in [acceptance.md](acceptance.md). Collection baseline: `7155dff`.
+Status: implemented locally with automated checks passing. Real-account Settings-to-Noodle acceptance and production deployment remain pending in [acceptance.md](../acceptance.md). Collection baseline: `7155dff`.
 
 Let an enabled Code Mortis member create a named, expiring personal API token in Settings and use it from Noodle or a script. Tokens authenticate as their owner and further restrict that owner's access by permissions and selected repositories. Existing browser GitHub login, cookie sessions, CSRF protection, and MCP OAuth remain independent.
 
@@ -37,7 +37,7 @@ Keep these decisions together during implementation; changing one must update th
 | `backend/code_mortis/mcp/auth.py`, `models.py`, `provenance.py` | Existing examples of opaque-token hashing, scope/repository checks, rate limiting, and durable work attribution. PAT records and credential namespaces remain separate from MCP grants. |
 | `backend/code_mortis/core/security.py`, `core/telemetry.py` | Reuse `digest()` and existing event scrubbing. Extend secret redaction for the PAT prefix. |
 | `backend/code_mortis/jobs.py`, `reviews/`, `security_scans/` | Authorization must reach delayed execution, paid work, and GitHub writes. Checking a bearer token only when enqueueing is insufficient. |
-| `frontend/src/settings.tsx`, `mcp.tsx`, `components/app-header.tsx`, `components/app-sidebar.tsx` | Reuse member-visible Settings navigation, breadcrumbs, divided records, permission choices, dialogs, clipboard feedback, and revocation patterns. Follow `DESIGN.md`. |
+| `frontend/src/settings.tsx`, `mcp.tsx`, `components/app-header.tsx`, `components/app-sidebar.tsx` | Reuse member-visible Settings navigation, breadcrumbs, divided records, permission choices, dialogs, clipboard feedback, and revocation patterns. Follow `docs/design.md`. |
 | `collections/code-mortis/`, `backend/tests/test_noodle_collection.py` | Replace cookie-copy authentication for supported API requests. Update the current contract test, which presently expects nearly every browser API endpoint in the collection. |
 
 Verify callers again when implementing. In particular, MCP authorization also calls the session helper directly; changing its signature or making it return a coroutine would break that flow.
@@ -77,7 +77,7 @@ Cookie requests retain their existing CSRF and origin checks. Bearer-only reques
 
 ## Permissions and supported routes
 
-Maintain a finite permission catalog and an explicit policy keyed by HTTP method and FastAPI route template. The [route policy appendix](api-token-route-policy.md) classifies the baseline contract and proposed routes before implementation. Do not authorize by path prefix or GET-versus-POST alone. Every protected operation must be classified as PAT-supported with its required permission or session-only. A new/unmapped operation is denied to PATs, with a route-inventory test catching omissions.
+Maintain a finite permission catalog and an explicit policy keyed by HTTP method and FastAPI route template. The [route policy appendix](../api-token-route-policy.md) classifies the baseline contract and proposed routes before implementation. Do not authorize by path prefix or GET-versus-POST alone. Every protected operation must be classified as PAT-supported with its required permission or session-only. A new/unmapped operation is denied to PATs, with a route-inventory test catching omissions.
 
 | PAT permission | Supported operation families |
 | --- | --- |

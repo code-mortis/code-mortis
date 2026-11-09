@@ -13,7 +13,7 @@ administrator or owner checks; ``ADMIN`` route annotations are FastAPI
 dependencies and do not run on direct calls, so those checks are
 repeated explicitly here.
 
-Excluded on purpose (see docs/mcp-plan.md): raw console tickets and the
+Excluded on purpose (see docs/plans/mcp.md): raw console tickets and the
 console socket, browser login/setup flows, webhooks, unsaved-connection
 model discovery and credential-bearing connection fields (credentials
 are entered in the browser), and bearer-in-URL report downloads (use

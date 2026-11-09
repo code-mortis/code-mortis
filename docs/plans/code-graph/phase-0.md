@@ -1,6 +1,6 @@
 # Code graph Phase 0: feasibility and implementation decisions
 
-Completed locally on 2026-10-26. This closes Phase 0 of the [feature plan](code-graph-plan.md). It adds an isolated experiment and evidence, not a production graph feature. No application dependencies, migrations, routes, permissions, review prompts, or deployment changed.
+Completed locally on 2026-10-26. This closes Phase 0 of the [feature plan](plan.md). It adds an isolated experiment and evidence, not a production graph feature. No application dependencies, migrations, routes, permissions, review prompts, or deployment changed.
 
 ## Decision
 
@@ -12,11 +12,11 @@ Keep the feature opt-in and embedding-free. Choose a separate `/mcp/code` protec
 
 ## Reproduce and inspect the evidence
 
-- [Evaluation harness](../scripts/code_graph_eval/run.py): exports regular tracked source blobs from local Git object databases, then starts fresh bounded containers.
-- [Extractor comparison and assertions](../scripts/code_graph_eval/evaluate.py): direct parsing, the pinned Graphify API, adversarial checks, and measurements.
-- [Inert fixtures](../scripts/code_graph_eval/fixtures.json): twelve languages, aliases, re-exports, cycles, shadowing, dynamic calls, malformed syntax, and execution traps.
-- [Dockerfile](../scripts/code_graph_eval/Dockerfile) and [hashed requirements](../scripts/code_graph_eval/requirements.txt): pinned base image and evaluation-only dependencies.
-- [Recorded JSON evidence](evidence/code-graph-phase0.json): corpus revisions/digests, script hashes, package versions, all twelve benchmark runs, three fixture states per candidate, and diagnostics.
+- [Evaluation harness](../../../scripts/code_graph_eval/run.py): exports regular tracked source blobs from local Git object databases, then starts fresh bounded containers.
+- [Extractor comparison and assertions](../../../scripts/code_graph_eval/evaluate.py): direct parsing, the pinned Graphify API, adversarial checks, and measurements.
+- [Inert fixtures](../../../scripts/code_graph_eval/fixtures.json): twelve languages, aliases, re-exports, cycles, shadowing, dynamic calls, malformed syntax, and execution traps.
+- [Dockerfile](../../../scripts/code_graph_eval/Dockerfile) and [hashed requirements](../../../scripts/code_graph_eval/requirements.txt): pinned base image and evaluation-only dependencies.
+- [Recorded JSON evidence](../../evidence/code-graph-phase0.json): corpus revisions/digests, script hashes, package versions, all twelve benchmark runs, three fixture states per candidate, and diagnostics.
 
 From the repository root:
 
@@ -127,17 +127,17 @@ These are implementation decisions, not settings already added to the product:
 | Isolation | A separate optional parser container, activated only with the feature. Follow the existing runner's explicit-context boundary without changing the native runner: no database/GitHub/model credentials, repository execution, Docker socket, or public port. Connect only the trusted worker and parser through a dedicated internal network for bounded input/output; deny external egress and access to database/Redis networks. Run non-root with read-only inputs, dropped capabilities and enforced process/memory limits. The worker owns authorization and jobs. Phase 1 must implement/test this transport and network boundary; the experiment uses the stricter offline `--network none` equivalent with mounted input. |
 | Resource budget | One active extraction per instance, one CPU, 256 MiB total parser memory including children/tmpfs, 128 MiB temporary-space ceiling, 120-second job deadline. Enforce at the process/container boundary; timeouts/OOM must produce a visible failed/partial state and preserve prior evidence. |
 | Admission limits | Start with 1 MiB per source file, 1,000 eligible source files and 8 MiB total source per snapshot. These conservative proposed ceilings exceed the largest measured corpus; they are not tested capacity guarantees. Oversized/excluded files and repository-limit failures need explicit status, never silent completeness. Revisit only with a measured corpus. The general evaluation harness permits up to 2,000 files / 32 MiB and is not the production admission policy. |
-| Retention | Original Phase 0 limit, superseded by [Phase 4](code-graph-phase4.md): at most two unpinned ready snapshots per repository, latest default-branch snapshot and most recent other requested revision. Current policy keeps the default plus up to ten recent other usable revisions. Expire the latter after seven days. Running consumers pin their exact snapshot; queue/cleanup must bound pinned/building snapshots before accepting more work. Retain required source/evidence citations with review records independently of graph cleanup. |
+| Retention | Original Phase 0 limit, superseded by [Phase 4](phase-4.md): at most two unpinned ready snapshots per repository, latest default-branch snapshot and most recent other requested revision. Current policy keeps the default plus up to ten recent other usable revisions. Expire the latter after seven days. Running consumers pin their exact snapshot; queue/cleanup must bound pinned/building snapshots before accepting more work. Retain required source/evidence citations with review records independently of graph cleanup. |
 | Disk | Cap serialized extraction output at 32 MiB per snapshot before database insertion. Measure actual table/index/WAL/bloat and Git storage in Phase 1/2 before claiming a disk capacity. Do not infer DB memory needs from the JSON table. |
 | MCP | Separate `/mcp/code`, `code:read`, independent off-by-default activation and repository consent. Revalidate current GitHub access on every read, including cache/traversal paths. Existing Reviews/Security grants and personal API tokens gain no implicit code access. |
 | Tokens | Structural extraction consumes no model tokens. Retrieval added to prompts still consumes context; no savings claim until the Phase 2 review benchmark. |
 
-The separate MCP resource follows the current domain/resource pattern in [server.py](../backend/code_mortis/mcp/server.py) and [auth.py](../backend/code_mortis/mcp/auth.py). Phase 3 must explicitly extend the domain types, discovery, settings, consent, redaction and permission tests. Reusing `/mcp/reviews` would blur raw-code consent with review-history access, so it is rejected for the initial implementation.
+The separate MCP resource follows the current domain/resource pattern in [server.py](../../../backend/code_mortis/mcp/server.py) and [auth.py](../../../backend/code_mortis/mcp/auth.py). Phase 3 must explicitly extend the domain types, discovery, settings, consent, redaction and permission tests. Reusing `/mcp/reviews` would blur raw-code consent with review-history access, so it is rejected for the initial implementation.
 
 The 256 MiB result makes a modest parser plausible on an 8 GB deployment. **The full application on 8 GB remains unverified**, including concurrent review/security workers, PostgreSQL, Redis, runner, source checkouts and temporary files. That acceptance gate remains in Phase 2.
 
 ## Handoff
 
-Phase 0 is complete: extractor comparison, capability matrix, adversarial/revision fixtures, bounded measurements and initial decisions are recorded. The subsequent [Phase 1 checklist and handoff](code-graph-plan.md) now records completed 1A contracts/persistence and the remaining parser, authorized indexing, retrieval and activation work. Preserve exact revision provenance and the limited capability tiers above. Do not copy the experimental script into the runtime without its missing authorization, durable state, admission, cancellation, retention and error contracts.
+Phase 0 is complete: extractor comparison, capability matrix, adversarial/revision fixtures, bounded measurements and initial decisions are recorded. The subsequent [Phase 1 checklist and handoff](plan.md) now records completed 1A contracts/persistence and the remaining parser, authorized indexing, retrieval and activation work. Preserve exact revision provenance and the limited capability tiers above. Do not copy the experimental script into the runtime without its missing authorization, durable state, admission, cancellation, retention and error contracts.
 
 Validation: both fixture suites and twelve benchmark runs completed; the direct assertions and pinned Graphify regression observation passed. Ruff passes for the evaluation scripts. No full application test suite, hosted CI, real review/model benchmark, MCP integration, production deployment or 8 GB full-stack test was performed. No commit or push was made.

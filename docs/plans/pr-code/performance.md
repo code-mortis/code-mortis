@@ -1,6 +1,6 @@
 # PR Code navigation performance
 
-Status: **implemented and verified locally**, 2026-10-29. Requested after slow Code, files, Diff and Dependencies navigation; authorized by the user's “go”. All implementation checkpoints below are complete. This follows [PR Code A–D](pr-code-plan.md), not graph Phase 5 or generated tours. No commit, push, production deployment, review, indexing or model operation was started by this task.
+Status: **implemented and verified locally**, 2026-10-29. Requested after slow Code, files, Diff and Dependencies navigation; authorized by the user's “go”. All implementation checkpoints below are complete. This follows [PR Code A–D](plan.md), not graph Phase 5 or generated tours. No commit, push, production deployment, review, indexing or model operation was started by this task.
 
 The diagnosis below records the **pre-change baseline**. Current measurements and remaining limits are in [Delivered results](#delivered-results).
 
@@ -8,7 +8,7 @@ The diagnosis below records the **pre-change baseline**. Current measurements an
 
 The pre-change implementation was functionally usable but repeatedly waited on GitHub authorization and discarded useful browser results. This is a request-flow problem before it is a parser, database, rendering or server-capacity problem. The earlier delivery's functional passes did not establish acceptable interaction latency.
 
-Evidence: [sanitized measurements](evidence/pr-code-performance-2026-10-29.json). The investigation used the existing signed-in local browser on Code Mortis PR #34 (`frontend/src/inbox.tsx`) and disposable instrumentation inside the API container. It did not patch or restart the running application, disable access checks, change opt-ins or issue review/index/model operations.
+Evidence: [sanitized measurements](../../evidence/pr-code-performance-2026-10-29.json). The investigation used the existing signed-in local browser on Code Mortis PR #34 (`frontend/src/inbox.tsx`) and disposable instrumentation inside the API container. It did not patch or restart the running application, disable access checks, change opt-ins or issue review/index/model operations.
 
 ### Measured baseline
 
@@ -36,12 +36,12 @@ The probe was small and ran alongside the existing browser/scheduler. One pooled
 
 | Concern | Baseline source |
 | --- | --- |
-| Recreated HTTP connections and five-second permission cache | [integrations/github.py](../backend/code_mortis/integrations/github.py): `request`, `permission_request`, `authorize_repo`. `fresh=True` deliberately bypasses a prior completed success; only a refresh completed since a caller began waiting is shared. |
-| Two fresh gates | [code_graph/explorer.py](../backend/code_mortis/code_graph/explorer.py): `context` and `finish`; [service.py](../backend/code_mortis/code_graph/service.py): `authorize`. |
-| Duplicate compare caches | [reviews/code.py](../backend/code_mortis/reviews/code.py): `comparison` caches four patch-bearing comparisons; explorer `comparison_metadata` caches 32 path-only results from another upstream request. |
-| Sequential browser requests and zero retention | [pr-code.tsx](../frontend/src/components/pr-code.tsx), [code-graph-explorer.tsx](../frontend/src/components/code-graph-explorer.tsx): `staleTime: 0`, `gcTime: 0`, query ownership under unmounting file/tab content, overview prerequisites before graph content. |
-| Hidden polling | [reviews.tsx](../frontend/src/reviews.tsx): PR details and findings every five seconds regardless of selected PR tab; [app-sidebar.tsx](../frontend/src/components/app-sidebar.tsx) repository polling through [api.ts](../frontend/src/api.ts). |
-| Extra refetch behavior | [main.tsx](../frontend/src/main.tsx): default window-focus refetch and development StrictMode. Zero-byte aborted requests were observed; they are not counted as completed transfers, but cancellation does not prove a synchronous backend task stopped. |
+| Recreated HTTP connections and five-second permission cache | [integrations/github.py](../../../backend/code_mortis/integrations/github.py): `request`, `permission_request`, `authorize_repo`. `fresh=True` deliberately bypasses a prior completed success; only a refresh completed since a caller began waiting is shared. |
+| Two fresh gates | [code_graph/explorer.py](../../../backend/code_mortis/code_graph/explorer.py): `context` and `finish`; [service.py](../../../backend/code_mortis/code_graph/service.py): `authorize`. |
+| Duplicate compare caches | [reviews/code.py](../../../backend/code_mortis/reviews/code.py): `comparison` caches four patch-bearing comparisons; explorer `comparison_metadata` caches 32 path-only results from another upstream request. |
+| Sequential browser requests and zero retention | [pr-code.tsx](../../../frontend/src/components/pr-code.tsx), [code-graph-explorer.tsx](../../../frontend/src/components/code-graph-explorer.tsx): `staleTime: 0`, `gcTime: 0`, query ownership under unmounting file/tab content, overview prerequisites before graph content. |
+| Hidden polling | [reviews.tsx](../../../frontend/src/reviews.tsx): PR details and findings every five seconds regardless of selected PR tab; [app-sidebar.tsx](../../../frontend/src/components/app-sidebar.tsx) repository polling through [api.ts](../../../frontend/src/api.ts). |
+| Extra refetch behavior | [main.tsx](../../../frontend/src/main.tsx): default window-focus refetch and development StrictMode. Zero-byte aborted requests were observed; they are not counted as completed transfers, but cancellation does not prove a synchronous backend task stopped. |
 | Shared lifecycle/blast radius | GitHub adapter is also used by workers, token routes and MCP. Existing MCP installation owns application lifespan integration. Transport ownership must fit those entry points rather than replacing their lifecycle wholesale. |
 
 ## Decisions and boundaries
@@ -113,7 +113,7 @@ Detailed findings stop polling while Code/history is selected. PR metadata suppl
 
 ### Real local measurements
 
-Sources: [backend samples](evidence/pr-code-performance-after-2026-10-29.json), [144 browser clicks](evidence/pr-code-browser-after-2026-10-29.json), and [derived statistics, idle requests and restart hashes](evidence/pr-code-performance-acceptance-2026-10-29.json). Browser clicks used a temporary production frontend build on the existing local origin with the real authenticated backend. Normal Vite HMR was restored and the real Dependencies screen was verified afterward.
+Sources: [backend samples](../../evidence/pr-code-performance-after-2026-10-29.json), [144 browser clicks](../../evidence/pr-code-browser-after-2026-10-29.json), and [derived statistics, idle requests and restart hashes](../../evidence/pr-code-performance-acceptance-2026-10-29.json). Browser clicks used a temporary production frontend build on the existing local origin with the real authenticated backend. Normal Vite HMR was restored and the real Dependencies screen was verified afterward.
 
 | Scenario | Samples | Median | p95 | Request behavior |
 | --- | ---: | ---: | ---: | --- |
