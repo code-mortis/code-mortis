@@ -97,6 +97,15 @@ For substantial development tasks in Codex, delegate implementation and relevant
 - Return confirmed fixes to the implementation owner, then use `verification_runner` to check the final state. Keep one writer per file and one owner of shared database-backed tests across agents and worktrees.
 - The main agent remains responsible for scope, integration, evaluating findings and the final report. Subagents complete their assignment without recursively delegating. Delegation does not authorize publication, issue/thread resolution, deployment or paid evaluations.
 
+## Development skills
+
+Use these repository skills when the assigned task matches; agents share the same workflows.
+
+- [mortis-verify-change](.agents/skills/mortis-verify-change/SKILL.md): implementation and verification agents select checks, isolate test services and verify generated contracts.
+- [mortis-diagnose-run](.agents/skills/mortis-diagnose-run/SKILL.md): the coordinator or workflow reviewer explains saved review/scan evidence without triggering recovery.
+- [mortis-refresh-dev](.agents/skills/mortis-refresh-dev/SKILL.md): the coordinator or implementation owner performs a requested local development refresh with draining and readiness checks.
+- [mortis-engine-evidence](.agents/skills/mortis-engine-evidence/SKILL.md): the coordinator or workflow reviewer inspects retained evaluations, performs requested offline rescoring, or prepares a prospective evaluation.
+
 ## Graphify for local development
 
 Use the repo-local skill at `.agents/skills/graphify/SKILL.md` for graph builds and semantic refreshes. In Codex, invoke it with `$graphify`.
