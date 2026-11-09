@@ -654,8 +654,14 @@ def controlled_performance(seal, results):
         resource = attempt.get("resource_evidence", {})
         measured = attempt.get("performance_evidence", {})
         transport = attempt.get("transport", {})
-        upstream = urlsplit(transport.get("declared_connection", {}).get("base_url", ""))
-        valid = (resource.get("profile_sha256") == seal["protocol"]["execution_profile_sha256"]
+        declared = transport.get("declared_connection") if isinstance(transport, dict) else None
+        base_url = declared.get("base_url") if isinstance(declared, dict) else None
+        try:
+            upstream = urlsplit(base_url if isinstance(base_url, str) else "")
+        except ValueError:
+            upstream = urlsplit("")
+        valid = (isinstance(resource, dict) and isinstance(measured, dict) and isinstance(transport, dict)
+                 and resource.get("profile_sha256") == seal["protocol"]["execution_profile_sha256"]
                  and resource.get("within_limits") is True and sha(resource.get("artifact_sha256"))
                  and measured.get("measurement") == seal["protocol"]["performance_measurement"]
                  and sha(measured.get("artifact_sha256"))
@@ -816,7 +822,7 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
         if usage_evidence["unknown_fields"] or usage_evidence["proof_gaps"]:
             blockers.add("unknown_consumption")
         resource = attempt.get("resource_evidence", {})
-        resource_ok = resource.get("profile_sha256") == protocol["execution_profile_sha256"] and resource.get("within_limits") is True and sha(resource.get("artifact_sha256"))
+        resource_ok = isinstance(resource, dict) and resource.get("profile_sha256") == protocol["execution_profile_sha256"] and resource.get("within_limits") is True and sha(resource.get("artifact_sha256"))
         resources.append({"attempt_id": attempt["attempt_id"], "evidence": resource, "valid": resource_ok})
         if not resource_ok:
             blockers.add("resource_budget_deadline_evidence_missing_or_violated")

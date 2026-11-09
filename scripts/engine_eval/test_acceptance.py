@@ -324,7 +324,8 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_malformed_timing_and_usage_are_unknown_not_scoring_errors(self):
         seal = self.seal()
-        for field, blocker in (("timing_ms", "incomplete_required_work"), ("usage", "unknown_consumption")):
+        for field, blocker in (("timing_ms", "incomplete_required_work"), ("usage", "unknown_consumption"),
+                               ("resource_evidence", "resource_budget_deadline_evidence_missing_or_violated")):
             for malformed in (None, [], "invalid", 1, True):
                 with self.subTest(field=field, malformed=malformed):
                     results = self.results(seal)
@@ -345,6 +346,40 @@ class AcceptanceTests(unittest.TestCase):
                     groups, report = acceptance.controlled_performance(seal, results)
                     self.assertIn(blocker, report["blockers"])
                     self.assertFalse(groups)
+
+    def test_malformed_controlled_resource_and_transport_evidence_excludes_the_pair(self):
+        seal = self.seal()
+        paths = (("resource_evidence",), ("performance_evidence",), ("transport",),
+                 ("transport", "declared_connection"), ("transport", "declared_connection", "base_url"))
+        for path in paths:
+            for malformed in (None, [], [1], {}, "invalid", 1, True):
+                with self.subTest(path=path, malformed=malformed):
+                    results = self.controlled_security(seal)
+                    self.assertTrue(acceptance.controlled_performance(seal, results)[0])
+                    parent = results["attempts"][0]
+                    for field in path[:-1]:
+                        parent = parent[field]
+                    parent[path[-1]] = malformed
+                    original = copy.deepcopy(results)
+                    groups, report = acceptance.controlled_performance(seal, results)
+                    self.assertFalse(groups)
+                    self.assertIn("controlled_required_work_timing_or_resource_evidence_incomplete", report["blockers"])
+                    self.assertEqual(results, original)
+
+    def test_controlled_transport_rejects_malformed_urls_and_keeps_loopback_urls(self):
+        seal = self.seal()
+        for url, valid in (("http://[", False), ("http://[not-an-ip]/v1", False),
+                           ("http://localhost／invalid", False), ("https://localhost/v1", False),
+                           ("http://example.com/v1", False), ("http://user@localhost/v1", False),
+                           ("http://localhost/v1?extra=1", False), ("http://localhost/v1#extra", False),
+                           ("http://127.0.0.1:12345/v1", True), ("http://localhost/v1", True),
+                           ("http://[::1]:12345/v1", True)):
+            with self.subTest(url=url):
+                results = self.controlled_security(seal)
+                results["attempts"][0]["transport"]["declared_connection"]["base_url"] = url
+                groups, report = acceptance.controlled_performance(seal, results)
+                self.assertEqual(bool(groups), valid)
+                self.assertEqual("controlled_required_work_timing_or_resource_evidence_incomplete" in report["blockers"], not valid)
 
     def test_declared_clean_single_file_controlled_case_is_valid(self):
         seal = self.seal()
