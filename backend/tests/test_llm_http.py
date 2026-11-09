@@ -418,6 +418,39 @@ def test_quota_and_configured_retry_codes(status, body, configured, code, retry)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+@pytest.mark.parametrize("options,status,provider_code,code,retry,unknown", [
+    ({}, 429, "rate_limit_error", "rate_limit", True, False),
+    ({"retry_codes": None}, 429, "rate_limit_error", "rate_limit", True, False),
+    ({"retry_codes": []}, 429, "rate_limit_error", "rate_limit", False, False),
+    ({"retry_codes": [429]}, 429, "rate_limit_error", "rate_limit", True, False),
+    ({"retry_codes": [400]}, 429, "rate_limit_error", "rate_limit", False, False),
+    ({"retry_codes": None}, 429, "insufficient_quota", "quota", False, False),
+    ({"retry_codes": [429]}, 429, "insufficient_quota", "quota", False, False),
+    ({"retry_codes": [401]}, 401, "invalid_api_key", "authentication", False, False),
+    ({"retry_codes": [403]}, 403, "permission_denied", "authentication", False, False),
+    ({"retry_codes": [400]}, 400, "bad_request", "provider_error", True, False),
+    ({"retry_codes": [503]}, 503, "unavailable", "provider_http_503", False, True),
+])
+def test_send_preserves_transport_retry_policy(monkeypatch, protocol, options, status, provider_code, code, retry, unknown):
+    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
+    calls = []
+    async def handler(wire):
+        calls.append(wire)
+        return httpx.Response(status, json={"error": {"code": provider_code}},
+                              headers={"retry-after": "2", "x-request-id": "retry-fixture"})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False) as client:
+            with pytest.raises(llm_http.InferenceError) as caught:
+                await llm_http.send(connection(protocol, **options), {}, request(), client=client)
+            error = caught.value
+            assert error.code == code and error.status_code == status
+            assert error.retryable is retry and error.consumption_unknown is unknown
+            assert error.retry_after == 2 and error.request_id == "retry-fixture"
+    asyncio.run(run())
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("value,expected", [("nan", None), ("inf", None), ("-1", 0),
                                            ("100000000000", 900), ("nonsense", None)])
 def test_retry_after_is_bounded(value, expected):

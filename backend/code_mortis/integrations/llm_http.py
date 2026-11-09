@@ -596,11 +596,6 @@ async def send(connection: dict, credentials: dict, request: Request, *, client:
     if endpoint.hostname == "opencode.ai" and endpoint.path.rstrip("/") == "/zen/go/v1":
         headers["User-Agent"] = "code-mortis/0.1.0"
         headers["x-opencode-session"] = request.session_id
-    try:
-        data, identity = await post_json(client, base + suffix, headers, body, stopped=stopped,
-                                         timeout=duration - (time.monotonic() - started), retry_codes=options.get("retry_codes"))
-    except InferenceError as exc:
-        if exc.status_code == 429 and 429 not in options.get("retry_codes", [429]):
-            exc.retryable = False
-        raise
+    data, identity = await post_json(client, base + suffix, headers, body, stopped=stopped,
+                                     timeout=duration - (time.monotonic() - started), retry_codes=options.get("retry_codes"))
     return decode_response(protocol, data, request, identity)
