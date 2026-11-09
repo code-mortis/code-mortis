@@ -18,10 +18,10 @@ from code_mortis.core import analysis, process
 from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.security import clean_text, digest, safe_repo_name
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import llm, runner_client
+from code_mortis.integrations import llm
 from code_mortis.reviews import verification
 from code_mortis.schemas.common import ReviewComment
 from code_mortis.schemas.inference import Message, Request
@@ -578,7 +578,7 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
-        *, configuration_managed=False, infer=None, source_packing=None, select_packing=None,
+        *, infer, source_packing=None, select_packing=None,
         output_token_policy=analysis.OUTPUT_TOKEN_POLICY, navigation=None, select_navigation=None,
         record_sources=None):
     require_shared(connection)
@@ -662,7 +662,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         context["source_navigation"] = navigation
 
     # Pin the choice before dispatch: peer consumption or transient reads cannot change replay inputs.
-    if infer is not None and context.get("task_contract") in {LEGACY_TASK_CONTRACT, TASK_CONTRACT} and task in {"analysis", "assessment"}:
+    if context.get("task_contract") in {LEGACY_TASK_CONTRACT, TASK_CONTRACT} and task in {"analysis", "assessment"}:
         original, sources, selected = context["sources"], None, False
         if source_packing is not False:
             try:
@@ -766,8 +766,6 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
         if stopped():
             raise ReviewStopped("Security scan cancelled.")
         remaining = None if budget is None else max(0, budget - used)
-        if remaining is not None and remaining <= 0 and infer is None:
-            raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": used}, "skipped")
         remaining_time = max(0, int(deadline - time.monotonic())) if deadline is not None else None
         if remaining_time is not None and remaining_time <= 0:
             raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
@@ -782,39 +780,19 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             exc.usage = {"tokens": used}
             raise
         try:
-            if infer is not None:
-                result, usage = infer(request_context, schema=schema, instructions=instructions,
-                                      validator=lambda raw, supplied: redacted_context(item, validate(raw, supplied)),
-                                      budget=remaining, timeout=remaining_time, round=attempt)
-            elif connection["kind"] == "api":
-                result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
-                    remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
-                    configuration_managed=configuration_managed, structured_result=True, delivery=verification.STRUCTURED_RESULT_DELIVERY +
-                    " Select evidence using only source_id, start_line and end_line from citation_sources. "
-                    "Do not copy or generate quote, path or revision fields in evidence; Code Mortis supplies them from the snapshot.")
-            else:
-                result, usage = runner_client.review(connection["id"], f"{identity}-{attempt}", {
-                    "task": "security_verification" if task == "verification" else "security_analysis",
-                    "kind": connection["kind"], "model": connection["model"], "effort": "high",
-                    "prompt": instructions + "\n\n" + verification.evidence_bundle(request_context), "output_schema": schema,
-                    "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                    "token_budget": remaining, "timeout": remaining_time,
-                }, stopped)
-                try:
-                    result = validate(result, request_context)
-                except (ValueError, KeyError, TypeError) as exc:
-                    raise verification.VerificationOutputError("The native security result failed source validation: " + str(exc), usage,
-                        feedback=exc.feedback if isinstance(exc, verification.ResultValidationError) else None) from exc
+            result, usage = infer(request_context, schema=schema, instructions=instructions,
+                                  validator=lambda raw, supplied: redacted_context(item, validate(raw, supplied)),
+                                  budget=remaining, timeout=remaining_time, round=attempt)
         except ReviewStopped as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
             exc.usage = {"tokens": used + tokens if type(tokens) is int and tokens >= 0 else None}
             raise
-        except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
+        except (verification.VerificationOutputError, RunnerBlocked) as exc:
             tokens = exc.usage.get("tokens")
             known = type(tokens) is int and tokens >= 0
             used = used + tokens if known else None
             exc.usage = {**exc.usage, "tokens": used}
-            if isinstance(exc, runner_client.RunnerBlocked) and exc.reason == "prompt_limit" and known:
+            if isinstance(exc, RunnerBlocked) and exc.reason == "prompt_limit" and known:
                 raise verification.VerificationOutputError("Necessary security context exceeds the connection's per-prompt limit; this task was withheld.",
                     exc.usage, feedback={"kind": "context_limit", "reason": "Necessary source and related history exceed the per-prompt limit"}) from exc
             if (isinstance(exc, verification.VerificationOutputError) and exc.feedback

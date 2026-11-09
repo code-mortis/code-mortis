@@ -1,4 +1,5 @@
-# The frozen incumbent supplies the exact OCR/Trivy/Git binaries to both arms.
+# Historical recipe only: the evaluation entry point now refuses execution.
+# Preserved evidence refers to the frozen incumbent image, not the current Mortis image.
 ARG BASE_IMAGE=code-mortis:pr44-smoke
 FROM ${BASE_IMAGE} AS dependencies
 USER root

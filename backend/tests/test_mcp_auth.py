@@ -585,7 +585,6 @@ def test_tool_errors_and_results_do_not_expose_saved_credentials(enabled, client
 
 
 def test_approved_disconnect_commits_revocation_and_replays_without_native_logout(enabled, client, monkeypatch):
-    from code_mortis.integrations import runner_client
     from code_mortis.mcp.models import McpApproval
     from code_mortis.models import Connection
 
@@ -594,7 +593,6 @@ def test_approved_disconnect_commits_revocation_and_replays_without_native_logou
         config.mcp_settings = {**config.mcp_settings, "management_enabled": True}
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "ready"
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired management reached runner"))
     tokens = credentials(client, scopes=["connections:manage"])
     with transaction() as db:
         grant_id = db.get(McpToken, digest(tokens["access_token"])).grant_id

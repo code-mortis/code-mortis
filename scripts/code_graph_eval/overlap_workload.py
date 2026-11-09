@@ -4,6 +4,10 @@ Only the isolated mortis_test database is allowed. GitHub/model replies are stub
 Git, OCR scope, parser HTTP, Trivy, snapshot storage and workflow persistence are real.
 """
 
+if __name__ == "__main__":
+    raise SystemExit("This historical OCR/native overlap evaluation is retired; saved evidence remains available.")
+
+
 import json
 import subprocess
 import sys

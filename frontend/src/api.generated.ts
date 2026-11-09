@@ -3666,10 +3666,10 @@ export interface components {
             token_budget?: number | null;
             /**
              * Analysis Engine
-             * @default ocr
-             * @enum {string}
+             * @default mortis
+             * @constant
              */
-            analysis_engine: "ocr" | "mortis";
+            analysis_engine: "mortis";
             /** Assessment Token Budget */
             assessment_token_budget?: number | null;
             /** Verification Token Budget */

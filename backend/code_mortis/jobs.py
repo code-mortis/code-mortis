@@ -13,10 +13,10 @@ from sqlalchemy import and_, case, func, or_, select
 from code_mortis.core.analysis import fingerprint
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.security import unseal
 from code_mortis.core.telemetry import init_sentry
-from code_mortis.integrations import github, installations, llm, runner_client
+from code_mortis.integrations import github, installations, llm
 from code_mortis.models import (
     Connection,
     Finding,
@@ -163,15 +163,15 @@ def sync_pr(repository_id: int, number: int, automatic: bool = True, sender_type
             and (data["user"].get("type") == "User" or (bot and include_bots))
             and (sender_type != "Bot" or bot)
         ):
-            from code_mortis.core.analysis import require_available_engine
+            from code_mortis.core.analysis import new_engine_snapshot
             from code_mortis.core.shared_execution import is_shared
 
             if not is_shared(db.get(Connection, repo.connection_id)):
                 return  # Repository setup exposes the retired selection; keep synchronized PR history.
             try:
-                require_available_engine(repo.settings)
+                new_engine_snapshot(repo.settings)
             except ValueError:
-                return  # Preserve the selected engine without substituting OCR during synchronization.
+                return  # Invalid or retired mutable settings never select another engine implicitly.
             create_run(db, pr, repo, "automatic", actor=actor)
 
 
@@ -402,6 +402,11 @@ def execute_job(job_id: str):
         if retired_job(db, job):
             settle_job(db, job)
             return
+        from code_mortis.core import engine_retirement
+
+        if engine_retirement.retired_job(db, job):
+            engine_retirement.settle_job(db, job)
+            return
         delivered_queue = (execute_job.request.delivery_info or {}).get("routing_key")
         graph_delivery = job.kind in CODE_GRAPH_KINDS or delivered_queue == "code-graph"
         if graph_delivery and delivered_queue and delivered_queue != job_queue(job.kind, job.payload):
@@ -487,7 +492,7 @@ def execute_job(job_id: str):
             job.status, job.lease_until, job.dispatched_at = "queued", None, None
             job.available_at = now() + timedelta(seconds=30)
         return
-    except runner_client.RunnerBlocked as exc:
+    except RunnerBlocked as exc:
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
@@ -643,6 +648,11 @@ def dispatch():
 
             if retired_job(db, job):
                 settle_job(db, job)
+                continue
+            from code_mortis.core import engine_retirement
+
+            if engine_retirement.retired_job(db, job):
+                engine_retirement.settle_job(db, job)
                 continue
             if job.kind == "security_scan":
                 from code_mortis.security_scans.service import interrupt_work, report_data

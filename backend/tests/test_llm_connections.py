@@ -207,7 +207,7 @@ def queued_job():
         return job.id
 
 
-def test_job_uses_direct_transport_and_never_ocr(seed, monkeypatch):
+def test_job_uses_direct_transport(seed, monkeypatch):
     from sqlalchemy import select
 
     from code_mortis import jobs
@@ -216,10 +216,6 @@ def test_job_uses_direct_transport_and_never_ocr(seed, monkeypatch):
 
     calls = []
     monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
-    from code_mortis.integrations import ocr
-
-    monkeypatch.setattr(ocr, "test_connection", lambda *args, **kwargs: pytest.fail("OCR probe was dispatched"))
-
     async def handler(wire):
         calls.append(wire)
         assert wire.headers["authorization"] == "Bearer provider-secret"

@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from redis import Redis
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 os.environ.setdefault(
     "CM_DATABASE_URL", "postgresql+psycopg://mortis:mortis-test-only@127.0.0.1:55439/mortis_test"
@@ -157,7 +157,7 @@ def github_stub(monkeypatch):
     from code_mortis.integrations import github
 
     monkeypatch.setattr(
-        github, "authorize_repo", lambda *args, **kwargs: {"permissions": {"pull": True, "push": True}}
+        github, "authorize_repo", lambda db, user, full_name, *args, **kwargs: {"id": db.scalar(select(Repository.id).where(Repository.full_name == full_name)) if db is not None else 22, "permissions": {"pull": True, "push": True}}
     )
     monkeypatch.setattr(github, "installation_token", lambda *args, **kwargs: "installation-token")
     monkeypatch.setattr(github, "app_token", lambda *args: "app-jwt")

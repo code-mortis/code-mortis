@@ -52,8 +52,6 @@ def test_mortis_callback_preserves_security_evidence_expansion_and_redaction(tmp
             raw["explanation"] = secret
         return kwargs["validator"](raw, supplied), {"tokens": 7}
 
-    monkeypatch.setattr(engine.verification, "api_verify", legacy)
-    monkeypatch.setattr(engine.runner_client, "review", legacy)
     result, usage = engine.ask(item, {"id": "shared", "kind": "api", "model": "selected"}, {}, task,
         context, 100, 60, lambda: False, "task", infer=safe_infer)
     assert usage == {"tokens": 14}
@@ -92,7 +90,7 @@ def scan_workflow(seed, github_stub, tmp_path, monkeypatch):
 
     from code_mortis.core.analysis import engine_snapshot
     from code_mortis.core.db import now, transaction, uid
-    from code_mortis.integrations import github, llm, ocr
+    from code_mortis.integrations import github, llm
     from code_mortis.models import Job
     from code_mortis.schemas.security import SecurityScanInput
     from code_mortis.security_scans import service
@@ -109,8 +107,6 @@ def scan_workflow(seed, github_stub, tmp_path, monkeypatch):
     state = {"calls": [], "stale": False, "usage": 12, "after_response": None, "item": item}
     monkeypatch.setattr(engine, "trivy", lambda *a: {"findings": [], "targets": {},
         "problems": ["Advisory database is stale"] if state["stale"] else [], "metadata": {"database_fresh": not state["stale"]}})
-    monkeypatch.setattr(ocr, "command", lambda *a, **kw: pytest.fail("Mortis executed OCR"))
-    monkeypatch.setattr(service, "legacy_configuration", lambda *a, **kw: pytest.fail("Mortis configured OCR"))
     with transaction() as db:
         scan = service.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=1, token_budget=200_000))

@@ -343,12 +343,10 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
   const needsSharedConnection = !connection && repository.connection_requires_setup;
-  const engineUnavailable = repository.settings.analysis_engine === "mortis";
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
-    : engineUnavailable ? "Mortis execution is not available yet. An administrator can select Open Code Review in repository configuration."
     : needsSharedConnection ? "The repository's connection is retired. Choose a shared API connection for this review, or update repository configuration."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
@@ -406,7 +404,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
           {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
               options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
-            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection || engineUnavailable} onClick={async () => {
+            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection} onClick={async () => {
               const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
               if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
             }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
@@ -899,7 +897,8 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       <p className="text-muted-foreground">{tokenUsage(summaryStage.tokens, summaryStage.status)}</p>
       {summaryStage.status === "waiting" && <p className="text-muted-foreground">Waiting to generate the summary.</p>}
       {summaryDiagnostics && <TechnicalDetails error={summaryDiagnostics} name="Summary" />}
-      {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>Retry summary generation</Button>}
+      {run.engine !== "mortis" && summaryStage.status === "failed" && <p className="text-muted-foreground">Generating a new Mortis summary uses the repository's current shared API connection and limits.</p>}
+      {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>{run.engine === "mortis" ? "Retry summary generation" : "Generate summary with Mortis"}</Button>}
       {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
     </div>}
     {([["ocr", run.engine === "mortis" ? "Analysis" : "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
@@ -918,13 +917,14 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : run.engine === "mortis" ? "Mortis" : run.engine === "ocr" ? "Open Code Review" : run.engine;
   return <>
+    {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used {engine}. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <header className="mb-6 min-w-0">
       <div>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <h1 className="flex flex-wrap items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">Review run <Status value={run.status} /></h1>
           {can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
-            {run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
+            {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
           </div>}
@@ -1050,7 +1050,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {findingId ? finding ? <FindingPanel key={finding.finding_id} id={finding.finding_id} canWrite={can_write} snapshot={finding.snapshot} headSha={run.head_sha} /> : <div className="px-6">{findingQuery.isPending ? <Loading /> : <ErrorNotice error={findingQuery.error} />}</div> : candidate && <AssessmentPanel key={candidate.id} candidate={candidate} headSha={run.head_sha} runId={run.id}
           merged={pr.state === "merged"}
           waitingForVerification={run.stages?.assessment?.waiting_for === "verification"}
-          canRetry={can_write && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
+          canRetry={can_write && run.engine === "mortis" && !pr.ignored && (run.owner_id === null || run.owner_id === user.id) && ["completed", "partial"].includes(run.status) && ["published", "no_new_comments"].includes(run.publication)}
           onOpenFinding={() => { if (candidate.finding_id) showSheet("finding", candidate.finding_id); }} />}
       </SheetContent>
     </Sheet>

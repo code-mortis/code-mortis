@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import func, select
 
 from code_mortis.code_graph import service as graphs
@@ -52,14 +53,27 @@ def test_old_clients_preserve_engine_and_graph_limits(seed, client, monkeypatch)
         assert db.scalar(select(func.count()).select_from(Job)) == 0
 
 
-def test_engine_change_requires_browser_and_exact_repository(seed, client, monkeypatch):
+def test_sole_engine_is_available_to_authorized_clients_and_exact_repository(seed, client, monkeypatch):
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": 22, "permissions": {"push": True}})
     body = {"enabled": False, "settings": {"analysis_engine": "mortis"}}
     with monkeypatch.context() as scoped:
         scoped.setattr(graphs.mcp, "current_provenance", lambda: {"grant_id": "reviews-only"})
-        assert client.put("/api/v1/repositories/22", json=body).status_code == 422
+        assert client.put("/api/v1/repositories/22", json=body).status_code == 200
+        retired = {**body, "settings": {"analysis_engine": "ocr"}}
+        assert client.put("/api/v1/repositories/22", json=retired).status_code == 422
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": 23, "permissions": {"push": True}})
     assert client.put("/api/v1/repositories/22", json=body).status_code == 403
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": 22, "permissions": {"push": True}})
     saved = client.put("/api/v1/repositories/22", json=body)
     assert saved.status_code == 200 and saved.json()["settings"]["analysis_engine"] == "mortis"
+
+
+@pytest.mark.parametrize("remote_id", [None, True, "22", 23])
+def test_repository_updates_reject_invalid_remote_identity(seed, client, monkeypatch, remote_id):
+    monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": remote_id, "permissions": {"push": True}})
+    with transaction() as db:
+        before = dict(db.get(Repository, 22).settings)
+    response = client.put("/api/v1/repositories/22", json={"enabled": False, "settings": {"language": "Spanish"}})
+    assert response.status_code == 403
+    with transaction() as db:
+        assert db.get(Repository, 22).settings == before

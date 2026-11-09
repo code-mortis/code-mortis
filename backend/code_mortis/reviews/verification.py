@@ -2,10 +2,6 @@
 
 import json
 import re
-import secrets
-import tempfile
-import time
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
 
@@ -16,11 +12,12 @@ from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import require_execution_engine
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import InferenceOutputError, ReviewStopped
-from code_mortis.core.review_results import evidence_bundle, report_tokens
+from code_mortis.core.errors import InferenceOutputError, ReviewStopped, RunnerBlocked
+from code_mortis.core.review_results import evidence_bundle as evidence_bundle
+from code_mortis.core.review_results import report_tokens
 from code_mortis.core.security import clean_text
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
@@ -36,7 +33,6 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.reviews import context as review_context
-from code_mortis.reviews import diagnostics as result_diagnostics
 from code_mortis.schemas.common import StrictModel, VerificationResult
 
 INSTRUCTIONS = (
@@ -260,51 +256,12 @@ def read_requested_source(repo, env, sha, path, options, stopped, *, revision, f
 
 
 def filter_context(repo, env, sources, options, stopped, *, base_sha=None, head_sha=None):
-    """Filter inert evidence with the selected engine's trusted scope policy."""
-    if base_sha is not None:
-        from code_mortis.reviews import planning
+    """Filter inert evidence against the pinned Mortis review scope."""
+    from code_mortis.reviews import planning
 
-        return planning.allowed_context(repo, env, base_sha, head_sha, sources, options, stopped)
-
-    from code_mortis.integrations import ocr
-    sources = {path: source for path, source in sources.items()
-               if not file_policy.excluded(path, file_policy.policy(options))}
-
-    with tempfile.TemporaryDirectory(prefix="verify-scope-", dir=repo.parent) as temp:
-        root = Path(temp)
-        git_source.git(root, env, "init", "--quiet", stopped=stopped)
-        for path, source in sources.items():
-            target = root / path
-            if path.startswith(".opencodereview/"):
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(source)
-        trusted_rules = repo / ".opencodereview" / "rule.json"
-        if trusted_rules.is_file():
-            target = root / ".opencodereview" / "rule.json"
-            target.parent.mkdir(exist_ok=True)
-            target.write_text(trusted_rules.read_text())
-        args = [ocr.settings().ocr_binary, "scan", "--preview", "--repo", str(root), "--format", "json"]
-        if options.get("exclusions"):
-            args += ["--exclude", options["exclusions"]]
-        rules = root.parent / (root.name + "-rules.json")
-        try:
-            rules.write_text(json.dumps(file_policy.review_rules(options)))
-            args += ["--rule", str(rules)]
-            code, output, _ = ocr.command(args, root, env, stopped=stopped)
-        finally:
-            rules.unlink(missing_ok=True)
-        if code:
-            raise ValueError("The review engine could not check which evidence files are excluded. Check file exclusions and review rules before starting another review.")
-        data = json.loads(output)
-        selected = set()
-        for item in data.get("files", []):
-            path = Path(item["path"])
-            markdown = path.suffix.lower() in {".md", ".markdown", ".mdx"}
-            # OCR checks secrets and user exclusions before rejecting unsupported extensions.
-            if item.get("will_review") is True or (markdown and item.get("exclude_reason") == "unsupported_ext"):
-                selected.add(item["path"])
-        return set(sources) & selected
+    if base_sha is None or head_sha is None:
+        raise ValueError("Evidence filtering requires the exact review base and head commits.")
+    return planning.allowed_context(repo, env, base_sha, head_sha, sources, options, stopped)
 
 
 def build_context(repo, env, fetch_env, original, original_sha, head_sha, options, stopped, *, focused=False, base_sha=None):
@@ -417,135 +374,6 @@ class ResultValidationError(ValueError):
 
 VerificationOutputError = InferenceOutputError
 
-STRUCTURED_RESULT_DELIVERY = (
-    " Submit exactly one task_done call with state DONE and the complete structured result in result. "
-    "The state field alone never submits a result; result must be an object matching the requested schema. "
-    "A negative or uncertain verdict is a completed assessment, not a request to search for another issue. "
-    "This terminal call submits the result and ends the task. Do not use code_comment. "
-)
-
-RESULT_DELIVERY = STRUCTURED_RESULT_DELIVERY + (
-    "Evidence must cite paths and line numbers from the supplied source blocks, never evidence.py. "
-    "Copy source text verbatim after the line-number delimiter, preserving indentation, case and literals. "
-)
-
-
-def verification_tools(instructions=INSTRUCTIONS, schema=None, delivery=RESULT_DELIVERY):
-    result = dict(schema or output_schema())
-    definitions = result.pop("$defs", {})
-    # OCR terminates on task_done; putting the verdict in that call avoids its asynchronous comment loop.
-    return [{"name": "task_done", "main_task": True, "definition": {
-        "name": "task_done", "description": instructions + delivery +
-        " This is an internal result transport, including non-confirming outcomes.",
-        "parameters": {"type": "object", "$defs": definitions, "properties": {
-            "state": {"type": "string", "enum": ["DONE"]}, "result": result,
-        }, "required": ["state", "result"], "additionalProperties": False},
-    }}]
-
-
-def delivery_error(reason, **received):
-    problem = {"field": "task_done", "reason": reason, "received": received,
-               "expected": {"state": "DONE", "result": "Complete object matching the requested output schema"}}
-    feedback = {"kind": "delivery", **problem, "errors": [problem]}
-    return ResultValidationError("The AI did not submit a complete structured result. " + json.dumps(feedback), feedback)
-
-
-def terminal_result(root, session_id):
-    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session_id):
-        raise ValueError("The review engine did not identify which analysis produced this result. It cannot be trusted for automatic resolution. Start a new review.")
-    results, matched, rejected = [], False, None
-    for path in (Path.home() / ".opencodereview" / "sessions").glob(f"*/{session_id}.jsonl"):
-        with path.open() as stream:
-            header = json.loads(next(stream, ""))
-            if not isinstance(header, dict):
-                raise ValueError("The review engine returned an unreadable session header.")
-            if (header.get("type") != "session_start" or header.get("cwd") != str(root)
-                or header.get("sessionId") != session_id):
-                continue
-            matched = True
-            for line in stream:
-                row = json.loads(line)
-                if not isinstance(row, dict):
-                    raise ValueError("The review engine returned an unreadable session record.")
-                if row.get("type") == "llm_response" and row.get("taskType") == "main_task":
-                    if row.get("sessionId") != session_id:
-                        raise ValueError("The review engine returned a result from a different analysis. It cannot be used to verify this finding. Start a new review.")
-                    calls = row.get("tool_calls")
-                    if calls is not None and not isinstance(calls, list):
-                        raise delivery_error("The response tool calls must be a list.")
-                    for call in calls or []:
-                        if not isinstance(call, dict):
-                            raise delivery_error("The response contains a malformed tool call.")
-                        if call.get("name") != "task_done":
-                            raise delivery_error("The response used a tool outside the requested result transport.")
-                        arguments = call.get("arguments")
-                        if not isinstance(arguments, str):
-                            raise delivery_error("task_done arguments must contain JSON text.")
-                        try:
-                            value = json.loads(arguments)
-                        except (ValueError, TypeError) as exc:
-                            # OCR executes the first balanced JSON value when a gateway adds control tokens.
-                            start = re.search(r"[\[{]", arguments)
-                            try:
-                                if start is None:
-                                    raise exc
-                                value, _ = json.JSONDecoder().raw_decode(arguments[start.start():])
-                            except ValueError:
-                                rejected = delivery_error("task_done arguments are not valid JSON.")
-                                continue
-                        if isinstance(value, dict) and "state" in value and value["state"] != "DONE":
-                            rejected = delivery_error("task_done did not report DONE.")
-                            continue
-                        if (not isinstance(value, dict) or value.get("state") != "DONE"
-                            or not isinstance(value.get("result"), dict)):
-                            fields = [key for key in ("state", "result", "findings", "verdict", "evidence", "required_paths")
-                                      if isinstance(value, dict) and key in value]
-                            raise delivery_error("task_done did not include the required DONE state and result object.",
-                                argument_type=type(value).__name__, argument_fields=fields,
-                                result_type=type(value.get("result")).__name__ if isinstance(value, dict) else None)
-                        results.append(value["result"])
-    if len(results) != 1:
-        if matched:
-            if not results and rejected:
-                raise rejected
-            raise delivery_error("The response must submit exactly one complete task_done result.", result_count=len(results))
-        raise ValueError("The AI did not return exactly one final assessment. Start a new review or check the selected model.")
-    return results[0]
-
-
-def scan_diagnostics(root, env, code, errors, secrets, stopped) -> tuple[str, int | None]:
-    from code_mortis.integrations import ocr
-
-    detail = {"exit_code": code, "stderr": clean_text(errors, secrets)}
-    overflow_limit = None
-    session = re.search(r"\[ocr\] Session: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b", errors)
-    if code and session:
-        try:
-            if stopped():
-                return json.dumps(detail)[:4000], overflow_limit
-            status, output, _ = ocr.command([
-                ocr.settings().ocr_binary, "session", "show", "--repo", str(root), "--json", session[1],
-            ], root, env, timeout=5, stopped=stopped)
-            data = json.loads(output)
-            summary = data["summary"]
-            if not status and summary["session_id"] == session[1] and summary["repo_dir"] == str(root):
-                items = data["items"]
-                detail["failures"] = [clean_text(item["error"], secrets) for item in items
-                                      if item.get("file_path") == "evidence.py" and item.get("error")]
-                # This single-file scan disables preparation calls; this exact failure precedes inference.
-                counts = {"selected_files": 1, "failed_files": 1, "completed_files": 0,
-                          "reused_files": 0, "llm_failures": 0}
-                if (summary.get("review_mode") == "full_scan" and len(items) == 1
-                    and items[0].get("type") == "failed" and items[0].get("file_path") == "evidence.py"
-                    and all(type(summary.get(key)) is int and summary[key] == value for key, value in counts.items())):
-                    overflow = re.fullmatch(r"prompt tokens \((\d+)\) exceed 80% of max_tokens\((\d+)\)", items[0].get("error", ""))
-                    if overflow and int(overflow[1]) > int(overflow[2]) * 4 // 5:
-                        overflow_limit = int(overflow[2])
-        except (ValueError, KeyError, TypeError, AttributeError, OSError, TimeoutError, ReviewStopped, github.GitHubError):
-            pass  # Missing diagnostics must not hide the original failure or release its reservation.
-    return json.dumps(detail)[:4000], overflow_limit
-
-
 def mortis_verify(connection, credentials, context, token_budget, timeout, stopped, *,
                   run_id, claim, stage, task_key, round=0, instructions=INSTRUCTIONS,
                   schema=None, validator=validate_response, selection=False, authorize=None, effort="medium"):
@@ -566,163 +394,6 @@ def mortis_verify(connection, credentials, context, token_budget, timeout, stopp
         validator=validator, claim=claim, stage=stage, task_key=f"{task_key}:{round}", run_id=run_id,
         stopped=stopped, authorize=authorize, effort=effort, token_budget=token_budget, timeout=timeout,
     )
-
-
-def api_verify(repo, env, connection, credentials, context, token_budget, timeout, stopped,
-               *, instructions=INSTRUCTIONS, schema=None, validator=validate_response, configuration_managed=False,
-               delivery=RESULT_DELIVERY, structured_result=False, selection=False):
-    from code_mortis.integrations import ocr
-
-    if token_budget is not None and token_budget <= 0:
-        raise ValueError(f"No token budget remains for this assessment ({max(0, token_budget):,} tokens remaining).")
-    if timeout is not None and timeout <= 0:
-        raise ValueError("This assessment cannot start because its time limit has expired.")
-    deadline = time.monotonic() + timeout if timeout is not None else None
-
-    def remaining_time():
-        remaining = deadline - time.monotonic() if deadline is not None else None
-        if remaining is not None and remaining <= 0:
-            raise TimeoutError("This assessment reached its time limit.")
-        return remaining
-
-    def before_dispatch():
-        remaining_time()
-        return stopped()
-
-    selection = selection or context.get("task_contract") == review_context.TASK_CONTRACT
-    context = review_context.sanitize(context, credentials, stopped)
-    instructions = review_context.sanitize(instructions, credentials, stopped)
-    if selection:
-        original_context, original_validator = context, validator
-        context, schema, history_ids = review_context.selection_context(context, schema or output_schema())
-        def validator(raw, supplied):
-            return original_validator(review_context.selected_result(raw, supplied, history_ids), original_context)
-        instructions += review_context.SELECTION_INSTRUCTIONS
-        structured_result = True
-        delivery = STRUCTURED_RESULT_DELIVERY
-
-    # OCR remains the provider adapter. These internal envelopes never enter finding publication.
-    with tempfile.TemporaryDirectory(prefix="verify-", dir=repo.parent) as temp:
-        root = Path(temp)
-        capture = root / "delivery.jsonl"
-        capture.touch(mode=0o600)
-        diagnostic_key = secrets.token_bytes(32)
-        if connection.get("protocol") == "openai-responses":
-            env = {**env, "CM_OCR_DIAGNOSTIC_FILE": str(capture), "CM_OCR_DIAGNOSTIC_KEY": diagnostic_key.hex()}
-        git_source.git(root, env, "init", "--quiet", stopped=stopped)
-        evidence = root / "evidence.py"
-        bundle = evidence_bundle(context)
-        evidence.write_text(bundle)
-        rule = root / "rules.json"
-        rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": instructions + delivery + (
-            " The result must match this schema, including non-confirming outcomes: "
-        ) + json.dumps(schema or output_schema())}]}))
-        tools = root / "tools.json"
-        tools.write_text(json.dumps(verification_tools(instructions, schema, delivery)))
-        # Legacy connections retain OCR 1.12.11's scan default.
-        max_tokens = connection.get("options", {}).get("prompt_token_ceiling", 58888)
-        token_limit = max_tokens * 4 // 5
-        args = [ocr.settings().ocr_binary, "scan", "--repo", str(root), "--path", "evidence.py",
-                "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tools), "--concurrency", "1",
-                "--no-plan", "--no-summary", "--no-dedup", "--max-tokens-budget", str(token_budget or 0),
-                "--timeout", "0", "--max-tokens", str(max_tokens)]
-        try:
-            code, preview, errors = ocr.command([*args, "--preview"], root, env, timeout=remaining_time(), stopped=stopped)
-            selected = next((item for item in json.loads(preview).get("files", [])
-                             if item.get("path") == "evidence.py"), {})
-        except Exception as exc:
-            status = "skipped" if isinstance(exc, (ReviewStopped, TimeoutError)) else "failed"
-            raise VerificationOutputError("The review engine could not check the source evidence before analysis. No AI request was made for this assessment. Start a new review.", {"tokens": 0}, status) from exc
-        if code or selected.get("will_review") is not True:
-            reason = selected.get("exclude_reason", "evidence.py was not selected")
-            detail = f"OCR rejected assessment/verification evidence ({reason}; exit code {code})."
-            if reason == "too_large":
-                detail += (f" Evidence size: {len(bundle.encode()):,} bytes. OCR's per-prompt limit is "
-                           f"{token_limit:,} tokens (80% of max_tokens={max_tokens:,}), separate from the run token budget.")
-            elif errors:
-                detail += " " + errors[-1500:]
-            detail = clean_text(detail, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
-            raise VerificationOutputError(detail, {"tokens": 0}, "failed" if code else "skipped",
-                feedback={"kind": "context_limit", "reason": "Necessary evidence exceeds the per-prompt limit"} if reason == "too_large" else None)
-        dispatched = False
-        try:
-            with nullcontext() if configuration_managed else ocr.configuration(
-                connection, credentials, {}, before_dispatch, structured_result=structured_result,
-            ):
-                if before_dispatch():
-                    raise ReviewStopped("Verification stopped before provider analysis.")
-                allowance = remaining_time()
-                dispatched = True
-                code, output, errors = ocr.command(args, root, env, timeout=allowance, stopped=stopped)
-                diagnostics, overflow_limit = scan_diagnostics(root, env, code, errors, (
-                    credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
-                ), stopped)
-                try:
-                    data = json.loads(output)
-                    if not isinstance(data, dict):
-                        raise ValueError("The review engine returned an unreadable assessment response.")
-                except ValueError as exc:
-                    if overflow_limit == max_tokens:
-                        raise VerificationOutputError(
-                            f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
-                            f"(80% of max_tokens={max_tokens:,}); no AI request was made. Technical details: " + diagnostics,
-                            {"tokens": 0}, "skipped",
-                        ) from exc
-                    failure = "OCR verification process failed" if code else "OCR returned invalid JSON"
-                    raise ValueError(f"{failure}; token consumption is unknown. {diagnostics}") from exc
-                raw, result_error, result_feedback = None, None, None
-                try:
-                    raw = terminal_result(root, data.get("session_id"))
-                except (ValueError, KeyError, TypeError, OSError, StopIteration) as exc:
-                    result_error = str(exc) or "The AI did not return a final assessment."
-                    result_feedback = exc.feedback if isinstance(exc, ResultValidationError) else None
-                    if result_feedback and result_feedback.get("kind") == "delivery":
-                        result_feedback = {**result_feedback, "transport": result_diagnostics.compare(
-                            root, data.get("session_id"), capture, diagnostic_key)}
-        except (ValueError, OSError, TimeoutError, ReviewStopped, github.GitHubError) as exc:
-            if dispatched:
-                raise
-            status = "skipped" if isinstance(exc, (ReviewStopped, TimeoutError)) else "failed"
-            raise VerificationOutputError(str(exc), {"tokens": 0}, status) from exc
-        summary = data.get("summary") or {}
-        usage = summary.get("total_tokens") if isinstance(summary, dict) else None
-        if type(usage) is not int or usage < 0:
-            raise ValueError("The review engine did not report valid token usage. Further AI checks were stopped to avoid exceeding the run budget. Technical details: " + diagnostics)
-        warnings, comments = data.get("warnings"), data.get("comments")
-        for warning in warnings if isinstance(warnings, list) else []:
-            if isinstance(warning, dict) and warning.get("type") == "token_threshold_exceeded":
-                message = clean_text(str(warning.get("message", "")), (
-                    credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
-                ))
-                raise VerificationOutputError(
-                    f"OCR evidence prompt exceeds its {token_limit:,}-token limit "
-                    f"(80% of max_tokens={max_tokens:,}): {message}", {"tokens": usage}, "skipped",
-                )
-        complete = (not code and data.get("status") == "success" and not summary.get("budget_exceeded")
-                    and type(summary.get("budget_exceeded", False)) is bool
-                    and type(summary.get("files_reviewed")) is int and summary["files_reviewed"] == 1
-                    and (warnings is None or isinstance(warnings, list)) and not warnings
-                    and (comments is None or isinstance(comments, list)) and not comments)
-        if not complete or result_error:
-            detail = {"exit_code": code, "status": data.get("status"), "summary": summary,
-                      "warnings": data.get("warnings"), "result_error": result_error, "diagnostics": diagnostics}
-            message = ("AI result delivery failed: " + result_feedback["reason"]
-                       if complete and result_feedback and result_feedback.get("kind") == "delivery"
-                       else "The AI did not finish checking this finding.")
-            if result_feedback and result_feedback.get("transport"):
-                message += " " + result_diagnostics.explanation(result_feedback["transport"])
-                detail = {"delivery": result_feedback["transport"], "ocr": detail}
-            raise VerificationOutputError(message + " Technical details: " + json.dumps(detail)[:4000],
-                                          {"tokens": usage}, feedback=result_feedback if complete else None)
-        try:
-            validated = validator(raw, context)
-            return validated, {"tokens": usage}
-        except (ValueError, KeyError, TypeError) as exc:
-            raise VerificationOutputError(
-                "OCR returned an invalid structured result: " + str(exc) +
-                "; response=" + json.dumps(raw)[:2000], {"tokens": usage},
-                feedback=exc.feedback if isinstance(exc, ResultValidationError) else None,
-            ) from exc
 
 
 def record_summary(db, run):
@@ -828,7 +499,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         ids = list(db.scalars(select(FindingVerification.id).where(
             FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
         ).order_by(FindingVerification.created_at, FindingVerification.id)))
-        mortis = run.config.get("analysis_engine") == "mortis"
         separate = pipeline.enabled(run)
         options = dict(run.config["settings"])
         if separate:
@@ -852,9 +522,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 continue
             # A vanished worker may have spent its entire reservation. Never repeat unknown paid work.
             if row.status == "running":
-                if not mortis:
-                    finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
-                    continue
                 row.usage = {"tokens": 0}
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
@@ -893,7 +560,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     github.authorize_repo(db, actor, repo.full_name, write=True)
                 authorize_connection(db, current_connection, repo, run.trigger, actor)
                 if current_connection.kind != "api" and current_connection.auth_status != "connected":
-                    raise runner_client.RunnerBlocked("authentication")
+                    raise RunnerBlocked("authentication")
             except (ValueError, github.GitHubError) as exc:
                 finish(db, row, status="skipped", error=str(exc))
                 continue
@@ -916,7 +583,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
 
         try:
             context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped,
-                                    **({"base_sha": run.base_sha} if mortis else {}))
+                                    base_sha=run.base_sha)
             consumed, feedback, corrected = 0, None, False
             for attempt in range(3):
                 allowance = None if budget is None else budget - consumed
@@ -958,31 +625,19 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     record_summary(db, current)
                 known = False
                 try:
-                    if mortis:
-                        raw, spent = mortis_verify(
-                            connection, credentials, request_context, allowance, remaining, stopped,
-                            run_id=run_id, claim=claim, stage="verification", task_key="verify:" + identity,
-                            round=attempt, instructions=INSTRUCTIONS + "\nLanguage: " + options["language"],
-                            effort=options["effort"], authorize=authorize_finding,
-                        )
-                    elif connection["kind"] == "api":
-                        raw, spent = api_verify(repo_path, env, connection, credentials, request_context, allowance, remaining, stopped)
-                    else:
-                        raw, spent = runner_client.review(connection["id"], "verify-" + identity + (f"-{attempt}" if attempt else ""), {
-                            "kind": connection["kind"], "task": "verification", "model": connection["model"],
-                            "_evidence_context": request_context, "_instructions": review_context.sanitize(INSTRUCTIONS + "\nLanguage: " + options["language"], credentials, stopped, usage={"tokens": consumed}),
-                            "effort": options["effort"], "prompt": INSTRUCTIONS + "\nLanguage: " + options["language"] + "\n\n" + evidence_bundle(request_context),
-                            "output_schema": output_schema(), "timeout": remaining,
-                            "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                            "token_budget": allowance,
-                        }, stopped)
+                    raw, spent = mortis_verify(
+                        connection, credentials, request_context, allowance, remaining, stopped,
+                        run_id=run_id, claim=claim, stage="verification", task_key="verify:" + identity,
+                        round=attempt, instructions=INSTRUCTIONS + "\nLanguage: " + options["language"],
+                        effort=options["effort"], authorize=authorize_finding,
+                    )
                     amount = spent.get("tokens")
                     known = type(amount) is int and amount >= 0
                     if known:
                         consumed += amount
                     usage = {"tokens": consumed if known else None}
                     result = validate_response(raw, request_context)
-                except runner_client.RunnerBlocked as exc:
+                except RunnerBlocked as exc:
                     amount = exc.usage.get("tokens")
                     exc.usage = {"tokens": consumed + amount if type(amount) is int and amount >= 0 else None}
                     raise
@@ -992,7 +647,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         known = type(amount) is int and amount >= 0
                         if known:
                             consumed += amount
-                        exc.usage = {"tokens": consumed if known else None if mortis or separate else budget}
+                        exc.usage = {"tokens": consumed if known else None}
                         usage = exc.usage
                     if review_context.correctable(exc.feedback) and known and not corrected and attempt < 2:
                         feedback, corrected = exc.feedback, True
@@ -1026,9 +681,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             elif isinstance(exc, ReviewStopped) and hasattr(exc, "usage"):
                 amount = exc.usage.get("tokens")
                 usage = {"tokens": consumed + amount if type(amount) is int and amount >= 0 else None}
-            elif isinstance(exc, runner_client.RunnerBlocked):
+            elif isinstance(exc, RunnerBlocked):
                 usage = exc.usage
-            error = str(exc) if isinstance(exc, (runner_client.RunnerBlocked, ReviewStopped)) else "The fix could not be verified automatically. " + (
+            error = str(exc) if isinstance(exc, (RunnerBlocked, ReviewStopped)) else "The fix could not be verified automatically. " + (
                 str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError, ResultValidationError} else "The AI returned an unsupported response. Start a new review or check the selected model."
             )
             error = clean_text(error, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:10000]

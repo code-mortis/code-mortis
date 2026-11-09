@@ -173,10 +173,10 @@ def cancel_task_waiter(task_id: str, job_id: str, job_attempt: int) -> int:
 @contextmanager
 def reserve_connection(connection_id: str, run_key: str, *, stopped=lambda: False,
                        wait_seconds=60, lease_seconds=60, deadline_at: datetime | None = None):
-    """Reserve all eight slots for the lifetime of a legacy OCR configuration.
+    """Reserve all eight slots while a connection probe is in flight.
 
-    The context must enclose process shutdown. A deadline or lost heartbeat does
-    not automatically reclaim capacity from a potentially live subprocess.
+    The context must enclose every request. A deadline or lost heartbeat does
+    not automatically reclaim capacity from a potentially live request.
     """
     validate_limits(CONNECTION_CEILING, CONNECTION_CEILING, lease_seconds)
     if not isinstance(run_key, str) or not 1 <= len(run_key) <= 100:
@@ -205,5 +205,5 @@ def reserve_connection(connection_id: str, run_key: str, *, stopped=lambda: Fals
                 raise TimeoutError("Inference connection admission timed out")
             time.sleep(min(0.1, max(0, until - time.monotonic())))
     finally:
-        # The caller promises every request/subprocess has stopped before exit.
+        # The caller promises every request has stopped before exit.
         release_connection(identity)

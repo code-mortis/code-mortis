@@ -12,11 +12,11 @@ from sqlalchemy import func, select
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import require_execution_engine
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.review_results import fingerprint, report_tokens
 from code_mortis.core.security import clean_text, digest
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
@@ -309,11 +309,11 @@ def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, ren
 
 
 def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
-    scope = {"base_sha": run.base_sha, "head_sha": run.head_sha} if run.config.get("analysis_engine") == "mortis" else {}
+    scope = {"base_sha": run.base_sha, "head_sha": run.head_sha}
     head = run.head_sha
     source_sha = snapshot.get("source_sha") or head
     context = verification.build_context(
-        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped, focused=True, **({"base_sha": run.base_sha} if scope else {}),
+        repo, env, fetch_env, snapshot, source_sha, head, run.config["settings"], stopped, focused=True, base_sha=run.base_sha,
     )
     if source_sha == head:
         context["sources"].pop("original", None)
@@ -341,15 +341,9 @@ def build_context(repo, env, fetch_env, run, snapshot, previous, stopped):
                                               run.config["settings"], stopped, **scope)
         if not history_paths.issubset(allowed):
             raise ValueError("Relevant finding history is excluded by the current review scope.")
-    if scope:
-        from code_mortis.reviews import planning
+    from code_mortis.reviews import planning
 
-        rules = planning.load_rules(repo, env, run.base_sha, run.config["settings"], stopped)
-    else:
-        rules = run.config["settings"].get("rules")
-        trusted_rules = repo / ".opencodereview" / "rule.json"
-        if rules is None and trusted_rules.is_file():
-            rules = json.loads(trusted_rules.read_text())
+    rules = planning.load_rules(repo, env, run.base_sha, run.config["settings"], stopped)
     context.update({
         "history": related,
         "prior_candidates": prior_candidates,
@@ -370,7 +364,7 @@ def check_context_size(context, options):
 
 
 def expand_context(repo, env, run, context, paths, stopped):
-    scope = {"base_sha": run.base_sha, "head_sha": run.head_sha} if run.config.get("analysis_engine") == "mortis" else {}
+    scope = {"base_sha": run.base_sha, "head_sha": run.head_sha}
     for path in paths:
         git_source.repository_path(path)
     repeated = set(paths) & context["sources"].get("current", {}).keys()
@@ -537,7 +531,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
         require_execution_engine(run.config)
         if not enabled(run):
             return
-        mortis = run.config.get("analysis_engine") == "mortis"
         retry = run.progress.get("assessment_retry")
         ids = [retry["candidate_id"]] if retry else list(db.scalars(select(ReviewCandidate.id)
             .where(ReviewCandidate.run_id == run_id).order_by(ReviewCandidate.position)))
@@ -572,7 +565,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                                    .order_by(ReviewCandidate.position)))
             interrupted = False
             for row in rows:
-                if row.status == "running" and mortis:
+                if row.status == "running":
                     row.status, row.usage = "queued", {"tokens": 0}
                 elif row.status == "running":
                     row.status, row.error, row.finished_at = "failed", "The review worker stopped while checking this proposed finding. AI usage was not saved, so the reserved budget cannot be reused. Start a new review.", now()
@@ -633,7 +626,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                 request_context = review_context.sanitize(
                     {**context, "task_contract": review_context.TASK_CONTRACT, **({"validation_feedback": feedback} if feedback else {})}, credentials, stopped, usage={"tokens": consumed})
                 check_context_size(request_context, options)
-                prompt = instructions + "\n\n" + verification.evidence_bundle(request_context)
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     row = db.get(ReviewCandidate, identity)
@@ -657,7 +649,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                         github.authorize_repo(db, actor, repo.full_name, write=True)
                     authorize_connection(db, selected, repo, trigger, actor)
                     if selected.kind != "api" and selected.auth_status != "connected":
-                        raise runner_client.RunnerBlocked("authentication")
+                        raise RunnerBlocked("authentication")
                     if result is None:
                         if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
                             reason = verification.limit_error(options, allowance, remaining, usage_known)
@@ -668,39 +660,19 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                     record_summary(db, current, advance_revision=True, totals_unchanged=True)
                 if result is None:
                     try:
-                        if mortis:
-                            result, spent = verification.mortis_verify(
-                                connection, credentials, request_context, allowance, remaining, stopped,
-                                run_id=run_id, claim=claim, stage="assessment", task_key=attempt_id,
-                                round=attempt, instructions=instructions, schema=output_schema(context),
-                                validator=validate_response, effort=options["effort"], authorize=authorize_history,
-                            )
-                            amount = spent.get(unit)
-                            if type(amount) is int and amount >= 0:
-                                consumed += amount
-                            else:
-                                raise verification.VerificationOutputError(
-                                    "Assessment token consumption is unknown; further inference is blocked.", {"tokens": None})
-                        elif connection["kind"] == "api":
-                            result, spent = verification.api_verify(
-                                repo_path, env, connection, credentials, request_context, allowance, remaining, stopped,
-                                instructions=instructions, schema=output_schema(context), validator=validate_response,
-                                configuration_managed=parallel,
-                            )
-                            consumed += spent[unit]
+                        result, spent = verification.mortis_verify(
+                            connection, credentials, request_context, allowance, remaining, stopped,
+                            run_id=run_id, claim=claim, stage="assessment", task_key=attempt_id,
+                            round=attempt, instructions=instructions, schema=output_schema(context),
+                            validator=validate_response, effort=options["effort"], authorize=authorize_history,
+                        )
+                        amount = spent.get(unit)
+                        if type(amount) is int and amount >= 0:
+                            consumed += amount
                         else:
-                            raw, spent = runner_client.review(connection["id"], attempt_id + (f"-{attempt}" if attempt else ""), {
-                                "kind": connection["kind"], "task": "assessment", "model": connection["model"],
-                                "effort": options["effort"], "prompt": prompt,
-                                "_evidence_context": request_context, "_instructions": review_context.sanitize(instructions, credentials, stopped, usage={"tokens": consumed}),
-                                "output_schema": output_schema(context), "timeout": remaining,
-                                "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                                "token_budget": allowance,
-                            }, stopped)
-                            consumed += spent["tokens"]
-                            usage = {unit: consumed}
-                            result = validate_response(raw, request_context)
-                    except runner_client.RunnerBlocked as exc:
+                            raise verification.VerificationOutputError(
+                                "Assessment token consumption is unknown; further inference is blocked.", {"tokens": None})
+                    except RunnerBlocked as exc:
                         spent = exc.usage["tokens"]
                         usage = {"tokens": consumed + spent if type(spent) is int and spent >= 0 else None}
                         raise
@@ -711,8 +683,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                             known = type(spent) is int and spent >= 0
                             if known:
                                 consumed += spent
-                            exc.usage = {"tokens": consumed if known else None if mortis or run.config.get("pipeline_version") == 2 else budget}
-                        usage = {unit: consumed} if known else {"tokens": None if mortis or run.config.get("pipeline_version") == 2 else budget}
+                            exc.usage = {"tokens": consumed if known else None}
+                        usage = {unit: consumed} if known else {"tokens": None}
                         if review_context.correctable(exc.feedback) and known and not corrected and attempt < 2:
                             if stopped():
                                 raise ReviewStopped("The assessment stopped before its invalid response could be corrected.") from exc
@@ -799,12 +771,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             record_summary(db, run, advance_revision=True)
             return True
 
-    configuration = nullcontext()
-    if parallel and not mortis:
-        from code_mortis.integrations import ocr
-
-        configuration = ocr.configuration(connection, credentials, {}, stopped, session_per_task=True)
-    with configuration, ThreadPoolExecutor(max_workers=concurrency) if parallel else nullcontext() as pool:
+    with ThreadPoolExecutor(max_workers=concurrency) if parallel else nullcontext() as pool:
         try:
             while ids:
                 prepared = prepare()

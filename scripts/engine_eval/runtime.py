@@ -710,7 +710,7 @@ class SyntheticGitHub:
     def installed(self):
         from code_mortis.code_graph import store
         from code_mortis.core import source
-        from code_mortis.integrations import comparison, github, ocr
+        from code_mortis.integrations import comparison, github
         from code_mortis.security_scans import engine
 
         def read_token(db, installation_id, repository_id, **kwargs):
@@ -731,22 +731,6 @@ class SyntheticGitHub:
             store.git(target, "update-ref", store.reference(snapshot_id), sha)
 
         comparison.cached.cache_clear()
-        command = ocr.command
-
-        def checked_command(args, *positional, **kwargs):
-            result = command(args, *positional, **kwargs)
-            if len(args) > 1 and args[1] == "review" and "--preview" in args and not result[0]:
-                preview = json.loads(result[1])
-                paths = ocr.preview_paths(
-                    [row for row in preview["files"] if row["will_review"]],
-                    preview["reviewable_count"],
-                )
-                require(
-                    sorted(paths) == sorted(self.case["selected_paths"]),
-                    "OCR preview differs from the frozen paired scope; inference forbidden",
-                )
-            return result
-
         with ExitStack() as stack:
             for target, name, replacement in (
                 (github, "request", self.request),
@@ -759,7 +743,6 @@ class SyntheticGitHub:
                 (engine, "snapshot", self.security_snapshot),
             ):
                 stack.enter_context(patch.object(target, name, replacement))
-            stack.enter_context(patch.object(ocr, "command", checked_command))
             yield
         comparison.cached.cache_clear()
 
@@ -1599,4 +1582,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("This historical OCR/native evaluation is retired. Saved evidence and offline scoring remain available; new execution is disabled.")

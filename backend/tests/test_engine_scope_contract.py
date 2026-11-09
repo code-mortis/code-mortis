@@ -5,12 +5,14 @@ from pathlib import Path
 
 import pytest
 from test_graph_admission_policy import manifest_request
+from test_pr_planning import plan, write
+from test_pr_planning import repository as repository
 
 from code_mortis.code_graph import errors
 from code_mortis.code_graph.client import validate_result
 from code_mortis.code_graph.extract import extract
 from code_mortis.core import file_policy
-from code_mortis.integrations import ocr
+from code_mortis.reviews import engine
 from code_mortis.schemas.code_graph import CodeGraphLimits
 
 SCOPE = json.loads((Path(__file__).parent / "fixtures" / "engine_scope_v1.json").read_text())
@@ -54,15 +56,21 @@ def test_frozen_graph_admission(case, monkeypatch):
 
 
 @pytest.mark.parametrize("case", SCOPE["review_gates"], ids=lambda case: case["id"])
-def test_frozen_review_gate(case):
+def test_frozen_review_gate(case, repository):
     paths = [f"src/file_{number}.py" for number in range(case["selected_count"])]
-    result = ocr.file_limit_result(paths, case["maximum"])
-    assert (result is not None) is case["skipped"]
+    repo, _base = repository
+    write(repo, "ignored.lock", "metadata-only fixture\n")
+    for path in paths:
+        write(repo, path, "value = 1\n")
+    selected = plan(repository, max_files=case["maximum"])
+    assert len(selected.selected) == case["selected_count"]
+    assert bool(selected.limit_reason) is case["skipped"]
+    result = engine._report(selected, [], {}, tokens=0) if selected.limit_reason else None
     if result:
         status, report, comments = result
         assert status == "skipped" and comments == []
         coverage = report["manifest"]["coverage"]
-        assert [item["path"] for item in coverage["selected"]] == paths
+        assert [item["path"] for item in coverage["selected"]] == sorted(paths)
         assert coverage["completed"] == [] and coverage["reused"] == []
         assert len(coverage["waived"]) == len(paths)
         assert report["summary"]["total_tokens"] == 0

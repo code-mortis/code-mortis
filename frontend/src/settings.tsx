@@ -176,7 +176,7 @@ export function RepositorySettings({
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState({
     ...repo.settings,
-    analysis_engine: repo.settings.analysis_engine ?? "ocr",
+    analysis_engine: "mortis" as const,
     timeout_seconds: repo.settings.timeout_seconds ?? null,
     token_budget: repo.settings.token_budget ?? null,
     assessment_token_budget: repo.settings.assessment_token_budget ?? null,
@@ -371,13 +371,7 @@ export function RepositorySettings({
               <p className="mt-1 text-sm text-muted-foreground">Choose the connection and model used to review this repository.</p>
             </div>
             {repo.connection_requires_setup && <p role="status" className="rounded-md border p-4 text-sm">The saved subscription connection is retired. Select a shared API connection to resume reviews. Historical runs remain available.</p>}
-            <Field label="Review engine">{(fieldId) => <select id={fieldId} value={settings.analysis_engine}
-              onChange={(event) => change("analysis_engine", event.target.value as "ocr" | "mortis")}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm">
-              <option value="ocr">Open Code Review</option>
-              <option value="mortis" disabled>Mortis — not available yet</option>
-            </select>}</Field>
-            {settings.analysis_engine === "mortis" && <p role="status" className="text-sm text-muted-foreground">Mortis execution is not available yet. Select Open Code Review to run reviews.</p>}
+            <p className="text-sm text-muted-foreground">Mortis reviews this repository using the selected shared API connection.</p>
             <Field label="AI connection">
               {(id) => (
                 <SearchSelect
@@ -478,7 +472,7 @@ export function RepositorySettings({
           <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
             <div>
               <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Limits & rules</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize OCR rules.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize review rules.</p>
             </div>
             {([
               { key: "execution", title: "Review execution", fields: [
@@ -488,8 +482,8 @@ export function RepositorySettings({
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
               ] },
               { key: "budgets", title: "Token budgets", fields: [
-                { key: "token_budget", label: "OCR token budget", min: 1000, max: 5000000,
-                  hint: "Budget for OCR analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
+                { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000,
+                  hint: "Budget for Mortis analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
                 { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000,
                   hint: "Independent budget for validating proposed findings, including correction attempts." },
                 { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000,
@@ -567,23 +561,19 @@ export function RepositorySettings({
               </section>
             ))}
             <section aria-labelledby={`${id}-rules`} className="space-y-3">
-              <h3 id={`${id}-rules`} className="text-base font-semibold">OCR rules</h3>
+              <h3 id={`${id}-rules`} className="text-base font-semibold">Review rules</h3>
               <div className="space-y-4 rounded-lg border bg-card p-5">
                 <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
                   Optional rule-file object. Empty uses rules from the trusted base revision.
                 </p>
                 <Textarea
-                  aria-label="OCR rules JSON"
+                  aria-label="Review rules JSON"
                   aria-describedby={`${id}-rules-hint`}
                   rows={6}
                   className="min-h-40 max-h-96 resize-y font-mono text-xs"
                   value={rules}
                   onChange={(e) => setRules(e.target.value)}
                 />
-                <Button asChild variant="link" className="h-auto p-0 text-xs underline">
-                  <a href="https://github.com/alibaba/open-code-review/blob/main/pages/src/content/docs/en/review-rules.md"
-                    target="_blank" rel="noreferrer">Rule file documentation<ArrowUpRight aria-hidden="true" className="size-3" /></a>
-                </Button>
               </div>
             </section>
           </section>
@@ -685,10 +675,8 @@ function ConnectionForm({
       onChange={(event) => setName(event.target.value)} placeholder="Team review model" />}
   </Field>;
   const ceilingField = <Field
-    label={kind === "api" ? "Evidence prompt ceiling (tokens)" : "Prompt ceiling (tokens)"}
-    hint={kind === "api"
-      ? "For assessments and fix verification. OCR accepts prompts up to 80% of this value. Choose a value your model supports; the total review token budget stays separate."
-      : "Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The total review Token budget stays separate."}
+    label="Evidence prompt ceiling (tokens)"
+    hint="Each Mortis request, including instructions and output schema, is checked conservatively against this limit. Choose a value your model supports; the total review token budget stays separate."
   >
     {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
       value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}

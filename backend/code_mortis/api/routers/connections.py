@@ -152,9 +152,5 @@ def delete_connection(connection_id: str, db: DB, user: SESSION_USER) -> dict:
         for run in db.scalars(select(ReviewRun).where(ReviewRun.status.in_({"queued", "running", "blocked"})))
     ):
         raise HTTPException(409, "Wait for active reviews using this connection to finish.")
-    if connection.kind != "api":
-        from code_mortis.integrations import runner_client
-
-        runner_client.request("POST", f"/connections/{connection.id}/disconnect", {"kind": connection.kind})
     db.delete(connection)
     return {"ok": True}

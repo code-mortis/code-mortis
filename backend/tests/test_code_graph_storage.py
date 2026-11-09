@@ -259,6 +259,8 @@ def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
     with engine().connect() as connection:
         after = {t.name: connection.execute(select(*[c for c in t.columns if c.name != "code_graph_limits"]).order_by(*t.primary_key.columns)).mappings().all()
                  for t in legacy_tables}
+        before["repositories"] = [{**row, "settings": {**row["settings"], "analysis_engine": "mortis"}}
+                                  for row in before["repositories"]]
         assert before == after
         context = MigrationContext.configure(connection, opts={
             "compare_type": True, "compare_server_default": True,
@@ -283,4 +285,4 @@ def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
         assert db.get(ReviewRun, "history").report == {"saved": "original report"}
         assert db.get(Finding, "finding").status == "open"
         assert db.get(Occurrence, "occurrence").snapshot == {"saved": "original evidence"}
-        assert db.get(Repository, 22).settings == seed["repo"].settings
+        assert db.get(Repository, 22).settings == {**seed["repo"].settings, "analysis_engine": "mortis"}

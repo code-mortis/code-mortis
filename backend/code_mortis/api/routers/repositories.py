@@ -43,18 +43,11 @@ def repositories(db: DB, user: USER):
 def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: ADMIN):
     db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update())
     repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
     effective_settings = body.settings.model_dump()
-    previous_engine = (repo.settings or {}).get("analysis_engine", "ocr")
-    if "analysis_engine" not in body.settings.model_fields_set:
-        effective_settings["analysis_engine"] = previous_engine
-    elif effective_settings["analysis_engine"] != previous_engine:
-        graphs.browser_only()
-        if type(remote.get("id")) is not int or remote["id"] != repo.id:
-            raise HTTPException(403, "GitHub repository identity changed.")
     if body.code_graph_enabled is not None or body.code_graph_limits is not None:
         graphs.browser_only()
-        if (body.code_graph_enabled or body.code_graph_limits is not None) and (type(remote.get("id")) is not int or remote["id"] != repo.id):
-            raise HTTPException(403, "GitHub repository identity changed.")
     if body.connection_id and not db.get(Connection, body.connection_id):
         raise HTTPException(422, "Choose an existing AI connection.")
     if body.enabled and not body.connection_id:
@@ -85,7 +78,7 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         browser = pat.current_provenance() is None and mcp.current_provenance() is None
         if browser and (body.code_graph_enabled is not None or old_policy != store.policy(repo)):
             graphs.schedule_refresh(db, repo.id, retry=graph_changed or old_policy != store.policy(repo))
-    if repo.enabled and selected.kind == "api" and effective_settings.get("analysis_engine", "ocr") == "ocr":
+    if repo.enabled and selected.kind == "api":
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)

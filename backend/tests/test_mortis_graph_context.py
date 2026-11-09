@@ -13,7 +13,6 @@ from code_mortis.code_graph import retrieval, service
 from code_mortis.core import source as git_source
 from code_mortis.core.db import transaction
 from code_mortis.core.errors import ReviewStopped
-from code_mortis.integrations import ocr
 from code_mortis.models import CodeGraphRepository, CodeGraphSnapshot, Connection, Job, Repository, User
 from code_mortis.reviews import graph_context, planning, verification
 from code_mortis.schemas.common import RepoSettings
@@ -29,7 +28,6 @@ def neutral(related, monkeypatch):
         related["options"] = graph_context.configuration(
             db, db.get(Repository, 22), connection, db.get(User, 7), engine={"analysis_engine": "mortis"},
         )
-    monkeypatch.setattr(ocr, "command", lambda *a, **kw: pytest.fail("Mortis graph context executed OCR"))
     monkeypatch.setattr(verification, "filter_context", lambda *a, **kw: pytest.fail("Mortis used OCR scope"))
     monkeypatch.setattr(verification, "read_source", lambda *a, **kw: pytest.fail("Mortis used legacy source helper"))
     return {**related, "settings": options, "rules": rules}

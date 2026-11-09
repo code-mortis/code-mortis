@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.review_results import fingerprint, report_tokens
 from code_mortis.core.security import digest, unseal
 from code_mortis.core.shared_execution import (
@@ -18,7 +18,7 @@ from code_mortis.core.shared_execution import (
     is_shared,
     require_shared,
 )
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
@@ -104,7 +104,6 @@ def connection_snapshot(connection: Connection) -> dict:
         "kind": connection.kind,
         "owner_id": connection.owner_id,
         "client_version": {"chatgpt": "0.160.1", "claude_code": "2.1.292"}.get(connection.kind),
-        "ocr_version": settings().ocr_version,
     }
 
 
@@ -387,7 +386,7 @@ def perform_review(run_id: str, claim: str | None = None):
             prior_job = db.get(Job, job_id)
             if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
                 if run.progress.get("assessment_retry"):
-                    raise runner_client.RunnerBlocked("busy")
+                    raise RunnerBlocked("busy")
                 return
         if not pipeline.enabled(run) and run.summary.get("status") == "running":
             pr_summary.interrupt(run)
@@ -428,7 +427,7 @@ def perform_review(run_id: str, claim: str | None = None):
             from code_mortis.security_scans.service import connection_busy
 
             if connection_busy(db, connection.id, run_id=run.id):
-                raise runner_client.RunnerBlocked("busy")
+                raise RunnerBlocked("busy")
             other = db.scalar(
                 select(ReviewRun.id)
                 .where(
@@ -439,9 +438,9 @@ def perform_review(run_id: str, claim: str | None = None):
                 .limit(1)
             )
             if other:
-                raise runner_client.RunnerBlocked("busy")
+                raise RunnerBlocked("busy")
             if connection.auth_status != "connected":
-                raise runner_client.RunnerBlocked("authentication")
+                raise RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
         if not retry:
             verification.prepare(db, run, repo, token)
@@ -455,16 +454,6 @@ def perform_review(run_id: str, claim: str | None = None):
         saved_review = None
         if run.progress.get("analysis_saved"):
             saved_review = (run.progress["analysis_status"], run.report, [])
-        if (connection.kind == "api" and run.config.get("analysis_engine", "ocr") == "ocr"
-                and not saved_review and run.progress.get("analysis_started")):
-            # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
-            run.failure_reason, run.error = "worker_stopped", "The review worker stopped before saving token usage. The remaining budget cannot be verified, so this run cannot resume. Start a new review."
-            if pipeline.enabled(run):
-                complete_saved_review(db, run, run.error)
-            else:
-                run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
-                verification.skip_pending(db, run, run.error)
-            return
         allowance = run.config["settings"]["timeout_seconds"]
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         remaining = int(allowance - (now() - started_at).total_seconds()) if allowance is not None else None
@@ -557,13 +546,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     current.progress = {**current.progress, "file_limit_checked": True, "file_limit_exceeded": limited is not None}
                     pipeline.enqueue_stages(db, current)
 
-        if run.config.get("analysis_engine") == "mortis":
-            reviewer = mortis.review
-        else:
-            from code_mortis.integrations import ocr
-
-            reviewer = ocr.review
-        status, report, comments = reviewer(
+        status, report, comments = mortis.review(
             *args,
             stopped=lambda: review_stopped(run_id, claim),
             run_id=run_id,
@@ -573,7 +556,7 @@ def perform_review(run_id: str, claim: str | None = None):
             after_review=after_review,
             before_analysis=before_analysis,
             graph_options=run.config.get("code_graph"),
-            **({"claim": claim} if reviewer is mortis.review else {}),
+            claim=claim,
         )
     except ReviewStopped:
         with transaction() as db:

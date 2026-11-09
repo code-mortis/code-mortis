@@ -12,7 +12,7 @@ from test_mortis_review import CREDENTIALS
 from test_mortis_review import scenario as scenario
 
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import github, llm, ocr
+from code_mortis.integrations import github, llm
 from code_mortis.models import (
     AnalysisAttempt,
     AnalysisBudget,
@@ -56,7 +56,6 @@ def summary_case(scenario, monkeypatch):
         return httpx.Response(200, json=wire_result("openai", content=json.dumps(output), usage=state["usage"]))
 
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
-    monkeypatch.setattr(ocr, "git", lambda *a, **kw: pytest.fail("Mortis summary used OCR source helpers"))
     return state
 
 
@@ -174,8 +173,6 @@ def test_background_uses_exact_snapshot_redaction_and_shared_ledger(seed, github
         "repository": "team/project", "branch": "main", "sha": "a" * 40,
         "paths": ["README.md"], "sources": {"README.md": {"text": "A service; provider-secret installation-token", "truncated": False}},
     })
-    monkeypatch.setattr(ocr, "command", lambda *a, **kw: pytest.fail("Mortis background executed OCR"))
-    monkeypatch.setattr(background, "api_generate", lambda *a, **kw: pytest.fail("Mortis background used legacy generation"))
 
     def handler(request):
         wire.append(json.loads(request.content))

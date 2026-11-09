@@ -11,7 +11,6 @@ on:
       - '.dockerignore'
       - 'backend/**'
       - 'frontend/**'
-      - 'build/ocr/**'
       - 'LICENSE'
       - 'LICENSES/**'
       - 'THIRD_PARTY_NOTICES.md'
@@ -37,13 +36,11 @@ jobs:
           tags: code-mortis:test
           build-args: DOCKERHUB_REGISTRY=mirror.gcr.io
           cache-from: type=gha,scope=image
-          # Include the OCR build stage, not just the final runtime layers.
           cache-to: type=gha,scope=image,mode=max
       - run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:mode=1777,size=256m
-          --tmpfs /home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=32m
-          code-mortis:test python tests/ocr_container_smoke.py
+          code-mortis:test python tests/mortis_container_smoke.py
       - run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:mode=1777,size=512m

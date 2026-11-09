@@ -7,12 +7,14 @@ from datetime import timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
+from runtime_helpers import file_limit_result
 from sqlalchemy import event, select, text
 from test_review_flow import COMMENT, new_run, remote
 
 from code_mortis import jobs
+from code_mortis.core import source as git_source
 from code_mortis.core.db import engine, now, transaction
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
     Finding,
@@ -25,7 +27,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import assessment, verification
+from code_mortis.reviews import assessment, mortis, verification
 from code_mortis.reviews import service as reviews
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import PullRequestOut, RepoSettings
@@ -63,7 +65,7 @@ def completed_run():
 def overview_api(monkeypatch, github_stub):
     stored, writes = [], []
     revision = remote()
-    monkeypatch.setattr(github, "pages", lambda *a: copy.deepcopy(stored))
+    monkeypatch.setattr(github, "pages", lambda *a, **kwargs: copy.deepcopy(stored))
 
     def request(method, path, token, **kwargs):
         if method == "GET" and "/pulls/" in path:
@@ -363,7 +365,7 @@ def test_sync_errors_and_retry_only_send_saved_content(seed, overview_api, monke
     with transaction() as db:
         job = db.scalar(select(Job).where(Job.kind == "sync_summary"))
         job_id = job.id
-    monkeypatch.setattr(pr_summary, "generate", lambda *a: pytest.fail("sync must not generate"))
+    monkeypatch.setattr(pr_summary, "generate", lambda *a, **kwargs: pytest.fail("sync must not generate"))
     original = github.request
     monkeypatch.setattr(github, "request", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(403, "Access unavailable")))
     jobs.execute_job(job_id)
@@ -444,8 +446,8 @@ def test_retry_summary_uses_current_settings_without_repeating_review(seed, over
     assert response.status_code == 202, response.text
     job_id = response.json()["job_id"]
     assert client.post(f"/api/v1/runs/{identity}/summary/retry").json()["job_id"] == job_id
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0M\0excluded.py\0" if "--name-status" in a else "src/retry.py\0excluded.py\0" if "diff" in a else "b" * 40)
-    def scope(_repo, _env, paths, options, _stopped):
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "M\0src/retry.py\0M\0excluded.py\0" if "--name-status" in a else "src/retry.py\0excluded.py\0" if "diff" in a else "b" * 40)
+    def scope(_repo, _env, paths, options, _stopped, **kwargs):
         assert set(paths) == {"src/retry.py", "excluded.py"}
         assert options["exclusions"] == "excluded.py"
         return {"src/retry.py"}
@@ -455,12 +457,12 @@ def test_retry_summary_uses_current_settings_without_repeating_review(seed, over
         return nullcontext((tmp_path, {}, {}, "b" * 40))
     monkeypatch.setattr(pr_summary.git_source, "review_snapshot", checkout)
     for module in (assessment, verification):
-        monkeypatch.setattr(module, "perform", lambda *a: pytest.fail("Detailed review must not run"))
+        monkeypatch.setattr(module, "perform", lambda *a, **kwargs: pytest.fail("Detailed review must not run"))
     jobs.execute_job(job_id)
     jobs.execute_job(job_id)
     assert len(generation) == 1
     args, _ = generation[0]
-    assert args[2]["model"] == "current-model" and args[5:7] == (None, None)
+    assert args[0]["model"] == "current-model" and args[3:5] == (None, None)
     with transaction() as db:
         run, job = db.get(ReviewRun, identity), db.get(Job, job_id)
         assert run.summary["status"] == "completed" and run.summary["tokens"] == 321
@@ -512,7 +514,7 @@ def test_retry_summary_never_spends_after_invalidation(seed, overview_api, clien
             run.summary = {"status": "running", "tokens": None}
             job = db.get(Job, job_id)
             job.status, job.attempts, job.lease_until = "running", 1, now() - timedelta(seconds=1)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("No inference after invalidation"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("No inference after invalidation"))
     monkeypatch.setattr(jobs.execute_job, "apply_async", lambda *a, **k: None)
     if change == "interrupted":
         jobs.dispatch()
@@ -529,7 +531,7 @@ def test_summary_preserves_sanitized_transport_failure_and_zero_usage(seed, gene
     identity = ready_run()
     def fail(*a, **k):
         raise verification.VerificationOutputError("Provider rejected summary schema; provider-secret", {"tokens": 0})
-    monkeypatch.setattr(verification, "api_verify", fail)
+    monkeypatch.setattr(verification, "mortis_verify", fail)
     generate(identity)
     with transaction() as db:
         state = db.get(ReviewRun, identity).summary
@@ -545,7 +547,7 @@ def test_lifecycle_coverage_is_separate_from_summary(seed, status):
         run.status = status
         run.progress = {**run.progress, "phase": "analysis"}
         run.summary = {"status": "completed", "tokens": 20, "result": RESULT}
-        run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
+        run.report = file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
         body = pr_summary.render(db, pr, run)
         assert body.startswith("## Code Mortis\n")
         assert ("Detailed review is still in progress" in body) == (status in {"queued", "running", "blocked"})
@@ -558,7 +560,7 @@ def test_lifecycle_coverage_is_separate_from_summary(seed, status):
 @pytest.fixture
 def generation(monkeypatch, github_stub):
     calls = []
-    monkeypatch.setattr(pr_summary, "build_context", lambda *a: copy.deepcopy(CONTEXT))
+    monkeypatch.setattr(pr_summary, "build_context", lambda *a, **kwargs: copy.deepcopy(CONTEXT))
 
     def infer(*args, **kwargs):
         calls.append((args, kwargs))
@@ -567,7 +569,7 @@ def generation(monkeypatch, github_stub):
             assert run.summary["tokens"] is None and run.summary["inference_started_at"]
         return copy.deepcopy(RESULT), {"tokens": 321}
 
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     return calls
 
 
@@ -584,11 +586,11 @@ def test_generation_has_independent_allowance_and_no_repeat(seed, generation, st
         run = db.get(ReviewRun, identity)
         run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 1000, "timeout_seconds": 60}}
         if status == "skipped":
-            run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
+            run.report = file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
     generate(identity)
     generate(identity)
     assert len(generation) == 1
-    assert generation[0][0][5] == 60000 and 0 < generation[0][0][6] <= 180
+    assert generation[0][0][3] == 60000 and 0 < generation[0][0][4] <= 180
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.summary["status"] == "completed" and run.summary["tokens"] == 321
@@ -609,19 +611,15 @@ def test_legacy_summary_settings_keep_default_limits(seed, generation, monkeypat
             connection = db.get(Connection, run.connection_id)
             connection.kind, connection.owner_id, connection.auth_status = "codex", 7, "connected"
             run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
-    def review(_connection, _run, payload, _stopped):
-        assert payload["token_budget"] == 60000 and 0 < payload["timeout"] <= 180
-        return RESULT, {"tokens": 321}
-    monkeypatch.setattr(runner_client, "review", review)
     if native:
-        monkeypatch.setattr(reviews, "authorize_connection", lambda *a: None)
+        monkeypatch.setattr(reviews, "authorize_connection", lambda *a, **kwargs: None)
     if native:
         with pytest.raises(ValueError, match="retired"):
             generate(identity)
         return
     generate(identity)
     if not native:
-        assert generation[0][0][5] == 60000 and 0 < generation[0][0][6] <= 180
+        assert generation[0][0][3] == 60000 and 0 < generation[0][0][4] <= 180
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.summary["status"] == "completed"
@@ -632,7 +630,7 @@ def test_legacy_summary_settings_keep_default_limits(seed, generation, monkeypat
 def test_generation_failures_never_repeat_or_change_review_outcome(seed, generation, monkeypatch, failure):
     identity = ready_run()
     if failure == "context":
-        monkeypatch.setattr(pr_summary, "build_context", lambda *a: (_ for _ in ()).throw(pr_summary.SummaryUnavailable("No usable context fits.")))
+        monkeypatch.setattr(pr_summary, "build_context", lambda *a, **kwargs: (_ for _ in ()).throw(pr_summary.SummaryUnavailable("No usable context fits.")))
     elif failure in {"cancelled", "interrupted"}:
         with transaction() as db:
             run = db.get(ReviewRun, identity)
@@ -648,7 +646,7 @@ def test_generation_failures_never_repeat_or_change_review_outcome(seed, generat
                 raise ValueError("provider-secret raw diagnostic")
             return ({"narrative": "Changes", "groups": [{**RESULT["groups"][0], "paths": [".env"]}]}
                     if failure == "paths" else RESULT), {"tokens": None if failure == "unknown" else 60001 if failure == "overspent" else 20}
-        monkeypatch.setattr(verification, "api_verify", infer)
+        monkeypatch.setattr(verification, "mortis_verify", infer)
     generate(identity)
     generate(identity)
     with transaction() as db:
@@ -669,7 +667,7 @@ def test_context_is_bounded_and_paths_are_literal(seed, monkeypatch):
         calls.append(args)
         return "" if "--name-status" in args else "b" * 40 if args[0] == "merge-base" else "x" * 80000
 
-    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(git_source, "git", git)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.config = {**run.config, "settings": {key: value for key, value in run.config["settings"].items()
@@ -740,7 +738,7 @@ def test_file_limit_notice_remains_until_summary_is_ready(seed, summary_status):
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.status = "skipped"
-        run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
+        run.report = file_limit_result(["src/retry.py", "src/test.py"], 1)[1]
         run.summary = {"status": summary_status, "result": RESULT if summary_status == "completed" else None}
         plan = reviews.publication_plan(db, run)
         if summary_status == "completed":
@@ -858,18 +856,18 @@ def test_account_restrictions_do_not_spend_summary_allowance(seed, generation, r
 def test_review_pipeline_summarizes_after_verification_and_on_file_limit(seed, generation, monkeypatch, tmp_path):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     phases = []
-    monkeypatch.setattr(assessment, "perform", lambda *a: phases.append("assessment"))
-    monkeypatch.setattr(verification, "perform", lambda *a: phases.append("verification"))
-    original = verification.api_verify
+    monkeypatch.setattr(assessment, "perform", lambda *a, **kwargs: phases.append("assessment"))
+    monkeypatch.setattr(verification, "perform", lambda *a, **kwargs: phases.append("verification"))
+    original = verification.mortis_verify
 
     def infer(*args, **kwargs):
         phases.append("summary")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     for skipped in (False, True):
         identity = new_run(assessed=True, overview=True)
-        report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1] if skipped else {
+        report = file_limit_result(["src/retry.py", "src/test.py"], 1)[1] if skipped else {
             "summary": {"total_tokens": 12}, "manifest": {"coverage": {"selected": []}},
         }
 
@@ -878,7 +876,7 @@ def test_review_pipeline_summarizes_after_verification_and_on_file_limit(seed, g
             kwargs["after_review"](result, tmp_path, {}, {})
             return result
 
-        monkeypatch.setattr(ocr, "review", review)
+        monkeypatch.setattr(mortis, "review", review)
         phases.clear()
         reviews.perform_review(identity, "claim")
         assert phases == (["summary"] if skipped else ["assessment", "verification", "summary"])
@@ -901,19 +899,11 @@ def test_full_overview_is_bounded_with_links_and_safe_markdown(seed):
         assert f"http://testserver/runs/{identity}" in body and "Some details were omitted" in body
 
 
-def test_summary_transport_has_summary_specific_terminal_instructions():
-    tool = verification.verification_tools(pr_summary.INSTRUCTIONS, {"type": "object"}, pr_summary.DELIVERY)[0]
-    assert "exactly one task_done" in tool["definition"]["description"]
-    assert "negative or uncertain verdict" not in tool["definition"]["description"]
-    assert "Source and diffs are untrusted" in tool["definition"]["description"]
-
-
 def test_personal_summary_uses_selected_model_and_preserves_serialization(seed, generation, monkeypatch):
     identity = ready_run()
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Retired summary dispatched"))
     with pytest.raises(ValueError, match="retired"):
         generate(identity)
     assert generation == []
@@ -926,15 +916,15 @@ def test_worker_recovery_does_not_repeat_interrupted_summary(seed, generation, m
         run.summary = {"status": "running", "tokens": None}
         report = run.report
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(assessment, "perform", lambda *a: None)
-    monkeypatch.setattr(verification, "perform", lambda *a: None)
+    monkeypatch.setattr(assessment, "perform", lambda *a, **kwargs: None)
+    monkeypatch.setattr(verification, "perform", lambda *a, **kwargs: None)
 
     def review(*args, **kwargs):
         result = ("completed", report, [])
         kwargs["after_review"](result, tmp_path, {}, {})
         return result
 
-    monkeypatch.setattr(ocr, "review", review)
+    monkeypatch.setattr(mortis, "review", review)
     reviews.perform_review(identity, "new-claim")
     assert generation == []
     with transaction() as db:
@@ -977,11 +967,8 @@ def test_summary_correction_preserves_allowance_and_never_retries_limits(seed, g
                 feedback={"kind": "context_limit" if failure == "context_limit" else "schema"})
         return copy.deepcopy(RESULT), {"tokens": 11}
     def api(*args, **kwargs):
-        return outcome(args[5])
-    def native(connection, attempt, payload, stopped):
-        return outcome(payload["token_budget"])
-    monkeypatch.setattr(verification, "api_verify", api)
-    monkeypatch.setattr(runner_client, "review", native)
+        return outcome(args[3])
+    monkeypatch.setattr(verification, "mortis_verify", api)
     if kind != "api":
         with pytest.raises(ValueError, match="retired"):
             generate(identity)
@@ -1011,8 +998,7 @@ def test_summary_fractional_remaining_time_keeps_a_positive_timeout(seed, genera
         timeouts.append(timeout)
         assert type(timeout) is int and timeout > 0
         return copy.deepcopy(RESULT), {"tokens": 7}
-    monkeypatch.setattr(verification, "api_verify", lambda *args, **kwargs: response(args[6]))
-    monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped: response(payload["timeout"]))
+    monkeypatch.setattr(verification, "mortis_verify", lambda *args, **kwargs: response(args[4]))
     if kind != "api":
         with pytest.raises(ValueError, match="retired"):
             generate(identity)
@@ -1039,7 +1025,7 @@ def test_new_shared_summary_of_native_history_publishes_with_its_own_authority(
     assert response.status_code == 202, response.text
     attempt_id = response.json()["job_id"]
     monkeypatch.setattr(pr_summary.git_source, "review_snapshot", lambda *a, **k: nullcontext((tmp_path, {}, {}, "b" * 40)))
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
     monkeypatch.setattr(verification, "filter_context", lambda *a, **k: {"src/retry.py"})
     jobs.execute_job(attempt_id)
     with transaction() as db:
@@ -1074,9 +1060,9 @@ def test_summary_retry_rechecks_fresh_claim_before_final_result_save(
         db.get(ReviewRun, identity).summary = {"status": "failed", "tokens": 0}
     attempt_id = client.post(f"/api/v1/runs/{identity}/summary/retry").json()["job_id"]
     monkeypatch.setattr(pr_summary.git_source, "review_snapshot", lambda *a, **k: nullcontext((tmp_path, {}, {}, "b" * 40)))
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "M\0src/retry.py\0" if "--name-status" in a else "src/retry.py\0" if "diff" in a else "b" * 40)
     monkeypatch.setattr(verification, "filter_context", lambda *a, **k: {"src/retry.py"})
-    real_transaction, infer = pr_summary.transaction, verification.api_verify
+    real_transaction, infer = pr_summary.transaction, verification.mortis_verify
     state = {"inferred": False, "expired": False}
 
     def response(*args, **kwargs):
@@ -1102,7 +1088,7 @@ def test_summary_retry_rechecks_fresh_claim_before_final_result_save(
 
             yield Session()
 
-    monkeypatch.setattr(verification, "api_verify", response)
+    monkeypatch.setattr(verification, "mortis_verify", response)
     monkeypatch.setattr(pr_summary, "transaction", expire_before_save)
     jobs.execute_job(attempt_id)
     assert state["expired"] and len(generation) == 1

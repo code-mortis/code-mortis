@@ -163,7 +163,7 @@ def fresh_session(seed):
 def pat_client(fresh_session, monkeypatch):
     from code_mortis.integrations import github
 
-    monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"permissions": {"pull": True, "push": True}})
+    monkeypatch.setattr(github, "authorize_repo", lambda db, user, full_name, *args, **kwargs: {"id": db.scalar(select(Repository.id).where(Repository.full_name == full_name)) if db is not None else 22, "permissions": {"pull": True, "push": True}})
     def visible(db, user):
         selected = getattr(user, "api_token_repository_ids", None)
         return [repo for repo in db.scalars(select(Repository)).all()
@@ -466,7 +466,6 @@ def test_connections_filtered_to_selected(pat_client, seed):
 
 
 def test_owned_personal_connection_needs_grant(pat_client, seed, monkeypatch):
-    from code_mortis.integrations import runner_client
 
     client, raw, _ = pat_client
     headers = {"Authorization": f"Bearer {raw}"}
@@ -476,7 +475,6 @@ def test_owned_personal_connection_needs_grant(pat_client, seed, monkeypatch):
                           kind="claude_code", owner_id=7))
         db.flush()
         db.add(ConnectionGrant(connection_id="personal", repository_id=22))
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Native model discovery"))
     listed = client.get("/api/v1/connections", headers=headers).json()
     assert "personal" not in {row["id"] for row in listed}
     assert client.get("/api/v1/connections/personal/models", headers=headers).status_code == 410

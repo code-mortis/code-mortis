@@ -22,6 +22,7 @@ const repo = {
   enabled: true,
   connection_id: "connection",
   settings: {
+    analysis_engine: "mortis" as const,
     automatic: true,
     model: "",
     effort: "medium",
@@ -53,6 +54,8 @@ test("code graph stays opt-in and saves with the existing repository draft", asy
   await page.goto("/repositories/22/settings?tab=code-graph");
   const toggle = page.getByRole("switch", { name: "Code graph", exact: true });
   await expect(toggle).not.toBeChecked();
+  await expect(toggle).toHaveAccessibleDescription(/eligible Mortis PR reviews can use related source/);
+  await expect(toggle).toHaveAccessibleDescription(/Security scans do not use graph enrichment/);
   await toggle.focus();
   await page.keyboard.press("Space");
   await expect(page.getByText("Save graph settings before indexing.", { exact: true })).toBeVisible();
@@ -164,7 +167,7 @@ test("code graph limits retain drafts across tabs and focus invalid settings", a
   await expect(page).toHaveURL((url) => url.pathname === "/repositories/22");
   expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
     code_graph_enabled: true, code_graph_limits: { max_files: 2000, max_file_bytes: 4194304, max_source_bytes: 33554432 },
-    settings: { exclusions: "fixtures/**" },
+    settings: { analysis_engine: "mortis", exclusions: "fixtures/**" },
   });
 });
 
@@ -1288,7 +1291,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
   await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
   await repositorySection(page, "Limits & rules");
-  await expect(page.getByRole("textbox", { name: "OCR rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
+  await expect(page.getByRole("textbox", { name: "Review rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
   await repositorySection(page, "Review behavior");
   await expect(slider).toHaveValue("0");
   expect(saves).toHaveLength(0);
@@ -1381,9 +1384,9 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
   await page.goto("/repositories/22/settings?tab=limits");
   for (const [group, labels] of [
     ["Review execution", ["Maximum files", "Timeout (seconds)", "Concurrency"]],
-    ["Token budgets", ["OCR token budget", "Assessment token budget", "Verification token budget"]],
+    ["Token budgets", ["Analysis token budget", "Assessment token budget", "Verification token budget"]],
     ["PR summary", ["Summary timeout (seconds)", "Summary token budget"]],
-    ["OCR rules", ["OCR rules JSON"]],
+    ["Review rules", ["Review rules JSON"]],
   ] as const) {
     const section = page.getByRole("region", { name: group, exact: true });
     await expect(section.getByRole("heading", { name: group, level: 3, exact: true })).toBeVisible();
@@ -1415,7 +1418,7 @@ test("stage budgets and optional overview content save independently", async ({ 
     await toggle.check();
   }
   await repositorySection(page, "Limits & rules");
-  await page.getByLabel("OCR token budget", { exact: true }).fill("11000");
+  await page.getByLabel("Analysis token budget", { exact: true }).fill("11000");
   await page.getByLabel("Assessment token budget", { exact: true }).fill("22000");
   await page.getByLabel("Unlimited verification token budget", { exact: true }).check();
   await page.getByLabel("Summary token budget", { exact: true }).fill("33000");
@@ -2105,7 +2108,7 @@ test("PR summary errors and warnings stay in copyable technical details", async 
 
 test("failed PR summary retries generation separately and removes recovery after success", async ({ page }) => {
   const summary: NonNullable<Run["summary"]> = { status: "failed", tokens: 0, limited_context: false, error: "Provider rejected the summary request." };
-  const requests = await mock(page, { run: { status: "completed", summary }, overview: { summary_error: null } });
+  const requests = await mock(page, { run: { engine: "mortis", status: "completed", summary }, overview: { summary_error: null } });
   await page.goto("/runs/run");
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
@@ -4116,7 +4119,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "token budget" || change === "timeout") {
         await repositorySection(page, "Limits & rules");
-        await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "OCR token budget", { exact: true })
+        await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Analysis token budget", { exact: true })
           .fill(change === "timeout" ? "1200" : "450000");
       }
       background.background = "Stale generated context";
@@ -4287,10 +4290,10 @@ for (const unlimited of [false, true]) {
   await repositorySection(page, "Project context");
     await repositorySection(page, "Limits & rules");
     if (unlimited) {
-      await page.getByLabel("Unlimited ocr token budget", { exact: true }).check();
+      await page.getByLabel("Unlimited analysis token budget", { exact: true }).check();
       await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
     } else {
-      await page.getByLabel("OCR token budget", { exact: true }).fill("450000");
+      await page.getByLabel("Analysis token budget", { exact: true }).fill("450000");
       await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
     }
     await repositorySection(page, "Project context");
@@ -4332,7 +4335,7 @@ test("repository limits default to unlimited and preserve an explicit cap", asyn
   await mock(page);
   const limits = [
     ["Maximum files", "max_files"], ["Timeout (seconds)", "timeout_seconds"],
-    ["OCR token budget", "token_budget"], ["Assessment token budget", "assessment_token_budget"],
+    ["Analysis token budget", "token_budget"], ["Assessment token budget", "assessment_token_budget"],
     ["Verification token budget", "verification_token_budget"],
     ["Summary timeout (seconds)", "summary_timeout_seconds"], ["Summary token budget", "summary_token_budget"],
   ] as const;
@@ -4380,10 +4383,10 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Limits & rules");
   const time = page.getByLabel("Timeout (seconds)", { exact: true });
-  const tokens = page.getByLabel("OCR token budget", { exact: true });
+  const tokens = page.getByLabel("Analysis token budget", { exact: true });
   const files = page.getByLabel("Maximum files", { exact: true });
   const unlimitedTime = page.getByRole("checkbox", { name: "Unlimited timeout (seconds)", exact: true });
-  const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited ocr token budget", exact: true });
+  const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited analysis token budget", exact: true });
   const unlimitedFiles = page.getByRole("checkbox", { name: "Unlimited maximum files", exact: true });
   await expect(time).toHaveValue("900");
   await expect(tokens).toHaveValue("200000");
@@ -4519,7 +4522,7 @@ test("current finding header waits for current evidence instead of showing the s
 });
 
 for (const field of [
-  { label: "OCR token budget", key: "token_budget", valid: "6000", excessive: "5000001" },
+  { label: "Analysis token budget", key: "token_budget", valid: "6000", excessive: "5000001" },
   { label: "Concurrency", key: "concurrency", valid: "4", excessive: "9" },
 ] as const) {
   test(`repository ${field.label} keeps invalid drafts out of saved settings`, async ({ page }) => {
@@ -4834,7 +4837,7 @@ test(`${merged ? "merged PR " : ""}${failure} assessment retry preserves its pre
   };
   const writes = await mock(page, { candidates: [candidate],
     overview: { state: merged ? "merged" : "open" },
-    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    run: { engine: "mortis", status: "completed", publication: "no_new_comments", publication_error: null },
     assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, failed: 0, skipped: 0, published_comments: 0 },
   });
@@ -4912,7 +4915,7 @@ test("assessment explains when it is waiting for verification history", async ({
 test("assessment retry shows server errors without discarding the failed attempt", async ({ page }) => {
   await mock(page, { candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
     status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", assessment_only: false, retryable: true }],
-    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    run: { engine: "mortis", status: "completed", publication: "no_new_comments", publication_error: null },
     assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, failed: 0, skipped: 0, published_comments: 0 },
   });
@@ -4932,7 +4935,7 @@ test("assessment retry shows server errors without discarding the failed attempt
 test("read-only users cannot retry technical assessment failures", async ({ page }) => {
   await mock(page, { canWrite: false, candidates: [{ id: "failed", snapshot: { content: "Failed proposal." },
     status: "failed", result: null, finding_id: null, is_new: false, error: "Assessment timed out", assessment_only: false, retryable: true }],
-    run: { status: "completed", publication: "no_new_comments", publication_error: null },
+    run: { engine: "mortis", status: "completed", publication: "no_new_comments", publication_error: null },
     assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
       pending: 0, incomplete: 1, failed: 0, skipped: 0, published_comments: 0 },
   });
@@ -5444,26 +5447,32 @@ const feedbackCases: { name: string; state: Partial<Run>; summary: string; nextS
     name: "native context limit",
     state: { report: { manifest: { coverage: { selected: [{ path: "source.py" }], failed: [{ path: "source.py" }] } }, errors: [{ path: "source.py", message: "Delegated context budget exceeded; reduce the supplied context." }] } },
     summary: "The native context budget was reached.",
-    nextStep: "Subscription reviews now use the Token budget",
+    nextStep: "Start a new Mortis review using a shared API connection",
     fileReason: "Delegated context budget exceeded; reduce the supplied context.",
   },
   {
     name: "authentication",
     state: { status: "blocked", blocked_reason: "authentication", owner_id: 7 },
-    summary: "The AI connection needs to sign in again.",
-    nextStep: "The connection owner must reconnect the account, then resume this review.",
+    summary: "The AI connection needs authentication.",
+    nextStep: "Ask the administrator to check the shared connection credentials before retrying.",
   },
   {
     name: "quota",
     state: { status: "blocked", blocked_reason: "quota", owner_id: 8 },
     summary: "The AI connection reached its usage limit.",
-    nextStep: "The connection owner can resume this review when usage becomes available.",
+    nextStep: "Retry with the same shared connection when usage becomes available.",
   },
   {
     name: "busy connection",
     state: { status: "queued", blocked_reason: "busy" },
-    summary: "The selected personal connection is reviewing another pull request.",
+    summary: "The selected AI connection is busy.",
     nextStep: "This review will retry automatically when the connection is available.",
+  },
+  {
+    name: "unavailable service",
+    state: { status: "queued", blocked_reason: "unavailable" },
+    summary: "The review service is unavailable.",
+    nextStep: "Ask the administrator to check the review worker and selected shared API connection.",
   },
   {
     name: "interrupted worker",
@@ -5522,7 +5531,7 @@ for (const publication of ["not_applicable", "failed"] as const) {
 
 for (const example of feedbackCases) {
   test(`review feedback: ${example.name}`, async ({ page }, info) => {
-    await mock(page, { run: { publication: "not_applicable", publication_error: null, ...example.state } });
+    await mock(page, { run: { engine: "mortis", publication: "not_applicable", publication_error: null, ...example.state } });
     await page.goto("/repositories/22");
     const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
     await expect(row).toBeVisible();
@@ -6715,7 +6724,7 @@ test("API test badges show a spinner while queued and a check after success", as
   await page.screenshot({ path: `../.impeccable/review/api-test-menu-${info.project.name}.png`, fullPage: true });
   await page.getByRole("menuitem", { name: "Test again", exact: true }).click();
   await expect(row.getByRole("status")).toHaveAttribute("title", "Testing connection…");
-  result = "OCR connection test failed. Check credentials, protocol, and model.";
+  result = "Mortis connection test failed. Check credentials, protocol, and model.";
   await page.clock.runFor(5000);
   await expect(badge).toHaveText("failed");
   await expect(badge.locator("svg")).toHaveCount(0);
@@ -8484,20 +8493,20 @@ for (const area of ["pull", "run", "assessment", "resolved"] as const) {
   });
 }
 
-test("retired repository connections require explicit shared selection and preserve engine settings", async ({ page }, info) => {
+test("retired repository connections require explicit shared selection and use Mortis", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, connection_id: "personal", connection_requires_setup: true, settings: { ...repo.settings, analysis_engine: "ocr" } }] }));
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, connection_id: "personal", connection_requires_setup: true, settings: { ...repo.settings } }] }));
   await page.goto("/repositories/22/settings?tab=connection");
   await expect(page.getByText("The saved subscription connection is retired.", { exact: false })).toBeVisible();
   const picker = page.getByRole("combobox", { name: "AI connection", exact: true });
   await expect(picker).toHaveValue("Retired connection");
-  await expect(page.getByLabel("Review engine", { exact: true })).toHaveValue("ocr");
-  await expect(page.getByLabel("Review engine", { exact: true }).locator('option[value="mortis"]')).toBeDisabled();
+  await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/retired-connection-${info.project.name}.png`, fullPage: true });
   await chooseOption(page, picker, "Team reviews");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ connection_id: "connection", settings: { analysis_engine: "ocr" } });
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ connection_id: "connection", settings: { analysis_engine: "mortis" } });
 });
 
 test("retired review default blocks inference until an explicit shared override", async ({ page }) => {
@@ -8565,4 +8574,82 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} h
   if (status === "partial") await expect(coverage.getByRole("heading", { name: /Files not reviewed/ })).toBeVisible();
   await noOverflow(page);
   expect(requests).toHaveLength(0);
+});
+
+
+test("Mortis is saved without an engine selector while custom review rules remain editable", async ({ page }, info) => {
+  const requests = await mock(page);
+  const legacySettings: Partial<Schema["RepoSettings"]> = { ...repo.settings, effort: "medium" };
+  delete legacySettings.analysis_engine;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: legacySettings }] }));
+  await page.goto("/repositories/22/settings?tab=connection");
+  await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
+  await repositorySection(page, "Limits & rules");
+  await expect(page.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
+  const rules = { rules: [{ path: "**/*.py", rule: "Preserve ownership checks" }] };
+  await page.getByRole("textbox", { name: "Review rules JSON", exact: true }).fill(JSON.stringify(rules));
+  await expect(page.getByRole("link", { name: "Rule file documentation" })).toHaveCount(0);
+  await noOverflow(page);
+  await page.screenshot({ path: info.outputPath("mortis-only-settings.png"), fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    settings: { analysis_engine: "mortis", rules, token_budget: 200000 },
+  });
+});
+
+test("historical OCR reviews preserve origin and publication recovery without resuming inference", async ({ page }) => {
+  const requests = await mock(page, { run: { engine: "ocr", status: "blocked", owner_id: 7,
+    blocked_reason: "The saved OCR execution is retired.", publication: "failed", publication_error: "Publication failed.",
+    stages: { ocr: { status: "completed", tokens: 10 }, assessment: { status: "failed", tokens: 0 } } } });
+  await page.goto("/runs/run?tab=details");
+  await expect(page.getByText("This historical review used Open Code Review.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review setup", exact: true }).getByText("Open Code Review", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Resume review", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry GitHub publication", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Review stage details", exact: true }).getByText("OCR", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry summary generation", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: /^Findings/ }).click();
+  await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
+  await expect(page.getByRole("dialog", { name: "Finding details" })).toContainText(finding.content);
+  expect(requests).toHaveLength(0);
+});
+
+test("historical OCR candidates keep failed evidence without offering another assessment", async ({ page }) => {
+  const writes = await mock(page, { candidates: [{ id: "failed", snapshot: { content: "Historical failed proposal." },
+    status: "failed", result: null, finding_id: null, is_new: false, error: "Saved OCR failure", assessment_only: false, retryable: true }],
+    run: { engine: "ocr", status: "completed", publication: "no_new_comments", publication_error: null },
+    assessment: { candidates: 1, new_findings: 0, repeated_observations: 0, rejected_candidates: 0, withheld_candidates: 1,
+      pending: 0, incomplete: 1, failed: 1, skipped: 0, published_comments: 0 },
+  });
+  await page.goto("/runs/run?tab=assessment");
+  await page.getByRole("button", { name: /Historical failed proposal/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(sheet).toContainText("Saved OCR failure");
+  await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
+  expect(writes).toHaveLength(0);
+});
+
+
+for (const engine of ["ocr", "chatgpt", "claude_code"] as const) test(`historical ${engine} reviews can explicitly generate a new Mortis summary`, async ({ page }) => {
+  const summary: NonNullable<Run["summary"]> = { status: "failed", tokens: 17, limited_context: false, error: "Saved summary failed." };
+  const requests = await mock(page, { run: { engine, status: "completed", summary }, overview: { summary_error: null } });
+  await page.goto("/runs/run?tab=details");
+  const setup = page.getByRole("region", { name: "Review setup", exact: true });
+  const originalEngine = engine === "ocr" ? "Open Code Review" : engine === "chatgpt" ? "Codex (ChatGPT)" : "Claude Code";
+  await expect(setup.getByText(originalEngine, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review stage details", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
+  await expect(details.getByRole("button", { name: "Retry summary generation", exact: true })).toHaveCount(0);
+  await expect(details).toContainText("Generating a new Mortis summary uses the repository's current shared API connection and limits.");
+  await noOverflow(page);
+  summary.status = "pending";
+  summary.error = null;
+  await details.getByRole("button", { name: "Generate summary with Mortis", exact: true }).click();
+  expect(requests.map((request) => request.path)).toEqual(["/runs/run/summary/retry"]);
+  await expect(details.getByRole("button", { name: "Generate summary with Mortis", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(setup.getByText(originalEngine, { exact: true })).toBeVisible();
 });

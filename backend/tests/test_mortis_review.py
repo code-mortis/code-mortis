@@ -16,7 +16,7 @@ from code_mortis.core import analysis, source
 from code_mortis.core.db import now, transaction
 from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import seal
-from code_mortis.integrations import github, llm, llm_http, ocr
+from code_mortis.integrations import github, llm, llm_http
 from code_mortis.models import (
     AnalysisAttempt,
     AnalysisBudget,
@@ -143,7 +143,6 @@ def scenario(seed, tmp_path, monkeypatch):
     monkeypatch.setattr(github, "request", remote)
     monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
-    monkeypatch.setattr(ocr, "command", lambda *a, **kw: pytest.fail("Mortis executed OCR"))
     state["handler"] = handler
     return state
 
@@ -530,3 +529,20 @@ def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, m
     assert all(request["max_tokens"] == (8192 if legacy else 16384) for request in scenario["wire"])
     assert review(scenario) == first
     assert len(scenario["wire"]) == 2
+
+
+def test_graph_context_reaches_the_actual_shared_provider_payload(scenario, optional_graph):
+    graph, options = optional_graph
+    result = review(scenario, graph_options=options)
+    assert result[0] == "completed"
+    assert len(scenario["wire"]) == 1
+    payload = next(json.loads(message["content"]) for message in scenario["wire"][0]["messages"]
+                   if message["role"] == "user" and "assigned_units" in message["content"])
+    assert payload["head_sha"] == scenario["head"]
+    records = payload["code_graph"]
+    assert records and all(record["commit_sha"] == scenario["head"] for record in records.values())
+    supporting = [source for record in records.values() for source in record["sources"]]
+    assert supporting and all(source["path"] == "support.py" for source in supporting)
+    assert all(source["text"] == graph["text"] for source in supporting)
+    assert {unit["path"] for unit in payload["assigned_units"]} == {"app.py", "guide.md"}
+    assert all(unit["source"] and unit["diff"] for unit in payload["assigned_units"])

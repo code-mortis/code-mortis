@@ -17,15 +17,15 @@ def require_shared(connection):
         raise ValueError(RETIRED_MESSAGE)
 
 
-def cancel_retired_review(db, run):
+def cancel_retired_review(db, run, reason=RETIRED_MESSAGE):
     from code_mortis.reviews.service import cancel_review
 
     if run.status not in {"queued", "running", "blocked"}:
         return
     cancel_review(db, run)
-    run.error = RETIRED_MESSAGE
+    run.error = reason
     if run.summary.get("status") in {"pending", "running"}:
-        run.summary = {**run.summary, "status": "failed", "error": RETIRED_MESSAGE,
+        run.summary = {**run.summary, "status": "failed", "error": reason,
                        "tokens": None if run.summary["status"] == "running" else run.summary.get("tokens", 0)}
     run.stages = {name: {**stage, "status": "cancelled", "tokens": None if stage.get("status") == "running" else stage.get("tokens", 0)}
                   if stage.get("status") in {"pending", "running", "waiting"} else stage for name, stage in run.stages.items()}
@@ -52,7 +52,7 @@ def retired_job(db, job) -> bool:
     return not is_shared(snapshot)
 
 
-def settle_job(db, job):
+def settle_job(db, job, reason=RETIRED_MESSAGE):
     from code_mortis.models import ReviewRun, SecurityScan
     from code_mortis.reviews.summary import fail_retry
     from code_mortis.security_scans.service import cancel
@@ -72,14 +72,14 @@ def settle_job(db, job):
     if job.kind in {"review", "assess_candidates", "verify_fixes", "summarize_review"}:
         run = db.get(ReviewRun, job.payload.get("run_id"))
         if run:
-            cancel_retired_review(db, run)
+            cancel_retired_review(db, run, reason)
     elif job.kind == "security_scan":
         scan = db.get(SecurityScan, job.payload.get("scan_id"))
         if scan:
-            cancel(db, scan, reason=RETIRED_MESSAGE)
+            cancel(db, scan, reason=reason)
     elif job.kind == "generate_summary":
-        fail_retry(db, job, RETIRED_MESSAGE)
-    job.status, job.error, job.lease_until, job.dispatched_at = "failed", RETIRED_MESSAGE, None, None
+        fail_retry(db, job, reason)
+    job.status, job.error, job.lease_until, job.dispatched_at = "failed", reason, None, None
     job.available_at = now()
     usage = {}
     if job.payload.get("inference_started") and "usage" not in job.payload:

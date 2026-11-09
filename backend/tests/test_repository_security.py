@@ -10,13 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from runtime_helpers import ask_security, perform_security
 from sqlalchemy import select
 
-from code_mortis import jobs, native_runner
+from code_mortis import jobs
 from code_mortis.api_tokens import provenance as pat_provenance
+from code_mortis.core import workflow_inference
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import RunnerBlocked
 from code_mortis.core.security import digest
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import (
     ConnectionGrant,
     Job,
@@ -49,23 +52,19 @@ def test_security_outgoing_history_is_redacted_without_mutating_saved_context(tm
     response = {"verdict": "uncertain", "finding_id": None, "explanation": "Missing caller", "evidence": [], "required_paths": []}
 
     def api(*args, **kwargs):
-        sent.append(security_engine.verification.evidence_bundle(args[4]))
+        sent.append(security_engine.verification.evidence_bundle(args[2]))
         if len(sent) == 1:
             raise security_engine.verification.VerificationOutputError("Correction needed", {"tokens": 2},
                 feedback={"kind": "schema", "errors": [{"msg": credential}]})
-        return kwargs["validator"](response, args[4]), {"tokens": 1}
+        return kwargs["validator"](response, args[2]), {"tokens": 1}
 
-    def native(connection, identity, payload, stopped):
-        sent.append(payload["prompt"])
-        return response, {"tokens": 1}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     context = {"sources": {"current": {"app.py": "safe"}}, "diff": credential,
         "proposal": {"path": "app.py", "explanation": credential},
         "history": [{"id": "existing", "path": "app.py", "evidence": {"quote": credential}}]}
     original = deepcopy(context)
-    _, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {},
+    _, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {},
         "assessment", context, 1000, 60, lambda: False, uid())
     assert context == original
     assert sent and all(credential not in text and json.dumps(credential)[1:-1] not in text for text in sent)
@@ -91,9 +90,9 @@ def test_secret_in_structural_path_withholds_dispatch(tmp_path, monkeypatch):
     item.secret_values = ["synthetic-credential"]
     path = "synthetic-credential.py"
     item.inventory = {path: {}}
-    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: pytest.fail("Must not dispatch"))
+    monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: pytest.fail("Must not dispatch"))
     with pytest.raises(security.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "analysis",
+        ask_security(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "analysis",
             {"assigned_path": path, "sources": {"current": {path: "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
     assert error.value.usage["tokens"] == 0
     assert error.value.feedback["kind"] == "redaction"
@@ -128,7 +127,7 @@ def test_missing_historical_secret_commit_does_not_abort_current_analysis(seed, 
         finding_id = saved_finding(db, seed, earlier, kind="secret", state=state, match_offset=0,
             match_bytes=len(credential.encode()), rule_id="fixture", identity=security_engine.secure_digest("fixture\0" + credential)).id
         scan_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid())).id
-    security.perform(scan_id, "audit:1")
+    perform_security(scan_id, "audit:1")
     with transaction() as db:
         scan = db.get(SecurityScan, scan_id)
         assert scan.status == expected, scan.error
@@ -260,10 +259,9 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
     paths = ["fresh.py", "cached.py", "cached2.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     calls = []
 
     def ask(*args, **kwargs):
@@ -283,7 +281,7 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(seed, securi
                 "input_hash": digest(json.dumps([config, context], sort_keys=True)), "result": {"findings": [], "required_paths": []}}
         parent.status, parent.progress = "partial", {"tokens": 2, "tasks": tasks}
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()), parent=parent).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         if obsolete:
@@ -317,14 +315,10 @@ def test_security_context_limit_is_local_to_the_task(tmp_path, monkeypatch, kind
         raise security.verification.VerificationOutputError("Too large", {"tokens": 0}, "skipped",
             feedback={"kind": "context_limit"})
 
-    def native(*args):
-        calls.append(1)
-        raise security.runner_client.RunnerBlocked("prompt_limit", {"tokens": 0})
 
-    monkeypatch.setattr(security.verification, "api_verify", api)
-    monkeypatch.setattr(security.runner_client, "review", native)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
+        ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
             {"history": [], "sources": {"current": {"app.py": "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
     assert error.value.feedback["kind"] == "context_limit" and error.value.usage["tokens"] == 0
     assert len(calls) == 1
@@ -398,16 +392,16 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
     paths = ["app.py", "independent.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={}, renamed=lambda sha, path: path)
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={}, renamed=lambda sha, path: path)
     histories = []
     real_ask = security_engine.ask
 
     def api(*args, **kwargs):
-        if args[4].get("history"):
+        if args[2].get("history"):
             raise security.verification.VerificationOutputError("Necessary context exceeds the prompt limit", {"tokens": 0},
                 feedback={"kind": "context_limit"})
         result = {"verdict": "rejected", "finding_id": None, "explanation": "Guarded", "evidence": [], "required_paths": []}
-        return kwargs["validator"](result, args[4]), {"tokens": 1}
+        return kwargs["validator"](result, args[2]), {"tokens": 1}
 
     def ask(item, connection, credentials, task, context, *args, **kwargs):
         if task == "analysis":
@@ -419,19 +413,17 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
         histories.append((context["proposal"]["path"], len(context["history"])))
         return real_ask(item, connection, credentials, task, context, *args, **kwargs)
 
-    monkeypatch.setattr(native_runner, "auth_status", lambda *args: pytest.fail("Oversized history must be blocked before authentication"))
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
-    monkeypatch.setattr(security.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
         earlier = saved_scan(db, seed, status="completed")
         for index in range(60):
             saved_finding(db, seed, earlier, state="false_positive", source_sha=SHA,
                 path="app.py" if related else f"unrelated/{index}.py", explanation="e" * 1000)
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid())).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == ("partial" if related else "completed"), scan.error
@@ -532,9 +524,9 @@ def test_redaction_failure_after_provider_result_retains_paid_usage(tmp_path, mo
         item.redact = lambda text: (_ for _ in ()).throw(TimeoutError("Redaction deadline reached"))
         return {"verdict": "uncertain", "finding_id": None, "explanation": "Checked", "evidence": [], "required_paths": []}, {"tokens": 17}
 
-    monkeypatch.setattr(security.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "assessment",
+        ask_security(item, {"id": "connection", "kind": "api", "model": "test"}, {}, "assessment",
             {"history": [], "sources": {"current": {"app.py": "safe"}}, "diff": ""}, 1000, 60, lambda: False, uid())
     assert error.value.usage["tokens"] == 17 and error.value.feedback["kind"] == "redaction"
 
@@ -550,7 +542,7 @@ def security_github(github_stub, monkeypatch):
 def saved_scan(db, seed, status="running", sha=SHA, **values):
     scan = SecurityScan(id=uid(), repository_id=seed["repo"].id, actor_id=seed["user"].id,
         connection_id=seed["connection"].id, request_key=uid(), branch="main", head_sha=sha,
-        config={"connection": security.connection_snapshot(seed["connection"]), "limits": {"token_budget": 100000, "timeout_seconds": 900}},
+        config={"analysis_engine": "mortis", "connection": security.connection_snapshot(seed["connection"]), "limits": {"token_budget": 100000, "timeout_seconds": 900}},
         status=status, progress={"tasks": {}, "tokens": 0}, stages={}, **values)
     db.add(scan)
     db.flush()
@@ -954,7 +946,6 @@ def test_personal_scans_require_owner_and_repository_grant(seed, security_github
         assert not list(db.scalars(select(SecurityScan)))
 
 
-
 @pytest.mark.parametrize(("complete", "current", "resolved"), [(True, True, True), (False, True, False), (True, False, False)])
 def test_resolution_requires_complete_current_evidence(seed, security_github, complete, current, resolved):
     with transaction() as db:
@@ -1002,7 +993,7 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
             package="http-cache-semantics", installed_version="4.2.0", fixed_version="", package_type="bun", rule_id="CVE-2026-93748").id
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid())).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == ("completed" if advisory_available else "partial")
@@ -1399,23 +1390,17 @@ def test_scanner_environment_excludes_all_application_and_provider_credentials(t
     assert env["HOME"] == str(tmp_path)
 
 
-def test_citations_and_native_task_boundaries():
+def test_security_citations_require_exact_supplied_source():
     evidence = [{"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}]
     assert security_engine.validate_citations(evidence, {"current": {"app.py": "unsafe\n"}}) == {"current"}
     with pytest.raises(ValueError):
         security_engine.validate_citations(evidence, {"current": {"app.py": "safe\n"}})
-    for task in ("security_analysis", "security_verification"):
-        instructions = native_runner.task_instructions(SimpleNamespace(task=task))
-        assert "untrusted data" in instructions and "Do not execute code" in instructions
-        assert "source_id" in instructions and "application supplies exact quotes" in instructions
-    assert native_runner.CODEX_CONFIG["features.shell_tool"] is False
-    assert native_runner.CODEX_CONFIG["permissions.mortis-review.network.enabled"] is False
 
 
 def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, security_github, monkeypatch, tmp_path):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("safe"), "lines": 1}},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
 
     @contextmanager
     def snapshot(*args):
@@ -1425,7 +1410,7 @@ def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, s
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
     calls = []
 
-    def ask(*args):
+    def ask(*args, **kwargs):
         calls.append(args[3])
         return {"findings": [], "required_paths": []}, {"tokens": 12}
 
@@ -1433,7 +1418,7 @@ def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, s
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         identity = scan.id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == "completed", scan.error
@@ -1451,7 +1436,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
     paths = ["a.py", "bad.py", "c.py", "d.py", "e.py", "f.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("safe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     calls, configurations, active = [], [], [0, 0]
     original_ask = security_engine.ask
     lock, barrier = Lock(), Barrier(concurrency)
@@ -1460,10 +1445,6 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
     def snapshot(*args):
         yield item
 
-    @contextmanager
-    def configuration(*args, **kwargs):
-        configurations.append(kwargs)
-        yield
 
     def ask(*args, **kwargs):
         path, allowance = args[4]["assigned_path"], args[5]
@@ -1474,7 +1455,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
         barrier.wait(timeout=10)
         with lock:
             active[0] -= 1
-        assert kwargs.get("configuration_managed", False) is (concurrency > 1)
+        assert callable(kwargs["infer"])
         if path == "bad.py":
             if failure == "cancel":
                 with transaction() as db:
@@ -1483,22 +1464,21 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
                 raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": None if failure == "usage" else 12},
                     feedback={"errors": [{"reason": "invented quote"}]})
             if failure == "quota":
-                raise security_engine.runner_client.RunnerBlocked("quota")
+                raise RunnerBlocked("quota")
             if failure == "evidence":
                 return original_ask(*args, **kwargs)
         return {"findings": [], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
-    monkeypatch.setattr(security, "legacy_configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
-    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
+    monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"findings": [], "required_paths": ["bad.py"]}, {"tokens": 12}))
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget))
         identity = scan.id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         if failure in {"usage", "quota", "cancel"}:
@@ -1528,7 +1508,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
             if len(calls) > concurrency:
                 assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 12 * concurrency
     assert active[1] == concurrency
-    assert configurations == ([{"session_per_task": True, "structured_result": True}] if concurrency > 1 else [])
+    assert configurations == []
 
 
 @pytest.mark.parametrize("value", [0, 9, 1.5, True, "4"])
@@ -1542,7 +1522,7 @@ def test_security_concurrency_is_validated_at_the_api_boundary(seed, security_gi
 def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_github, monkeypatch, tmp_path, failure):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("unsafe"), "lines": 1}},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
     finding = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
                "explanation": "Synthetic test", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1552,7 +1532,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
     def api(*args, **kwargs):
         try:
             return kwargs["validator"]({"verdict": "confirmed", "finding_id": "history_999", "explanation": "Confirmed",
-                "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": []}, args[4]), {"tokens": 12}
+                "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": []}, args[2]), {"tokens": 12}
         except security_engine.verification.ResultValidationError as exc:
             raise security_engine.verification.VerificationOutputError("Invalid history selection", {"tokens": 12}, feedback=exc.feedback) from exc
 
@@ -1572,13 +1552,12 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         identity = scan.id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == "partial" and scan.grade == "B", scan.error
@@ -1610,7 +1589,7 @@ def test_security_stage_status_only_reflects_its_own_results(
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1}
                                      for path in ["app.py", "bad.py"]},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
-        renamed=lambda sha, path: path, diff=lambda sha: "", redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+        renamed=lambda sha, path: path, diff=lambda sha: "", redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     citation = {"revision": "current", "path": "app.py", "start_line": 1, "end_line": 1, "quote": "unsafe"}
     proposal = {"title": "Synthetic defect", "category": "test", "severity": "low", "path": "app.py",
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
@@ -1637,14 +1616,13 @@ def test_security_stage_status_only_reflects_its_own_results(
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {},
         "problems": ["Dependency scan incomplete"] if earlier_error == "trivy" else [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         finding = saved_finding(db, seed, saved_scan(db, seed, status="completed"))
         finding_id = finding.id
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid())).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         partial = bool(earlier_error or assessment_result != "rejected" or verification_result != "still_present")
@@ -1666,7 +1644,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     paths = ["a.py", "bad.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(path), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
-        redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+        redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     calls, configurations, active = [], [], [0, 0]
     original_ask = security_engine.ask
     lock, barrier = Lock(), Barrier(concurrency)
@@ -1674,10 +1652,6 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     if failure == "timeout":
         monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
 
-    @contextmanager
-    def configuration(*args, **kwargs):
-        configurations.append(kwargs)
-        yield
 
     def ask(*args, **kwargs):
         task, context, allowance = args[3:6]
@@ -1696,7 +1670,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
         barrier.wait(timeout=10)
         with lock:
             active[0] -= 1
-        assert kwargs.get("configuration_managed", False) is (concurrency > 1)
+        assert callable(kwargs["infer"])
         if path == "bad.py":
             if failure == "cancel":
                 with transaction() as db:
@@ -1705,7 +1679,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
                 raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": None if failure == "usage" else 12},
                     feedback={"errors": [{"reason": "invented quote"}]})
             if failure == "quota":
-                raise security_engine.runner_client.RunnerBlocked("quota")
+                raise RunnerBlocked("quota")
             if failure == "timeout":
                 clock[0] = 61
             if failure == "evidence":
@@ -1715,15 +1689,14 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", configuration)
     monkeypatch.setattr(security_engine, "ask", ask)
-    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *args, **kwargs: (
+    monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget,
             timeout_seconds=60 if failure == "timeout" else None)).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         if failure in {"usage", "quota", "cancel", "timeout"}:
@@ -1754,7 +1727,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
             if len(calls) > concurrency:
                 assert sum(allowance for _, allowance in calls[concurrency:2 * concurrency]) <= budget - 96 - 12 * concurrency
     assert active[1] == concurrency
-    assert configurations == ([{"session_per_task": True, "structured_result": True}] * 2 if concurrency > 1 else [])
+    assert configurations == []
 
 
 def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
@@ -1778,7 +1751,7 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
     paths = ["same.py", "independent.py"]
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(path), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
-        redact=lambda text: text, sha=SHA, git=tmp_path, env={}, renamed=lambda sha, path: path)
+        redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={}, renamed=lambda sha, path: path)
     barrier, calls = Barrier(2), []
 
     def ask(*args, **kwargs):
@@ -1809,12 +1782,11 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=4)).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         findings = list(db.scalars(select(SecurityFinding)))
@@ -1844,7 +1816,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest("unsafe"), "lines": 1} for path in paths},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "unsafe",
         renamed=lambda sha, path: path, diff=lambda sha: "source changed", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     proposals = [{"title": path, "category": "test", "severity": "low", "path": path,
         "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
         "verification": "Test", "evidence": [{"revision": "current", "path": path,
@@ -1863,7 +1835,6 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(security_engine, "ask", ask)
     body = {"connection_id": "connection", "token_budget": budget, "concurrency": concurrency}
     with transaction() as db:
@@ -1872,7 +1843,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
             for path in paths:
                 saved_finding(db, seed, original, path=path)
         parent_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid())).id
-    security.perform(parent_id, "test:1")
+    perform_security(parent_id, "test:1")
     with transaction() as db:
         parent = db.get(SecurityScan, parent_id)
         assert parent.status == "partial" and parent.progress["tokens"] == 28
@@ -1883,7 +1854,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
     retrying = True
     if policy_changed:
         monkeypatch.setattr(security_engine, "ASSESSMENT_INSTRUCTIONS", security_engine.ASSESSMENT_INSTRUCTIONS + " Revised decision criteria.")
-    security.perform(retry_id, "retry:1")
+    perform_security(retry_id, "retry:1")
     with transaction() as db:
         retry = db.get(SecurityScan, retry_id)
         expected = [(task, path) for path in paths] if task == "assessment" and policy_changed else [(task, paths[0])]
@@ -1904,7 +1875,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
 def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, security_github, monkeypatch, tmp_path, concurrency):
     item = SimpleNamespace(inventory={"app.py": {"code": True, "hash": digest("safe"), "lines": 1}},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: "safe", redact=lambda text: text,
-        sha=SHA, git=tmp_path, env={})
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
 
     @contextmanager
     def snapshot(*args):
@@ -1929,7 +1900,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(seed, securi
         identity = retry.id
         assert "task_contract" not in retry.config
         assert retry.config["limits"]["concurrency"] == (concurrency or 1)
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == "completed", scan.error
@@ -2030,15 +2001,11 @@ def test_security_source_selections_cover_recorded_failures_in_every_stage_and_t
 
     def api(*args, **kwargs):
         calls.append(1)
-        return kwargs["validator"](response, args[4]), {"tokens": 7}
+        return kwargs["validator"](response, args[2]), {"tokens": 7}
 
-    def native(*args):
-        calls.append(1)
-        return response, {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
-    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+    monkeypatch.setattr(workflow_inference, "execute", api)
+    result, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
         {"assigned_path": citation["path"], "diff": "a source change", "history": [{"id": "stored-finding"}],
          "sources": {revision: {citation["path"]: source} for revision in ("current", "original")}},
         100, 60, lambda: False, uid())
@@ -2064,11 +2031,11 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
     item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(source), "lines": len(source.splitlines())}
                                       for path, source in sources.items()},
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: sources[path],
-        redact=lambda text: text, sha=SHA, git=tmp_path, env={})
+        redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     calls = []
 
     def api(*args, **kwargs):
-        context = args[4]
+        context = args[2]
         path = context.get("assigned_path") or context["proposal"]["path"]
         calls.append(path)
         citation = cases[path]["citation"]
@@ -2084,12 +2051,11 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
-    monkeypatch.setattr(security, "legacy_configuration", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency)).id
-    security.perform(identity, "test:1")
+    perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         assert scan.status == ("partial" if uncertain else "completed"), scan.error
@@ -2128,18 +2094,14 @@ def test_security_source_selection_cannot_forge_evidence(tmp_path, monkeypatch, 
     def api(*args, **kwargs):
         calls.append(1)
         try:
-            return kwargs["validator"](response, args[4]), {"tokens": 7}
+            return kwargs["validator"](response, args[2]), {"tokens": 7}
         except security_engine.verification.ResultValidationError as exc:
             raise security_engine.verification.VerificationOutputError("Invalid selection", {"tokens": 7}, feedback=exc.feedback) from exc
 
-    def native(*args):
-        calls.append(1)
-        return response, {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
+        ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "assessment",
             {"diff": "", "history": [], "sources": {"current": sources}}, 100, 60, lambda: False, uid())
     assert calls == [1, 1] and error.value.usage == {"tokens": 14}
     assert error.value.feedback["kind"] == ("schema" if invalid in {"zero", "string_line", "boolean_line", "quote", "path", "revision"} else "citation_selection")
@@ -2170,19 +2132,15 @@ def test_security_source_ids_stay_bound_when_evidence_expands(tmp_path, monkeypa
             **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": True})}
 
     def api(*args, **kwargs):
-        evidence_bundle(args[4])
+        evidence_bundle(args[2])
         calls.append(1)
-        return kwargs["validator"](response(args[4]), args[4]), {"tokens": 7}
+        return kwargs["validator"](response(args[2]), args[2]), {"tokens": 7}
 
-    def native(*args):
-        calls.append(1)
-        return response(contexts[-1]), {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
     context = {"assigned_path": "z.tsx", "original_sha": OLD, "diff": "", "history": [], "sources": {"current": {"z.tsx": "preserve this"}}}
-    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+    result, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
         context, 100, 60, lambda: False, uid())
     assert usage == {"tokens": 14} and calls == [1, 1]
     assert contexts[0]["citation_sources"]["source_1"] == contexts[1]["citation_sources"]["source_1"] == {
@@ -2406,32 +2364,27 @@ def test_security_assessment_selects_history_references_and_server_assigns_uuid(
                 "evidence": [{"source_id": "source_1", "start_line": 1, "end_line": 1}], "required_paths": ["guard.py"] if expand else []}
 
     def api(*args, **kwargs):
-        evidence_bundle(args[4])
-        calls.append(args[5])
+        evidence_bundle(args[2])
+        calls.append(kwargs["token_budget"])
         schemas.append(kwargs["schema"])
         try:
-            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+            return kwargs["validator"](response(), args[2]), {"tokens": 7}
         except security_engine.verification.ResultValidationError as exc:
             raise security_engine.verification.VerificationOutputError("Invalid selection", {"tokens": 7}, feedback=exc.feedback) from exc
 
-    def native(connection, identity, payload, stopped):
-        calls.append(payload["token_budget"])
-        schemas.append(payload["output_schema"])
-        return response(), {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
     context = {"history": history, "sources": {"current": {"app.py": "unsafe"}}, "diff": ""}
     connection = {"id": "connection", "kind": kind, "model": "test"}
     invalid = case in {"repeat", "uuid", "empty_invalid", "number"}
     if invalid:
         with pytest.raises(security_engine.verification.VerificationOutputError) as caught:
-            security_engine.ask(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
+            ask_security(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
         assert caught.value.usage == {"tokens": 14}
         assert caught.value.feedback["kind"] == ("schema" if case == "number" else "history_selection")
     else:
-        result, usage = security_engine.ask(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
+        result, usage = ask_security(item, connection, {}, "assessment", context, 100, 60, lambda: False, uid())
         expected_id = None if case in {"new", "empty"} else identities[1 if case in {"second", "corrected"} else 0]
         assert result["finding_id"] == expected_id
         assert usage == {"tokens": 7 * len(calls)}
@@ -2455,19 +2408,14 @@ def test_security_transports_validate_terminal_empty_result_and_evidence_expansi
     calls = []
 
     def api(*args, **kwargs):
-        calls.append(args[4])
+        calls.append(args[2])
         raw = {"findings": [], "required_paths": ["guard.py"] if len(calls) == 1 else []}
         assert kwargs["schema"]["additionalProperties"] is False
-        return kwargs["validator"](raw, args[4]), {"tokens": 7}
+        return kwargs["validator"](raw, args[2]), {"tokens": 7}
 
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        assert payload["task"] == "security_analysis" and "untrusted data" in payload["prompt"]
-        return {"findings": [], "required_paths": ["guard.py"] if len(calls) == 1 else []}, {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
-    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
+    monkeypatch.setattr(workflow_inference, "execute", api)
+    result, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
         {"assigned_path": "app.py", "diff": "", "sources": {"current": {"app.py": "safe"}}}, 100, 60, lambda: False, uid())
     assert result == {"findings": [], "required_paths": []} and usage == {"tokens": 14}
     assert len(calls) == 2
@@ -2485,9 +2433,9 @@ def test_failed_expansion_keeps_already_consumed_tokens(tmp_path, monkeypatch):
             raise security_engine.verification.VerificationOutputError("Invalid result", {"tokens": 5})
         return {"findings": [], "required_paths": ["guard.py"]}, {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"diff": "", "sources": {"current": {}}}, 100, 60, lambda: False, uid())
+        ask_security(item, {"kind": "api"}, {}, "analysis", {"diff": "", "sources": {"current": {}}}, 100, 60, lambda: False, uid())
     assert error.value.usage["tokens"] == 12
 
 
@@ -2527,12 +2475,11 @@ def test_unavailable_security_evidence_reports_path_reason_and_usage(tmp_path, m
         return {"findings": [], "required_paths": [f"guard{len(calls)}.py" if failure == "pass_limit" else path]}
 
     def api(*args, **kwargs):
-        return kwargs["validator"](response(), args[4]), {"tokens": 7}
+        return kwargs["validator"](response(), args[2]), {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", lambda *args: (response(), {"tokens": 7}))
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
+        ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, "analysis",
             {"assigned_path": "app.py", "sources": {"current": sources}, "diff": ""}, 100, 60, lambda: False, uid())
     assert len(calls) == (4 if failure == "pass_limit" else 1 if failure == "file_limit" else 2)
     assert error.value.usage == {"tokens": 7 * len(calls)}
@@ -2578,31 +2525,27 @@ def test_security_missing_evidence_can_use_real_inventory_before_failing(tmp_pat
         return raw
 
     def api(*args, **kwargs):
-        evidence_bundle(args[4])
-        calls.append((args[5], args[6]))
+        evidence_bundle(args[2])
+        calls.append((kwargs["token_budget"], kwargs["timeout"]))
         try:
-            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+            return kwargs["validator"](response(), args[2]), {"tokens": 7}
         except security_engine.verification.ResultValidationError as exc:
             raise security_engine.verification.VerificationOutputError("Invalid schema", {"tokens": 7}, feedback=exc.feedback) from exc
 
-    def native(connection, identity, payload, stopped):
-        calls.append((payload["token_budget"], payload["timeout"]))
-        return response(), {"tokens": 7}
 
     item.read = read
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": "", "original_sha": OLD,
                "available_paths": ["invented.py"]}
     connection = {"id": "connection", "kind": kind, "model": "test"}
     if case == "repeat" and task == "analysis":
         with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-            security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+            ask_security(item, connection, {}, task, context, 100, 60, lambda: False, uid())
         assert error.value.usage == {"tokens": 14}
         assert error.value.feedback["required_paths"] == missing
     else:
-        result, usage = security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        result, usage = ask_security(item, connection, {}, task, context, 100, 60, lambda: False, uid())
         assert result["required_paths"] == [] and usage == {"tokens": 7 * len(calls)}
         if task != "analysis":
             assert result["verdict"] == "uncertain"
@@ -2646,16 +2589,12 @@ def test_security_unavailable_evidence_preserves_uncertainty_and_scope(tmp_path,
                 **({"finding_id": None} if task == "assessment" else
                    {"change_explanation": "", "original_issue_present": False})}
     def api(*args, **kwargs):
-        capture(args[4])
-        calls.append(args[5])
-        return kwargs["validator"](response(), args[4]), {"tokens": 7}
-    def native(connection, identity, payload, stopped):
-        calls.append(payload["token_budget"])
-        return response(), {"tokens": 7}
+        capture(args[2])
+        calls.append(kwargs["token_budget"])
+        return kwargs["validator"](response(), args[2]), {"tokens": 7}
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", capture)
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
-    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+    monkeypatch.setattr(workflow_inference, "execute", api)
+    result, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
         {"sources": {"current": {"app.py": "safe"}}, "original_sha": OLD, "diff": ""},
         100, 60, lambda: False, uid())
     assert result["verdict"] == "uncertain" and result["required_paths"] == []
@@ -2691,22 +2630,18 @@ def test_security_evidence_pass_limit_keeps_uncertainty_identity_and_usage(tmp_p
                 **({"finding_id": "history_1"} if task == "assessment" else
                    {"change_explanation": "", "original_issue_present": True})}
     def api(*args, **kwargs):
-        calls.append(args[5])
-        return kwargs["validator"](response(), args[4]), {"tokens": 7}
-    def native(connection, identity, payload, stopped):
-        calls.append(payload["token_budget"])
-        return response(), {"tokens": 7}
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
+        calls.append(kwargs["token_budget"])
+        return kwargs["validator"](response(), args[2]), {"tokens": 7}
+    monkeypatch.setattr(workflow_inference, "execute", api)
     context = {"sources": {"current": {"app.py": "safe"}}, "original_sha": OLD, "diff": "",
                "history": [{"id": "existing-finding"}]}
     args = (item, {"id": "connection", "kind": kind, "model": "test"}, {}, task, context, 100, 60, lambda: False, uid())
     if redaction_failure:
         with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-            security_engine.ask(*args)
+            ask_security(*args)
         assert error.value.usage == {"tokens": 28} and error.value.feedback["kind"] == "redaction"
     else:
-        result, usage = security_engine.ask(*args)
+        result, usage = ask_security(*args)
         assert result["verdict"] == "uncertain" and result["required_paths"] == []
         assert result.get("finding_id") is None and usage == {"tokens": 28}
         assert "guard4.py" in result["explanation"] and "four evidence passes" in result["explanation"]
@@ -2729,8 +2664,7 @@ def test_security_missing_path_correction_respects_execution_limits(tmp_path, mo
         return {"verdict": "uncertain", "finding_id": None, "explanation": "Need settings", "evidence": [],
                 "required_paths": ["config/settings.py"]}, {"tokens": None if limit == "unknown_usage" else 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", response)
-    monkeypatch.setattr(security_engine.runner_client, "review", response)
+    monkeypatch.setattr(workflow_inference, "execute", response)
     context = {"sources": {"current": {}}, "diff": ""}
     connection = {"id": "connection", "kind": kind, "model": "test"}
     def stopped():
@@ -2738,7 +2672,7 @@ def test_security_missing_path_correction_respects_execution_limits(tmp_path, mo
 
     error_type = security_engine.ReviewStopped if limit == "cancel" else security_engine.verification.VerificationOutputError
     with pytest.raises(error_type) as error:
-        security_engine.ask(item, connection, {}, "assessment", context, 7 if limit == "budget" else 100, 60, stopped, uid())
+        ask_security(item, connection, {}, "assessment", context, 7 if limit == "budget" else 100, 60, stopped, uid())
     assert calls == [1]
     if limit != "cancel":
         assert error.value.usage == {"tokens": None if limit == "unknown_usage" else 7}
@@ -2771,30 +2705,26 @@ def test_security_repeated_evidence_gets_one_correction(tmp_path, monkeypatch, k
                 **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": False})}
 
     def api(*args, **kwargs):
-        evidence_bundle(args[4])
-        calls.append(args[5])
-        return kwargs["validator"](response(), args[4]), {"tokens": None if case == "unknown_usage" else 7}
+        evidence_bundle(args[2])
+        calls.append(kwargs["token_budget"])
+        return kwargs["validator"](response(), args[2]), {"tokens": None if case == "unknown_usage" else 7}
 
-    def native(connection, identity, payload, stopped):
-        calls.append(payload["token_budget"])
-        return response(), {"tokens": None if case == "unknown_usage" else 7}
 
     item.read = read
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": ""}}, "diff": "", "original_sha": OLD}
     connection = {"id": "connection", "kind": kind, "model": "test"}
     budget = 7 if case == "budget" else 100
     if case in {"repeat", "budget", "unknown_usage"}:
         with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-            security_engine.ask(item, connection, {}, task, context, budget, 60, lambda: False, uid())
+            ask_security(item, connection, {}, task, context, budget, 60, lambda: False, uid())
         assert error.value.usage == {"tokens": None if case == "unknown_usage" else 14 if case == "repeat" else 7}
         if case == "repeat":
             assert error.value.feedback["required_paths"] == ["app.py"]
             assert error.value.feedback["kind"] == "evidence"
     else:
-        result, usage = security_engine.ask(item, connection, {}, task, context, budget, 60, lambda: False, uid())
+        result, usage = ask_security(item, connection, {}, task, context, budget, 60, lambda: False, uid())
         assert result["required_paths"] == [] and usage == {"tokens": 14}
     assert calls == ([budget] if case in {"budget", "unknown_usage"} else [100, 93])
     assert "validation_feedback" not in contexts[0]
@@ -2838,31 +2768,24 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
             target.update(start_line=1, end_line=1, quote="unsafe")
         return raw
 
-    def command(args, *a, **kwargs):
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        calls.append(int(args[args.index("--max-tokens-budget") + 1]))
-        return 0, json.dumps({"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 7}}), ""
+    def infer(connection, credentials, context, **kwargs):
+        calls.append(kwargs["token_budget"])
+        contexts.append(context)
+        try:
+            return kwargs["validator"](response(), context), {"tokens": 7}
+        except security_engine.verification.ResultValidationError as exc:
+            raise security_engine.verification.VerificationOutputError("Invalid schema", {"tokens": 7}, feedback=exc.feedback) from exc
 
-    def native(connection, identity, payload, stopped):
-        calls.append(payload["token_budget"])
-        return response(), {"tokens": 7}
-
-    monkeypatch.setattr(security.git_source, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(security_engine.verification, "terminal_result", lambda *a: response())
-    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
+    monkeypatch.setattr(workflow_inference, "execute", infer)
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "unsafe"}}, "diff": "", "history": []}
     connection = {"id": "connection", "kind": kind, "model": "test"}
     if corrected:
-        result, usage = security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+        result, usage = ask_security(item, connection, {}, task, context, 100, 60, lambda: False, uid())
         assert usage == {"tokens": 14}
         assert (result["findings"][1] if task == "analysis" else result)["evidence"] == [citation]
     else:
         with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-            security_engine.ask(item, connection, {}, task, context, 100, 60, lambda: False, uid())
+            ask_security(item, connection, {}, task, context, 100, 60, lambda: False, uid())
         assert error.value.usage == {"tokens": 14}
     assert calls == [100, 93]
     assert "validation_feedback" not in contexts[0]
@@ -2872,61 +2795,6 @@ def test_security_schema_errors_get_one_strict_correction(tmp_path, monkeypatch,
     assert all(problem["type"] == "extra_forbidden" and "input" not in problem for problem in feedback["errors"])
     if task == "analysis":
         assert all(problem["loc"][:2] == ("findings", 1) for problem in feedback["errors"])
-
-
-@pytest.mark.parametrize("case", ["corrected", "repeat", "warning", "unknown_usage", "wrong_session", "budget"])
-def test_security_terminal_delivery_recovery_keeps_usage_and_session_guards(tmp_path, monkeypatch, case):
-    from pathlib import Path
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
-    session_id = "00000000-0000-4000-8000-000000000001"
-    folder = tmp_path / ".opencodereview/sessions/repo"
-    folder.mkdir(parents=True)
-    calls, contexts = [], []
-    bundle = security_engine.verification.evidence_bundle
-
-    def evidence_bundle(context):
-        contexts.append(context)
-        return bundle(context)
-
-    def command(args, root, *a, **kwargs):
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        calls.append(int(args[args.index("--max-tokens-budget") + 1]))
-        payload = {"state": "DONE"}
-        if case == "corrected" and len(calls) == 2:
-            payload["result"] = {"findings": [], "required_paths": []}
-        header = {"type": "session_start", "cwd": str(root), "sessionId": session_id}
-        row = {"type": "llm_response", "sessionId": "another-session" if case == "wrong_session" else session_id,
-               "taskType": "main_task", "tool_calls": [{"name": "task_done", "arguments": json.dumps(payload)}]}
-        (folder / f"{session_id}.jsonl").write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
-        return 0, json.dumps({"session_id": session_id, "status": "success",
-            "summary": {"files_reviewed": 1, "total_tokens": None if case == "unknown_usage" else 71300},
-            "warnings": ["incomplete"] if case == "warning" else None}), ""
-
-    monkeypatch.setattr(security.git_source, "git", lambda *a, **kwargs: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(ocr, "command", command)
-    monkeypatch.setattr(security_engine.verification, "evidence_bundle", evidence_bundle)
-    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "safe"}}, "diff": ""}
-    budget = 71300 if case == "budget" else 200000
-    if case == "corrected":
-        result, usage = security_engine.ask(item, {"kind": "api"}, {}, "analysis", context, budget, 60, lambda: False, uid())
-        assert result == {"findings": [], "required_paths": []} and usage == {"tokens": 142600}
-    else:
-        with pytest.raises(ValueError) as caught:
-            security_engine.ask(item, {"kind": "api"}, {}, "analysis", context, budget, 60, lambda: False, uid())
-        if case != "unknown_usage":
-            assert caught.value.usage["tokens"] == (142600 if case == "repeat" else 71300)
-    assert calls == ([200000, 128700] if case in {"corrected", "repeat"} else [budget])
-    if len(calls) == 2:
-        feedback = contexts[1]["validation_feedback"]
-        assert feedback["kind"] == "delivery"
-        assert feedback["received"]["argument_fields"] == ["state"]
-        assert feedback["received"]["result_type"] == "NoneType"
-    elif case in {"warning", "wrong_session"}:
-        assert caught.value.feedback is None
 
 
 @pytest.mark.parametrize("kind", ["api"])
@@ -2948,23 +2816,17 @@ def test_security_corrects_invalid_source_selections_once_with_known_usage(tmp_p
                 **({"finding_id": None} if task == "assessment" else {"change_explanation": "", "original_issue_present": True})}
 
     def api(*args, **kwargs):
-        calls.append((args[4], args[5], args[6]))
+        calls.append((args[2], kwargs["token_budget"], kwargs["timeout"]))
         clock[0] += 10
         try:
-            return kwargs["validator"](response(), args[4]), {"tokens": 7}
+            return kwargs["validator"](response(), args[2]), {"tokens": 7}
         except security_engine.verification.ResultValidationError as exc:
             assert len(exc.feedback["errors"]) == (2 if task == "analysis" else 1)
             raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": 7}, feedback=exc.feedback) from exc
 
-    def native(connection, identity, payload, stopped):
-        calls.append((payload, payload["token_budget"], payload["timeout"]))
-        identities.append(identity)
-        clock[0] += 10
-        return response(), {"tokens": 7}
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
-    monkeypatch.setattr(security_engine.runner_client, "review", native)
-    result, usage = security_engine.ask(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
+    monkeypatch.setattr(workflow_inference, "execute", api)
+    result, usage = ask_security(item, {"id": "connection", "kind": kind, "model": "test"}, {}, task,
         {"assigned_path": "app.py", "sources": {"current": {"app.py": source}}, "diff": "", "history": []},
         100, 60, lambda: False, uid())
     assert usage == {"tokens": 14} and len(calls) == 2
@@ -2996,9 +2858,9 @@ def test_security_citation_recovery_is_bounded_and_never_repeats_unknown_usage(
         raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": tokens},
             feedback={"field": "evidence[0]", "errors": [{"reason": "invalid source line range"}]})
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     with pytest.raises(security_engine.verification.VerificationOutputError) as error:
-        security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, budget, 60, lambda: False, uid())
+        ask_security(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, budget, 60, lambda: False, uid())
     assert len(calls) == expected_calls and error.value.usage["tokens"] == expected_usage
 
 
@@ -3029,10 +2891,10 @@ def test_security_does_not_start_correction_after_cancellation_or_timeout(tmp_pa
         raise security_engine.verification.VerificationOutputError("Invalid citation", {"tokens": 7},
             feedback={"field": "evidence[0]", "errors": [{"reason": "invalid source line range"}]})
 
-    monkeypatch.setattr(security_engine.verification, "api_verify", api)
+    monkeypatch.setattr(workflow_inference, "execute", api)
     error_type = security_engine.ReviewStopped if interruption == "cancel" else security_engine.verification.VerificationOutputError
     with pytest.raises(error_type) as error:
-        security_engine.ask(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, 100, 60,
+        ask_security(item, {"kind": "api"}, {}, "analysis", {"sources": {"current": {}}}, 100, 60,
             lambda: bool(calls) and interruption == "cancel", uid())
     assert len(calls) == 1
     if interruption == "timeout":
@@ -3726,8 +3588,40 @@ def test_retired_security_transports_stop_before_source_or_provider_dispatch(tmp
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {"app.py": {}}
     item.source = lambda *a, **k: pytest.fail("Retired security execution read source")
-    monkeypatch.setattr(security_engine.verification, "api_verify", lambda *a, **k: pytest.fail("Silent shared fallback"))
-    monkeypatch.setattr(security_engine.runner_client, "review", lambda *a, **k: pytest.fail("Native security dispatch"))
+    monkeypatch.setattr(workflow_inference, "execute", lambda *a, **k: pytest.fail("Silent shared fallback"))
     with pytest.raises(ValueError, match="retired"):
-        security_engine.ask(item, {"id": "old", "kind": kind, "model": "old-model"}, {}, task,
+        ask_security(item, {"id": "old", "kind": kind, "model": "old-model"}, {}, task,
                             {"sources": {"current": {}}, "diff": ""}, 1000, 60, lambda: False, uid())
+
+
+def test_retry_of_mortis_history_keeps_inert_ocr_metadata(seed, security_github):
+    with transaction() as db:
+        repo, actor = db.get(Repository, 22), db.get(User, 7)
+        initial = security.create_scan(db, repo, actor, SecurityScanInput(connection_id="connection", request_key=uid()))
+        initial.status = "partial"
+        initial.config = {**initial.config, "connection": {**initial.config["connection"], "ocr_version": "1.13.1"}}
+        original = deepcopy(initial.config)
+        retried = security.create_scan(db, repo, actor,
+            SecurityScanInput(connection_id="connection", request_key=uid()), parent=initial)
+        assert retried.parent_id == initial.id and retried.config == original
+        assert initial.config == original and retried.config["analysis_engine"] == "mortis"
+
+
+def test_rolling_admission_failure_keeps_pending_provider_block_reason():
+    from concurrent.futures import Future
+
+    future = Future()
+    future.set_exception(RunnerBlocked("quota"))
+    stopped, submitted = Event(), []
+
+    def submit(path):
+        submitted.append(path)
+        if len(submitted) > 1:
+            raise ValueError("Token usage is unknown")
+        return future
+
+    results = list(security.rolling_analysis(["first.py", "second.py", "third.py"], 3, submit, lambda: False, stopped))
+    assert results == [("first.py", future)]
+    assert isinstance(results[0][1].exception(), RunnerBlocked)
+    assert results[0][1].exception().reason == "quota"
+    assert submitted == ["first.py", "second.py"] and stopped.is_set()

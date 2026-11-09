@@ -1,16 +1,14 @@
-import asyncio
 import copy
+import importlib.util
 from datetime import timedelta
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 from test_review_flow import new_run
 
-from code_mortis import jobs, native_runner
+from code_mortis import jobs
 from code_mortis.core.db import now, transaction
 from code_mortis.core.shared_execution import INFERENCE_JOBS, RETIRED_MESSAGE, retire_subscriptions
-from code_mortis.integrations import runner_client
 from code_mortis.mcp import tools
 from code_mortis.models import Connection, Job, PullRequest, Repository, ReviewRun, SecurityScan, User
 from code_mortis.reviews import background, pipeline, summary
@@ -28,7 +26,6 @@ def retired_connection(db, kind="chatgpt"):
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code", "unknown"])
 def test_native_and_unknown_admission_never_reach_runner(seed, client, github_stub, monkeypatch, kind):
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("native request"))
     with transaction() as db:
         connection = retired_connection(db, kind)
         repo, actor = db.get(Repository, 22), db.get(User, 7)
@@ -46,7 +43,7 @@ def test_native_and_unknown_admission_never_reach_runner(seed, client, github_st
     assert [row["id"] for row in client.get("/api/v1/connections").json()] == ["connection"]
 
 
-@pytest.mark.parametrize("kind,engine", [("chatgpt", "ocr"), ("unknown", "ocr"), ("api", "mortis")])
+@pytest.mark.parametrize("kind,engine", [("chatgpt", "mortis"), ("unknown", "mortis"), ("api", "ocr")])
 def test_automatic_sync_keeps_pr_history_without_starting_unavailable_execution(seed, github_stub, monkeypatch, kind, engine):
     from test_review_flow import remote
 
@@ -164,7 +161,7 @@ def test_explicit_shared_summary_keeps_original_native_configuration_and_attempt
         first = summary.retry_generation(db, run, db.get(Repository, 22), db.get(User, 7))
         db.flush()
         assert first.payload["config"]["connection"]["kind"] == "api"
-        assert first.payload["config"]["analysis_engine"] == "ocr"
+        assert first.payload["config"]["analysis_engine"] == "mortis"
         assert first.payload["previous_summary"]["tokens"] == 17
         first.status = "failed"
         summary.fail_retry(db, first, "first shared failure")
@@ -247,16 +244,9 @@ def test_revoked_summary_attempt_settles_projection_and_allows_explicit_new_retr
         assert run.summary["status"] == "pending"
 
 
-def test_runner_and_management_tools_cannot_start_retired_inference(seed, monkeypatch):
-    monkeypatch.setattr(runner_client.httpx, "request", lambda *a, **k: pytest.fail("native HTTP"))
-    for method, path in [("POST", "/connections/old/reviews/new"), ("POST", "/connections/old/auth"),
-                         ("GET", "/connections/old/models?kind=chatgpt")]:
-        with pytest.raises(runner_client.RunnerBlocked) as exc:
-            runner_client.request(method, path)
-        assert exc.value.reason == "retired"
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(native_runner.review_start("old", "new", None))
-    assert exc.value.status_code == 410
+def test_runner_and_management_tools_cannot_start_retired_inference():
+    for module in ("code_mortis.native_runner", "code_mortis.integrations.runner_client", "code_mortis.integrations.ocr"):
+        assert importlib.util.find_spec(module) is None
     names = {row[1] for row in tools.MANAGEMENT_TOOLS}
     assert "management_create_connection" in names and "management_test_connection" in names
     assert "management_start_connection_auth" not in names and "management_grant_repository_access" not in names

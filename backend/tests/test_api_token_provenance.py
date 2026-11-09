@@ -11,8 +11,9 @@ from code_mortis import jobs
 from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.api_tokens import service as pat_service
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import digest
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp_provenance
 from code_mortis.models import (
     Finding,
@@ -25,6 +26,7 @@ from code_mortis.models import (
     SecurityScan,
 )
 from code_mortis.reviews import checks as review_checks
+from code_mortis.reviews import mortis
 from code_mortis.reviews import service as reviews
 from code_mortis.security_scans import issues as security_issues
 
@@ -58,7 +60,8 @@ def pat_setup(seed):
 def saved_run(db, seed, status="queued", provenance=None):
     progress = {"pat": provenance} if provenance else {}
     run = ReviewRun(id=uid(), pr_id=seed["pr"].id, trigger="automatic", dedup_key=uid(),
-                    base_sha="b" * 40, head_sha="a" * 40, config={"connection": {"id": "connection", "kind": "api"}, "settings": {}},
+                    base_sha="b" * 40, head_sha="a" * 40, engine="mortis",
+                    config={"analysis_engine": "mortis", "connection": {"id": "connection", "kind": "api"}, "settings": {}},
                     status=status, publication="pending",
                     progress=pat_provenance.attach_progress(progress))
     db.add(run)
@@ -473,7 +476,7 @@ def test_sync_pr_descendant_sets_owner_actor(seed, pat_setup, monkeypatch, worke
     with transaction() as db:
         db.get(PersonalApiToken, pat_setup["token"].id).revoked_at = now()
     with pat_provenance.scoped(pat_setup["record"]):
-        with pytest.raises(ocr.ReviewStopped, match="revoked or expired"):
+        with pytest.raises(ReviewStopped, match="revoked or expired"):
             jobs.sync_pr(seed["repo"].id, seed["pr"].number)
 
 
@@ -786,7 +789,7 @@ def test_review_pre_dispatch_rejects_malformed_origin_without_crashing(seed, git
     monkeypatch.setattr(github, "request", lambda *a, **k: {
         "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
     })
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("invalid origin must not execute"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("invalid origin must not execute"))
     with transaction() as db:
         run_id = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),
                                     db.get(Repository, seed["repo"].id), "manual", seed["user"]).id
@@ -811,7 +814,7 @@ def test_review_pre_dispatch_cleans_both_revoked_origins(seed, github_stub, pat_
     monkeypatch.setattr(github, "request", lambda *a, **k: {
         "state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40},
     })
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
     with transaction() as db:
         db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
         run = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),

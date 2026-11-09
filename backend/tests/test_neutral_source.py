@@ -1,7 +1,6 @@
 """Source infrastructure is independent of model adapters and review exclusions do not govern scanners."""
 
 import base64
-import json
 import os
 import subprocess
 import sys
@@ -13,7 +12,6 @@ from code_mortis.code_graph import store
 from code_mortis.core import file_policy, process, source
 from code_mortis.core.config import settings
 from code_mortis.core.errors import ReviewStopped, RunnerBlocked
-from code_mortis.integrations import ocr, runner_client
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.reviews import verification
 from code_mortis.security_scans import engine as security
@@ -27,23 +25,18 @@ def commit(repo):
     return source.git(repo, env, "rev-parse", "HEAD").strip()
 
 
-def test_neutral_process_keeps_credentials_cancellation_bounds_and_ocr_redaction(tmp_path, monkeypatch):
+def test_neutral_process_keeps_credentials_cancellation_and_bounds(tmp_path, monkeypatch):
     monkeypatch.setenv("CM_DATABASE_URL", "database-secret")
     monkeypatch.setenv("GH_TOKEN", "github-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "provider-secret")
     env = process.child_environment()
     assert not {"CM_DATABASE_URL", "GH_TOKEN", "ANTHROPIC_API_KEY"} & env.keys()
-    assert ocr.ReviewStopped is ReviewStopped and runner_client.RunnerBlocked is RunnerBlocked
     with pytest.raises(ReviewStopped):
         process.command([sys.executable, "-c", "import time;time.sleep(30)"], tmp_path, env, stopped=lambda: True)
     with pytest.raises(ValueError, match="output exceeded"):
         process.command([sys.executable, "-c", "print('x'*100)"], tmp_path, env, max_output=20)
     code, out, _ = process.command([sys.executable, "-c", "import os;print(os.getenv('CM_OCR_REDACTION_FILE', 'absent'))"], tmp_path, env)
     assert code == 0 and out.strip() == "absent"
-    received = []
-    monkeypatch.setattr(process, "command", lambda args, directory, env, *a, **kw: received.append(env) or (0, "", ""))
-    ocr.command([settings().ocr_binary, "review"], tmp_path, {})
-    assert received[0]["CM_OCR_REDACTION_FILE"].endswith("/.opencodereview/redaction.json")
     busy = RunnerBlocked("busy", {"tokens": 4})
     assert busy.reason == "busy" and busy.usage == {"tokens": 4}
     assert "wait" in str(busy)
@@ -138,31 +131,3 @@ def test_renames_cannot_restore_evidence_and_optional_diff_is_not_leaked(tmp_pat
         verification.read_source(repo, env, original, "sensitive_credentials.py", lambda: False)
     with pytest.raises(ValueError, match="excluded"):
         verification.build_context(repo, env, env, {"path": "sensitive_credentials.py"}, original, head, {}, lambda: False)
-
-
-@pytest.mark.parametrize("path,changes", [
-    ("credentials.py", "M\0credentials.py\0"),
-    ("renamed.py", "R100\0credentials.py\0renamed.py\0"),
-])
-def test_ocr_scope_disagreement_stops_before_inference(tmp_path, monkeypatch, path, changes):
-    from contextlib import nullcontext
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    monkeypatch.setattr(source, "review_snapshot", lambda *a, **k: nullcontext((repo, {}, {}, "a" * 40)))
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: changes)
-    monkeypatch.setattr(ocr, "check_version", lambda *a: None)
-    monkeypatch.setattr(ocr, "configuration", lambda *a: nullcontext())
-    calls = []
-
-    def command(args, *a, **k):
-        calls.append(args)
-        assert "--preview" in args, "Excluded source must not reach model execution"
-        return 0, json.dumps({"files": [{"path": path, "will_review": True}], "reviewable_count": 1}), ""
-
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(ValueError, match="outside the permitted review scope"):
-        ocr.review("owner/repo", 1, "a" * 40, "b" * 40, {"kind": "api"}, {},
-            {"effort": "low", "concurrency": 1, "token_budget": 1000, "timeout_seconds": 60},
-            "synthetic-token", lambda: False)
-    assert len(calls) == 1

@@ -3,7 +3,6 @@ from sqlalchemy import delete, select
 
 from code_mortis.api.dependencies import DB, USER, manage_connection
 from code_mortis.core.shared_execution import RETIRED_MESSAGE
-from code_mortis.integrations import runner_client
 from code_mortis.models import (
     ConnectionGrant,
     ConsoleTicket,
@@ -54,9 +53,8 @@ def auth_status(identity: str, db: DB, user: USER):
 @router.delete("/connections/{identity}/auth")
 def cancel_auth(identity: str, db: DB, user: USER):
     connection = personal(db, user, identity)
-    runner_client.request("DELETE", f"/connections/{identity}/auth")
     db.execute(delete(ConsoleTicket).where(ConsoleTicket.connection_id == identity))
-    connection.auth_status = "disconnected"
+    connection.auth_status, connection.auth_message = "revoked", RETIRED_MESSAGE
     return {"ok": True}
 
 
@@ -66,16 +64,7 @@ def disconnect(identity: str, db: DB, user: USER):
     cancel_connection_runs(db, identity)
     db.execute(delete(ConsoleTicket).where(ConsoleTicket.connection_id == identity))
     db.execute(delete(ConnectionGrant).where(ConnectionGrant.connection_id == identity))
-    connection.auth_status, connection.auth_message = "revoked", None
-    # Revoke application access durably even if the native runner is currently offline.
-    db.commit()
-    try:
-        runner_client.request("POST", f"/connections/{identity}/disconnect", {"kind": connection.kind})
-    except runner_client.RunnerBlocked:
-        connection.auth_message = (
-            "Code Mortis access was revoked, but the account sign-in service is unavailable. Retry disconnect when the service is back to remove the saved account session."
-        )
-        return {"status": "disconnected", "message": connection.auth_message}
+    connection.auth_status, connection.auth_message = "revoked", RETIRED_MESSAGE
     return {"status": "disconnected"}
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "disposable-code-graph-test-token"
 ENV = os.environ | {"CM_CODE_GRAPH_TOKEN": TOKEN, "POSTGRES_PASSWORD": "test-only",
-                    "CM_RUNNER_TOKEN": "test-only", "COMPOSE_PROFILES": "", "CM_PUBLIC_HOST": "example.test", "COOLIFY_RESOURCE_UUID": "test-only"}
+                    "COMPOSE_PROFILES": "", "CM_PUBLIC_HOST": "example.test", "COOLIFY_RESOURCE_UUID": "test-only"}
 COMPOSE = ["docker", "compose", "-f", "compose.code-graph.test.yaml"]
 
 
@@ -51,7 +51,11 @@ def configurations():
         assert configured["networks"]["code-graph"]["internal"] is True
         worker = services["code-graph-worker"]
         assert {name for name, service in services.items() if "code-graph" in service.get("networks", {})} == {"code-graph-parser", "code-graph-worker"}
-        assert set(services["review-worker"]["networks"]) == {"default", "runners"}
+        assert set(services["review-worker"]["networks"]) == {"default"}
+        assert "runner" not in services and "runners" not in configured["networks"]
+        assert "runner-profiles" not in configured["volumes"]
+        assert all(not any(key.startswith("CM_OCR_") or key.startswith("CM_RUNNER_")
+                           for key in service.get("environment", {})) for service in services.values())
         assert set(worker["networks"]) == {"default", "code-graph"}
         assert worker["image"] == services["review-worker"]["image"]
         assert worker["build"] == services["review-worker"]["build"]

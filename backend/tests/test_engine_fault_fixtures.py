@@ -1,4 +1,4 @@
-"""Six original reliability arms, real workflows/DB/HTTP and synthetic scanner processes."""
+"""Mortis frozen reliability fixtures and explicit refusal of retired OCR execution."""
 
 import importlib.util
 import json
@@ -9,14 +9,15 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from test_llm_http import result as wire_result
 
+from code_mortis.core import analysis
 from code_mortis.core.config import settings
 from code_mortis.core.db import transaction
 from code_mortis.models import AnalysisAttempt, Finding, Job, SecurityFinding, SecurityScan
 from code_mortis.schemas.common import RepoSettings
-from code_mortis.schemas.inference import ToolCall
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts/engine_eval"
@@ -72,15 +73,23 @@ def provider(monkeypatch):
 @pytest.mark.parametrize("case_id", faults.CASES)
 @pytest.mark.parametrize("arm", ["ocr", "mortis"])
 def test_frozen_reliability_fixture_never_becomes_clean(tmp_path, monkeypatch, provider, case_id, arm):
-    if case_id == "sec-07" and arm == "ocr" and not settings().ocr_isolated_runtime:
-        pytest.skip("Real OCR fixture requires the isolated Docker runtime; never bypass its host safeguard")
     exported = tmp_path / "export"
     case = prepare.prepare_case(prepare.PILOT / case_id, exported)
+    if arm == "ocr":
+        historical = {"analysis_engine": arm}
+        assert analysis.engine_snapshot(historical)["analysis_engine"] == "ocr"
+        with pytest.raises(ValueError, match="OCR execution is retired"):
+            analysis.require_execution_engine(historical)
+        with pytest.raises(ValidationError):
+            RepoSettings(analysis_engine=arm)
+        assert not provider["requests"]
+        with transaction() as db:
+            assert not list(db.scalars(select(Job)))
+            assert not list(db.scalars(select(Finding)))
+            assert not list(db.scalars(select(SecurityFinding)))
+        return
     value = {"findings": [], "required_paths": []}
-    provider["body"] = wire_result("openai", content=json.dumps(value), call=(
-        ToolCall(id="fixture-result", name="task_done", arguments={"state": "DONE", "result": value})
-        if arm == "ocr" else None
-    ))
+    provider["body"] = wire_result("openai", content=json.dumps(value))
     monkeypatch.setattr(settings(), "work_dir", tmp_path / "work")
     options = RepoSettings(analysis_engine=arm, concurrency=1, token_budget=200_000,
                            timeout_seconds=120).model_dump()

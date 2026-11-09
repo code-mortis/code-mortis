@@ -11,9 +11,8 @@ SHA = "a" * 40
 
 
 @pytest.mark.parametrize("task", ["analysis", "assessment", "verification"])
-@pytest.mark.parametrize("transport", ["callback", "api"])
 @pytest.mark.parametrize("contract", [None, "security-task/v3", policy.TASK_CONTRACT])
-def test_security_policy_is_delivered_only_for_pinned_new_tasks(tmp_path, monkeypatch, task, transport, contract):
+def test_security_policy_is_delivered_only_for_pinned_new_tasks(tmp_path, monkeypatch, task, contract):
     item = engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {"app.py": {}}
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "boundary(value)"}},
@@ -29,13 +28,8 @@ def test_security_policy_is_delivered_only_for_pinned_new_tasks(tmp_path, monkey
         assert kwargs["schema"]["$defs"]["SecurityEvidenceSelection"]["properties"]["source_id"]["enum"] == ["source_1"]
         return kwargs["validator"](selected_result(task), supplied), {"tokens": 7}
 
-    def api_verify(*args, **kwargs):
-        assert args[5] == 100
-        return respond(args[4], **kwargs)
-
-    monkeypatch.setattr(engine.verification, "api_verify", api_verify)
     result, usage = engine.ask(item, {"kind": "api"}, {}, task, context, 100, 60, lambda: False,
-                               "task", infer=respond if transport == "callback" else None, source_packing=False)
+                               "task", infer=respond, source_packing=False)
     assert len(delivered) == 1
     assert delivered[0].startswith(engine.INSTRUCTIONS)
     assert (policy.instructions(task) in delivered[0]) is (contract == policy.TASK_CONTRACT)

@@ -14,7 +14,7 @@ def test_repeated_empty_source_produces_correctable_feedback(stage):
     context = {"sources": {"current": {"empty.py": ""}}}
     with pytest.raises(verification.ResultValidationError) as caught:
         if stage == "assessment":
-            assessment.expand_context(Path("/tmp"), {}, SimpleNamespace(config={}), context, ["empty.py"], lambda: False)
+            assessment.expand_context(Path("/tmp"), {}, SimpleNamespace(base_sha="a" * 40, head_sha="b" * 40, config={"settings": {}}), context, ["empty.py"], lambda: False)
         else:
             verification.expand_context(Path("/tmp"), {}, context,
                 [{"revision": "current", "path": "empty.py"}], {}, lambda: False)
@@ -93,33 +93,6 @@ def test_unavailable_history_commit_does_not_abort_unrelated_current_assessment(
     assert len(calls) == 2
     assert assessment.related_history(Path("/tmp"), {}, {}, "b" * 40,
         {"path": "current.py", "existing_code": "old", "content": "same defect"}, previous, lambda: False, renamed)[0][0]["id"] == "old"
-
-
-@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
-def test_retired_native_transport_rejects_evidence_before_any_request(monkeypatch, kind):
-    from code_mortis.integrations import runner_client
-
-    context = {"sources": {"current": {"app.py": "safe\n"}}, "diff": ""}
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired transport sent a request"))
-    with pytest.raises(runner_client.RunnerBlocked) as caught:
-        runner_client.review("connection", "attempt", {
-            "kind": kind, "_evidence_context": context, "_instructions": "Verify.",
-            "prompt": "old", "output_schema": verification.output_schema()}, lambda: False)
-    assert caught.value.reason == "retired" and caught.value.usage == {"tokens": None}
-    assert context == {"sources": {"current": {"app.py": "safe\n"}}, "diff": ""}
-
-
-def test_older_pinned_ocr_build_cannot_silently_skip_context_guard(monkeypatch):
-    from code_mortis.integrations import ocr
-
-    monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-diagnostics)", ""))
-    with pytest.raises(ValueError, match="context guard"):
-        ocr.check_version(Path("/tmp"), {})
-    monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-context)", ""))
-    with pytest.raises(ValueError, match="file policy"):
-        ocr.check_version(Path("/tmp"), {})
-    monkeypatch.setattr(ocr, "command", lambda *a, **k: (0, "v1.13.1 (8eb8334+cm-context-scope-v2)", ""))
-    ocr.check_version(Path("/tmp"), {})
 
 
 def test_historical_secret_matching_remains_in_worker_memory_and_keeps_usage():

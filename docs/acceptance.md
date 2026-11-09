@@ -2,6 +2,9 @@
 
 Implementation session: 2026-10-06, America/Santiago. This record distinguishes implemented code, local integration checks and authenticated external evidence. The complete project is **not yet accepted**: real account authorization, reviews and final server deployment are outstanding.
 
+
+Current execution policy (2026-11-08): the owner authorizes **personal early adoption of Mortis as the sole PR/security engine**, using shared API connections. OCR and subscription execution are retired; the older capability/evidence rows below are historical and do not enable those runtimes. ENGINE_PLAN.md and ENGINE_M5.md record current removal, local checks and deployment boundaries. M5's frozen experimental result remains `not_established`; known severe misses, unresolved independent judgments and token regressions are not relabeled as passes. Security has no graph enrichment.
+
 ## Implemented scope
 
 | Capability | Implementation |

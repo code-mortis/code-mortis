@@ -6,10 +6,10 @@ from sqlalchemy import select
 
 from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.review_results import report_tokens
 from code_mortis.core.security import unseal
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
     FindingVerification,
@@ -26,6 +26,8 @@ from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import summary as pr_summary
 
 TERMINAL = {"completed", "partial", "failed", "skipped", "cancelled"}
+
+# The stored analysis key remains readable in historical runs. It never selects an executable engine.
 STAGES = ("ocr", "assessment", "verification", "summary")
 KINDS = {"verify_fixes": "verification", "summarize_review": "summary", "assess_candidates": "assessment"}
 
@@ -126,7 +128,7 @@ def fail_stage(db, run, stage, error):
 
 def defer_assessment(db, run):
     if run.progress.get("assessment_deferred"):
-        return True  # A recovered OCR job must not take ownership from the assessment job.
+        return True  # A recovered analysis job must not take ownership from the assessment job.
     if (run.config["connection"]["kind"] != "api"
         or run.stages.get("verification", {}).get("status") in TERMINAL
         or not db.scalar(select(ReviewCandidate.id).where(
@@ -174,27 +176,20 @@ def perform(payload):
             fail_stage(db, run, stage, _pat.REVOKED_MESSAGE)
             return
         if run.status != "running":
-            raise runner_client.RunnerBlocked("busy")
+            raise RunnerBlocked("busy")
         previous = run.stages.get(stage, {})
         if previous.get("status") == "running":
             previous_id, _, previous_attempt = previous.get("execution", "").rpartition(":")
             previous_job = db.get(Job, previous_id) if previous_id else None
             if previous_job and previous_job.status == "running" and str(previous_job.attempts) == previous_attempt and previous_job.lease_until > now():
                 return
-            if stage == "summary" or run.config.get("analysis_engine", "ocr") != "mortis":
+            if stage == "summary":
                 fail_stage(db, run, stage, "The worker stopped during this stage. Unknown usage will not be spent again automatically.")
                 return
         connection = db.get(Connection, run.connection_id)
         snapshot = run.config["connection"]
         if not connection or any(snapshot[key] != getattr(connection, key) for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
             raise ValueError("The selected connection changed. Start a new review with the current settings.")
-        # Personal profiles are serialized; OCR/assessment keep priority within this run.
-        if connection.kind != "api":
-            predecessors = ["ocr"] + ([] if stage == "assessment" else ["assessment"]) + (["verification"] if stage == "summary" else [])
-            if any(run.stages.get(name, {}).get("status") not in TERMINAL for name in predecessors):
-                raise runner_client.RunnerBlocked("busy")
-            if connection.auth_status != "connected":
-                raise runner_client.RunnerBlocked("authentication")
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:

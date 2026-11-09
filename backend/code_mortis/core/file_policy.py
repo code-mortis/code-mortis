@@ -29,7 +29,7 @@ MANDATORY = sorted({
     *(pattern for word in ("secret", "credential", "password", "privatekey", "private-key", "private_key")
       for pattern in (f"**/*{word}*", f"**/*{word}*/**")),
 })
-# OCR's extension list is independent of the structural parser's capabilities.
+# Review text scope is independent of the structural parser's capabilities.
 TEXT_CONTEXT = [f"**/*.{ext}" for ext in "md markdown mdx rst txt adoc json yaml yml toml sql html css astro".split()]
 
 

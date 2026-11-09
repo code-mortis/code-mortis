@@ -12,13 +12,13 @@ from urllib.parse import quote
 from sqlalchemy import select
 
 from code_mortis.core import file_policy, source
-from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
+from code_mortis.core.analysis import new_engine_snapshot, require_execution_engine
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import InferenceOutputError, ReviewStopped
+from code_mortis.core.errors import InferenceOutputError, ReviewStopped, RunnerBlocked
 from code_mortis.core.process import child_environment
 from code_mortis.core.security import clean_text, safe_repo_name, unseal
 from code_mortis.core.shared_execution import require_shared
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -31,7 +31,6 @@ from code_mortis.models import (
 )
 from code_mortis.reviews.service import authorize_connection, connection_snapshot
 from code_mortis.reviews.service import enqueue as enqueue_job
-from code_mortis.reviews.verification import scan_diagnostics
 from code_mortis.schemas.common import BackgroundJobOut, BackgroundResult, RunLimits
 
 INSTRUCTIONS = (
@@ -78,7 +77,7 @@ def authorize(db, repo, actor, connection, *, check_repository=True):
 
 def enqueue(db, repo, actor, connection, model, limits=None):
     require_shared(connection)
-    require_available_engine(repo.settings)
+    engine = new_engine_snapshot(repo.settings)
     snapshot = connection_snapshot(connection)
     snapshot["model"] = model.strip() or connection.model.strip()
     if not snapshot["model"]:
@@ -87,7 +86,7 @@ def enqueue(db, repo, actor, connection, model, limits=None):
                                                if key in RunLimits.model_fields})
     job = enqueue_job(db, "generate_background", {
         "repository_id": repo.id, "actor_id": actor.id, "connection_id": connection.id,
-        **engine_snapshot(repo.settings),
+        **engine,
         "connection": snapshot, "limits": limits.model_dump(), "file_policy": file_policy.policy(repo.settings),
         "expires_at": now().timestamp() + 600,
     })
@@ -125,17 +124,8 @@ def source_kind(path):
     return None
 
 
-def source_adapter(mortis):
-    if mortis:
-        return source
-    from code_mortis.integrations import ocr
-
-    return ocr
-
-
-def collect(repo, env, sha, stopped, *, exclusions="", mortis=False):
-    adapter = source_adapter(mortis)
-    tree = adapter.git(repo, env, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped)
+def collect(repo, env, sha, stopped, *, exclusions=""):
+    tree = source.git(repo, env, "ls-tree", "-r", "-l", "-z", sha, stopped=stopped)
     candidates = []
     for entry in tree.split("\0"):
         if not entry:
@@ -169,7 +159,7 @@ def collect(repo, env, sha, stopped, *, exclusions="", mortis=False):
             available = min(4000, 24_000 - used[group])
             if available <= 0:
                 break
-            raw = adapter.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
+            raw = source.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
             if "\0" in raw or "\ufffd" in raw:
                 continue
             text = clean_text(raw.encode()[:available].decode("utf-8", "ignore"))
@@ -180,8 +170,7 @@ def collect(repo, env, sha, stopped, *, exclusions="", mortis=False):
     return {"paths": [path for _, path in candidates[:200]], "tree_truncated": len(candidates) > 200, "sources": sources}
 
 
-def context(full_name, branch, token, directory, stopped, *, exclusions="", mortis=False):
-    adapter = source_adapter(mortis)
+def context(full_name, branch, token, directory, stopped, *, exclusions=""):
     safe_repo_name(full_name)
     if not isinstance(branch, str) or not branch or len(branch) > 255:
         raise ValueError("GitHub did not return a valid default branch.")
@@ -193,9 +182,9 @@ def context(full_name, branch, token, directory, stopped, *, exclusions="", mort
     authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     fetch_env = {**env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
                  "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}"}
-    adapter.git(directory, env, "init", "--quiet", stopped=stopped)
-    adapter.git(directory, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
-    evidence = collect(directory, env, sha, stopped, exclusions=exclusions, mortis=mortis)
+    source.git(directory, env, "init", "--quiet", stopped=stopped)
+    source.git(directory, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
+    evidence = collect(directory, env, sha, stopped, exclusions=exclusions)
     data = {"repository": full_name, "branch": branch, "sha": sha, **evidence}
     # JSON escaping and long filenames also count towards the explicit input bound.
     while len(json.dumps(data, ensure_ascii=False).encode()) > CONTEXT_BYTES and data["paths"]:
@@ -217,103 +206,6 @@ def validate_result(value):
         return BackgroundResult.model_validate(value).background
     except ValueError as exc:
         raise ValueError("The model returned invalid project background. Generate again to retry.") from exc
-
-
-def api_generate(directory, connection, credentials, prompt, timeout, stopped, token_budget):
-    """Explicit legacy OCR execution; Mortis uses the shared structured gateway."""
-    from code_mortis.integrations import ocr
-    env = ocr.child_environment()
-    ocr.check_version(directory, env)
-    ocr.git(directory, env, "init", "--quiet", stopped=stopped)
-    marker = "# Code Mortis project background evidence"
-    (directory / "evidence.py").write_text(marker + "\n" + prompt)
-    properties = {key: {"type": "string", "enum": [value]} for key, value in {
-        "path": "evidence.py", "existing_code": marker, "category": "other", "severity": "low", "suggestion_code": "",
-    }.items()}
-    properties["content"] = {"type": "string", "description": "JSON matching: " + json.dumps(output_schema())}
-    tools = [
-        {"name": "code_comment", "main_task": True, "definition": {
-            "name": "code_comment", "description": INSTRUCTIONS + " Submit exactly one internal result transport envelope, not a review finding.",
-            "parameters": {"type": "object", "properties": {"comments": {
-                "type": "array", "minItems": 1, "maxItems": 1,
-                "items": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
-            }}, "required": ["comments"], "additionalProperties": False},
-        }},
-        {"name": "task_done", "main_task": True, "definition": {
-            "name": "task_done", "description": "Finish after submitting the project background through code_comment.",
-            "parameters": {"type": "object", "properties": {"state": {"type": "string", "enum": ["DONE", "FAILED"]}}, "required": ["state"]},
-        }},
-    ]
-    rule = directory / "rules.json"
-    rule.write_text(json.dumps({"rules": [{"path": "evidence.py", "rule": INSTRUCTIONS +
-        " This file is a repository evidence bundle. The required output is a project overview, even when "
-        "there are no code defects. Submit exactly one code_comment for evidence.py whose content is JSON "
-        "matching: " + json.dumps(output_schema())}]}))
-    tool_file = directory / "tools.json"
-    tool_file.write_text(json.dumps(tools))
-    args = [ocr.settings().ocr_binary, "scan", "--repo", str(directory), "--path", "evidence.py",
-            "--format", "json", "--audience", "agent", "--rule", str(rule), "--tools", str(tool_file),
-            "--concurrency", "1", "--no-plan", "--no-summary", "--no-dedup",
-            "--max-tokens", "32000", "--max-tokens-budget", str(token_budget or 0), "--timeout", "0"]
-    with ocr.configuration(connection, credentials, {}, stopped):
-        code, output, errors = ocr.command(args, directory, env, timeout=timeout, stopped=stopped)
-        diagnostics, _ = scan_diagnostics(directory, env, code, errors, (
-            credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
-        ), stopped)
-    return parse_api_result(code, output, diagnostics, token_budget, (
-        credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values(),
-    ))
-
-
-def parse_api_result(code, output, diagnostics, token_budget, secrets=()):
-    detail = {"process": diagnostics}
-
-    def fail(reason, message):
-        detail["reason"] = reason
-        raise GenerationError(message + " Your background was not changed.",
-                              clean_text(json.dumps(detail), secrets)[:8000])
-
-    try:
-        data = json.loads(output)
-        if not isinstance(data, dict) or not isinstance(data.get("summary", {}), dict):
-            raise ValueError()
-    except (ValueError, TypeError):
-        data = {}
-    summary = data.get("summary", {})
-    comments = data.get("comments", [])
-    warnings = data.get("warnings") or []
-    detail.update(status=data.get("status"), summary=summary, warnings=warnings,
-                  result_count=len(comments) if isinstance(comments, list) else None)
-    signals = (diagnostics + json.dumps(warnings)).lower()
-    if summary.get("budget_exceeded"):
-        allowance = f"{token_budget:,}" if token_budget is not None else "configured"
-        fail("budget", f"OCR stopped at the {allowance}-token budget, including its estimate for the next request. "
-             "Increase Token budget under Review limits and rules, then generate again.")
-    if code or data.get("status") != "success" or summary.get("files_reviewed") != 1 or warnings:
-        if any(word in signals for word in ("insufficient_quota", "quota exceeded", "quota_exceeded", "insufficient balance", "credit balance", "billing", "payment required")):
-            fail("quota", "The provider reports exhausted quota or credits. Check your provider account's usage and billing before retrying.")
-        if re.search(r"\b429\b|rate.?limit|too many requests", signals):
-            fail("rate_limit", "The provider is limiting requests. Wait for its rate limit to reset, then generate again.")
-        if re.search(r"\b401\b|unauthorized|authentication_error|invalid.?api.?key", signals):
-            fail("authentication", "The provider rejected this connection's credentials. Update the API key in Settings → AI connections and run Test connection.")
-        if re.search(r"\b403\b|permission.denied|access.denied", signals):
-            fail("permission", "The provider denied access to this model. Check the account's model permissions or select an available model.")
-        if re.search(r"\b404\b|model.not.found|unknown.model", signals):
-            fail("model", "The provider could not find the selected model or API endpoint. Check the model ID and connection URL, then run Test connection.")
-        if re.search(r"context.length|context.window|token_threshold_exceeded|prompt.too.long", signals):
-            fail("context", "The repository sample exceeds a model or OCR prompt limit. Choose a model with a larger context window or reduce the repository documentation.")
-        if re.search(r"timed?.out|timeout|deadline.exceeded", signals):
-            fail("timeout", "The provider request timed out. Check the connection's timeout_sec option and the repository Timeout, then generate again.")
-        if re.search(r"\b50[0234]\b|connection.refused|connection.reset|service.unavailable|no.such.host", signals):
-            fail("unavailable", "The provider could not be reached or is temporarily unavailable. Check its service status and the connection URL, then retry.")
-        fail("execution", "OCR could not complete background generation. Run Test connection for the selected model; if it passes, use the generation reference to inspect the worker diagnostics.")
-    if not isinstance(comments, list) or len(comments) != 1 or not isinstance(comments[0], dict) or comments[0].get("path") != "evidence.py":
-        fail("missing_result", "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result.")
-    try:
-        value = json.loads(comments[0]["content"])
-        return {"background": validate_result(value)}
-    except (ValueError, TypeError, KeyError):
-        fail("invalid_result", "The model returned a background in an invalid format, empty, or longer than 20,000 characters. Generate again or choose another model.")
 
 
 def perform(job_id, attempt):
@@ -357,7 +249,6 @@ def perform(job_id, attempt):
         payload = job.payload
         require_shared(payload.get("connection", {}))
         require_execution_engine(payload)
-        mortis = engine_snapshot(payload)["analysis_engine"] == "mortis"
         if now().timestamp() >= payload["expires_at"]:
             raise TimeoutError("Background generation expired. Generate again to retry.")
         from code_mortis.api_tokens import provenance as _pat
@@ -376,13 +267,13 @@ def perform(job_id, attempt):
         from code_mortis.security_scans.service import connection_busy
 
         if connection.kind != "api" and connection_busy(db, connection.id, job_id=job_id):
-            raise runner_client.RunnerBlocked("busy")
+            raise RunnerBlocked("busy")
         if any(snapshot[key] != getattr(connection, key) for key in ("kind", "provider", "protocol", "base_url", "options", "owner_id")):
             raise ValueError("The connection changed after generation was queued. Generate again to retry.")
         if connection.kind != "api" and db.scalar(select(ReviewRun.id).where(
             ReviewRun.connection_id == connection.id, ReviewRun.status == "running",
         ).limit(1)):
-            raise runner_client.RunnerBlocked("busy")
+            raise RunnerBlocked("busy")
         full_name, branch = repo.full_name, remote.get("default_branch")
         token = github.installation_token(db, repo.installation_id)
         credentials = json.loads(unseal(connection.secret))
@@ -392,16 +283,14 @@ def perform(job_id, attempt):
         raise ReviewStopped("Background generation stopped.")
     with tempfile.TemporaryDirectory(prefix="mortis-background-") as temp:
         root = Path(temp)
-        repo_path, inference_path = root / "repo", root / "generation"
+        repo_path = root / "repo"
         repo_path.mkdir()
-        inference_path.mkdir()
         evidence = context(full_name, branch, token, repo_path, stopped, exclusions=",".join(exclusions),
-                           **({"mortis": True} if mortis else {}))
-        if mortis:
-            from code_mortis.reviews import context as review_context
+                           )
+        from code_mortis.reviews import context as review_context
 
-            credentials.setdefault("redaction_values", []).append(token)
-            evidence = review_context.sanitize(evidence, credentials, stopped)
+        credentials.setdefault("redaction_values", []).append(token)
+        evidence = review_context.sanitize(evidence, credentials, stopped)
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.status != "running" or job.attempts != attempt:
@@ -424,29 +313,18 @@ def perform(job_id, attempt):
                     raise ValueError("The connection changed during generation. Generate again to retry.")
                 authorize(db, db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"]), selected)
 
-        prompt = INSTRUCTIONS + "\n\n" + json.dumps(evidence, ensure_ascii=False)
         usage = None
         try:
             if stopped():
                 raise ReviewStopped("Background generation stopped.")
             timeout = max(1, int(deadline - time.monotonic())) if deadline is not None else None
-            if mortis:
-                from code_mortis.core.workflow_inference import execute
+            from code_mortis.core.workflow_inference import execute
 
-                result, usage = execute(snapshot, credentials, evidence, instructions=INSTRUCTIONS,
-                    schema=output_schema(), validator=lambda value, _: {"background": validate_result(value)},
-                    claim=f"{job_id}:{attempt}", stage="summary", task_key="background:0",
-                    repository_id=payload["repository_id"], revisions={"head": evidence["sha"]},
-                    stopped=stopped, authorize=authorize_inference, token_budget=limits.token_budget, timeout=timeout)
-            elif snapshot["kind"] == "api":
-                result = api_generate(inference_path, snapshot, credentials, prompt, timeout, stopped, limits.token_budget)
-            else:
-                result, usage = runner_client.review(snapshot["id"], job_id, {
-                    "task": "background", "kind": snapshot["kind"], "model": snapshot["model"],
-                    "effort": "medium", "prompt": prompt, "output_schema": output_schema(), "timeout": timeout,
-                    "prompt_token_ceiling": snapshot.get("options", {}).get("prompt_token_ceiling", 58888),
-                    "token_budget": limits.token_budget,
-                }, stopped)
+            result, usage = execute(snapshot, credentials, evidence, instructions=INSTRUCTIONS,
+                schema=output_schema(), validator=lambda value, _: {"background": validate_result(value)},
+                claim=f"{job_id}:{attempt}", stage="summary", task_key="background:0",
+                repository_id=payload["repository_id"], revisions={"head": evidence["sha"]},
+                stopped=stopped, authorize=authorize_inference, token_budget=limits.token_budget, timeout=timeout)
         except TimeoutError as exc:
             raise TimeoutError(
                 f"Background generation reached its {limits.timeout_seconds}-second timeout. "
@@ -457,7 +335,7 @@ def perform(job_id, attempt):
         except (InferenceOutputError, ReviewStopped) as exc:
             usage = getattr(exc, "usage", usage)
             raise
-        except runner_client.RunnerBlocked as exc:
+        except RunnerBlocked as exc:
             usage = exc.usage
             if exc.reason == "busy":
                 with transaction() as db:
@@ -471,8 +349,7 @@ def perform(job_id, attempt):
                     job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
                     if job.status == "running" and job.attempts == attempt:
                         job.payload = {**job.payload, "usage": usage}
-        if mortis:
-            authorize_inference()
+        authorize_inference()
         background = clean_text(validate_result(result), (token, credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))
         if stopped():
             raise ReviewStopped("Background generation stopped.")

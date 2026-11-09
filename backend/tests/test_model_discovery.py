@@ -1,16 +1,12 @@
-import asyncio
 import json
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from sqlalchemy import select
 
-from code_mortis import native_runner
 from code_mortis.core.db import transaction
 from code_mortis.core.security import seal
-from code_mortis.integrations import model_discovery, runner_client
+from code_mortis.integrations import model_discovery
 from code_mortis.models import (
     Connection,
     Membership,
@@ -222,11 +218,12 @@ def test_invalid_draft_endpoint_returns_validation_error(seed, client, monkeypat
     assert result.json() == {"detail": detail}
 
 
-def test_model_visibility_drafts_and_revoked_auth(seed, client, github_stub, monkeypatch):
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
+def test_model_visibility_drafts_and_retired_auth(seed, client, github_stub, monkeypatch, kind):
     with transaction() as db:
-        db.add(Connection(id="personal", name="Historical", kind="chatgpt", owner_id=7,
+        db.add(Connection(id="personal", name="Historical", kind=kind, owner_id=7,
                           provider="openai", protocol="native", model="", base_url="", secret=seal("{}")))
-    monkeypatch.setattr(runner_client, "request", lambda *a, **k: pytest.fail("Retired discovery"))
+    monkeypatch.setattr(model_discovery, "api_models", lambda *a, **k: pytest.fail("Retired discovery must not call a provider"))
     assert client.get("/api/v1/connections/personal/models").status_code == 410
     assert client.get("/api/v1/connections/personal/models?repository_id=22").status_code == 410
     with transaction() as db:
@@ -235,7 +232,7 @@ def test_model_visibility_drafts_and_revoked_auth(seed, client, github_stub, mon
     assert client.get("/api/v1/connections/missing/models").status_code == 404
 
 
-def test_personal_setup_requires_effective_model_and_keeps_run_snapshot(
+def test_retired_setup_cannot_create_connections_or_runs(
     seed, client, github_stub, monkeypatch
 ):
     from test_review_flow import remote
@@ -252,53 +249,3 @@ def test_personal_setup_requires_effective_model_and_keeps_run_snapshot(
     with transaction() as db:
         assert not list(db.scalars(select(ReviewRun)))
     assert client.post("/api/v1/connections", json={"name": "API", **draft(), "api_key": "key"}).status_code == 422
-
-
-def test_native_catalogs_are_isolated_and_never_start_a_review(monkeypatch, tmp_path):
-    from fastapi import HTTPException
-
-    spawn = AsyncMock()
-    monkeypatch.setattr(native_runner, "codex", spawn)
-    monkeypatch.setattr(native_runner, "claude_models", spawn)
-    for kind in ("chatgpt", "claude_code", "unknown"):
-        with pytest.raises(HTTPException) as exc:
-            asyncio.run(native_runner.model_catalog("historical", kind))
-        assert exc.value.status_code == 410
-    spawn.assert_not_awaited()
-
-
-def test_native_catalog_timeout_includes_waiting_for_lock(monkeypatch, tmp_path):
-    from fastapi import HTTPException
-
-    monkeypatch.setattr(native_runner, "locks", {})
-    auth = AsyncMock()
-    monkeypatch.setattr(native_runner, "auth_status", auth)
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(native_runner.model_catalog("historical", "chatgpt"))
-    assert exc.value.status_code == 410 and not native_runner.locks
-    auth.assert_not_awaited()
-
-
-@pytest.mark.parametrize("newline", [b"", b"\n"])
-def test_oversized_claude_model_line_is_unavailable_and_stops_process(monkeypatch, tmp_path, newline):
-    identity = "00000000-0000-4000-8000-000000000010"
-    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
-    monkeypatch.setattr(native_runner, "locks", {})
-    monkeypatch.setattr(native_runner, "auth_status", AsyncMock(return_value={"status": "connected"}))
-    stopped = AsyncMock()
-    monkeypatch.setattr(native_runner, "stop", stopped)
-
-    async def check():
-        stdout = asyncio.StreamReader(limit=native_runner.MAX_BYTES)
-        stdout.feed_data(b"x" * (native_runner.MAX_BYTES + 1) + newline)
-        stdout.feed_eof()
-        process = SimpleNamespace(stdout=stdout, stdin=SimpleNamespace(write=lambda data: None, drain=AsyncMock()))
-        spawn = AsyncMock(return_value=process)
-        monkeypatch.setattr(native_runner.asyncio, "create_subprocess_exec", spawn)
-        with pytest.raises(ValueError):
-            await native_runner.claude_models(identity)
-        assert spawn.call_args.kwargs["limit"] == native_runner.MAX_BYTES
-        stopped.assert_awaited_once_with(process)
-        assert not native_runner.locks
-
-    asyncio.run(check())

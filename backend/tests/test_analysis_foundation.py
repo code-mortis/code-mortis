@@ -322,11 +322,11 @@ def test_shared_summary_plan_cannot_consume_after_its_attempt_or_parent_changes(
 
 
 def test_engine_selection_is_explicit_and_does_not_change_legacy_engine_semantics():
-    assert RepoSettings().analysis_engine == "ocr"
+    assert RepoSettings().analysis_engine == "mortis"
     assert analysis.engine_snapshot({})["analysis_engine"] == "ocr"
-    analysis.require_available_engine({"engine": "chatgpt"})
-    with pytest.raises(ValueError, match="not available"):
-        analysis.require_available_engine({"settings": {"analysis_engine": "mortis"}})
+    analysis.require_available_engine({"settings": {"analysis_engine": "mortis"}})
+    with pytest.raises(ValueError, match="retired"):
+        analysis.require_available_engine({"engine": "chatgpt"})
     with pytest.raises(ValueError, match="supported"):
         analysis.engine_snapshot({"analysis_engine": "future"})
     with pytest.raises(ValueError, match="does not match"):
@@ -362,7 +362,7 @@ def test_additive_upgrade_keeps_mixed_history_and_jobs_without_inference(seed, c
         command.upgrade(config, "head")
     engine().dispose()
     with transaction() as db:
-        assert db.get(Repository, 22).settings == settings
+        assert db.get(Repository, 22).settings == {**settings, "analysis_engine": "mortis"}
         for kind, values in originals.items():
             row = db.get(ReviewRun, values["id"])
             for key, value in values.items():

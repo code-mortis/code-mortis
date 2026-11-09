@@ -48,7 +48,7 @@ def stub_github(monkeypatch, seed):
     from code_mortis.models import Repository
 
     monkeypatch.setattr(
-        github, "authorize_repo", lambda *args, **kwargs: {"permissions": {"pull": True, "push": True}})
+        github, "authorize_repo", lambda db, user, full_name, *args, **kwargs: {"id": db.scalar(select(Repository.id).where(Repository.full_name == full_name)) if db is not None else 22, "permissions": {"pull": True, "push": True}})
     monkeypatch.setattr(
         github, "visible_repositories",
         lambda db, user: list(db.scalars(select(Repository).where(Repository.active.is_(True)))))

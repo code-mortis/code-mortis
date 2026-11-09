@@ -1,6 +1,4 @@
 import json
-import subprocess
-import sys
 from importlib.resources import files
 from pathlib import Path
 
@@ -17,18 +15,7 @@ def test_provider_catalog_is_a_package_resource():
     assert providers and all(provider["name"] for provider in providers)
 
 
-def test_native_runner_import_does_not_initialize_application_services():
-    subprocess.run(
-        [sys.executable, "-c", """
-import sys
-from code_mortis.native_runner import app
-assert app.routes
-assert not any(name in sys.modules for name in (
-    "code_mortis.main", "code_mortis.api.dependencies", "code_mortis.jobs",
-    "code_mortis.models", "code_mortis.core.db", "celery",
-))
-"""],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+def test_retired_native_runtime_is_not_shipped():
+    import importlib.util
+
+    assert importlib.util.find_spec("code_mortis.native_runner") is None

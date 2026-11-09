@@ -300,7 +300,6 @@ def test_legacy_mortis_retry_keeps_v2_checkpoint_identity_and_focused_mode(
     delayed_security_provider, seed, monkeypatch,
 ):
     state = delayed_security_provider
-    monkeypatch.setattr(service, "require_available_engine", lambda options: None)
     with transaction() as db:
         parent = db.get(SecurityScan, state["scan_id"])
         parent.config = {key: value for key, value in parent.config.items() if key != "task_contract"}

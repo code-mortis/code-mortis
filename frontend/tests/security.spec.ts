@@ -13,7 +13,7 @@ const at = "2026-10-18T15:00:00Z";
 const sha = "a".repeat(40);
 const repository: Schema["RepositoryOut"] = { id: 22, installation_id: 10, full_name: "acme/payments", private: false,
   active: true, enabled: false, code_graph_enabled: false, connection_id: "connection", connection_requires_setup: false, open_prs: 0, has_running_review: false,
-  settings: { analysis_engine: "ocr", timeout_seconds: 900, token_budget: 200000, language: "English",
+  settings: { analysis_engine: "mortis", timeout_seconds: 900, token_budget: 200000, language: "English",
     summary_diagram_enabled: false, ai_fix_prompts_enabled: false, automatic: false, include_bot_prs: false,
     model: "", review_sensitivity: "balanced", background: "", exclusions: "",
     delegated_context_bytes: 800000, concurrency: 2, effort: "high", max_files: 40, auto_resolve: false } };
@@ -21,7 +21,7 @@ const summary: Schema["SecuritySummary"] = { grade: "D", state: "current", cover
   graded_at: at, latest_scan_id: "scan", latest_status: "completed", latest_at: at, default_branch: "main", head_sha: sha,
   checked_at: at, counts: { high: 1 } };
 const scan: Schema["SecurityScanOut"] = { id: "scan", repository_id: 22, actor_id: 7, connection_id: "connection", parent_id: null,
-  branch: "main", head_sha: sha, config: { connection: { id: "connection", kind: "api", name: "Team API", model: "test-model" },
+  branch: "main", head_sha: sha, config: { analysis_engine: "mortis", connection: { id: "connection", kind: "api", name: "Team API", model: "test-model" },
     limits: { token_budget: 200000, timeout_seconds: 900 } }, status: "completed", grade: "D", error: null,
   stages: Object.fromEntries(["snapshot", "trivy", "analysis", "assessment", "verification", "report"].map((name) => [name, { status: "completed" }])),
   progress: { tokens: 4500, work: { completed: 3, failed: 0, analysis_total: 1, analysis_completed: 1 } },
@@ -640,6 +640,7 @@ test("scan dialog uses existing connection and configurable concurrency without 
   await page.getByRole("button", { name: "Actions for acme/payments", exact: true }).click();
   await page.getByRole("menuitem", { name: "Run scan", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Run security scan" });
+  await expect(dialog).toContainText("Scan the full default branch with Mortis and Trivy.");
   await expect(dialog.getByRole("spinbutton", { name: "Token budget" })).toHaveValue("200000");
   await expect(dialog.getByRole("spinbutton", { name: "Timeout (seconds)" })).toHaveValue("900");
   const concurrency = dialog.getByRole("spinbutton", { name: "Concurrent tasks" });
@@ -676,7 +677,7 @@ test("retired security connections cannot start a scan", async ({ page }) => {
   expect(writes).toHaveLength(0);
 });
 
-test("legacy scan retries can increase concurrency while preserving model and limits", async ({ page }) => {
+test("Mortis scan retries can increase concurrency while preserving model and limits", async ({ page }) => {
   const writes = await mock(page, { scanError: "Security analysis did not finish." });
   await page.goto("/security/scans/scan");
   await page.getByRole("button", { name: "Retry scan", exact: true }).click();
@@ -3132,4 +3133,36 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} s
   await expect(detail.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
   await expect(detail.getByRole("region", { name: "Code snippet" })).toContainText("return orders.find(id)");
   expect(writes).toHaveLength(0);
+});
+
+
+for (const analysisEngine of [undefined, "ocr"] as const) test(`historical ${analysisEngine ?? "implicit OCR"} security scan cannot retry inference and can start a new Mortis scan`, async ({ page }, info) => {
+  const writes = await mock(page, { scanError: "Saved analysis did not complete." });
+  const config = { ...scan.config };
+  delete config.analysis_engine;
+  if (analysisEngine) config.analysis_engine = analysisEngine;
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, can_write: true, finding_count: 1, finding_state_counts: { open: 1 }, report_count: 1,
+    activity_count: 0, activity: [], scan: { ...scan, status: "partial", config },
+  } }));
+  await page.goto("/security/scans/scan");
+  await expect(page.getByText("This historical scan used Open Code Review, which is retired.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Open Code Review", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry scan", exact: true }).click();
+  const retry = page.getByRole("dialog", { name: "Retry security scan", exact: true });
+  await expect(retry).toContainText("This saved scan used a retired engine.");
+  await expect(retry).toContainText("This scan used Open Code Review, which is retired.");
+  await expect(retry.getByRole("button", { name: "Retry scan", exact: true })).toBeDisabled();
+  expect(writes).toHaveLength(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("retired-ocr-security-retry.png"), fullPage: true });
+  await retry.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Rescan repository", exact: true }).click();
+  const next = page.getByRole("dialog", { name: "Run security scan", exact: true });
+  await expect(next).toContainText("Scan the full default branch with Mortis and Trivy.");
+  await next.getByRole("button", { name: "Run scan", exact: true }).click();
+  await expect(page).toHaveURL(/\/security\/scans\/queued$/);
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ path: "/security/repositories/22/scans", body: { connection_id: "connection", model: "test-model" } });
+  expect(writes[0].body).not.toHaveProperty("analysis_engine");
 });

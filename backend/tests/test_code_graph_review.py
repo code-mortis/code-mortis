@@ -10,7 +10,7 @@ from code_mortis import jobs
 from code_mortis.code_graph import retrieval, service, store
 from code_mortis.core import source as git_source
 from code_mortis.core.db import transaction
-from code_mortis.integrations import ocr, runner_client
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.models import (
     CodeGraphRepository,
     CodeGraphSnapshot,
@@ -19,8 +19,8 @@ from code_mortis.models import (
     Repository,
     User,
 )
-from code_mortis.reviews import delegated, graph_context, verification
-from code_mortis.schemas.common import RepoSettings, native_prompt_size
+from code_mortis.reviews import engine, graph_context, planning, verification
+from code_mortis.schemas.common import RepoSettings
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def related(graph, monkeypatch):
         connection = db.get(Connection, 'connection')
         connection.kind, connection.owner_id = 'chatgpt', 7
         graph['options'] = graph_context.configuration(db, db.get(Repository, 22), connection, db.get(User, 7))
-    monkeypatch.setattr(verification, 'filter_context', lambda repo, env, sources, options, stopped: set(sources))
+    monkeypatch.setattr(verification, 'filter_context', lambda repo, env, sources, options, stopped, **kwargs: set(sources))
     return graph
 
 
@@ -126,7 +126,7 @@ def test_byte_caps_and_review_scope_drop_optional_sources(related, monkeypatch):
 
 @pytest.mark.parametrize('problem', ['blob', 'size', 'symlink', 'binary'])
 def test_source_must_match_regular_text_blob(related, monkeypatch, problem):
-    original = ocr.git
+    original = git_source.git
     def git(repo, env, *args, **kwargs):
         result = original(repo, env, *args, **kwargs)
         if args[:3] == ('ls-tree', '-z', '-l'):
@@ -139,7 +139,6 @@ def test_source_must_match_regular_text_blob(related, monkeypatch, problem):
         if args[0] == 'show' and problem == 'binary':
             return '\x00binary'
         return result
-    monkeypatch.setattr(ocr, 'git', git)
     monkeypatch.setattr(git_source, 'git', git)
     selection, context = prepare(related)
     assert not selection['files'] and context is None
@@ -150,12 +149,12 @@ def test_shared_eligibility_is_frozen_and_old_native_grants_cannot_start_work(re
     from code_mortis.reviews.service import create_run
     with transaction() as db:
         connection, repo, actor = db.get(Connection, 'connection'), db.get(Repository, 22), db.get(User, 7)
-        connection.auth_status = 'connected'
+        connection.kind, connection.auth_status = 'chatgpt', 'connected'
         with pytest.raises(ValueError, match='Subscription execution is retired'):
             create_run(db, db.get(PullRequest, 'pr'), repo, 'manual', actor)
         connection.kind = 'api'
         native = create_run(db, db.get(PullRequest, 'pr'), repo, 'manual', actor)
-        assert native.config['code_graph'] == related['options']
+        assert native.config['code_graph'] == graph_context.configuration(db, repo, connection, actor, engine={'analysis_engine': 'mortis'})
         original = copy.deepcopy(native.config)
         db.get(CodeGraphRepository, 22).enabled = False
         assert graph_context.configuration(db, repo, connection, actor) is None
@@ -168,39 +167,8 @@ def test_shared_eligibility_is_frozen_and_old_native_grants_cannot_start_work(re
         assert graph_context.configuration(db, repo, connection, actor) is None
 
 
-def native(related, monkeypatch, *, checkpoint=None, ceiling=58888, blocked=False, deleted=False, use_graph=True, background="", path='a.py'):
-    monkeypatch.setattr(ocr, 'check_version', lambda *a: None)
-    def command(args, root, env, **kwargs):
-        if 'preview' in args:
-            data = {'schema_version': '1', 'reviewable_count': 1,
-                    'reviewable_files': [{'path': path, 'status': 'deleted' if deleted else 'modified'}]}
-        else:
-            data = {'schema_version': '1', 'groups': [{'files': [path], 'rule': 'Find defects'}]}
-        return 0, json.dumps(data), ''
-    # Delegate commands are stubbed; Git-object reads remain real.
-    original = ocr.command
-    monkeypatch.setattr(ocr, 'command', lambda args, *a, **kw: original(args, *a, **kw) if args[0]=='git' else command(args, *a, **kw))
-    prompts, checkpoints = [], []
-    def runner(connection, identity, payload, stopped):
-        prompts.append(payload)
-        if blocked:
-            raise runner_client.RunnerBlocked('authentication', {'tokens': 0})
-        return {'comments': []}, {'tokens': 123}
-    monkeypatch.setattr(runner_client, 'review', runner)
-    args = (related['source'], {}, related['first'], related['head'], related['first'],
-            {'id': 'connection', 'kind': 'chatgpt', 'model': 'test', 'options': {'prompt_token_ceiling': ceiling}},
-            RepoSettings(token_budget=20000, background=background).model_dump(), 'run', lambda: False, lambda v: checkpoints.append(copy.deepcopy(v)))
-    try:
-        result = delegated.review(*args, checkpoint or {}, graph_options=related['options'] if use_graph else None,
-                                  credentials={'api_key': 'private-fixture-value'})
-    except runner_client.RunnerBlocked:
-        assert blocked
-        result = None
-    return result, prompts, checkpoints
-
-
 @pytest.mark.parametrize('case', ['python_many_importers', 'typescript_byte_pressure', 'same_file_tail'])
-def test_required_context_reaches_complete_native_prompt(graph, monkeypatch, case):
+def test_required_context_reaches_complete_mortis_request(graph, monkeypatch, case):
     if case == 'python_many_importers':
         path, dependency = 'z_review.py', 'z_contract.py'
         files = {
@@ -228,83 +196,39 @@ def test_required_context_reaches_complete_native_prompt(graph, monkeypatch, cas
     fixture_git(graph['source'], 'commit', '-qm', case)
     graph['head'] = fixture_git(graph['source'], 'rev-parse', 'HEAD')
     row, _ = run(service.enqueue_snapshot(22))
+    options = RepoSettings(token_budget=200000).model_dump()
     with transaction() as db:
         connection = db.get(Connection, 'connection')
-        connection.kind, connection.owner_id = 'chatgpt', 7
-        graph['options'] = graph_context.configuration(db, db.get(Repository, 22), connection, db.get(User, 7))
-    monkeypatch.setattr(verification, 'filter_context', lambda repo, env, sources, options, stopped: set(sources))
-    baseline, plain, _ = native(graph, monkeypatch, use_graph=False, path=path)
-    result, prompts, _ = native(graph, monkeypatch, path=path)
-    payload, expected = json.loads(prompts[0]['prompt']), json.loads(plain[0]['prompt'])
-    supporting = payload.pop('code_graph', None)
-    assert payload == expected and payload['head_file'] == files[path]
-    assert result[0] == baseline[0] == 'completed'
-    assert result[1]['manifest']['coverage'] == baseline[1]['manifest']['coverage']
+        connection.kind, connection.owner_id = 'api', None
+        graph_options = graph_context.configuration(db, db.get(Repository, 22), connection, db.get(User, 7),
+                                                     engine={'analysis_engine': 'mortis'})
+    plan = planning.plan_review(graph['source'], {}, graph['first'], graph['head'], graph['first'], options, lambda: False)
+    selection, supporting = graph_context.prepare(
+        graph_options, path, graph['head'], graph['source'], {}, options, {}, lambda: False,
+        remaining=graph_context.MAX_RUN_BYTES, base_sha=graph['first'], trusted_rules=plan.rules)
+    connection = {'kind': 'api', 'protocol': 'openai', 'model': 'fixture', 'options': {'prompt_token_ceiling': 200000}}
+    plain = engine.prepare_batches(plan, connection, options, {})
+    enriched = engine.prepare_batches(plan, connection, options, {}, graph_by_path={path: supporting} if supporting else {})
+    assert plain and len(plain) == len(enriched)
+    plain_payloads = [json.loads(batch.request.messages[0].content) for batch in plain]
+    enriched_payloads = [json.loads(batch.request.messages[0].content) for batch in enriched]
+    assert [payload['assigned_units'] for payload in plain_payloads] == [payload['assigned_units'] for payload in enriched_payloads]
+    assigned = [unit for payload in enriched_payloads for unit in payload['assigned_units'] if unit['path'] == path]
+    assert ''.join(unit['source'] for unit in assigned) == files[path]
+    assert all(payload['head_sha'] == graph['head'] for payload in enriched_payloads)
     if dependency:
-        assert supporting and supporting['snapshot_id'] == row.id
+        assert selection['reason'] == 'used' and supporting['snapshot_id'] == row.id
         assert supporting['commit_sha'] == graph['head']
         sources = {source['path']: source['text'] for source in supporting['sources']}
         assert dependency in sources, f'{case}: missing required contract; selected {list(sources)}'
         assert sources[dependency] == files[dependency]
         assert len(sources) <= graph_context.MAX_FILES
         assert sum(len(source.encode()) for source in sources.values()) <= graph_context.MAX_BYTES
+        supplied = next(payload['code_graph'][path] for payload in enriched_payloads if path in payload.get('code_graph', {}))
+        assert supplied == supporting
     else:
-        assert supporting is None
-        assert result[1]['code_graph']['files'][path]['reason'] == 'no_related_source'
-
-
-def test_native_prompt_usage_checkpoint_and_scope(related, monkeypatch):
-    result, prompts, checkpoints = native(related, monkeypatch)
-    status, report, comments = result
-    payload = json.loads(prompts[0]['prompt'])
-    assert payload['assigned_path'] == 'a.py' and len(payload['code_graph']['sources']) == 3
-    assert status == 'completed' and not comments
-    assert report['summary']['total_tokens'] == 123
-    assert report['limits']['context_bytes'] == len(prompts[0]['prompt'].encode()) + 4096
-    assert len(report['manifest']['coverage']['selected']) == len(report['manifest']['coverage']['completed']) == 1
-    assert checkpoints[-1]['code_graph']['a.py']['reason'] == 'used'
-    assert 'private-fixture-value' not in json.dumps(checkpoints)
-    assert 'def four' not in json.dumps(report)
-    with pytest.raises(ValueError, match='assigned file'):
-        delegated.validate_result({'comments': [{'path':'one.py','start_line':1,'end_line':1,'severity':'high',
-                                    'category':'bug','content':'Other file defect'}]}, 'a.py', 4, '')
-
-
-def test_optional_context_cannot_make_baseline_prompt_fail(related, monkeypatch):
-    result, prompts, _ = native(related, monkeypatch, ceiling=4096, background='x' * 256)
-    assert result[0] == 'completed'
-    assert native_prompt_size(prompts[0]['prompt'], delegated.output_schema()) <= 4096 * 4 // 5
-    assert 'code_graph' not in json.loads(prompts[0]['prompt'])
-    assert result[1]['code_graph']['files']['a.py']['reason'] == 'prompt_limit'
-
-
-def test_deleted_file_does_not_use_head_graph(related, monkeypatch):
-    result, prompts, _ = native(related, monkeypatch, deleted=True)
-    assert 'code_graph' not in json.loads(prompts[0]['prompt'])
-    assert result[1]['code_graph']['files']['a.py']['reason'] == 'deleted_file'
-
-
-def test_resume_keeps_attempted_prompt_and_usage(related, monkeypatch):
-    result, first, checkpoints = native(related, monkeypatch, blocked=True)
-    assert result is None and checkpoints[-1]['total_tokens'] == 0
-    monkeypatch.setattr(retrieval, 'query', lambda *a: pytest.fail('Resume selected new graph context'))
-    result, resumed, _ = native(related, monkeypatch, checkpoint=checkpoints[-1])
-    assert first[0]['prompt'] == resumed[0]['prompt']
-    assert result[1]['limits']['context_bytes'] == 2 * (len(first[0]['prompt'].encode()) + 4096)
-    assert result[1]['summary']['total_tokens'] == 123
-
-
-def test_legacy_native_review_never_queries_graph(related, monkeypatch):
-    monkeypatch.setattr(graph_context, 'prepare', lambda *a, **kw: pytest.fail('Legacy review used graph'))
-    result, prompts, _ = native(related, monkeypatch, use_graph=False)
-    assert 'code_graph' not in json.loads(prompts[0]['prompt']) and 'code_graph' not in result[1]
-
-
-def test_run_source_reservations_are_not_reset(related, monkeypatch):
-    checkpoint = {'code_graph': {'earlier.py': {'source_bytes': 0, 'reserved_bytes': graph_context.MAX_RUN_BYTES}}}
-    result, prompts, _ = native(related, monkeypatch, checkpoint=checkpoint)
-    assert 'code_graph' not in json.loads(prompts[0]['prompt'])
-    assert result[1]['code_graph']['files']['a.py']['reason'] == 'limited_or_excluded'
+        assert supporting is None and selection['reason'] == 'no_related_source'
+        assert not any('code_graph' in payload for payload in enriched_payloads)
 
 
 def test_metadata_snapshot_lock_prevents_concurrent_retention(related, monkeypatch):
@@ -323,7 +247,7 @@ def test_metadata_snapshot_lock_prevents_concurrent_retention(related, monkeypat
 
 
 def test_policy_changed_during_source_read_prevents_delivery(related, monkeypatch):
-    def filter_context(repo, env, sources, options, stopped):
+    def filter_context(repo, env, sources, options, stopped, **kwargs):
         with transaction() as db:
             db.get(Repository, 22).settings = {'exclusions': 'one.py'}
         return set(sources)
@@ -333,7 +257,7 @@ def test_policy_changed_during_source_read_prevents_delivery(related, monkeypatc
 
 
 def test_cancellation_is_not_hidden_as_optional_fallback(related):
-    with pytest.raises(ocr.ReviewStopped):
+    with pytest.raises(ReviewStopped):
         graph_context.prepare(related['options'], 'a.py', related['head'], related['source'], {}, {}, {},
                               lambda: True, remaining=graph_context.MAX_BYTES)
 

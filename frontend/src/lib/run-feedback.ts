@@ -130,10 +130,10 @@ export function runFeedback(run: Run) {
     destination = "pull";
   } else if (run.blocked_reason || run.status === "blocked") {
     const reasons: Record<string, [string, string]> = {
-      authentication: ["The AI connection needs to sign in again.", "The connection owner must reconnect the account, then resume this review."],
-      quota: ["The AI connection reached its usage limit.", "The connection owner can resume this review when usage becomes available. No other connection is used automatically."],
-      busy: ["The selected personal connection is reviewing another pull request.", "This review will retry automatically when the connection is available."],
-      unavailable: ["The review service is unavailable.", "Ask the administrator to check the service that runs ChatGPT and Claude Code. Queued reviews retry automatically."],
+      authentication: ["The AI connection needs authentication.", "Ask the administrator to check the shared connection credentials before retrying."],
+      quota: ["The AI connection reached its usage limit.", "Retry with the same shared connection when usage becomes available. No other connection is used automatically."],
+      busy: ["The selected AI connection is busy.", "This review will retry automatically when the connection is available."],
+      unavailable: ["The review service is unavailable.", "Ask the administrator to check the review worker and selected shared API connection. Queued reviews retry automatically."],
     };
     [summary, nextStep] = reasons[run.blocked_reason ?? ""] ?? [run.error || "This review needs attention.", "Check the selected AI connection before resuming."];
     if (!["busy", "unavailable"].includes(run.blocked_reason ?? "")) destination = "connections";
@@ -164,7 +164,7 @@ export function runFeedback(run: Run) {
       destination = "repository";
     } else if (rows(report.errors).some((item) => text(item.message).startsWith("Delegated context budget"))) {
       summary = `${summary} The native context budget was reached.`;
-      nextStep = "Start a new review. Subscription reviews now use the Token budget configured in repository settings.";
+      nextStep = "Start a new Mortis review using a shared API connection and the Token budget configured in repository settings.";
       destination = "repository";
     } else if (run.failure_reason === "worker_stopped") {
       summary = "The review worker stopped before the run could finish.";

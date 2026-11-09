@@ -272,9 +272,7 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
                 repo_id = parent.repository_id
                 full_name = db.get(Repository, repo_id).full_name
             adapter = runtime.SyntheticGitHub(case, repo_id, full_name, export / "repo")
-            with adapter.installed(), monkeypatch.context() as patcher:
-                # Mortis public admission stays gated; this is an explicitly requested internal retry.
-                patcher.setattr(service, "require_available_engine", lambda options: None)
+            with adapter.installed():
                 with transaction() as db:
                     parent = db.get(SecurityScan, identity)
                     retry = service.create_scan(db, db.get(Repository, repo_id), db.get(User, parent.actor_id),

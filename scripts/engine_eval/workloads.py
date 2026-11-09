@@ -460,4 +460,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("This historical OCR/native evaluation is retired. Saved evidence and offline scoring remain available; new execution is disabled.")

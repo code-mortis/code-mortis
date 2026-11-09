@@ -24,7 +24,8 @@ def main():
     upgrade.add_argument("--file", default=".env")
     export = sub.add_parser("export-openapi")
     export.add_argument("--output", default="../frontend/node_modules/.cache/code-mortis-openapi.json")
-    sub.add_parser("retire-subscriptions", help="Cancel retired inference durably after stopping old workers and fencing their runner endpoint")
+    sub.add_parser("retire-subscriptions", help="Cancel retired subscription work durably after stopping old workers")
+    sub.add_parser("retire-ocr", help="After stopping admission and all workers/requests, settle OCR work and release its slots; preserve results and charges")
     args = parser.parse_args()
     if args.command == "retire-subscriptions":
         from code_mortis.core.db import transaction
@@ -33,13 +34,20 @@ def main():
         with transaction() as db:
             result = retire_subscriptions(db)
         print(json.dumps(result, sort_keys=True))
+    elif args.command == "retire-ocr":
+        from code_mortis.core.db import transaction
+        from code_mortis.core.engine_retirement import retire_ocr
+
+        with transaction() as db:
+            result = retire_ocr(db)
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "upgrade-env":
         path = Path(args.file)
         if not path.is_file():
             parser.error(f"{args.file} does not exist; use init-env for a new instance")
         content = path.read_text()
         missing = []
-        for key in ("CM_RUNNER_TOKEN", "CM_CODE_GRAPH_TOKEN"):
+        for key in ("CM_CODE_GRAPH_TOKEN",):
             if re.search(rf"(?m)^{key}=.+$", content):
                 continue
             if re.search(rf"(?m)^{key}=", content):
@@ -87,7 +95,6 @@ def main():
             "CM_OWNER_GITHUB_LOGIN": args.owner,
             "CM_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
             "CM_BOOTSTRAP_TOKEN": secrets.token_urlsafe(32),
-            "CM_RUNNER_TOKEN": secrets.token_urlsafe(32),
             "CM_CODE_GRAPH_TOKEN": secrets.token_urlsafe(32),
             "COMPOSE_PROFILES": "",
             "POSTGRES_PASSWORD": secrets.token_urlsafe(32),

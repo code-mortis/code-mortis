@@ -5,8 +5,8 @@ import pytest
 from sqlalchemy import select
 
 from code_mortis.core.db import now, transaction
-from code_mortis.core.security import seal
-from code_mortis.integrations import github, runner_client
+from code_mortis.core.security import digest, seal
+from code_mortis.integrations import github, llm
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -18,9 +18,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.native_runner import CODEX_CONFIG, environment, profile
 from code_mortis.reviews import service as reviews
-from code_mortis.reviews.delegated import validate_result
 
 
 def personal(client, kind="chatgpt"):
@@ -101,7 +99,7 @@ def test_installation_flow_checks_current_access_and_external_login(seed, client
     assert response.headers["location"] == "http://testserver/api/v1/auth/login?installation_id=90"
 
 
-def test_member_can_own_subscription_but_cannot_edit_shared_api(seed, client):
+def test_member_cannot_create_subscription_or_edit_shared_api(seed, client):
     with transaction() as db:
         db.get(Membership, 7).role = "member"
     assert client.post("/api/v1/connections", json={"name": "Personal", "kind": "chatgpt"}).status_code == 422
@@ -120,6 +118,8 @@ def test_other_users_cannot_authenticate_or_consume_personal_connection(seed, cl
     assert not any(row["id"] == identity for row in client.get("/api/v1/connections").json())
     assert client.post(f"/api/v1/connections/{identity}/auth").status_code == 403
     assert client.post(f"/api/v1/connections/{identity}/console-ticket").status_code == 403
+    assert client.delete(f"/api/v1/connections/{identity}/auth").status_code == 403
+    assert client.post(f"/api/v1/connections/{identity}/disconnect").status_code == 403
     assert (
         client.put(f"/api/v1/connections/{identity}/grants/22", json={"automatic": True}).status_code == 403
     )
@@ -143,24 +143,38 @@ def test_owner_consent_automation_and_revocation(seed, client, github_stub, monk
         assert not list(db.scalars(select(ReviewRun)))
 
 
-def test_runner_outage_revokes_access_without_silent_reconnection(seed, client, monkeypatch):
-    identity = personal(client)
-    monkeypatch.setattr(
-        runner_client,
-        "request",
-        lambda *a, **k: (_ for _ in ()).throw(runner_client.RunnerBlocked("unavailable")),
-    )
-    assert client.post(f"/api/v1/connections/{identity}/disconnect").status_code == 200
+@pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
+@pytest.mark.parametrize("operation", ["cancel_auth", "disconnect"])
+def test_retired_auth_revocation_is_local_and_preserves_history(seed, client, monkeypatch, kind, operation):
+    identity = personal(client, kind)
+    report = {"message": "Saved historical result"}
+    with transaction() as db:
+        db.add(ConnectionGrant(connection_id=identity, repository_id=22, automatic=True))
+        db.add(ConsoleTicket(token_hash=digest("historical-ticket"), connection_id=identity,
+                             session_hash=digest("session"), expires_at=now() + timedelta(minutes=1)))
+        db.add(ReviewRun(id="historical", pr_id="pr", connection_id=identity, engine=kind,
+                         trigger="manual", dedup_key="historical", base_sha="b" * 40, head_sha="a" * 40,
+                         config={"connection": {"id": identity, "kind": kind}}, status="completed",
+                         publication="published", report=report))
+    monkeypatch.setattr(github, "request", lambda *a, **k: pytest.fail("Local revocation must not call GitHub"))
+    monkeypatch.setattr(llm, "http_client", lambda: pytest.fail("Local revocation must not call a provider"))
+    response = (client.delete(f"/api/v1/connections/{identity}/auth") if operation == "cancel_auth"
+                else client.post(f"/api/v1/connections/{identity}/disconnect"))
+    assert response.status_code == 200
     assert client.get(f"/api/v1/connections/{identity}/auth").status_code == 410
     with transaction() as db:
         assert db.get(Connection, identity).auth_status == "revoked"
+        assert db.scalar(select(ConsoleTicket)) is None
+        assert bool(db.get(ConnectionGrant, (identity, 22))) is (operation == "cancel_auth")
+        run = db.get(ReviewRun, "historical")
+        assert (run.status, run.publication, run.engine, run.report) == ("completed", "published", kind, report)
 
 
-def test_native_quota_blocks_review_without_replacing_connection(seed, client, github_stub, monkeypatch):
+def test_retired_connection_cannot_review_or_replace_shared_default(seed, client, github_stub, monkeypatch):
     from code_mortis.models import PullRequest
 
     identity = personal(client)
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Retired connection dispatched"))
+    monkeypatch.setattr(llm, "http_client", lambda: pytest.fail("Retired connection must not call a provider"))
     with transaction() as db:
         with pytest.raises(ValueError, match="retired"):
             reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "manual", db.get(User, 7), identity)
@@ -168,29 +182,7 @@ def test_native_quota_blocks_review_without_replacing_connection(seed, client, g
         assert not list(db.scalars(select(ReviewRun)))
 
 
-def test_delegated_findings_cannot_escape_the_assigned_context():
-    finding = {"path": "a.py", "content": "Bug", "start_line": 1, "end_line": 1}
-    assert validate_result({"comments": [finding]}, "a.py", 1, "@@ -1 +1 @@\n+new\n")[0]["inline_line"] == 1
-    for changed in ({"path": "secrets.txt"}, {"end_line": 2}, {"path": "../credentials"}):
-        with pytest.raises(ValueError):
-            validate_result({"comments": [{**finding, **changed}]}, "a.py", 1, "")
-    assert validate_result({"comments": []}, "a.py", 1, "") == []
-
-
-def test_native_profiles_and_environment_are_isolated(tmp_path, monkeypatch):
-    from code_mortis import native_runner
-
-    monkeypatch.setattr(native_runner, "ROOT", tmp_path)
-    monkeypatch.setenv("CM_DATABASE_URL", "secret")
-    monkeypatch.setenv("OPENAI_API_KEY", "paid-secret")
-    first = profile("00000000-0000-4000-8000-000000000001")
-    second = profile("00000000-0000-4000-8000-000000000002")
-    assert first != second and first.stat().st_mode & 0o777 == 0o700
-    assert "CM_DATABASE_URL" not in environment(first) and "OPENAI_API_KEY" not in environment(first)
-    assert CODEX_CONFIG["features.shell_tool"] is False and CODEX_CONFIG["mcp_servers"] == {}
-
-
-def test_native_console_rejects_origin_and_replay(seed, client, monkeypatch):
+def test_retired_console_rejects_origin_and_replay(seed, client, monkeypatch):
     from starlette.websockets import WebSocketDisconnect
 
     identity = personal(client, "claude_code")
@@ -201,27 +193,3 @@ def test_native_console_rejects_origin_and_replay(seed, client, monkeypatch):
                 pass
     with transaction() as db:
         assert db.scalar(select(ConsoleTicket)) is None
-
-
-def test_native_process_drains_output_while_sending_context():
-    import asyncio
-    import sys
-
-    from code_mortis.native_runner import bounded_output, stop
-
-    async def exercise():
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-c",
-            "import sys; sys.stdout.buffer.write(b'x'*1000000); sys.stdout.flush(); assert len(sys.stdin.buffer.read()) == 1000000",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            assert len(await asyncio.wait_for(bounded_output(process, b"y" * 1000000), 10)) == 1000000
-            assert process.returncode == 0
-        finally:
-            await stop(process)
-
-    asyncio.run(exercise())

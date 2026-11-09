@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 
 import pytest
+from sqlalchemy import select
 from test_mortis_security import scan_workflow as scan_workflow
 from test_mortis_security import selected_result
 
@@ -125,20 +126,25 @@ def test_source_navigation_checkpoint_is_immutable(scan_workflow):
 
 
 @pytest.mark.parametrize("selected", ["ocr", "mortis"])
-def test_new_scan_pins_policy_without_changing_ocr(scan_workflow, seed, monkeypatch, selected):
+def test_new_scan_pins_mortis_policy_and_refuses_ocr(scan_workflow, seed, monkeypatch, selected):
     from code_mortis.core.db import uid
     from code_mortis.models import Repository
     from code_mortis.schemas.security import SecurityScanInput
 
-    monkeypatch.setattr(service, "require_available_engine", lambda options: None)
     with transaction() as db:
         db.get(SecurityScan, scan_workflow["scan_id"]).status = "completed"
         repo = db.get(Repository, seed["repo"].id)
         repo.settings = {**repo.settings, "analysis_engine": selected}
+        if selected == "ocr":
+            with pytest.raises(ValueError, match="OCR execution is retired"):
+                service.create_scan(db, repo, seed["user"], SecurityScanInput(
+                    connection_id="connection", request_key=uid()))
+            assert len(list(db.scalars(select(SecurityScan)))) == 1
+            return
         scan = service.create_scan(db, repo, seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid()))
-        expected = policy.TASK_CONTRACT if selected == "mortis" else engine.LEGACY_TASK_CONTRACT
-        assert scan.config["task_contract"] == expected
+        assert scan.config["analysis_engine"] == "mortis"
+        assert scan.config["task_contract"] == policy.TASK_CONTRACT
 
 
 @pytest.mark.parametrize("contract", [None, engine.LEGACY_TASK_CONTRACT, policy.TASK_CONTRACT])
@@ -146,7 +152,6 @@ def test_retry_keeps_original_policy(scan_workflow, seed, monkeypatch, contract)
     from code_mortis.core.db import uid
     from code_mortis.schemas.security import SecurityScanInput
 
-    monkeypatch.setattr(service, "require_available_engine", lambda options: None)
     with transaction() as db:
         parent = db.get(SecurityScan, scan_workflow["scan_id"])
         parent.status = "partial"

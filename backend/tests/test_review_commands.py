@@ -5,13 +5,14 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from runtime_helpers import file_limit_result
 from sqlalchemy import func, select
 from test_checks import rerun_body
 from test_review_flow import new_run, remote
 
 from code_mortis import jobs
 from code_mortis.core.db import transaction
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import (
     AppConfig,
     Connection,
@@ -23,15 +24,15 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import checks
+from code_mortis.reviews import checks, mortis
 from code_mortis.reviews import service as reviews
 from code_mortis.schemas.common import RepoSettings
 
 
 def skipped_run(monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    result = ocr.file_limit_result([f"file{i}.py" for i in range(41)], 40)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: result)
+    result = file_limit_result([f"file{i}.py" for i in range(41)], 40)
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: result)
     identity = new_run()
     reviews.perform_review(identity)
     return identity
@@ -79,7 +80,7 @@ def test_notice_recovers_lost_response_without_analysis(seed, github_stub, monke
         raise github.GitHubError(503, "Response lost")
 
     monkeypatch.setattr(github, "request", request)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Notice publication cannot run AI"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Notice publication cannot run AI"))
     with pytest.raises(github.GitHubError):
         reviews.publish_run(source)
     monkeypatch.setattr(reviews, "publication_plan", lambda *a: pytest.fail("Must reuse the saved notice"))
@@ -321,6 +322,6 @@ def test_command_rechecks_actor_before_execution(seed, github_stub, monkeypatch,
         def denied(*a, **k):
             raise github.GitHubError(403, "Write permission required")
         monkeypatch.setattr(github, "authorize_repo", denied)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Revoked members cannot run AI"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Revoked members cannot run AI"))
     with pytest.raises((ValueError, github.GitHubError)):
         reviews.perform_review(run_id)

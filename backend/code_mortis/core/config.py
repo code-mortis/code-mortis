@@ -12,8 +12,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     public_url: str = "http://localhost:8080"
     webhook_url: str = ""
-    runner_url: str = "http://runner:8090"
-    runner_token: str = ""
     code_graph_parser_url: str = ""
     code_graph_token: str = ""
     code_graph_store_dir: Path = Path("/var/lib/code-mortis/code-graph")
@@ -22,12 +20,9 @@ class Settings(BaseSettings):
     owner_github_login: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
     cookie_secure: bool = True
     session_days: int = Field(default=7, ge=1, le=30)
-    ocr_binary: str = "ocr"
-    ocr_version: str = "1.13.1"
     trivy_binary: str = "trivy"
     trivy_version: str = "0.76.0"
     trivy_cache_dir: Path = Path("/tmp/code-mortis-trivy")
-    ocr_isolated_runtime: bool = False
     work_dir: Path = Path("/tmp/code-mortis-runs")
     frontend_dir: Path = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     allow_private_endpoints: bool = False

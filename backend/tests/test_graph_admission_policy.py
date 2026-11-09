@@ -188,7 +188,7 @@ def test_summary_filters_legacy_selected_media_without_mutating_report(monkeypat
     report = {"manifest": {"coverage": {"selected": [{"path": path} for path in ("README.md", "image.SVG", "custom.py")]}}}
     run = SimpleNamespace(report=report, config={"settings": {"language": "English", "exclusions": "custom.py"}, "connection": {}},
                           base_sha="a" * 40, head_sha="b" * 40)
-    monkeypatch.setattr(summary.source_adapter(run.config), "git", lambda *a, **k: "" if "--name-status" in a else "a" * 40 if "merge-base" in a else "documentation change")
+    monkeypatch.setattr(summary.git_source, "git", lambda *a, **k: "" if "--name-status" in a else "a" * 40 if "merge-base" in a else "documentation change")
     context = summary.build_context(tmp_path, {}, run, lambda: False)
     assert context["paths"] == ["README.md"]
     assert len(report["manifest"]["coverage"]["selected"]) == 3

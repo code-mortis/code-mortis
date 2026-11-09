@@ -129,7 +129,7 @@ class RunLimits(StrictModel):
 
 
 class RepoSettings(RunLimits):
-    analysis_engine: Literal["ocr", "mortis"] = "ocr"
+    analysis_engine: Literal["mortis"] = "mortis"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
     verification_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
     summary_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -146,7 +146,7 @@ class RepoSettings(RunLimits):
     exclusions: str = Field(default="", max_length=4000)
     background: str = Field(default="", max_length=20000)
     max_files: int | None = Field(default=None, ge=1, strict=True)
-    # Retain legacy settings and snapshots; subscription runs now use token_budget.
+    # Retain historical settings for readers; Mortis uses token_budget.
     delegated_context_bytes: int | None = Field(default=None, ge=4096, le=20000000)
     concurrency: int = Field(default=2, ge=1, le=8)
     rules: dict[str, Any] | None = None

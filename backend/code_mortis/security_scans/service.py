@@ -4,7 +4,6 @@ import json
 import re
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from contextlib import nullcontext
 from datetime import datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -18,15 +17,15 @@ from code_mortis.core import source as git_source
 from code_mortis.core.analysis import (
     engine_snapshot,
     job_live,
-    require_available_engine,
+    new_engine_snapshot,
     require_execution_engine,
 )
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import ReviewStopped
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
 from code_mortis.core.shared_execution import RETIRED_MESSAGE, is_shared
-from code_mortis.integrations import github, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
     ConnectionGrant,
@@ -53,14 +52,9 @@ STAGES = ("snapshot", "trivy", "analysis", "assessment", "verification", "report
 RATING_POLICY = "highest-unresolved-severity/v1"
 
 
-def legacy_configuration(*args, **kwargs):
-    from code_mortis.integrations import ocr
-
-    return ocr.configuration(*args, **kwargs)
-
-
 def rolling_analysis(paths, concurrency, submit, stopped, stop_workers):
     paths, pending = iter(paths), {}
+    admission_error, failed = None, False
     try:
         while True:
             while len(pending) < concurrency and not stop_workers.is_set():
@@ -69,12 +63,22 @@ def rolling_analysis(paths, concurrency, submit, stopped, stop_workers):
                 path = next(paths, None)
                 if path is None:
                     break
-                pending[submit(path)] = path
+                try:
+                    pending[submit(path)] = path
+                except Exception as exc:
+                    if not pending:
+                        raise
+                    # A peer may have saved unknown usage before its failure future became ready.
+                    admission_error = exc
+                    stop_workers.set()
+                    break
             if not pending:
+                if admission_error and not failed:
+                    raise admission_error
                 return
             ready, _ = wait(pending, return_when=FIRST_COMPLETED)
-            # Consume every ready result before refilling; unknown usage stops new work.
             for future in ready:
+                failed |= not future.cancelled() and future.exception() is not None
                 yield pending.pop(future), future
     except BaseException:
         stop_workers.set()
@@ -101,7 +105,7 @@ def authorize(db, repo, actor, connection, *, fresh=True):
         if not db.get(ConnectionGrant, (connection.id, repo.id)):
             raise ValueError("Authorize this repository on your personal AI connection before scanning it.")
         if connection.auth_status != "connected":
-            raise runner_client.RunnerBlocked("authentication")
+            raise RunnerBlocked("authentication")
     return github.authorize_repo(db, actor, repo.full_name, write=True) if fresh else None
 
 
@@ -120,7 +124,10 @@ def branch_head(full_name, token, remote=None):
 
 def create_scan(db, repo, actor, body, remote=None, parent=None):
     connection = db.get(Connection, body.connection_id)
-    require_available_engine(parent.config if parent else repo.settings)
+    if parent:
+        require_execution_engine(parent.config)
+    else:
+        new_engine_snapshot(repo.settings)
     authorized = authorize(db, repo, actor, connection, fresh=remote is None)
     freshness = branch_head(repo.full_name, github.installation_token(db, repo.installation_id), remote or authorized)
     db.scalar(select(Repository).where(Repository.id == repo.id).with_for_update())
@@ -140,14 +147,16 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
                          "concurrency": body.concurrency if connection.kind == "api" else 1},
               "policy": security_engine.POLICY, "rating_policy": RATING_POLICY,
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
-    config.update(engine_snapshot(parent.config if parent else repo.settings))
+    config.update(engine_snapshot(parent.config) if parent else new_engine_snapshot(repo.settings))
     if parent is None or "task_contract" in parent.config:
-        config["task_contract"] = parent.config["task_contract"] if parent else (
-            security_engine.TASK_CONTRACT if config["analysis_engine"] == "mortis" else security_engine.LEGACY_TASK_CONTRACT)
+        config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
     if not config["connection"]["model"]:
         raise ValueError("Choose a model before starting a security scan.")
     if parent:
+        # Retain inert metadata in immutable retry identities without restoring its adapter.
+        if "ocr_version" in parent.config["connection"]:
+            config["connection"]["ocr_version"] = parent.config["connection"]["ocr_version"]
         if "concurrency" not in body.model_fields_set:
             config["limits"]["concurrency"] = parent.config["limits"].get("concurrency", 1)
         original = {**parent.config, **engine_snapshot(parent.config), "limits": {**parent.config["limits"],
@@ -570,11 +579,10 @@ def perform(scan_id, claim):
             cancel(db, scan, reason=RETIRED_MESSAGE)
             return
         require_execution_engine(scan.config)
-        if engine_snapshot(scan.config)["analysis_engine"] == "mortis":
-            job_id, _, attempt = claim.rpartition(":")
-            job = db.get(Job, job_id) if attempt.isdigit() else None
-            if not attempt.isdigit() or not job_live(job, int(attempt), now()) or job.payload.get("scan_id") != scan_id:
-                raise ValueError("Mortis security analysis requires its live durable job attempt.")
+        job_id, _, attempt = claim.rpartition(":")
+        job = db.get(Job, job_id) if attempt.isdigit() else None
+        if not attempt.isdigit() or not job_live(job, int(attempt), now()) or job.payload.get("scan_id") != scan_id:
+            raise ValueError("Mortis security analysis requires its live durable job attempt.")
         execution = scan.progress.get("execution")
         if execution and scan.status == "running":
             if execution == claim:
@@ -583,18 +591,13 @@ def perform(scan_id, claim):
             owner = db.get(Job, job_id) if attempt.isdigit() else None
             if owner and owner.status == "running" and owner.attempts == int(attempt) and owner.lease_until and owner.lease_until > now():
                 return
-            if engine_snapshot(scan.config)["analysis_engine"] != "mortis":
-                scan.status, scan.error, scan.finished_at = "partial", "Worker stopped; usage may have been consumed. Retry explicitly.", now()
-                interrupt_work(scan)
-                scan.report = report_data(db, scan, [scan.error])
-                return
         repo, actor, connection = db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id)
         authorize(db, repo, actor, connection)
         if connection.kind != "api":
             db.scalar(select(Connection).where(Connection.id == connection.id).with_for_update())
             if connection_busy(db, connection.id, scan_id=scan.id):
                 scan.status = "blocked"
-                raise runner_client.RunnerBlocked("busy")
+                raise RunnerBlocked("busy")
         current_connection = connection_snapshot(connection)
         if any(current_connection[key] != scan.config["connection"][key]
                for key in ("kind", "owner_id", "protocol", "base_url", "provider", "options")):
@@ -611,7 +614,6 @@ def perform(scan_id, claim):
         if scan.parent_id:
             parent = db.get(SecurityScan, scan.parent_id)
             saved = parent.progress.get("tasks", {})
-    mortis = engine_snapshot(config)["analysis_engine"] == "mortis"
     limits = config["limits"]
     concurrency = limits.get("concurrency", 1) if config["connection"]["kind"] == "api" else 1
     stop_workers = Event()
@@ -634,7 +636,7 @@ def perform(scan_id, claim):
                 return True
             try:
                 authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id), fresh=False)
-            except (ValueError, runner_client.RunnerBlocked):
+            except (ValueError, RunnerBlocked):
                 return True
             job_id, _, attempt = claim.rpartition(":")
             job = db.get(Job, job_id) if attempt.isdigit() else None
@@ -697,8 +699,6 @@ def perform(scan_id, claim):
         remaining = None if limits["token_budget"] is None else limits["token_budget"] - used
         if allowance is not None:
             remaining = min(remaining, allowance)
-        if remaining is not None and remaining <= 0 and not mortis:
-            raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": 0})
         if remaining is not None:
             remaining = max(0, remaining)
         checkpoint(scan_id, key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
@@ -736,17 +736,14 @@ def perform(scan_id, claim):
                     validator=validator, claim=claim, stage="security", task_key=f"{key}:round:{round}", scan_id=scan_id,
                     stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout)
 
-            if mortis:
-                from code_mortis.core.workflow_inference import output_token_policy
+            from code_mortis.core.workflow_inference import output_token_policy
 
-                token_policy = output_token_policy(claim.rsplit(":", 1)[0])
+            token_policy = output_token_policy(claim.rsplit(":", 1)[0])
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
-                                                **({"configuration_managed": True} if parallel else {}),
-                                                **({"infer": infer, "source_packing": packing, "output_token_policy": token_policy,
-                                                    "select_packing": select_packing, "navigation": navigation,
-                                                    "select_navigation": select_navigation, "record_sources": record_sources}
-                                                   if mortis else {}))
+                                                infer=infer, source_packing=packing, output_token_policy=token_policy,
+                                                select_packing=select_packing, navigation=navigation,
+                                                select_navigation=select_navigation, record_sources=record_sources)
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
@@ -766,7 +763,7 @@ def perform(scan_id, claim):
                     row.progress = {**row.progress, "tasks": tasks,
                                     "tokens": used + tokens if used is not None and tokens is not None else None}
             raise
-        except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
+        except (verification.VerificationOutputError, RunnerBlocked) as exc:
             tokens = getattr(exc, "usage", {}).get("tokens")
             feedback = getattr(exc, "feedback", None)
             try:
@@ -829,10 +826,8 @@ def perform(scan_id, claim):
             stage(scan_id, "analysis", "running", total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
 
             parallel = concurrency > 1 and len(code_paths) > 1
-            configuration = (legacy_configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
-                             if parallel and not mortis else nullcontext())
-            with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
-                rolling = mortis and parallel and limits["token_budget"] is None
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                rolling = parallel and limits["token_budget"] is None
                 batches = [code_paths] if rolling else [code_paths[offset:offset + concurrency]
                                                       for offset in range(0, len(code_paths), concurrency)]
                 for batch in batches:
@@ -873,7 +868,8 @@ def perform(scan_id, claim):
                                 fatal = fatal or exc
                                 stop_workers.set()
                         except Exception as exc:
-                            fatal = fatal or exc
+                            if fatal is None or isinstance(exc, RunnerBlocked):
+                                fatal = exc
                             stop_workers.set()
                         stage(scan_id, "analysis", "running", completed=completed, failed=failed)
                     for path in batch:
@@ -886,9 +882,7 @@ def perform(scan_id, claim):
             stage(scan_id, "assessment", "running", total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
-            configuration = (legacy_configuration(config["connection"], credentials, {}, stopped, session_per_task=True, structured_result=True)
-                             if parallel and not mortis else nullcontext())
-            with configuration, ThreadPoolExecutor(max_workers=concurrency) as pool:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
                 while remaining:
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
@@ -901,7 +895,7 @@ def perform(scan_id, claim):
                     contexts = {}
                     for candidate in batch:
                         paths = list(dict.fromkeys(citation["path"] for citation in candidate.proposal["evidence"]))
-                        if mortis and config.get("task_contract") == security_engine.TASK_CONTRACT:
+                        if config.get("task_contract") == security_engine.TASK_CONTRACT:
                             analysis_task = current_progress.get("tasks", {}).get("analysis:" + candidate.proposal["path"], {})
                             # Assess with the same source context, including guards not quoted in the allegation.
                             paths = sorted(set(paths) | set(analysis_task.get("context_paths", [])))
@@ -929,7 +923,8 @@ def perform(scan_id, claim):
                                 fatal = fatal or exc
                                 stop_workers.set()
                         except Exception as exc:
-                            fatal = fatal or exc
+                            if fatal is None or isinstance(exc, RunnerBlocked):
+                                fatal = exc
                             stop_workers.set()
                         stage(scan_id, "assessment", "running", failed=assessment_failed)
                     if fatal:
@@ -954,7 +949,7 @@ def perform(scan_id, claim):
                             if assessed["verdict"] != "confirmed":
                                 continue
                             proposal = candidate.proposal
-                            evidence = {**proposal, "kind": "code", "sources": ["mortis" if mortis else "ocr"], "source_sha": item.sha,
+                            evidence = {**proposal, "kind": "code", "sources": ["mortis"], "source_sha": item.sha,
                                         "source_hash": item.inventory[proposal["path"]]["hash"], "assessment": assessed,
                                         "fingerprint": digest(json.dumps(["code", proposal["path"], proposal["category"],
                                                                           proposal["evidence"][0]["quote"], proposal["title"]]))}
@@ -1007,7 +1002,7 @@ def perform(scan_id, claim):
         with transaction() as db:
             row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
             if row and row.status in ACTIVE:
-                row.status = "blocked" if isinstance(exc, runner_client.RunnerBlocked) else "partial" if observed else "failed"
+                row.status = "blocked" if isinstance(exc, RunnerBlocked) else "partial" if observed else "failed"
                 row.error, row.finished_at = message[:2000], now()
                 row.stages = {name: {**value, "status": "failed" if value.get("status") == "running" else "skipped"}
                               if value.get("status") in {"running", "pending"} else value for name, value in row.stages.items()}

@@ -1,4 +1,4 @@
-"""Durable task accounting for the future engine; these helpers never call a provider."""
+"""Durable Mortis execution contracts and historical engine identity readers."""
 
 import hashlib
 import json
@@ -32,14 +32,15 @@ from code_mortis.models import (
 )
 from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
-OUTPUT_TOKEN_POLICY = "ocr-completion/v1"
+OUTPUT_TOKEN_POLICY = "mortis-completion/v1"
+RETIRED_ENGINE_MESSAGE = "OCR execution is retired. Its saved plan and results were preserved; explicitly start new work with Mortis."
 
 
 def output_token_limit(policy):
     """Missing policy retains the original immutable 8,192-token requests."""
     if policy is None:
         return 8192
-    if policy == OUTPUT_TOKEN_POLICY:
+    if policy in {OUTPUT_TOKEN_POLICY, "ocr-completion/v1"}:
         return 16384
     raise ValueError("The saved output-token policy is unsupported")
 
@@ -56,7 +57,7 @@ def engine_snapshot(options):
     settings = options.get("settings", {})
     selected = options.get("analysis_engine", settings.get("analysis_engine", "ocr"))
     if not isinstance(selected, str) or selected not in {"ocr", "mortis"}:
-        raise ValueError("Choose a supported analysis engine: OCR or Mortis.")
+        raise ValueError("The stored analysis engine identity is unsupported.")
     if "analysis_engine" in settings and settings["analysis_engine"] != selected:
         raise ValueError("The stored analysis engine snapshot does not match its settings.")
     return {"analysis_engine": selected, "engine_contract": "analysis-engine/v1",
@@ -64,12 +65,22 @@ def engine_snapshot(options):
 
 
 def require_available_engine(options):
-    if engine_snapshot(options)["analysis_engine"] != "ocr":
-        raise ValueError("Mortis analysis is not available yet. Select OCR for new work; no fallback was used.")
+    if engine_snapshot(options)["analysis_engine"] != "mortis":
+        raise ValueError(RETIRED_ENGINE_MESSAGE)
+
+
+def new_engine_snapshot(options):
+    """Default mutable settings for new work; never apply this to a saved run or plan."""
+    if not isinstance(options, dict):
+        raise ValueError("The repository engine settings are invalid.")
+    snapshot = engine_snapshot({"analysis_engine": "mortis", **options})
+    require_available_engine(snapshot)
+    return snapshot
 
 
 def require_execution_engine(options):
-    """Validate a frozen worker snapshot; public admission remains independently gated."""
+    """Reject retired saved work without rewriting its engine identity."""
+    require_available_engine(options)
     return engine_snapshot(options)
 
 
@@ -448,16 +459,21 @@ def cancel_tasks(job_id: str) -> None:
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job:
             return
-        plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
-        if not plan:
-            return
-        for ticket in db.scalars(select(InferenceAdmission).where(
-                InferenceAdmission.job_id == job_id, InferenceAdmission.status == "queued")):
-            release_in_transaction(db, ticket.id, queued_only=True)
-        for task in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id).with_for_update()):
-            if task.status == "running":
-                attempt = db.scalar(select(AnalysisAttempt).where(
-                    AnalysisAttempt.task_id == task.id, AnalysisAttempt.number == task.attempts))
-                mark_uncertain(task, attempt, now())
-            if task.status != "completed":
-                task.status = "cancelled"
+        cancel_tasks_in_transaction(db, job_id)
+
+
+def cancel_tasks_in_transaction(db, job_id):
+    """The caller holds the job lock; completed outputs and all charges remain intact."""
+    plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
+    if not plan:
+        return
+    for ticket in db.scalars(select(InferenceAdmission).where(
+            InferenceAdmission.job_id == job_id, InferenceAdmission.status == "queued")):
+        release_in_transaction(db, ticket.id, queued_only=True)
+    for task in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id).with_for_update()):
+        if task.status == "running":
+            attempt = db.scalar(select(AnalysisAttempt).where(
+                AnalysisAttempt.task_id == task.id, AnalysisAttempt.number == task.attempts))
+            mark_uncertain(task, attempt, now())
+        if task.status != "completed":
+            task.status = "cancelled"

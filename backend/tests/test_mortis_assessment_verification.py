@@ -12,10 +12,10 @@ from test_verification import CONTEXT, RESULT
 from test_verification import scenario as verification_scenario  # noqa: F401
 
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import ocr
 from code_mortis.models import Finding, FindingVerification, Repository, ReviewCandidate, ReviewRun
 from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import context as review_context
+from code_mortis.reviews.verification import mortis_verify as real_mortis_verify
 from code_mortis.schemas.common import RepoSettings
 
 
@@ -39,9 +39,8 @@ def test_mortis_selection_reconstructs_verbatim_evidence_and_history(monkeypatch
         ]}
         return kwargs["validator"](raw, supplied), {"tokens": 31}
 
+    monkeypatch.setattr(verification, "mortis_verify", real_mortis_verify)
     monkeypatch.setattr(workflow_inference, "execute", execute)
-    monkeypatch.setattr(ocr, "configuration", fail_ocr)
-    monkeypatch.setattr(ocr, "command", fail_ocr)
     result, usage = verification.mortis_verify(
         {"kind": "api"}, {}, context, 100, 30, lambda: False,
         run_id="run", claim="job:1", stage="verification", task_key="finding", round=1,
@@ -70,8 +69,6 @@ def test_mortis_context_uses_exact_git_policy_without_ocr(tmp_path, monkeypatch)
     fixture_git(root, "commit", "-qam", "bounded retry")
     head = fixture_git(root, "rev-parse", "HEAD")
     options = RepoSettings(analysis_engine="mortis", exclusions="helper.py").model_dump()
-    monkeypatch.setattr(ocr, "command", fail_ocr)
-    monkeypatch.setattr(ocr, "configuration", fail_ocr)
     context = verification.build_context(
         root, {}, {}, {"path": "app.py"}, base, head, options, lambda: False, base_sha=base,
     )
@@ -130,11 +127,9 @@ def test_mortis_assessment_preserves_evidence_expansion_and_identity(pipeline, m
         assert paths == ["helper.py"]
         context["sources"]["current"]["helper.py"] = "def retry(): return False\n"
 
+    monkeypatch.setattr(verification, "mortis_verify", real_mortis_verify)
     monkeypatch.setattr(workflow_inference, "execute", execute)
     monkeypatch.setattr(assessment, "expand_context", expand)
-    monkeypatch.setattr(verification, "api_verify", fail_ocr)
-    monkeypatch.setattr(ocr, "configuration", fail_ocr)
-    monkeypatch.setattr(ocr, "command", fail_ocr)
     assessment.perform(run_id, Path("/tmp/repo"), {}, {}, connection, {}, claim)
     with transaction() as db:
         candidate = db.get(ReviewCandidate, "candidate")
@@ -182,11 +177,9 @@ def test_mortis_verification_retains_explicit_resolution_evidence(verification_s
         ]}
         return kwargs["validator"](raw, supplied), {"tokens": 37}
 
+    monkeypatch.setattr(verification, "mortis_verify", real_mortis_verify)
     monkeypatch.setattr(workflow_inference, "execute", execute)
     monkeypatch.setattr(verification, "build_context", lambda *a, **k: copy.deepcopy(CONTEXT))
-    monkeypatch.setattr(verification, "api_verify", fail_ocr)
-    monkeypatch.setattr(ocr, "configuration", fail_ocr)
-    monkeypatch.setattr(ocr, "command", fail_ocr)
     verification.perform(run_id, Path("/tmp/repo"), {}, {}, connection, {}, claim)
     with transaction() as db:
         row = db.scalar(select(FindingVerification))

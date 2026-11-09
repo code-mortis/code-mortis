@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from code_mortis import jobs
 from code_mortis.core.db import now, transaction
 from code_mortis.core.security import unseal
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
@@ -25,6 +25,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
+from code_mortis.reviews import mortis
 from code_mortis.reviews import service as reviews
 
 
@@ -596,7 +597,7 @@ def test_existing_revision_does_not_bypass_connection_authorization(seed, monkey
 def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     monkeypatch.setattr(
-        ocr, "review", lambda *a, **k: ("completed", {"message": "complete"}, [copy.deepcopy(COMMENT)])
+        mortis, "review", lambda *a, **k: ("completed", {"message": "complete"}, [copy.deepcopy(COMMENT)])
     )
     first = new_run()
     reviews.perform_review(first)
@@ -605,7 +606,7 @@ def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
         snapshot = copy.deepcopy(db.scalar(select(Occurrence)).snapshot)
         assert finding.status == "open"
         assert db.get(ReviewRun, first).status == "completed"
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("completed", {}, []))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, []))
     second = new_run()
     reviews.perform_review(second)
     with transaction() as db:
@@ -618,7 +619,7 @@ def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
 def test_publication_recovers_unknown_response_without_duplicate_or_review(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     snapshot = {**COMMENT, "suggestion_code": "for attempt in range(3):"}
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("partial", {}, [copy.deepcopy(snapshot)]))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: ("partial", {}, [copy.deepcopy(snapshot)]))
     run_id = new_run()
     reviews.perform_review(run_id)
     published = []
@@ -644,7 +645,7 @@ def test_publication_recovers_unknown_response_without_duplicate_or_review(seed,
         reviews.publish_run(run_id)
     with transaction() as db:
         saved_plan = copy.deepcopy(db.get(ReviewRun, run_id).publication_plan)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Publication must not rerun OCR"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Publication must not rerun Mortis"))
     monkeypatch.setattr(reviews, "comment_body", lambda *a, **k: pytest.fail("Publication must reuse saved comments"))
     reviews.publish_run(run_id)
     assert len(published) == 1
@@ -656,7 +657,7 @@ def test_publication_recovers_unknown_response_without_duplicate_or_review(seed,
 
 def test_resolution_sync_is_canonical_and_versioned(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
     run_id = new_run()
     reviews.perform_review(run_id)
     with transaction() as db:
@@ -708,7 +709,7 @@ def test_stale_publication_and_cancelled_review_do_no_work(seed, github_stub, mo
         run = db.get(ReviewRun, run_id)
         run.status = "cancelled"
         run.cancel_requested = True
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Cancelled run executed"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Cancelled run executed"))
     reviews.perform_review(run_id)
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
@@ -827,7 +828,7 @@ def test_pr_webhooks_only_automatically_review_human_prs(
 def test_queued_review_cannot_send_rotated_credentials_to_old_endpoint(seed, github_stub, monkeypatch):
     run_id = new_run()
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Changed endpoint must not execute"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Changed endpoint must not execute"))
     with transaction() as db:
         db.get(Connection, "connection").base_url = "https://new-provider.example/v1"
     with pytest.raises(ValueError, match="endpoint changed"):

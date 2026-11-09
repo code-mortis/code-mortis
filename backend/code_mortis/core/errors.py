@@ -1,4 +1,4 @@
-"""Execution signals shared by workflow, source and legacy adapters."""
+"""Execution signals shared by workflows and source readers."""
 
 
 class ReviewStopped(Exception):
@@ -22,15 +22,15 @@ class RunnerBlocked(ValueError):
             {
                 "retired": "Subscription execution is retired. Select a shared API connection and explicitly start new work.",
                 "busy": "This run or connection is in use. The review will wait.",
-                "quota": "The subscription limit was reached. Retry when usage is available.",
-                "authentication": "This personal account needs to sign in again. Reconnect it in Settings, then retry.",
-                "prompt_limit": "The subscription prompt exceeds its conservative per-prompt token limit. Increase Prompt ceiling on the AI connection or reduce the supplied context.",
-                "token_limit": "The subscription request exceeded the remaining Token budget. Increase Token budget, choose Unlimited, or reduce the review scope.",
-                "usage_unknown": "The native client did not report valid token usage. Further AI checks were stopped because the remaining Token budget cannot be verified. Start a new review.",
-                "unavailable": "The service that runs ChatGPT and Claude Code is unavailable. Ask the administrator to check the runner service, then try again.",
+                "quota": "The selected provider limit was reached. Retry when usage is available.",
+                "authentication": "The selected connection needs valid credentials. Ask an administrator to update it, then retry.",
+                "prompt_limit": "The request exceeds the connection's conservative per-prompt token limit. Increase Prompt ceiling on the AI connection or reduce the supplied context.",
+                "token_limit": "The request exceeded the remaining Token budget. Increase Token budget, choose Unlimited, or reduce the review scope.",
+                "usage_unknown": "The selected provider did not report valid token usage. Further AI checks were stopped because the remaining Token budget cannot be verified. Start a new review.",
+                "unavailable": "The selected provider is unavailable. Check the shared API connection, then try again.",
             }.get(
                 reason,
-                "ChatGPT or Claude Code could not complete this request. Check the AI connection account status, then try again.",
+                "The shared API connection could not complete this request. Check its configuration, then try again.",
             )
         )
 

@@ -58,7 +58,7 @@ def test_active_graph_claim_is_not_reset_by_a_stale_delivery(seed):
 def saved_review(db):
     db.add(ReviewRun(id="review-run", pr_id="pr", trigger="manual", dedup_key="review-run",
                      base_sha="b" * 40, head_sha="a" * 40,
-                     config={"connection": {"id": "connection", "kind": "api"}, "settings": {}}))
+                     engine="mortis", config={"analysis_engine": "mortis", "connection": {"id": "connection", "kind": "api"}, "settings": {}}))
     db.flush()
 
 

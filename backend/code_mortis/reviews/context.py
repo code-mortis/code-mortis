@@ -123,21 +123,3 @@ def execution_credentials(db, repository_id, credentials, token):
     rules = [dict(row.evidence, path=row.path) for row in db.scalars(select(SecurityFinding).where(
         SecurityFinding.repository_id == repository_id, SecurityFinding.kind == "secret"))]
     return {**credentials, "redaction_values": [token], "redaction_rules": rules}
-
-
-def prepare_ocr_redaction(repo, env, base, head, credentials, stopped):
-    from code_mortis.integrations import ocr
-
-    if not credentials.get("redaction_rules"):
-        return
-    sanitize("", credentials, stopped)
-    changed = ocr.git(repo, env, "diff", "--name-only", "-z", f"{base}...{head}", stopped=stopped).strip("\0").split("\0")
-    paths = set(filter(None, changed)) | {rule["path"] for rule in credentials["redaction_rules"]}
-    for path in sorted(paths):
-        ocr.ReviewComment.relative_path(path)
-        for sha in (base, head):
-            try:
-                source = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
-            except ValueError:
-                continue
-            sanitize(source, credentials, stopped)
