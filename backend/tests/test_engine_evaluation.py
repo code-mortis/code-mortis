@@ -167,6 +167,26 @@ def test_worker_rejects_executable_git_metadata(evaluation):
         runtime.checked_case(exported, case, RepoSettings().model_dump())
 
 
+@pytest.mark.parametrize("kind", ["file", "nonempty_directory", "empty_directory"])
+def test_worker_validates_git_hooks_path(evaluation, kind):
+    from code_mortis.schemas.common import RepoSettings
+
+    _, case, exported = evaluation
+    hooks = exported / "repo/.git/hooks"
+    assert not hooks.exists()
+    if kind == "file":
+        hooks.write_text("invalid hooks path")
+    else:
+        hooks.mkdir()
+        if kind == "nonempty_directory":
+            (hooks / "pre-commit").write_text("exit 1")
+    if kind == "empty_directory":
+        assert runtime.checked_case(exported, case, RepoSettings().model_dump())["head_sha"] == case["head"]["commit"]
+    else:
+        with pytest.raises(ValueError, match="Export must not contain Git hooks"):
+            runtime.checked_case(exported, case, RepoSettings().model_dump())
+
+
 @pytest.mark.parametrize(
     "url",
     [

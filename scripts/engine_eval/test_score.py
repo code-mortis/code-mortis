@@ -240,6 +240,19 @@ class ScoreTests(unittest.TestCase):
                 self.assertEqual(report["paired_performance"]["security/off/cold"]["eligible_completed_pairs"], 0)
                 self.assertIn("stage_" + stage + "_not_completed_or_missing", report["required_work_gaps"][0]["gaps"])
 
+    def test_malformed_security_snapshot_evidence_is_incomplete_not_a_scoring_crash(self):
+        for path in ((), ("coverage",), ("coverage", "trivy"), ("coverage", "trivy", "evaluation_snapshot")):
+            for malformed in (None, [], ["invalid"], "invalid", 1, True):
+                with self.subTest(path=path, malformed=malformed):
+                    results = self.results(("sec-01",))
+                    parent, key = results["attempts"][1], "report"
+                    for child in path:
+                        parent, key = parent[key], child
+                    parent[key] = malformed
+                    report = score.score(results)
+                    self.assertEqual(report["paired_performance"]["security/off/cold"]["eligible_completed_pairs"], 0)
+                    self.assertIn("scanner_snapshot_evidence_missing_or_changed", report["required_work_gaps"][0]["gaps"])
+
     def test_explicit_database_verification_selection_proves_zero_targets(self):
         results = self.results(("pr-01",))
         for attempt in results["attempts"]:

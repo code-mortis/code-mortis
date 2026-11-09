@@ -380,8 +380,9 @@ def checked_case(export, case, options):
         not (root / ".git" / "objects" / "info" / "alternates").exists(),
         "Export Git objects must be self-contained",
     )
+    hooks = root / ".git" / "hooks"
     require(
-        not (root / ".git" / "hooks").exists() or not any((root / ".git" / "hooks").iterdir()),
+        not hooks.exists() or (hooks.is_dir() and not any(hooks.iterdir())),
         "Export must not contain Git hooks",
     )
     for side in ("base", "head"):

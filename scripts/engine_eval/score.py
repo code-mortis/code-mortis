@@ -353,11 +353,12 @@ def required_work_gaps(attempt, workload, scanner_sha=None):
         expected = stages
     else:
         expected = dict.fromkeys(("snapshot", "trivy", "analysis", "assessment", "verification", "report"))
-        report = attempt.get("report") or {}
-        observed = report.get("coverage", {}).get("trivy", {}).get("evaluation_snapshot", {})
+        observed = attempt.get("report")
+        for key in ("coverage", "trivy", "evaluation_snapshot"):
+            observed = observed.get(key) if isinstance(observed, dict) else None
         if not scanner_sha:
             gaps.append("missing_frozen_scanner_identity")
-        elif observed.get("before") != scanner_sha or observed.get("after") != scanner_sha:
+        elif not isinstance(observed, dict) or observed.get("before") != scanner_sha or observed.get("after") != scanner_sha:
             gaps.append("scanner_snapshot_evidence_missing_or_changed")
     for name in expected:
         stage = stages.get(name)
