@@ -4,7 +4,9 @@ Instructions for AI coding agents working in this repository. Read this before m
 
 ## What this is
 
-Code Mortis is a self-hosted GitHub pull-request review service. It runs [Open Code Review](https://github.com/alibaba/open-code-review) (OCR) and official Claude Code / Codex clients on a server, publishes findings as GitHub comments from your own GitHub App, and keeps review runs, coverage, and resolution history in one workspace.
+Code Mortis is a self-hosted GitHub pull-request review and repository security service. Mortis Engine runs PR reviews and security analysis through explicitly selected shared API connections; Trivy supplies deterministic security checks. The service publishes findings through your own GitHub App and keeps results, coverage, consumption and resolution history in one workspace.
+
+OCR, subscription execution and the official-client runner are retired. Historical results and engine identities remain readable; they are not executable Mortis plans.
 
 Read the source-of-truth docs before touching a related area:
 
@@ -15,6 +17,8 @@ The [documentation index](docs/README.md) groups the guides, feature plans and e
 - `docs/design.md` — implemented UI system (colors, typography, components, do's/don'ts).
 - `docs/operations.md` — upgrade, backup, restore, troubleshooting.
 - `docs/acceptance.md` — what is verified vs. still awaiting real accounts.
+- `docs/architecture.md` — runtime boundaries, module placement and code graph integration.
+- `docs/plans/engine/plan.md` and `docs/plans/engine/m5.md` — engine milestones, retained evaluation evidence and remaining gaps.
 
 ## Stack and layout
 
@@ -22,9 +26,11 @@ The [documentation index](docs/README.md) groups the guides, feature plans and e
 | --- | --- |
 | `backend/` | Python 3.12+, FastAPI, SQLAlchemy 2, Alembic, Pydantic, Celery/Redis, `uv` |
 | `frontend/` | React 19, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS v4, shadcn/ui, Playwright, `bun` |
-| top-level | Docker Compose (prod, dev, test), pinned OCR/native-client versions |
+| top-level | Docker Compose (prod, dev, test), Trivy, optional isolated code graph parser |
 
-`backend/code_mortis/` groups HTTP routers and dependencies in `api/`, infrastructure in `core/`, external adapters in `integrations/`, workflows in `reviews/` and `security_scans/`, MCP in `mcp/`, and shared Pydantic contracts in `schemas/`. `main.py`, `native_runner.py`, `jobs.py`, and `manage.py` remain runtime entry points; `models.py` holds shared SQLAlchemy models. See [docs/architecture.md](docs/architecture.md) for placement and import rules. `frontend/src/` holds pages (`reviews.tsx`, `settings.tsx`, `subscriptions.tsx`), `components/`, and `lib/`.
+`backend/code_mortis/` groups HTTP routers and dependencies in `api/`, infrastructure in `core/`, external adapters in `integrations/`, workflows in `reviews/` and `security_scans/`, MCP in `mcp/`, and shared Pydantic contracts in `schemas/`. `main.py`, `jobs.py`, and `manage.py` remain application entry points; `models.py` holds shared SQLAlchemy models. `code_graph/server.py` is the separate optional parser entry point. `frontend/src/` holds pages (`reviews.tsx`, `security.tsx`, `inbox.tsx`, `settings.tsx`), `components/`, `hooks/`, and `lib/`.
+
+PR execution lives in `reviews/mortis.py`, `reviews/planning.py` and `reviews/engine.py`. Both review and security workflows use the inference gateway in `integrations/llm.py`, durable plans/tasks in `core/analysis.py`, and shared admission in `core/inference_admission.py`. Preserve common file-policy exclusions and limits in `core/file_policy.py`. Code graph enrichment supplies optional exact-revision PR context; security scans do not currently use that enrichment.
 
 ## Commands
 
@@ -48,7 +54,7 @@ bunx playwright install chromium
 bun run test
 ```
 
-Local dev uses a separate Compose project (`.env.dev`, `compose.dev.yaml`) with Vite HMR on `localhost:5173` and a smee.io webhook relay. Restart `review-worker`, `sync-worker`, `scheduler`, or `runner` after changing their code.
+Local dev uses `docker compose --env-file .env.dev -f compose.dev.yaml`, a separate database/Redis, Vite HMR on `localhost:5173`, and an optional Smee webhook relay (`webhooks` profile). The API reloads mounted backend code automatically. Restart affected Celery services after code changes: `review-worker`, `security-worker`, `verification-worker`, `summary-worker`, `sync-worker`, optional `code-graph-worker`, or `scheduler`. Shared inference changes affect the review, security, verification and summary workers. Check queued/running jobs and active/reserved tasks before restarting; drain active work first.
 
 ## Conventions
 
@@ -63,20 +69,24 @@ Local dev uses a separate Compose project (`.env.dev`, `compose.dev.yaml`) with 
 2. **No silent provider fallback.** Quota, auth, or availability failures never switch to another connection or paid API automatically.
 3. **Coverage is counted from validated file results**, never a model's self-reported completion. "Incomplete coverage" is never labeled clean.
 4. **Secrets stay server-side.** API keys and extra headers are encrypted and never returned to the browser. Never commit `.env` or real credentials.
-5. **Untrusted PR content is sandboxed.** Native clients get only explicit context and restricted read tools; repository scripts, agent instructions, hooks, and MCP servers are not executed.
-6. **The native runner is isolated.** It has no database or GitHub credentials. Do not expose its port or mount the Docker socket. Bedrock credentials belong only in the review worker.
+5. **Untrusted repository content is data.** Model tools receive only bounded, authorized exact-revision source. Repository scripts, agent instructions, hooks, and MCP servers are not executed.
+6. **The code graph parser is isolated.** Its private endpoint receives only its service token and bounded extraction input, with no app environment, database/GitHub/model credentials, source volume or Docker socket. Keep its resource and process limits intact.
+7. **Recovery preserves durable ownership and accounting.** Keep immutable plans, attempt fencing, cancellation, reservations and unknown-consumption accounting. Unknown usage must never become zero or silently free reserved budget.
+8. **Retired execution stays retired.** New inference uses Mortis and shared connections only. Preserve historical engine identities and results; do not resume OCR/subscription jobs or reinterpret their saved plans as Mortis work.
 
 ## Security-sensitive notes
 
 - Input validation at trust boundaries (webhook handling, GitHub API payloads) is mandatory — do not loosen it.
 - `CM_ALLOW_PRIVATE_ENDPOINTS` and `CM_TRUSTED_ENDPOINT_HOSTS` gate custom provider endpoints; keep that gating intact.
 - GitHub identity is the source of permission; an `installation_id` alone grants no access. Revalidate permissions before execution.
+- Production code graphs are opt-in and revision-specific. Parser extraction changes require an `EXTRACTOR_VERSION` bump in `schemas/code_graph.py`, compatible parser/worker images and fresh indexing; do not rewrite old snapshots to appear current.
 
 ## Testing
 
 - Non-trivial logic needs at least one runnable check (a pytest case, or a self-check). No new frameworks or fixture scaffolding unless asked.
-- Backend tests need the isolated `mortis_test` DB and Redis up. Browser tests run against the production build with mocked application APIs.
-- Mocked tests and unauthenticated client startup do **not** establish real integration — record such evidence separately rather than claiming it works end-to-end.
+- Backend tests need the isolated `mortis_test` DB and Redis up. `backend/tests/conftest.py` truncates database tables and clears shared Redis keys between cases: serialize test processes using those services, including across agents and worktrees.
+- Browser tests run against the production build with mocked application APIs. Evaluator regressions have offline tests in `scripts/engine_eval/`; keep synthetic test evidence separate from retained pilot records.
+- Mocked tests, worker startup and local checks do **not** establish real provider integration, hosted CI success or engine acceptance. Report those boundaries separately. Scoped adoption does not turn missing or failed milestone gates into passes.
 
 ## Graphify for local development
 
@@ -85,4 +95,4 @@ Use the repo-local skill at `.agents/skills/graphify/SKILL.md` for graph builds 
 - When `graphify-out/graph.json` exists, start architecture, dependency, and impact questions with `graphify query "<question>" --budget 1500`. Use `graphify path "<A>" "<B>"` or `graphify explain "<concept>"` for focused relationships.
 - Treat the graph as navigation. Verify relevant source files and callers before editing or making correctness or security claims. Narrow truncated queries; if the graph is missing, stale, or unhelpful, inspect the source directly.
 - Run `graphify update .` after code changes. For changed documents, use `$graphify . --update` to refresh their semantic content; the CLI update only refreshes AST results.
-- Keep generated files in the ignored `graphify-out/` directory. Graphify is a local developer tool; preserve the native review runner's restrictions on repository instructions, hooks, and MCP servers.
+- Keep generated files in the ignored `graphify-out/` directory. Graphify is a local developer tool, separate from the production code graph parser. Preserve Mortis Engine's restrictions on executing repository instructions, hooks, scripts and MCP servers.
