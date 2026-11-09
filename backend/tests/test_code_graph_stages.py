@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from test_assessment import pipeline as pipeline
 from test_assessment import verdict
-from test_review_flow import new_run
+from test_review_flow import new_run, perform_review
 from test_verification import CONTEXT, RESULT
 from test_verification import scenario as scenario
 
@@ -50,7 +50,7 @@ def test_assessment_dispatch_and_persistence(pipeline, suggestions, monkeypatch,
     with transaction() as db:
         row = db.get(ReviewRun, identity)
         row.config = {**row.config, 'code_graph': {'version': graph_context.VERSION}}
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert row.status == 'completed' and row.context['code_graph']['snapshot_id'] == 'snapshot'
@@ -79,7 +79,7 @@ def test_verification_dispatch_preserves_original_current_evidence_and_budget(sc
         assert budget == 199900
         return copy.deepcopy(RESULT), {'tokens': 50}
     monkeypatch.setattr(verification, 'mortis_verify', lambda *a, **kwargs: respond(a[2], a[3]))
-    reviews.perform_review(scenario['run'])
+    perform_review(scenario['run'])
     from test_verification import saved
     row, finding, _ = saved()
     assert row.verdict == 'fixed' and row.usage == {'tokens': 50}

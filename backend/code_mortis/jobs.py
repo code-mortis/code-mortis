@@ -319,7 +319,7 @@ def execute(kind: str, payload: dict):
 
         (security_issues.publish if kind == "security_issue_publish" else security_issues.sync)(payload["finding_id"])
     elif kind == "review":
-        perform_review(payload["run_id"], payload.get("_claim"))
+        perform_review(payload["run_id"], payload["_claim"])
     elif kind == "generate_background":
         background.perform(payload["_job_id"], payload["_attempt"])
     elif kind == "publish":

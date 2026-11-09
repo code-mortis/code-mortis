@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
-from test_review_flow import remote
+from test_review_flow import perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.api_tokens import provenance as pat_provenance
@@ -800,7 +800,7 @@ def test_review_pre_dispatch_rejects_malformed_origin_without_crashing(seed, git
         return credentials
 
     monkeypatch.setattr(context, "execution_credentials", credentials)
-    reviews.perform_review(run_id)
+    perform_review(run_id)
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         assert run.status == "cancelled" and run.cancel_requested
@@ -831,7 +831,7 @@ def test_review_pre_dispatch_cleans_both_revoked_origins(seed, github_stub, pat_
         return credentials
 
     monkeypatch.setattr(context, "execution_credentials", credentials)
-    reviews.perform_review(ids[0])
+    perform_review(ids[0])
     with transaction() as db:
         assert all(db.get(ReviewRun, run_id).status == "cancelled" for run_id in ids)
 

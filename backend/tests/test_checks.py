@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
 from test_pr_engine import plan, unit
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core.db import now, transaction
@@ -147,7 +147,7 @@ def test_unknown_create_response_concurrent_recovery_and_latest_state(seed, chec
 def test_publication_gates_success_and_does_not_rerun_analysis(seed, check_api, monkeypatch):
     run_id = new_run()
     monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
-    reviews.perform_review(run_id)
+    perform_review(run_id)
     checks.sync_check(run_id)
     assert check_api[1][-1][1]["output"]["title"] == "Publishing comments"
     with transaction() as db:

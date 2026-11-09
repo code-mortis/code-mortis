@@ -9,7 +9,7 @@ from alembic import command
 from alembic.config import Config
 from runtime_helpers import file_limit_result
 from sqlalchemy import event, select, text
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core import source as git_source
@@ -878,7 +878,7 @@ def test_review_pipeline_summarizes_after_verification_and_on_file_limit(seed, g
 
         monkeypatch.setattr(mortis, "review", review)
         phases.clear()
-        reviews.perform_review(identity, "claim")
+        perform_review(identity)
         assert phases == (["summary"] if skipped else ["assessment", "verification", "summary"])
         with transaction() as db:
             run = db.get(ReviewRun, identity)
@@ -925,7 +925,7 @@ def test_worker_recovery_does_not_repeat_interrupted_summary(seed, generation, m
         return result
 
     monkeypatch.setattr(mortis, "review", review)
-    reviews.perform_review(identity, "new-claim")
+    perform_review(identity)
     assert generation == []
     with transaction() as db:
         run = db.get(ReviewRun, identity)

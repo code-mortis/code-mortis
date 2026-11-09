@@ -17,7 +17,7 @@ from alembic.config import Config
 from fastapi import HTTPException
 from runtime_helpers import file_limit_result
 from sqlalchemy import func, select
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core import source as git_source
@@ -153,7 +153,7 @@ def scenario(seed, github_stub, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {"summary": {"total_tokens": 100}}, [copy.deepcopy(COMMENT)]))
     first = new_run()
-    reviews.perform_review(first)
+    perform_review(first)
     with transaction() as db:
         finding = db.scalar(select(Finding))
         finding.thread_id, finding.comment_id = "thread", 12
@@ -219,7 +219,7 @@ def saved():
 
 
 def perform(scenario):
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     return saved()
 
 
@@ -508,7 +508,7 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             raise verification.VerificationOutputError(str(exc), {"tokens": 25}, feedback=exc.feedback) from exc
 
     monkeypatch.setattr(verification, "mortis_verify", api)
-    reviews.perform_review(identity)
+    perform_review(identity)
     if parallel:
         with transaction() as db:
             if kind != "api":
@@ -815,7 +815,7 @@ def test_resume_reuses_review_and_saved_verification(scenario):
     calls = list(scenario["calls"])
     with transaction() as db:
         db.get(ReviewRun, scenario["run"]).status = "running"
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert scenario["calls"] == calls and saved()[0].id == row.id
 
 
@@ -844,7 +844,7 @@ def test_existing_limits_never_reset(scenario, limit):
             run.started_at = now() - timedelta(hours=1)
         else:
             db.get(Repository, 22).settings = {"auto_resolve": True, "automatic": False}
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert "verify" not in scenario["calls"] and not scenario["mutations"]
 
 
@@ -896,7 +896,7 @@ def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypa
     assert row.status == "failed" and row.usage == {"tokens": None}
     with transaction() as db:
         db.get(ReviewRun, scenario["run"]).status = "running"
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
 
 
@@ -932,7 +932,7 @@ def test_retired_native_verification_never_starts(scenario, monkeypatch, kind, u
             run.report = {"summary": {"total_tokens": 200000}, "limits": {"context_bytes": 800000}}
             run.progress = {"analysis_saved": True, "analysis_status": "completed"}
         before = copy.deepcopy((run.config, run.report))
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
         assert run.status == "cancelled" and "retired" in run.error
@@ -1077,7 +1077,7 @@ def test_retired_native_verification_cannot_start_without_grants(scenario, monke
         run = db.get(ReviewRun, scenario["run"])
         run.owner_id, run.engine = 7, "chatgpt"
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     with transaction() as db:
         assert db.get(ReviewRun, scenario["run"]).status == "cancelled"
         assert db.get(Finding, scenario["finding"]).status == "open"
@@ -1180,6 +1180,8 @@ def test_unrecoverable_worker_preserves_completed_analysis(scenario, monkeypatch
         jid = job.id
         if failure == "expired_lease":
             job.status, job.attempts, job.lease_until = "running", 3, now() - timedelta(seconds=1)
+        else:
+            job.status, job.available_at = "queued", now()
     if failure == "expired_lease":
         monkeypatch.setattr(jobs.execute_job, "apply_async", lambda **kw: None)
         jobs.dispatch()
@@ -1265,7 +1267,7 @@ def test_retired_subscription_verification_preserves_saved_consumption(scenario,
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
         report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
         run.report = report
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
         assert run.status == "cancelled" and "retired" in run.error
@@ -1283,7 +1285,7 @@ def test_interrupted_ocr_review_refuses_execution_without_new_allowance(scenario
         original_report = copy.deepcopy(run.report)
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Retired work reached inference"))
     with pytest.raises(ValueError, match="OCR execution is retired"):
-        reviews.perform_review(scenario["run"])
+        perform_review(scenario["run"])
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
         assert run.engine == "ocr" and run.config["analysis_engine"] == "ocr"
@@ -1396,7 +1398,7 @@ def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, mo
             raise ValueError("Necessary context is unavailable")
         return copy.deepcopy(CONTEXT)
     monkeypatch.setattr(verification, "build_context", context)
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     with transaction() as db:
         rows = list(db.scalars(select(FindingVerification)))
         failed = next(row for row in rows if row.status == "failed")

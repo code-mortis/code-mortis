@@ -7,7 +7,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
 from test_inbox import pull, run
-from test_review_flow import new_run, remote
+from test_review_flow import new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.api.routers import pulls as pull_routes
@@ -251,7 +251,7 @@ def test_ignore_blocks_retries_publication_and_stale_run_creation(seed, github_s
     assert client.post("/api/v1/pulls/pr/summary").status_code == 409
     monkeypatch.setattr(github, "request", lambda *a, **k: pytest.fail("Ignored work must not publish"))
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Ignored work must not run"))
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     pr_summary.sync("pr")
     assert client.put("/api/v1/pulls/pr/ignore", json={"ignored": False}).status_code == 200

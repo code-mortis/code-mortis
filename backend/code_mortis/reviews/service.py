@@ -362,8 +362,9 @@ def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool
         return False
 
 
-def perform_review(run_id: str, claim: str | None = None):
-    claim = claim or uid()
+def perform_review(run_id: str, claim: str):
+    if not isinstance(claim, str) or not re.fullmatch(r"[^:]+:[1-9][0-9]*", claim):
+        raise ValueError("Mortis analysis requires a durable job attempt")
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.status not in ACTIVE or run.cancel_requested:

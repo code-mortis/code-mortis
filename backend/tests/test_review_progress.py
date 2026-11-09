@@ -1,11 +1,10 @@
 """Validated engine progress reaches the run API before the final report is saved."""
 
 import pytest
-from test_review_flow import new_run, remote
+from test_review_flow import new_run, perform_review, remote
 
 from code_mortis.integrations import github
 from code_mortis.reviews import mortis
-from code_mortis.reviews import service as reviews
 
 
 @pytest.mark.parametrize("parallel", [False, True])
@@ -25,6 +24,6 @@ def test_live_counts_reach_run_api_before_report_is_saved(seed, github_stub, cli
         return "completed", {"message": "final report"}, []
 
     monkeypatch.setattr(mortis, "review", review)
-    reviews.perform_review(identity)
+    perform_review(identity)
     assert client.get(f"/api/v1/runs/{identity}").json()["run"]["report"] == {"message": "final report"}
 

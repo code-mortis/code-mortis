@@ -8,7 +8,7 @@ import pytest
 from runtime_helpers import file_limit_result
 from sqlalchemy import func, select
 from test_checks import rerun_body
-from test_review_flow import new_run, remote
+from test_review_flow import new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core.db import transaction
@@ -34,7 +34,7 @@ def skipped_run(monkeypatch):
     result = file_limit_result([f"file{i}.py" for i in range(41)], 40)
     monkeypatch.setattr(mortis, "review", lambda *a, **k: result)
     identity = new_run()
-    reviews.perform_review(identity)
+    perform_review(identity)
     return identity
 
 
@@ -324,4 +324,4 @@ def test_command_rechecks_actor_before_execution(seed, github_stub, monkeypatch,
         monkeypatch.setattr(github, "authorize_repo", denied)
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Revoked members cannot run AI"))
     with pytest.raises((ValueError, github.GitHubError)):
-        reviews.perform_review(run_id)
+        perform_review(run_id)

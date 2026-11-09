@@ -290,6 +290,21 @@ def remote(head="a" * 40):
     }
 
 
+def perform_review(run_id):
+    """Exercise the workflow with the same durable claim supplied by the dispatcher."""
+    with transaction() as db:
+        job = db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == run_id)
+                        .order_by(Job.available_at.desc()).limit(1))
+        assert job is not None
+        job.status, job.attempts, job.lease_until = "running", job.attempts + 1, now() + timedelta(hours=2)
+        claim = f"{job.id}:{job.attempts}"
+    result = reviews.perform_review(run_id, claim)
+    with transaction() as db:
+        job = db.get(Job, job.id)
+        job.status, job.lease_until = "done", None
+    return result
+
+
 def new_run(*, assessed=False, overview=False, parallel=False):
     with transaction() as db:
         run = reviews.create_run(
@@ -307,6 +322,20 @@ def new_run(*, assessed=False, overview=False, parallel=False):
             run.summary = {}
         db.flush()
         return run.id
+
+
+@pytest.mark.parametrize("claim", [None, "", "bare-uid", "job:0", "job:-1", "job:invalid"])
+def test_review_rejects_missing_or_malformed_claim_before_mutation(seed, github_stub, monkeypatch, claim):
+    identity = new_run()
+    monkeypatch.setattr(github, "request", lambda *a, **kw: pytest.fail("Invalid claim reached GitHub"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **kw: pytest.fail("Invalid claim reached inference"))
+    with pytest.raises(ValueError, match="durable job attempt"):
+        reviews.perform_review(identity, claim)
+    with transaction() as db:
+        run = db.get(ReviewRun, identity)
+        assert run.status == "queued" and not run.progress and run.started_at is None
+        job = db.scalar(select(Job).where(Job.kind == "review"))
+        assert job.status == "queued" and job.attempts == 0
 
 
 def test_pull_creation_time_is_saved_for_new_and_existing_pulls(seed):
@@ -603,7 +632,7 @@ def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
         mortis, "review", lambda *a, **k: ("completed", {"message": "complete"}, [copy.deepcopy(COMMENT)])
     )
     first = new_run()
-    reviews.perform_review(first)
+    perform_review(first)
     with transaction() as db:
         finding = db.scalar(select(Finding))
         snapshot = copy.deepcopy(db.scalar(select(Occurrence)).snapshot)
@@ -611,7 +640,7 @@ def test_review_snapshots_survive_later_runs(seed, github_stub, monkeypatch):
         assert db.get(ReviewRun, first).status == "completed"
     monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, []))
     second = new_run()
-    reviews.perform_review(second)
+    perform_review(second)
     with transaction() as db:
         assert db.scalar(select(Finding)).status == "open"
         assert db.scalar(select(Finding)).last_seen_run_id == first
@@ -624,7 +653,7 @@ def test_publication_recovers_unknown_response_without_duplicate_or_review(seed,
     snapshot = {**COMMENT, "suggestion_code": "for attempt in range(3):"}
     monkeypatch.setattr(mortis, "review", lambda *a, **k: ("partial", {}, [copy.deepcopy(snapshot)]))
     run_id = new_run()
-    reviews.perform_review(run_id)
+    perform_review(run_id)
     published = []
     monkeypatch.setattr(github, "pages", lambda *a: published)
 
@@ -662,7 +691,7 @@ def test_resolution_sync_is_canonical_and_versioned(seed, github_stub, monkeypat
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
     run_id = new_run()
-    reviews.perform_review(run_id)
+    perform_review(run_id)
     with transaction() as db:
         finding = db.scalar(select(Finding))
         fid = finding.id
@@ -713,7 +742,7 @@ def test_stale_publication_and_cancelled_review_do_no_work(seed, github_stub, mo
         run.status = "cancelled"
         run.cancel_requested = True
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Cancelled run executed"))
-    reviews.perform_review(run_id)
+    perform_review(run_id)
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         run.status = "completed"
@@ -835,7 +864,7 @@ def test_queued_review_cannot_send_rotated_credentials_to_old_endpoint(seed, git
     with transaction() as db:
         db.get(Connection, "connection").base_url = "https://new-provider.example/v1"
     with pytest.raises(ValueError, match="endpoint changed"):
-        reviews.perform_review(run_id)
+        perform_review(run_id)
 
 
 def test_rotated_oauth_credentials_survive_later_request_failure(seed, monkeypatch):

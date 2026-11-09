@@ -14,7 +14,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.api.routers import members as members_routes
@@ -134,7 +134,7 @@ def pipeline(seed, github_stub, monkeypatch):
 
 def run_and_publish():
     identity = new_run(assessed=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     return identity
 
@@ -156,7 +156,7 @@ def test_assessment_uses_saved_sensitivity_on_retry(pipeline, client, kind, sens
             run.config = {**run.config, "settings": {key: value for key, value in run.config["settings"].items()
                                                     if key != "review_sensitivity"}}
     pipeline["failure"] = verification.VerificationOutputError("Temporary failure", {"tokens": 25})
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
         candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
@@ -167,7 +167,7 @@ def test_assessment_uses_saved_sensitivity_on_retry(pipeline, client, kind, sens
     pipeline.pop("failure")
     response = client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry")
     assert response.status_code == 202, response.text
-    reviews.perform_review(identity)
+    perform_review(identity)
     assert len(pipeline["instructions"]) == 2
     assert pipeline["instructions"][0] == pipeline["instructions"][1]
     if sensitivity is None:
@@ -247,7 +247,7 @@ def test_retry_assesses_one_candidate_and_preserves_history_and_publication(pipe
     calls, native_ids = pipeline["calls"], list(pipeline["native_ids"])
     pipeline["respond"] = lambda context: verdict(context, relationship="new", finding_id=None,
                                                  cause="Different reachable defect")
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     reviews.publish_run(identity)
     assert pipeline["analysis_calls"] == 1
@@ -314,7 +314,7 @@ def test_assessment_retry_waits_for_previous_worker_to_release_its_claim(pipelin
     pipeline.update(pr_state="closed" if merged else "open", merged=merged, decision={})
     assert client.post(f"/api/v1/runs/{identity}/candidates/{candidate_id}/retry").status_code == 202
     with transaction() as db:
-        retry_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.id != previous_id))
+        retry_id = db.scalar(select(Job.id).where(Job.kind == "review", Job.status == "queued", Job.id != previous_id))
     calls = pipeline["calls"]
     jobs.execute_job(retry_id)
     with transaction() as db:
@@ -359,7 +359,7 @@ def test_history_conflict_retry_reuses_analysis_and_preserves_attempt(pipeline, 
     assert response.status_code == 202, response.text
     assert response.json()["failure_reason"] is None
     assert client.post(path + "/retry").status_code == 409
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     reviews.publish_run(identity)
     with transaction() as db:
@@ -425,7 +425,7 @@ def test_merged_retry_keeps_existing_finding_state_and_survives_sync(pipeline, c
     pipeline["decision"] = {"evidence": [{"revision": "current", "path": COMMENT["path"],
         "start_line": 7, "end_line": 7, "quote": "invented"}]}
     identity = new_run(assessed=True, parallel=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     # These focused fixtures do not execute asynchronous summary/verification jobs.
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -463,7 +463,7 @@ def test_merged_retry_keeps_existing_finding_state_and_survives_sync(pipeline, c
     monkeypatch.setattr(verification, "perform", unexpected)
     monkeypatch.setattr(reviews.pr_summary, "generate", unexpected)
     calls, published = pipeline["analysis_calls"], len(pipeline["reviews"])
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
         row = db.get(ReviewCandidate, candidate_id)
@@ -530,7 +530,7 @@ def test_stopped_assessment_retry_finishes_stage_and_preserves_historical_public
         "path": "src/failed.py", "start_line": 7, "end_line": 7, "quote": "invented"}]}
         if context["finding"]["path"] == "src/failed.py" else {"verdict": "uncertain", "relationship": "uncertain"} if not published else {}))
     identity = new_run(assessed=True, parallel=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         # This fixture only executes OCR/assessment; finish the independent summary stage.
         stages.update(db.get(ReviewRun, identity), "summary", "skipped", tokens=0)
@@ -575,7 +575,7 @@ def test_stopped_assessment_retry_finishes_stage_and_preserves_historical_public
         pipeline["head"] = "c" * 40
     else:
         monkeypatch.setattr(mortis, "review", lambda *a, **k: (_ for _ in ()).throw(ReviewStopped("Stopped during checkout")))
-    reviews.perform_review(identity)
+    perform_review(identity)
     stages.finalize(identity)
     reviews.publish_run(identity)
     with transaction() as db:
@@ -637,7 +637,7 @@ def test_manual_assessment_retry_cannot_resume_a_retired_automatic_run(pipeline,
         db.flush()
         identity = run.id
     pipeline["failure"] = verification.VerificationOutputError("Previous assessment failure", {"tokens": 25})
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
         candidate = db.scalar(select(ReviewCandidate))
@@ -742,7 +742,7 @@ def test_closed_finding_is_never_reopened_or_reposted(pipeline, client, status):
 
 def test_legacy_run_occurrence_does_not_guess_new_or_repeat(pipeline, client):
     identity = new_run()
-    reviews.perform_review(identity)
+    perform_review(identity)
     occurrence = client.get(f"/api/v1/runs/{identity}").json()["occurrences"][0]
     assert occurrence["is_new"] is None
     assert occurrence["current_status"] == "open"
@@ -839,7 +839,7 @@ def test_summary_findings_and_unknown_writes_publish_only_once(pipeline):
     pipeline["comments"][0]["inline_line"] = None
     pipeline["lost_response"] = True
     identity = new_run(assessed=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with pytest.raises(github.GitHubError):
         reviews.publish_run(identity)
     with transaction() as db:
@@ -881,7 +881,7 @@ def test_assessment_reports_exhausted_or_unknown_usage(pipeline, tokens, reason)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 5000000}}
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         row = db.scalar(select(ReviewCandidate))
         assert row.error == reason + " Assessment stopped."
@@ -901,7 +901,7 @@ def test_preflight_skip_retains_its_status_and_zero_usage(pipeline):
 @pytest.mark.parametrize("publication", ["failed", "publishing", "partially_published"])
 def test_unacknowledged_owner_keeps_frozen_plan_until_retry(pipeline, publication):
     first = new_run(assessed=True)
-    reviews.perform_review(first)
+    perform_review(first)
     with transaction() as db:
         run = db.get(ReviewRun, first)
         run.publication_plan = reviews.publication_plan(db, run)
@@ -1202,7 +1202,7 @@ def test_interrupted_assessment_never_gets_a_fresh_allowance(pipeline, monkeypat
     pipeline["failure"] = SystemExit("Worker terminated")
     identity = new_run(assessed=True)
     with pytest.raises(SystemExit):
-        reviews.perform_review(identity)
+        perform_review(identity)
     with transaction() as db:
         candidate = db.scalar(select(ReviewCandidate))
         assert candidate.status == "running" and candidate.usage == {"tokens": 199900}
@@ -1210,7 +1210,7 @@ def test_interrupted_assessment_never_gets_a_fresh_allowance(pipeline, monkeypat
     def unknown_attempt(*args, **kwargs):
         raise verification.VerificationOutputError("The durable attempt has unknown usage; further inference is blocked.", {"tokens": None})
     monkeypatch.setattr(verification, "mortis_verify", unknown_attempt)
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
         candidate = db.scalar(select(ReviewCandidate))
@@ -1241,7 +1241,7 @@ def test_stale_or_unauthorized_decisions_are_withheld(pipeline, monkeypatch, cha
 
     pipeline["during_assessment"] = changed
     identity = new_run(assessed=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         candidate = db.scalar(select(ReviewCandidate).where(ReviewCandidate.run_id == identity))
         assert candidate.status == "skipped" and candidate.finding_id is None
@@ -1256,7 +1256,7 @@ def test_concurrent_assessments_serialize_canonical_assignment(pipeline):
     barrier = Barrier(2)
     pipeline["during_assessment"] = lambda: barrier.wait(timeout=10)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(reviews.perform_review, [first, second]))
+        list(pool.map(perform_review, [first, second]))
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Finding)) == 1
         assert sorted(db.scalars(select(ReviewCandidate.status))) == ["completed", "skipped"]
@@ -1267,9 +1267,9 @@ def test_concurrent_assessments_serialize_canonical_assignment(pipeline):
 
 def test_concurrent_publication_claims_allow_one_comment(pipeline):
     first = new_run(assessed=True)
-    reviews.perform_review(first)
+    perform_review(first)
     second = new_run(assessed=True)
-    reviews.perform_review(second)
+    perform_review(second)
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(reviews.publish_run, [first, second, first]))
     assert len(pipeline["reviews"]) == 1
@@ -1404,7 +1404,7 @@ def test_missing_requested_source_can_be_corrected_without_losing_usage(pipeline
                        [available] if outcome == "corrected" else [missing] if outcome == "repeated" else [])
     pipeline["respond"] = respond
     identity = new_run(assessed=True, parallel=parallel)
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     expected_calls = 2 if outcome == "unavailable" else 3
     with transaction() as db:
@@ -1453,7 +1453,7 @@ def test_excluded_requested_evidence_is_feedback_not_an_execution_failure(pipeli
                        required_paths=[excluded] if outcome == "repeated" else [])
     pipeline["respond"] = respond
     identity = new_run(assessed=True, parallel=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     expected_calls = 3 if outcome == "repeated" else request_pass + 1
     with transaction() as db:
@@ -1583,7 +1583,7 @@ def test_supported_distinct_regression_can_reverse_prior_advice(pipeline):
 def test_legacy_summary_publication_is_adopted_without_changing_its_plan(pipeline, publication):
     pipeline["comments"][0]["inline_line"] = None
     old = new_run()
-    reviews.perform_review(old)
+    perform_review(old)
     with transaction() as db:
         run = db.get(ReviewRun, old)
         run.publication_plan = reviews.publication_plan(db, run)
@@ -1607,7 +1607,7 @@ def test_legacy_summary_publication_is_adopted_without_changing_its_plan(pipelin
 
 def test_publication_rechecks_permissions_after_assessment(pipeline, monkeypatch):
     identity = new_run(assessed=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
 
     def revoked(*args, **kwargs):
         raise github.GitHubError(403, "Permission revoked")
@@ -1619,7 +1619,7 @@ def test_publication_rechecks_permissions_after_assessment(pipeline, monkeypatch
 
 def test_saved_native_publication_needs_github_access_without_runner_or_connection(pipeline, monkeypatch):
     identity = new_run(assessed=True)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.connection_id, run.engine, run.owner_id = None, "chatgpt", 7
@@ -1632,7 +1632,7 @@ def test_saved_native_publication_needs_github_access_without_runner_or_connecti
 
 def test_additive_migration_keeps_legacy_identity_occurrences_and_frozen_plan(pipeline):
     identity = new_run()
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     with transaction() as db:
         finding = db.scalar(select(Finding))
@@ -1721,7 +1721,7 @@ def test_assessment_concurrency_uses_saved_limits_and_preserves_model(pipeline, 
         return original(*args, **kwargs)
     monkeypatch.setattr(verification, "mortis_verify", api)
     pipeline["respond"] = respond
-    reviews.perform_review(identity)
+    perform_review(identity)
     reviews.publish_run(identity)
     assert peak == expected and pipeline["calls"] == 8
     assert leases == []
@@ -1858,7 +1858,7 @@ def test_parallel_batch_revalidates_history_and_execution(pipeline, monkeypatch,
                 assert changed.wait(timeout=10)
         return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
     monkeypatch.setattr(verification, "mortis_verify", api)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
         if change == "claim":
@@ -1899,7 +1899,7 @@ def test_parallel_cancellation_stops_active_calls_before_cleanup(pipeline, monke
             with lock:
                 active -= 1
     monkeypatch.setattr(verification, "mortis_verify", api)
-    reviews.perform_review(identity)
+    perform_review(identity)
     assert len(started) == 2 and active == 0
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate).order_by(ReviewCandidate.position)))
@@ -1932,7 +1932,7 @@ def test_parallel_worker_failure_joins_peers_and_never_replays_unknown_usage(pip
             exited.set()
     monkeypatch.setattr(verification, "mortis_verify", api)
     with pytest.raises(SystemExit, match="Worker terminated"):
-        reviews.perform_review(identity)
+        perform_review(identity)
     assert exited.is_set()
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate)))
@@ -1940,7 +1940,7 @@ def test_parallel_worker_failure_joins_peers_and_never_replays_unknown_usage(pip
     def unknown_attempt(*args, **kwargs):
         raise verification.VerificationOutputError("The durable attempt has unknown usage; further inference is blocked.", {"tokens": None})
     monkeypatch.setattr(verification, "mortis_verify", unknown_attempt)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         rows = list(db.scalars(select(ReviewCandidate)))
         assert all(row.status == "failed" and row.usage == {"tokens": None} for row in rows)
@@ -2025,7 +2025,7 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
 
     monkeypatch.setattr(verification, "mortis_verify", api)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(reviews.perform_review, identity)
+        future = executor.submit(perform_review, identity)
         try:
             assert started.wait(10)
             deadline = monotonic() + 5

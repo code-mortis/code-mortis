@@ -563,16 +563,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                 return None
             rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.id.in_(ids))
                                    .order_by(ReviewCandidate.position)))
-            interrupted = False
             for row in rows:
                 if row.status == "running":
                     row.status, row.usage = "queued", {"tokens": 0}
-                elif row.status == "running":
-                    row.status, row.error, row.finished_at = "failed", "The review worker stopped while checking this proposed finding. AI usage was not saved, so the reserved budget cannot be reused. Start a new review.", now()
-                    interrupted = True
-            if interrupted:
-                db.flush()
-                record_summary(db, run, advance_revision=True)
             rows = [row for row in rows if row.status == "queued"]
             if not rows:
                 return None

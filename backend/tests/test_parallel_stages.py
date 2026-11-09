@@ -19,7 +19,7 @@ from test_pr_summary import (
     completed_run,
     overview_api,  # noqa: F401
 )
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 from test_verification import RESULT as FIXED
 from test_verification import scenario as verification_scenario  # noqa: F401
 
@@ -122,7 +122,7 @@ def test_malformed_report_summary_preserves_analysis(verification_scenario, monk
 
     monkeypatch.setattr(mortis, "review", engine)
     monkeypatch.setattr(pr_summary, "generate", lambda *a: None)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.progress["analysis_saved"] and run.progress["analysis_status"] == "completed"
@@ -155,7 +155,7 @@ def test_expired_pipeline_preserves_timeout_and_saved_analysis(seed, github_stub
             run.report = file_limit_result(["src/retry.py"], 0)[1] if saved_status == "skipped" else {"summary": {"total_tokens": 100}}
             if saved_status in {"completed", "partial"}:
                 db.add(ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT))
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.status == "running" and run.failure_reason == "timeout"
@@ -211,7 +211,7 @@ def test_three_workers_overlap_and_join_without_early_resolution(verification_sc
     monkeypatch.setattr(verification, "mortis_verify", infer)
     execute = jobs.execute_job.run
     with ThreadPoolExecutor(max_workers=3) as pool:
-        main = pool.submit(reviews.perform_review, identity)
+        main = pool.submit(perform_review, identity)
         assert started.wait(10)
         with transaction() as db:
             auxiliary = list(db.scalars(select(Job).where(Job.kind.in_(pipeline.KINDS))))
@@ -301,7 +301,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
     monkeypatch.setattr(assessment, "build_context", context)
     monkeypatch.setattr(verification, "mortis_verify", infer)
     # OCR finishes first; candidates must remain queued until the other worker stops writing history.
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.stages["assessment"]["status"] == "waiting"
@@ -329,7 +329,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
         assessment_job = deferred[0].id
         assert db.scalar(select(Activity.id).where(Activity.source == "verification"))
     # A recovered OCR delivery cannot bypass the deferred stage or repeat its model calls.
-    reviews.perform_review(identity)
+    perform_review(identity)
     assert calls.count("ocr") == 1 and "assessment" not in calls
     jobs.execute_job(assessment_job)
     jobs.execute_job(assessment_job)
@@ -702,7 +702,7 @@ def test_file_limit_prevents_verification_but_still_generates_summary(verificati
 
     monkeypatch.setattr(mortis, "review", engine)
     monkeypatch.setattr(verification, "mortis_verify", summary_only)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         assert not db.scalar(select(Job.id).where(Job.kind == "verify_fixes"))
         assert db.get(ReviewRun, identity).stages["verification"]["status"] == "skipped"
