@@ -167,7 +167,10 @@ def scan_check(cache, identity):
         )
         metrics = {}
         for name in ("memory.peak", "memory.events", "cpu.stat", "pids.current"):
-            metrics[name] = (Path("/sys/fs/cgroup") / name).read_text().strip()
+            try:
+                metrics[name] = (Path("/sys/fs/cgroup") / name).read_text()[:4096].strip()
+            except (OSError, ValueError):
+                metrics[name] = None
         return {"status": "passed", "provider_requests": 0, "trivy": result["metadata"], "cgroup": metrics}
 
 

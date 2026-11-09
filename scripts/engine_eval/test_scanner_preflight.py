@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scanner_preflight import guard_scanner, snapshot_identity
+from scanner_preflight import guard_scanner, scan_check, snapshot_identity
 
 
 class ScannerPreflightTests(unittest.TestCase):
@@ -169,6 +169,33 @@ class ScannerPreflightTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "fresh complete"),
         ):
             engine.trivy()
+
+
+    def test_successful_scanner_retains_missing_cgroup_metrics_as_unknown(self):
+        calls = []
+        def scan(*args):
+            calls.append(args)
+            return self.scanner_result()
+
+        engine, _, modules = self.fake_engine(scan)
+        engine.Snapshot = lambda *args: SimpleNamespace(populate=lambda: None)
+        original_read = Path.read_text
+        def read(path, *args, **kwargs):
+            if path.parent == Path("/sys/fs/cgroup"):
+                if path.name == "cpu.stat":
+                    return "1" * 5000
+                raise FileNotFoundError(path)
+            return original_read(path, *args, **kwargs)
+
+        with modules, patch.dict(sys.modules, {
+            "code_mortis.core": SimpleNamespace(source=SimpleNamespace(git=lambda *a: "a" * 40)),
+            "code_mortis.core.process": SimpleNamespace(child_environment=dict),
+        }), patch.object(Path, "read_text", read):
+            result = scan_check(self.root, snapshot_identity(self.root))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["cgroup"], {"cpu.stat": "1" * 4096, "memory.peak": None,
+                                           "memory.events": None, "pids.current": None})
 
 
 if __name__ == "__main__":
