@@ -432,11 +432,21 @@ def _next_request(batch, sources, notices, *, remaining_source_rounds, allow_sou
         unique = []
         for source in sources:
             cursor = source["start_line"]
+            ranges = []
             for prior in sorted([*batch.sources, *unique], key=lambda item: item["start_line"]):
-                if prior["source_id"] == source["source_id"] and prior["start_line"] <= cursor:
-                    cursor = max(cursor, prior["end_line"] + 1)
+                if prior["source_id"] != source["source_id"] or prior["end_line"] < cursor:
+                    continue
+                if prior["start_line"] > source["end_line"]:
+                    break
+                if cursor < prior["start_line"]:
+                    ranges.append((cursor, prior["start_line"] - 1))
+                cursor = max(cursor, prior["end_line"] + 1)
             if cursor <= source["end_line"]:
-                unique.append(source)
+                ranges.append((cursor, source["end_line"]))
+            lines = source["text"].split("\n")
+            for start, end in ranges:
+                unique.append({**source, "start_line": start, "end_line": end,
+                    "text": "\n".join(lines[start - source["start_line"]:end - source["start_line"] + 1])})
         sources = unique
     payload = {"supporting_sources": sources, "source_read_results": notices}
     if batch.prompt_version != "mortis-pr-prompt/v1":

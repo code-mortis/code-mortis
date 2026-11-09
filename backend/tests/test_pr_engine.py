@@ -1040,9 +1040,25 @@ def test_followup_omits_repeated_source_but_preserves_missing_ranges_and_read_re
     sources = [supplied, extension, extension, other]
     request = engine._next_request(batch, sources, notices, remaining_source_rounds=0, allow_source_reads=False)
     payload = json.loads(request.messages[-1].content)
-    assert payload["supporting_sources"] == [extension, other]
+    assert payload["supporting_sources"] == [engine._source(value.head_sha, "app.py", 5, 5, "five"), other]
     assert payload["source_read_results"] == notices and payload["remaining_source_rounds"] == 0
     assert sources == [supplied, extension, extension, other] and not request.tools
+    assert request.messages[0] == batch.request.messages[0]
+
+
+@pytest.mark.parametrize("start,end,expected", [(1, 7, [(1, 1), (4, 4), (7, 7)]),
+    (1, 2, [(1, 1)]), (3, 4, [(4, 4)]), (2, 3, []), (7, 7, [(7, 7)])])
+def test_followup_sends_only_unsupplied_line_ranges(start, end, expected):
+    value = plan([unit(start=2, source="two\nthree\n"), unit(key="u2", start=5, source="five\nsix\n")])
+    batch = prepared(value)[0]
+    lines = ["one", "two", "three", "four", "five", "six", "seven"]
+    source = engine._source(value.head_sha, "app.py", start, end, "\n".join(lines[start - 1:end]))
+    request = engine._next_request(batch, [source, source], [], remaining_source_rounds=0)
+    assert json.loads(request.messages[-1].content)["supporting_sources"] == [
+        engine._source(value.head_sha, "app.py", first, last, "\n".join(lines[first - 1:last]))
+        for first, last in expected
+    ]
+    assert source["start_line"] == start and source["end_line"] == end
     assert request.messages[0] == batch.request.messages[0]
 
 
