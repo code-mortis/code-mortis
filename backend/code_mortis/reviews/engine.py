@@ -22,7 +22,7 @@ from code_mortis.schemas.inference import Message, Request, Tool, ToolCall
 VERSION = "mortis-pr/v1"
 PROMPT_VERSION = "mortis-pr-prompt/v2"
 SCHEMA_VERSION = "mortis-pr-result/v1"
-SOURCE_TOOL_POLICY = "remaining-rounds/v1"
+SOURCE_TOOL_POLICY = "bounded-reads/v2"
 SOURCE_CODE_POLICY = "selected-lines/v1"
 MAX_READ_BYTES = 64 * 1024
 MAX_SOURCE_BYTES = 20_000_000
@@ -122,10 +122,15 @@ def output_schema(task_key, units, *, source_code_policy=SOURCE_CODE_POLICY):
     return schema
 
 
-def read_tool(*, source_code_policy=SOURCE_CODE_POLICY):
+def read_tool(*, source_code_policy=SOURCE_CODE_POLICY, source_tool_policy=SOURCE_TOOL_POLICY):
     description = "Read permitted source at the pinned PR head; no execution."
     if source_code_policy:
         description += " Request at most 400 lines per read and ten reads per round."
+    if source_tool_policy == "bounded-reads/v2":
+        description += (
+            " Mortis pages larger ranges into at most ten 400-line excerpts and 64 KiB total per round. "
+            "Reads stop at EOF. Check returned_ranges and next_start_line for any unreturned source."
+        )
     return Tool(name="read_source", description=description,
                 parameters={"type": "object", "additionalProperties": False, "required": ["path", "start_line", "end_line"],
                     "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -145,6 +150,7 @@ class PreparedBatch:
     error: str | None = None
     source_code_policy: str | None = SOURCE_CODE_POLICY
     prompt_version: str = PROMPT_VERSION
+    source_tool_policy: str | None = SOURCE_TOOL_POLICY
 
     @property
     def spec(self):
@@ -161,12 +167,14 @@ def _source(revision, path, start, end, text):
 
 def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False,
                     output_token_policy=analysis.OUTPUT_TOKEN_POLICY, source_code_policy=SOURCE_CODE_POLICY,
-                    prompt_version=PROMPT_VERSION):
+                    prompt_version=PROMPT_VERSION, source_tool_policy=SOURCE_TOOL_POLICY):
     """Freeze requests before persisting their task identities; optional graph never crowds out source."""
     if source_code_policy not in {None, SOURCE_CODE_POLICY}:
         raise ValueError("The saved source-code policy is unsupported")
     if prompt_version not in {"mortis-pr-prompt/v1", PROMPT_VERSION}:
         raise ValueError("The saved PR prompt version is unsupported")
+    if source_tool_policy not in {None, "remaining-rounds/v1", SOURCE_TOOL_POLICY}:
+        raise ValueError("The saved source-tool policy is unsupported")
     batches = []
     pending = deque(plan.batches)
     while pending:
@@ -207,7 +215,7 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
             )
         request = Request(instructions=instructions,
                           messages=[Message(role="user", content=json.dumps(supplied, ensure_ascii=False))],
-                          tools=[read_tool(source_code_policy=source_code_policy)],
+                          tools=[read_tool(source_code_policy=source_code_policy, source_tool_policy=source_tool_policy)],
                           output_schema=output_schema(key, units, source_code_policy=source_code_policy),
                           max_output_tokens=analysis.output_token_limit(output_token_policy), effort=options["effort"], session_id=key)
         omitted = []
@@ -232,7 +240,7 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
         # Store exactly the redacted source sent to the provider, including optional graph source.
         sources = context.sanitize(sources, credentials, stopped)
         batches.append(PreparedBatch(key, units, request, sources, dict(options), dict(connection), omitted, error,
-                                     source_code_policy, prompt_version))
+                                     source_code_policy, prompt_version, source_tool_policy))
     return batches
 
 
@@ -311,7 +319,8 @@ def validate_result(data, batch, sources, credentials, stopped=lambda: False):
     return context.sanitize({"kind": "final", "completed_units": value.completed_units, "comments": comments}, credentials, stopped)
 
 
-def read_sources(calls, *, repo, env, plan, options, credentials, authorize, stopped):
+def read_sources(calls, *, repo, env, plan, options, credentials, authorize, stopped,
+                 source_tool_policy=SOURCE_TOOL_POLICY):
     """Only bounded, policy-approved exact-head Git blob reads; tool names are never executable."""
     from code_mortis.reviews import planning
 
@@ -323,6 +332,7 @@ def read_sources(calls, *, repo, env, plan, options, credentials, authorize, sto
 
     if not 1 <= len(calls) <= 10:
         raise ResultValidationError("source_call_limit", ["tool_calls"], "Request one to ten source reads per round.")
+    bounded = source_tool_policy == "bounded-reads/v2"
     selections, sources, size = [], [], 0
     for index, call in enumerate(calls):
         field = ["tool_calls", index]
@@ -339,13 +349,15 @@ def read_sources(calls, *, repo, env, plan, options, credentials, authorize, sto
         except ValueError as exc:
             raise ResultValidationError("source_path", [*field, "arguments", "path"],
                                         "Source path must stay inside the repository and be canonical.") from exc
-        if type(start) is not int or type(end) is not int or start < 1 or end < start or end - start + 1 > MAX_READ_LINES:
+        if (type(start) is not int or type(end) is not int or start < 1 or end < start
+                or not bounded and end - start + 1 > MAX_READ_LINES):
             raise ResultValidationError("source_range", [*field, "arguments"],
                                         "Use integer line bounds with 1 <= start_line <= end_line and at most 400 lines.")
         check_access()
         permitted = path in planning.allowed_context(repo, env, plan.base_sha, plan.head_sha, [path],
                                                     options, stopped, rules=plan.rules)
         source = None
+        pages, next_start, eof_line = [], None, None
         reason = "excluded"
         if permitted:
             try:
@@ -357,7 +369,24 @@ def read_sources(calls, *, repo, env, plan, options, credentials, authorize, sto
                     # Inspect complete content for secret material before selecting a range.
                     text = context.sanitize(text, credentials, stopped)
                     lines = text.splitlines()
-                    if end > len(lines):
+                    if bounded:
+                        cursor, last = start, min(end, len(lines))
+                        eof_line = len(lines) if end > len(lines) else None
+                        while cursor <= last and len(sources) + len(pages) < 10:
+                            chunk = []
+                            for line in lines[cursor - 1:min(cursor + MAX_READ_LINES - 1, last)]:
+                                amount = len(line.encode()) + int(bool(chunk))
+                                if size + amount > MAX_READ_BYTES:
+                                    break
+                                chunk.append(line)
+                                size += amount
+                            if not chunk:
+                                break
+                            pages.append(_source(plan.head_sha, path, cursor, cursor + len(chunk) - 1, "\n".join(chunk)))
+                            cursor += len(chunk)
+                        next_start = cursor if cursor <= last else None
+                        reason = "invalid_range" if start > last else "source_limit" if next_start else "available"
+                    elif end > len(lines):
                         reason = "invalid_range"
                     else:
                         selected = "\n".join(lines[start - 1:end])
@@ -371,9 +400,15 @@ def read_sources(calls, *, repo, env, plan, options, credentials, authorize, sto
         check_access()
         if stopped():
             raise ReviewStopped("Review stopped before returning supporting evidence")
-        selections.append({"path": path, "start_line": start, "end_line": end,
-                           "source_hash": analysis.fingerprint(source) if source else None,
-                           "reason": "available" if source else reason})
+        selection = {"path": path, "start_line": start, "end_line": end,
+                     "source_hash": analysis.fingerprint(source) if source else None,
+                     "reason": "available" if source else reason}
+        if bounded:
+            selection.update(source_hash=analysis.fingerprint(pages) if pages else None,
+                             returned_ranges=[{"start_line": page["start_line"], "end_line": page["end_line"]} for page in pages],
+                             next_start_line=next_start, eof_line=eof_line)
+            sources.extend(pages)
+        selections.append(selection)
         if source:
             sources.append(source)
     return {"kind": "expansion", "selections": selections}, sources
@@ -383,7 +418,8 @@ def _restore_sources(result, *, repo, env, plan, batch, credentials, authorize, 
     calls = [ToolCall(id=f"restore_{index}", name="read_source", arguments={key: item[key]
              for key in ("path", "start_line", "end_line")}) for index, item in enumerate(result["selections"])]
     restored, sources = read_sources(calls, repo=repo, env=env, plan=plan, options=batch.options,
-                                    credentials=credentials, authorize=authorize, stopped=stopped)
+                                    credentials=credentials, authorize=authorize, stopped=stopped,
+                                    source_tool_policy=batch.source_tool_policy)
     if restored != result:
         raise ValueError("Supporting evidence no longer reproduces the accepted selection")
     return sources
@@ -601,11 +637,14 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                         if final_only or expansions + repairs >= ROUNDS[batch.options["effort"]]:
                             return {"kind": "incomplete", "code": "source_round_limit"}
                         result, expansion_sources = read_sources(response.tool_calls, repo=repo, env=env, plan=plan,
-                            options=batch.options, credentials=credentials, authorize=authorize, stopped=stopped)
+                            options=batch.options, credentials=credentials, authorize=authorize, stopped=stopped,
+                            source_tool_policy=batch.source_tool_policy)
                         return result
                     return validate_result(response.output, batch, sources, credentials, stopped)
                 except ValueError as exc:
-                    return {"kind": "feedback", "code": "invalid_result", "validation": _validation_feedback(exc)}
+                    return {"kind": "feedback", "code": "invalid_result", "validation": _validation_feedback(exc),
+                            **({"source_read_error": True} if response.tool_calls
+                               and batch.source_tool_policy == "bounded-reads/v2" else {})}
 
             if normalized is None:
                 try:
@@ -671,9 +710,13 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 supporting.extend(expansion_sources)
                 notices.extend(normalized["selections"])
                 sources.extend(expansion_sources)
-            elif (normalized["kind"] == "feedback" and not final_only and repairs < 1
+            elif (normalized["kind"] == "feedback" and not final_only
+                  and (repairs < 1 or normalized.get("source_read_error") and batch.source_tool_policy == "bounded-reads/v2")
                   and expansions + repairs < ROUNDS[batch.options["effort"]]):
-                repairs += 1
+                if normalized.get("source_read_error") and batch.source_tool_policy == "bounded-reads/v2":
+                    expansions += 1
+                else:
+                    repairs += 1
             else:
                 for unit in batch.units:
                     outcomes[unit.key] = {"status": "failed", "error": normalized.get("code", "invalid_result")}

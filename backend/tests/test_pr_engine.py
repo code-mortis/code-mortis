@@ -32,10 +32,11 @@ def plan(units=None):
 
 
 def prepared(value=None, *, options=None, graph=None, connection=None, source_code_policy=engine.SOURCE_CODE_POLICY,
-             prompt_version=engine.PROMPT_VERSION):
+             prompt_version=engine.PROMPT_VERSION, source_tool_policy=engine.SOURCE_TOOL_POLICY):
     value = value or plan()
     return engine.prepare_batches(value, connection or CONNECTION, options or OPTIONS, dict(CREDENTIALS),
-                                  graph_by_path=graph, source_code_policy=source_code_policy, prompt_version=prompt_version)
+                                  graph_by_path=graph, source_code_policy=source_code_policy, prompt_version=prompt_version,
+                                  source_tool_policy=source_tool_policy)
 
 
 def final(batch, findings=None):
@@ -459,7 +460,7 @@ def test_denied_context_is_reported_without_source_and_has_no_coverage(monkeypat
 
 
 @pytest.mark.parametrize("arguments", [{"path": "../bad", "start_line": 1, "end_line": 2},
-    {"path": "helper.py", "start_line": 1, "end_line": 500},
+    {"path": "helper.py", "start_line": 0, "end_line": 500},
     {"path": "helper.py", "start_line": True, "end_line": 2}])
 def test_source_tool_rejects_unsafe_paths_and_unbounded_ranges(monkeypatch, arguments):
     install_source_reads(monkeypatch)
@@ -490,7 +491,7 @@ def test_invalid_tool_requests_provide_actionable_bounded_repair_context(monkeyp
     elif case == "path":
         call.arguments["path"] = "../fixture-key PRIVATE_TOOL_MARKER"
     elif case == "range":
-        call.arguments["end_line"] = 500
+        call.arguments["start_line"] = 0
     else:
         output.tool_calls *= 11
     result, ledger = run(monkeypatch, value, batches, [output, response(final(batches[0]))])
@@ -1014,7 +1015,7 @@ def test_legacy_source_tool_policy_replays_unchanged_request_hashes(monkeypatch)
     install_source_reads(monkeypatch)
     value = plan()
     batches = engine.prepare_batches(value, CONNECTION, OPTIONS, CREDENTIALS, output_token_policy=None,
-                                      prompt_version="mortis-pr-prompt/v1")
+                                      prompt_version="mortis-pr-prompt/v1", source_tool_policy=None)
     responses = [tool_response(), tool_response(), response(final(batches[0]))]
     ledger = Ledger(batches, responses)
     monkeypatch.setattr(llm, "execute_task", ledger.execute)

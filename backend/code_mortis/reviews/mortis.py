@@ -139,15 +139,13 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         output_token_policy = analysis.output_token_policy(frozen_plan)
         source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
         prompt_version = frozen_plan["versions"]["prompt"] if frozen_plan else engine.PROMPT_VERSION
+        source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
         prepared = engine.prepare_batches(selection, connection, immutable_options, credentials,
                                            graph_by_path=graph_sources, stopped=cancelled,
                                            output_token_policy=output_token_policy, source_code_policy=source_code_policy,
-                                           prompt_version=prompt_version)
+                                           prompt_version=prompt_version, source_tool_policy=source_tool_policy)
         graph_omissions = {batch.key: batch.graph_omitted for batch in prepared if batch.graph_omitted}
         graph = {"options": graph_options, "selections": graph_records, "prompt_omissions": graph_omissions}
-        source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
-        if source_tool_policy not in {None, engine.SOURCE_TOOL_POLICY}:
-            raise ValueError("The saved source-tool policy is unsupported")
         recovery_policy = frozen_plan["versions"].get("output_recovery") if frozen_plan else analysis.OUTPUT_RECOVERY_POLICY
         if recovery_policy not in {None, "split-units/v1", analysis.OUTPUT_RECOVERY_POLICY}:
             raise ValueError("The saved output-recovery policy is unsupported")

@@ -530,25 +530,55 @@ def test_small_prompt_ceiling_splits_required_source_and_diff_into_complete_batc
         assert all(task.status == "completed" for task in db.scalars(select(AnalysisTask)))
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, monkeypatch, legacy):
+@pytest.mark.parametrize("policy", [None, "remaining-rounds/v1", engine.SOURCE_TOOL_POLICY])
+def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, monkeypatch, policy):
     from code_mortis.reviews import engine
 
     settings(scenario, effort="low")
     scenario["expand"] = True
     with monkeypatch.context() as patcher:
-        if legacy:
-            patcher.setattr(engine, "SOURCE_TOOL_POLICY", None)
+        patcher.setattr(engine, "SOURCE_TOOL_POLICY", policy)
+        if policy is None:
             patcher.setattr(engine.analysis, "output_token_policy", lambda snapshot=None: None)
         first = review(scenario)
     assert first[0] == "completed" and len(scenario["wire"]) == 2
     with transaction() as db:
         saved = db.scalar(select(AnalysisPlan)).snapshot
-        assert saved["versions"].get("source_tools") == (None if legacy else engine.SOURCE_TOOL_POLICY)
-        assert saved["versions"].get("output_tokens") == (None if legacy else engine.analysis.OUTPUT_TOKEN_POLICY)
-    assert all(request["max_tokens"] == (8192 if legacy else 16384) for request in scenario["wire"])
+        assert saved["versions"].get("source_tools") == policy
+        assert saved["versions"].get("output_tokens") == (None if policy is None else engine.analysis.OUTPUT_TOKEN_POLICY)
+    assert all(request["max_tokens"] == (8192 if policy is None else 16384) for request in scenario["wire"])
     assert review(scenario) == first
     assert len(scenario["wire"]) == 2
+
+
+@pytest.mark.parametrize("policy", ["remaining-rounds/v1", engine.SOURCE_TOOL_POLICY])
+@pytest.mark.parametrize("bounds", [{"start_line": 2, "end_line": 1}, {"start_line": 1, "end_line": 2.0}])
+def test_repeated_source_range_failures_preserve_final_attempt_and_durable_accounting(scenario, monkeypatch, policy, bounds):
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        if len(scenario["wire"]) <= 2:
+            return httpx.Response(200, json=wire_result("openai", content=None, call=ToolCall(
+                id="bad-range", name="read_source", arguments={"path": "support.py", **bounds})))
+        return valid
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    with monkeypatch.context() as patcher:
+        patcher.setattr(engine, "SOURCE_TOOL_POLICY", policy)
+        first = review(scenario)
+    bounded = policy == engine.SOURCE_TOOL_POLICY
+    assert first[0] == ("completed" if bounded else "failed")
+    assert len(scenario["wire"]) == (3 if bounded else 2)
+    assert first[1]["summary"]["total_tokens"] == (36 if bounded else 24)
+    if bounded:
+        assert "tools" not in scenario["wire"][-1]
+    with transaction() as db:
+        attempts = list(db.scalars(select(AnalysisAttempt)))
+        assert all(attempt.usage_state == "known" for attempt in attempts)
+        assert sum(attempt.usage_tokens for attempt in attempts) == first[1]["summary"]["total_tokens"]
+        assert all(ticket.status == "released" for ticket in db.scalars(select(InferenceAdmission)))
+    assert review(scenario) == first and len(scenario["wire"]) == (3 if bounded else 2)
 
 
 @pytest.mark.parametrize("legacy", [False, True])
