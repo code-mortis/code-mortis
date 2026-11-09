@@ -364,6 +364,31 @@ def test_ambiguous_provider_timeout_is_never_automatically_retried(seed):
     assert tickets[0].status == "released"
 
 
+@pytest.mark.parametrize("limited", [False, True])
+def test_provider_failures_preserve_precise_codes_and_charges_without_retry(seed, limited):
+    plan, ids, values, _ = planned(seed)
+    wire = []
+
+    def handler(message):
+        wire.append(True)
+        return (httpx.Response(200, json=result("openai", stop="length")) if limited
+                else httpx.Response(500, json={"error": {"message": "PRIVATE_PROVIDER_TEXT"}}))
+
+    code = "output_limit" if limited else "provider_http_500"
+    with pytest.raises(llm_http.InferenceError) as caught:
+        execute(ids["a"], values["a"], handler)
+    assert caught.value.code == code and len(wire) == 1
+    tasks, attempts, tickets = rows()
+    assert len(attempts) == 1 and attempts[0].error_code == code
+    assert tasks[0].status == ("failed" if limited else "uncertain") and tasks[0].result is None
+    assert attempts[0].usage_tokens == (12 if limited else None)
+    assert attempts[0].usage_state == ("known" if limited else "unknown")
+    assert tickets[0].status == "released"
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan, "analysis")).charged_tokens == (
+            12 if limited else attempts[0].reserved_tokens)
+
+
 @pytest.mark.parametrize(("options", "expected"), [({"timeout_sec": 300}, 300), ({"timeout_sec": 45}, 45), ({}, 120)])
 def test_request_snapshot_timeout_preserves_legacy_and_explicit_limits(seed, monkeypatch, options, expected):
     _, ids, values, _ = planned(seed, options=options)

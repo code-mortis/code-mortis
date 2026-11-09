@@ -138,21 +138,27 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                     graph_sources[item.path] = supporting
         output_token_policy = analysis.output_token_policy(frozen_plan)
         source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
+        prompt_version = frozen_plan["versions"]["prompt"] if frozen_plan else engine.PROMPT_VERSION
         prepared = engine.prepare_batches(selection, connection, immutable_options, credentials,
                                            graph_by_path=graph_sources, stopped=cancelled,
-                                           output_token_policy=output_token_policy, source_code_policy=source_code_policy)
+                                           output_token_policy=output_token_policy, source_code_policy=source_code_policy,
+                                           prompt_version=prompt_version)
         graph_omissions = {batch.key: batch.graph_omitted for batch in prepared if batch.graph_omitted}
         graph = {"options": graph_options, "selections": graph_records, "prompt_omissions": graph_omissions}
         source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
         if source_tool_policy not in {None, engine.SOURCE_TOOL_POLICY}:
             raise ValueError("The saved source-tool policy is unsupported")
+        recovery_policy = frozen_plan["versions"].get("output_recovery") if frozen_plan else analysis.OUTPUT_RECOVERY_POLICY
+        if recovery_policy not in {None, "split-units/v1", analysis.OUTPUT_RECOVERY_POLICY}:
+            raise ValueError("The saved output-recovery policy is unsupported")
         specification = PlanSpec(repository_id=repository_id, run_id=run_id, initiator_id=actor_id,
             authorization=authority, trigger=trigger, connection=connection,
             revisions={"base": base_sha, "head": head_sha, "merge_base": merge_base},
-            versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": engine.PROMPT_VERSION,
+            versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": prompt_version,
                       "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
                       **({"source_tools": source_tool_policy} if source_tool_policy else {}),
                       **({"source_code": source_code_policy} if source_code_policy else {}),
+                      **({"output_recovery": recovery_policy} if recovery_policy else {}),
                       **({"output_tokens": output_token_policy} if output_token_policy else {})},
             settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
                       "workflow_contract": "mortis-workflow/v1"},
@@ -196,7 +202,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                 task = db.scalar(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id, AnalysisTask.key == key))
                 if not task:
                     return None
-                attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id == task.id)))
+                attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id == task.id)
+                                           .order_by(AnalysisAttempt.number)))
                 known = all(row.usage_state == "known" for row in attempts)
                 usage = sum(row.usage_tokens for row in attempts) if known else None
                 budget = db.get(AnalysisBudget, (plan_id, task.stage))
@@ -216,23 +223,43 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                             AnalysisTask.stage == task.stage, AnalysisTask.status == "running").limit(1))
                         reason = "waiting_capacity" if running else "budget"
                 result = {"id": task.id, "status": task.status, "result": task.result, "input_hash": task.input_hash,
-                          "usage_tokens": usage, "pending_reason": reason}
+                          "usage_tokens": usage, "pending_reason": reason,
+                          "error_code": attempts[-1].error_code if attempts else None}
                 if key in unavailable:
                     chain = [task]
                     children = list(db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id,
-                        AnalysisTask.key.startswith(key + ":round:", autoescape=True))))
+                        AnalysisTask.key.startswith(key + ":round:", autoescape=True),
+                        AnalysisTask.key.not_like("%:unit:%"))))
                     while children:
                         child = next((row for row in children if row.dependencies == [chain[-1].id]), None)
                         if child is None or child.scope != task.scope or child.stage != task.stage:
                             raise ValueError("The saved evidence chain is inconsistent")
                         chain.append(child)
                         children.remove(child)
-                    consumed = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id.in_([row.id for row in chain]))))
+                    recovery = list(db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id,
+                        AnalysisTask.key.startswith(chain[-1].key + ":unit:", autoescape=True))))
+                    consumed = list(db.scalars(select(AnalysisAttempt).where(
+                        AnalysisAttempt.task_id.in_([row.id for row in [*chain, *recovery]]))))
                     result["replay_usage"] = (sum(row.usage_tokens for row in consumed)
                         if all(row.usage_state == "known" for row in consumed) else None)
                     if (all(row.status == "completed" for row in chain)
                             and chain[-1].result and chain[-1].result.get("kind") == "final"):
                         result["replay_result"] = chain[-1].result
+                    elif (all(row.status == "completed" for row in chain[:-1])
+                          and analysis.output_limited(db, plan, chain[-1])
+                          and len(recovery) == len(task.scope)
+                          and {analysis.fingerprint(row.scope) for row in recovery}
+                              == {analysis.fingerprint([scope]) for scope in task.scope}
+                          and all(row.dependencies == [chain[-1].id] and row.stage == task.stage
+                                  and row.key == f"{chain[-1].key}:unit:{analysis.fingerprint(row.scope[0])[:16]}"
+                                  for row in recovery)):
+                        completed = [row for row in recovery if row.status == "completed" and row.result
+                                     and row.result.get("kind") == "final"
+                                     and row.result.get("completed_units") == [row.scope[0]["unit_key"]]]
+                        result["replay_recovery"] = True
+                        result["replay_result"] = {"kind": "final",
+                            "completed_units": [row.scope[0]["unit_key"] for row in completed],
+                            "comments": [comment for row in completed for comment in row.result["comments"]]}
                 return result
 
         requests = {batch.key: batch.request for batch in prepared}
@@ -251,10 +278,21 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             requests[spec.key] = request
             return identity
 
+        def register_recovery(batches, *, parent_key):
+            specifications = [batch.spec.model_copy(update={"dependencies": [parent_key]}) for batch in batches]
+            authorize()
+            with transaction() as db:
+                parent = db.scalar(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id, AnalysisTask.key == parent_key))
+                if parent is None:
+                    raise ValueError("The output-limited parent is unavailable")
+                analysis.split_task(db, job_id, job_attempt, parent.id, specifications)
+            requests.update({batch.key: batch.request for batch in batches})
+
         result = engine.review(path, env, selection, prepared, job_id=job_id, job_attempt=job_attempt,
             credentials=credentials, authorize=authorize, register_task=register_task, load_task=load_task,
             stopped=cancelled, progress=progress, check_admission=check_admission,
-            limit_source_tools=source_tool_policy is not None)
+            limit_source_tools=source_tool_policy is not None,
+            register_recovery=register_recovery if recovery_policy else None, recovery_policy=recovery_policy)
         authorize(check_deadline=False)
         if after_review:
             after_review(result, path, env, fetch_env)

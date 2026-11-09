@@ -5,7 +5,7 @@ import json
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pydantic import ConfigDict, Field, ValidationError, model_validator
 
@@ -20,7 +20,7 @@ from code_mortis.schemas.common import ReviewComment, StrictModel
 from code_mortis.schemas.inference import Message, Request, Tool, ToolCall
 
 VERSION = "mortis-pr/v1"
-PROMPT_VERSION = "mortis-pr-prompt/v1"
+PROMPT_VERSION = "mortis-pr-prompt/v2"
 SCHEMA_VERSION = "mortis-pr-result/v1"
 SOURCE_TOOL_POLICY = "remaining-rounds/v1"
 SOURCE_CODE_POLICY = "selected-lines/v1"
@@ -144,6 +144,7 @@ class PreparedBatch:
     graph_omitted: list[str] = field(default_factory=list)
     error: str | None = None
     source_code_policy: str | None = SOURCE_CODE_POLICY
+    prompt_version: str = PROMPT_VERSION
 
     @property
     def spec(self):
@@ -159,10 +160,13 @@ def _source(revision, path, start, end, text):
 
 
 def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False,
-                    output_token_policy=analysis.OUTPUT_TOKEN_POLICY, source_code_policy=SOURCE_CODE_POLICY):
+                    output_token_policy=analysis.OUTPUT_TOKEN_POLICY, source_code_policy=SOURCE_CODE_POLICY,
+                    prompt_version=PROMPT_VERSION):
     """Freeze requests before persisting their task identities; optional graph never crowds out source."""
     if source_code_policy not in {None, SOURCE_CODE_POLICY}:
         raise ValueError("The saved source-code policy is unsupported")
+    if prompt_version not in {"mortis-pr-prompt/v1", PROMPT_VERSION}:
+        raise ValueError("The saved PR prompt version is unsupported")
     batches = []
     pending = deque(plan.batches)
     while pending:
@@ -191,6 +195,16 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
                 " Select precise finding start_line/end_line bounds; do not return existing_code. "
                 "Mortis constructs existing_code from those verified source lines, just like evidence quotes."
             )
+        if prompt_version != "mortis-pr-prompt/v1":
+            supplied["remaining_source_rounds"] = ROUNDS[options["effort"]]
+            instructions += (
+                " Assigned units already contain their source; citation_sources identifies supplied line ranges. "
+                "Use assigned, graph and supporting source directly instead of reading those ranges again. "
+                "Batch necessary missing evidence into at most ten reads of at most 400 lines each per round. "
+                "remaining_source_rounds is the remaining evidence budget, shared with validation repairs. "
+                "At zero, no source tools remain: finish the structured result using available evidence. "
+                "Do not invent evidence or claim completion when indispensable evidence is missing."
+            )
         request = Request(instructions=instructions,
                           messages=[Message(role="user", content=json.dumps(supplied, ensure_ascii=False))],
                           tools=[read_tool(source_code_policy=source_code_policy)],
@@ -218,7 +232,7 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
         # Store exactly the redacted source sent to the provider, including optional graph source.
         sources = context.sanitize(sources, credentials, stopped)
         batches.append(PreparedBatch(key, units, request, sources, dict(options), dict(connection), omitted, error,
-                                     source_code_policy))
+                                     source_code_policy, prompt_version))
     return batches
 
 
@@ -375,8 +389,22 @@ def _restore_sources(result, *, repo, env, plan, batch, credentials, authorize, 
     return sources
 
 
-def _next_request(batch, sources, notices, *, allow_source_reads=True, repair=False, validation=None):
+def _next_request(batch, sources, notices, *, remaining_source_rounds, allow_source_reads=True,
+                  repair=False, validation=None):
+    if batch.prompt_version != "mortis-pr-prompt/v1":
+        # Repeated reads must not duplicate source already present in this request.
+        unique = []
+        for source in sources:
+            cursor = source["start_line"]
+            for prior in sorted([*batch.sources, *unique], key=lambda item: item["start_line"]):
+                if prior["source_id"] == source["source_id"] and prior["start_line"] <= cursor:
+                    cursor = max(cursor, prior["end_line"] + 1)
+            if cursor <= source["end_line"]:
+                unique.append(source)
+        sources = unique
     payload = {"supporting_sources": sources, "source_read_results": notices}
+    if batch.prompt_version != "mortis-pr-prompt/v1":
+        payload["remaining_source_rounds"] = remaining_source_rounds
     if repair:
         payload["validation_feedback"] = (
             "The preceding result did not satisfy the required task identity, complete assigned coverage, "
@@ -394,6 +422,33 @@ def _followup_spec(batch, request, parent_key, round_number):
     scope = batch.spec.scope
     return TaskSpec(key=key, stage="analysis", input_hash=llm.input_fingerprint(request), scope=scope,
                     dependencies=[parent_key])
+
+
+def _recovery_batches(batch, request, sources, parent_key, *, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY):
+    """Narrow output responsibility while retaining every supplied source, diff and rule."""
+    original = json.loads(request.messages[0].content)
+    recovered = []
+    for unit, scope in zip(batch.units, batch.spec.scope, strict=True):
+        key = f"{parent_key}:unit:{analysis.fingerprint(scope)[:16]}"
+        payload = {**original, "task_key": key, "remaining_source_rounds": 0,
+                   "assigned_units": [item for item in original["assigned_units"] if item["key"] == unit.key],
+                   "context_units": [item for item in original["assigned_units"] if item["key"] != unit.key]}
+        messages = [Message(role="user", content=json.dumps(payload, ensure_ascii=False))]
+        for message in request.messages[1:]:
+            context_payload = json.loads(message.content)
+            context_payload["remaining_source_rounds"] = 0
+            messages.append(Message(role="user", content=json.dumps(context_payload, ensure_ascii=False)))
+        narrowed = request.model_copy(update={"messages": messages, "tools": [],
+            "max_output_tokens": (request.max_output_tokens if recovery_policy == "split-units/v1"
+                                  else min(32768, request.max_output_tokens * 2)),
+            "output_schema": output_schema(key, [unit], source_code_policy=batch.source_code_policy),
+            "instructions": request.instructions + (
+                " The combined response exceeded its output allowance. Complete only this assigned unit; "
+                "context_units retain the other units' source, diffs and rules as supporting evidence. "
+                "Return the final structured result without further source reads."
+            )})
+        recovered.append(replace(batch, key=key, units=[unit], request=narrowed, sources=list(sources)))
+    return recovered
 
 
 def _completed_outcomes(result, batch):
@@ -458,10 +513,10 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
 
 def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, authorize,
            register_task, load_task, stopped=lambda: False, progress=lambda value: None, check_admission=None,
-           limit_source_tools=True):
+           limit_source_tools=True, register_recovery=None, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY):
     """Execute or replay immutable task rows. Callbacks own plan/Job fencing and durable append.
 
-    load_task(key) returns {id,status,result,input_hash,usage_tokens,pending_reason};
+    load_task(key) returns {id,status,result,input_hash,usage_tokens,pending_reason,error_code};
     register_task(spec, request, parent_key=...)
     appends one bounded dependent task and returns its id. For unavailable optional
     frozen context only, the adapter may supply a validated final replay_result and
@@ -472,7 +527,27 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
     waiting_ids = set()
     visited = {batch.key: set() for batch in prepared}
 
-    async def execute_batch(batch, client):
+    async def recover(batch, request, row, sources, client, root_key):
+        if (register_recovery is None or ":unit:" in batch.key
+                or recovery_policy == "split-units/v1" and len(batch.units) <= 1
+                or not row or row["status"] != "failed"
+                or row.get("error_code") != "output_limit" or row.get("usage_tokens") is None):
+            return
+        recovered = _recovery_batches(batch, request, sources, row["key"], recovery_policy=recovery_policy)
+        try:
+            for child in recovered:
+                llm.reservation(child.connection, child.request)
+        except ValueError:
+            return
+        await asyncio.to_thread(register_recovery, recovered, parent_key=row["key"])
+        for unit in batch.units:
+            outcomes[unit.key] = {"status": "running"}
+        for child in recovered:
+            await execute_batch(child, client, root_key=root_key, final_only=True)
+            await save_progress()
+
+    async def execute_batch(batch, client, *, root_key=None, final_only=False):
+        root_key = root_key or batch.key
         if stopped():
             raise ReviewStopped("Review cancelled or superseded")
         if plan.limit_reason or batch.error:
@@ -482,7 +557,13 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 replay = row.get("replay_result") if row else None
                 if replay is not None:
                     try:
-                        outcomes.update(_completed_outcomes(replay, batch))
+                        replay_batch = (replace(batch, units=[unit for unit in batch.units
+                                        if unit.key in replay.get("completed_units", [])])
+                                        if row.get("replay_recovery") else batch)
+                        outcomes.update(_completed_outcomes(replay, replay_batch))
+                        for unit in batch.units:
+                            if unit.key not in outcomes:
+                                outcomes[unit.key] = {"status": "failed", "error": batch.error}
                         return
                     except ValueError:
                         pass
@@ -498,7 +579,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             if stopped():
                 raise ReviewStopped("Review cancelled or superseded")
             row = await asyncio.to_thread(load_task, key)
-            visited[batch.key].add(key)
+            visited[root_key].add(key)
             if not row:
                 raise ValueError("A persisted analysis task is required before execution")
             if row.get("input_hash", llm.input_fingerprint(request)) != llm.input_fingerprint(request):
@@ -507,7 +588,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             if normalized is None and row["status"] not in {"pending", "running"}:
                 task_usage[key] = row.get("usage_tokens")
                 for unit in batch.units:
-                    outcomes[unit.key] = {"status": "failed", "error": row["status"]}
+                    outcomes[unit.key] = {"status": "failed", "error": row.get("error_code") or row["status"]}
+                await recover(batch, request, {**row, "key": key}, sources, client, root_key)
                 break
             expansion_sources = []
             usage = row.get("usage_tokens")
@@ -516,7 +598,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 nonlocal expansion_sources
                 try:
                     if response.tool_calls:
-                        if expansions + repairs >= ROUNDS[batch.options["effort"]]:
+                        if final_only or expansions + repairs >= ROUNDS[batch.options["effort"]]:
                             return {"kind": "incomplete", "code": "source_round_limit"}
                         result, expansion_sources = read_sources(response.tool_calls, repo=repo, env=env, plan=plan,
                             options=batch.options, credentials=credentials, authorize=authorize, stopped=stopped)
@@ -539,6 +621,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                         outcomes[unit.key] = {"status": "failed", "error": "deadline" if deadline else exc.code}
                     task_usage[key] = (failed.get("usage_tokens") if failed and failed["status"] != "pending"
                                        else exc.usage.total_tokens)
+                    if failed:
+                        await recover(batch, request, {**failed, "key": key}, sources, client, root_key)
                     break
                 if response is None:
                     waiting_ids.add(row["id"])
@@ -587,7 +671,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 supporting.extend(expansion_sources)
                 notices.extend(normalized["selections"])
                 sources.extend(expansion_sources)
-            elif normalized["kind"] == "feedback" and repairs < 1 and expansions + repairs < ROUNDS[batch.options["effort"]]:
+            elif (normalized["kind"] == "feedback" and not final_only and repairs < 1
+                  and expansions + repairs < ROUNDS[batch.options["effort"]]):
                 repairs += 1
             else:
                 for unit in batch.units:
@@ -596,6 +681,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                         outcomes[unit.key]["validation"] = normalized["validation"]
                 break
             request = _next_request(batch, supporting, notices,
+                                    remaining_source_rounds=ROUNDS[batch.options["effort"]] - expansions - repairs,
                                     allow_source_reads=not limit_source_tools or expansions + repairs < ROUNDS[batch.options["effort"]],
                                     repair=normalized["kind"] == "feedback",
                                     validation=normalized.get("validation"))

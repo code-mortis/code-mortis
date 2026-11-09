@@ -551,6 +551,210 @@ def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, m
     assert len(scenario["wire"]) == 2
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_prompt_version_preserves_frozen_evidence_requests_across_upgrade(scenario, monkeypatch, legacy):
+    settings(scenario, effort="low")
+    scenario["expand"] = True
+    with monkeypatch.context() as patcher:
+        if legacy:
+            patcher.setattr(engine, "PROMPT_VERSION", "mortis-pr-prompt/v1")
+        first = review(scenario)
+    assert first[0] == "completed" and len(scenario["wire"]) == 2
+    payload = json.loads(scenario["wire"][-1]["messages"][-1]["content"])
+    assert ("remaining_source_rounds" in payload) is not legacy
+    with transaction() as db:
+        saved = db.scalar(select(AnalysisPlan)).snapshot
+        assert saved["versions"]["prompt"] == ("mortis-pr-prompt/v1" if legacy else engine.PROMPT_VERSION)
+    assert review(scenario) == first and len(scenario["wire"]) == 2
+
+
+@pytest.mark.parametrize("limited", [False, True])
+def test_incomplete_provider_results_remain_uncovered_and_replay_their_diagnostic(scenario, monkeypatch, limited):
+    # Historical plans retain their original terminal-failure behavior.
+    calls = []
+
+    def handler(request):
+        calls.append(True)
+        return (httpx.Response(200, json=wire_result("openai", stop="length")) if limited
+                else httpx.Response(500, json={"error": {"message": "PRIVATE_PROVIDER_TEXT"}}))
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    with monkeypatch.context() as legacy:
+        legacy.setattr(analysis, "OUTPUT_RECOVERY_POLICY", None)
+        first = review(scenario)
+    assert first[0] == "failed" and not first[1]["manifest"]["coverage"]["completed"] and not first[2]
+    assert len(first[1]["manifest"]["coverage"]["failed"]) == 2
+    assert first[1]["summary"]["total_tokens"] == (12 if limited else None)
+    assert {unit["error"] for unit in first[1]["units"]} == {"output_limit" if limited else "provider_http_500"}
+    assert review(scenario) == first and len(calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["output_limit", "unknown_usage", "server_error", "child_output_limit"])
+def test_output_limit_after_exhausted_evidence_rounds_recovers_exact_units(scenario, monkeypatch, failure):
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        number = len(scenario["wire"])
+        if number <= 2:
+            call = ToolCall(id=f"read-{number}", name="read_source", arguments={"path": "support.py",
+                            "start_line": 1, "end_line": 401 if number == 1 else 2})
+            return httpx.Response(200, json=wire_result("openai", content=None, call=call))
+        if number == 3 or number == 4 and failure == "child_output_limit":
+            if failure == "server_error":
+                return httpx.Response(500, json={"error": {"message": "PRIVATE_PROVIDER_TEXT"}})
+            return httpx.Response(200, json=wire_result("openai", stop="length", usage=failure != "unknown_usage"))
+        return valid
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    first = review(scenario)
+    recovered = failure in {"output_limit", "child_output_limit"}
+    assert len(scenario["wire"]) == (5 if recovered else 3)
+    assert first[0] == {"output_limit": "completed", "child_output_limit": "partial"}.get(failure, "failed")
+    assert len(first[1]["manifest"]["coverage"]["completed"]) == (
+        2 if failure == "output_limit" else 1 if failure == "child_output_limit" else 0)
+    assert first[1]["summary"]["total_tokens"] == (60 if recovered else None)
+    assert bool(first[2]) is (failure == "output_limit")
+    if failure == "output_limit":
+        assert all(progress.get("failed", 0) == 0 for progress in scenario["progress"])
+    if recovered:
+        assignments = []
+        for request in scenario["wire"][3:]:
+            assert "tools" not in request and request["max_tokens"] == 32768
+            user = [json.loads(message["content"]) for message in request["messages"] if message["role"] == "user"]
+            assert len(user[0]["assigned_units"]) == len(user[0]["context_units"]) == 1
+            assert user[-1]["supporting_sources"][0]["path"] == "support.py"
+            assert user[0]["remaining_source_rounds"] == user[-1]["remaining_source_rounds"] == 0
+            assignments.extend(user[0]["assigned_units"])
+        original_units = next(json.loads(message["content"])["assigned_units"]
+                              for message in scenario["wire"][0]["messages"] if message["role"] == "user")
+        assert assignments == original_units
+    with transaction() as db:
+        tasks = list(db.scalars(select(AnalysisTask)))
+        attempts = list(db.scalars(select(AnalysisAttempt)))
+        assert len(tasks) == len(attempts) == len(scenario["wire"])
+        parent = next(task for task in tasks if ":round:2:" in task.key and ":unit:" not in task.key)
+        assert parent.result is None and parent.status == ("failed" if recovered else "uncertain")
+        children = [task for task in tasks if ":unit:" in task.key]
+        assert len(children) == (2 if recovered else 0)
+        assert all(task.dependencies == [parent.id] for task in children)
+        assert all(ticket.status == "released" for ticket in db.scalars(select(InferenceAdmission)))
+        expected = sum(attempt.usage_tokens if attempt.usage_state == "known" else attempt.reserved_tokens
+                       for attempt in attempts)
+        assert db.get(AnalysisBudget, (parent.plan_id, "analysis")).charged_tokens == expected
+    assert review(scenario) == first and len(scenario["wire"]) == (5 if recovered else 3)
+
+
+@pytest.mark.parametrize("policy", ["split-units/v1", analysis.OUTPUT_RECOVERY_POLICY])
+def test_settled_recovery_survives_worker_loss_without_repeating_completed_units(scenario, monkeypatch, policy):
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        return (httpx.Response(200, json=wire_result("openai", stop="length"))
+                if len(scenario["wire"]) == 1 else valid)
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    validate = engine._completed_outcomes
+
+    def crash(result, batch):
+        if ":unit:" in batch.key:
+            raise RuntimeError("worker lost after durable recovery result")
+        return validate(result, batch)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(analysis, "OUTPUT_RECOVERY_POLICY", policy)
+        patcher.setattr(engine, "_completed_outcomes", crash)
+        with pytest.raises(RuntimeError, match="worker lost"):
+            review(scenario)
+    assert len(scenario["wire"]) == 2
+    completed = review(scenario)
+    assert completed[0] == "completed" and completed[1]["summary"]["total_tokens"] == 36
+    assert len(scenario["wire"]) == 3
+    assert review(scenario) == completed and len(scenario["wire"]) == 3
+    assert [wire["max_tokens"] for wire in scenario["wire"]] == [
+        16384, *([16384 if policy == "split-units/v1" else 32768] * 2)]
+
+
+@pytest.mark.parametrize("policy", ["split-units/v1", analysis.OUTPUT_RECOVERY_POLICY])
+@pytest.mark.parametrize("truncated_again", [False, True])
+def test_single_unit_truncation_gets_one_larger_attempt_only_for_new_plans(scenario, monkeypatch, policy, truncated_again):
+    settings(scenario, exclusions="guide.md")
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        return (httpx.Response(200, json=wire_result("openai", stop="length"))
+                if len(scenario["wire"]) == 1 or truncated_again else valid)
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    with monkeypatch.context() as patcher:
+        patcher.setattr(analysis, "OUTPUT_RECOVERY_POLICY", policy)
+        first = review(scenario)
+    new = policy != "split-units/v1"
+    assert first[0] == ("completed" if new and not truncated_again else "failed")
+    assert [wire["max_tokens"] for wire in scenario["wire"]] == ([16384, 32768] if new else [16384])
+    assert first[1]["summary"]["total_tokens"] == (24 if new else 12)
+    assert review(scenario) == first and len(scenario["wire"]) == (2 if new else 1)
+
+
+def test_recovery_reserves_the_larger_allowance_before_dispatch(scenario, monkeypatch):
+    settings(scenario, exclusions="guide.md", token_budget=30000)
+    original = scenario["handler"]
+
+    def handler(request):
+        original(request)
+        return httpx.Response(200, json=wire_result("openai", stop="length"))
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    result = review(scenario)
+    assert result[0] == "failed" and len(scenario["wire"]) == 1
+    assert result[1]["units"][0]["error"] == "budget"
+    assert result[1]["summary"]["total_tokens"] == 12
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_recovery_replays_validated_units_when_optional_graph_disappears(scenario, optional_graph, monkeypatch, partial):
+    graph, options = optional_graph
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        return (httpx.Response(200, json=wire_result("openai", stop="length"))
+                if len(scenario["wire"]) == 1 or partial and len(scenario["wire"]) == 3 else valid)
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    first = review(scenario, graph_options=options)
+    assert first[0] == ("partial" if partial else "completed") and len(scenario["wire"]) == 3
+    graph["available"] = False
+    replay = review(scenario, graph_options=options)
+    assert replay[0] == first[0] and replay[2] == first[2]
+    assert replay[1]["summary"]["total_tokens"] == first[1]["summary"]["total_tokens"] == 36
+    assert replay[1]["manifest"]["coverage"] == first[1]["manifest"]["coverage"]
+    assert len(scenario["wire"]) == 3
+
+
+def test_invalid_recovery_result_never_counts_coverage_or_starts_unbounded_repairs(scenario, monkeypatch):
+    original = scenario["handler"]
+
+    def handler(request):
+        valid = original(request)
+        if len(scenario["wire"]) == 1:
+            return httpx.Response(200, json=wire_result("openai", stop="length"))
+        if len(scenario["wire"]) == 2:
+            payload = next(json.loads(message["content"]) for message in json.loads(request.content)["messages"]
+                           if message["role"] == "user")
+            return httpx.Response(200, json=wire_result("openai", content=json.dumps({
+                "task_key": payload["task_key"], "completed_units": [], "findings": []})))
+        return valid
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    first = review(scenario)
+    assert first[0] == "partial" and len(first[1]["manifest"]["coverage"]["completed"]) == 1
+    assert len(scenario["wire"]) == 3 and first[1]["summary"]["total_tokens"] == 36
+    assert review(scenario) == first and len(scenario["wire"]) == 3
+
+
 def test_graph_context_reaches_the_actual_shared_provider_payload(scenario, optional_graph):
     graph, options = optional_graph
     result = review(scenario, graph_options=options)

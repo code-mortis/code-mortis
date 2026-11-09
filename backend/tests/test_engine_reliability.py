@@ -311,7 +311,7 @@ def test_real_http_failures_preserve_consumption_and_never_fallback(seed, provid
     expected = {
         "rate_limit": (429, "rate_limit", 0),
         "authentication": (401, "authentication", 0),
-        "unavailable": (503, "provider_error", None),
+        "unavailable": (503, "provider_http_503", None),
         "timeout": (200, "timeout", None),
         "schema": (200, "malformed_response", 12),
         "json": (200, "malformed_response", None),

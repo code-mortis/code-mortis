@@ -148,7 +148,8 @@ def test_evidence_rounds_follow_one_bounded_chain(expansion):
         assert db.get(AnalysisTask, parent_id).dependencies == []
 
 
-@pytest.mark.parametrize("key", ["a:round:0:context", "a:round:2:context", "b:round:1:context", "arbitrary"])
+@pytest.mark.parametrize("key", ["a:round:0:context", "a:round:2:context", "b:round:1:context", "arbitrary",
+                                "a:round:1:context:unit:forged"])
 def test_evidence_round_identity_must_name_its_root_and_exact_depth(expansion, key):
     _, parent_id = expansion
     complete(parent_id)

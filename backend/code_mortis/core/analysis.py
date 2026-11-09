@@ -33,6 +33,7 @@ from code_mortis.models import (
 from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
 OUTPUT_TOKEN_POLICY = "mortis-completion/v1"
+OUTPUT_RECOVERY_POLICY = "split-units/v2"
 RETIRED_ENGINE_MESSAGE = "OCR execution is retired. Its saved plan and results were preserved; explicitly start new work with Mortis."
 
 
@@ -173,10 +174,11 @@ def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specific
     if depth > limit or root.key not in {task["key"] for task in plan.snapshot["tasks"]}:
         raise ValueError("The evidence round limit was reached")
     prefix = f"{root.key}:round:{depth}:"
-    if not specification.key.startswith(prefix):
+    if not specification.key.startswith(prefix) or ":unit:" in specification.key:
         raise ValueError("The evidence round identity does not match its parent")
     existing = list(db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan.id,
-                                                        AnalysisTask.key.startswith(prefix, autoescape=True))))
+                                                        AnalysisTask.key.startswith(prefix, autoescape=True),
+                                                        AnalysisTask.key.not_like("%:unit:%"))))
     identity = fingerprint([plan.id, specification.key])
     if existing:
         task = existing[0]
@@ -189,6 +191,53 @@ def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specific
     db.add(task)
     db.flush()
     return task
+
+
+def output_limited(db, plan, parent):
+    """Only a settled truncation may unlock one separately accounted recovery per unit."""
+    policy = plan.snapshot["versions"].get("output_recovery")
+    if (policy not in {"split-units/v1", OUTPUT_RECOVERY_POLICY}
+            or parent.stage != "analysis" or parent.status != "failed" or not parent.scope
+            or policy == "split-units/v1" and len(parent.scope) <= 1
+            or ":unit:" in parent.key):
+        return False
+    attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id == parent.id)
+                              .order_by(AnalysisAttempt.number)))
+    return bool(attempts and attempts[-1].error_code == "output_limit"
+                and all(attempt.usage_state == "known" for attempt in attempts))
+
+
+def split_task(db, job_id, job_attempt, parent_task_id, specifications):
+    """Freeze the complete partition atomically; never rewrite the failed parent or its charge."""
+    specifications = [TaskSpec.model_validate(spec.model_dump(mode="json")) for spec in specifications]
+    job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    parent = db.scalar(select(AnalysisTask).where(AnalysisTask.id == parent_task_id).with_for_update())
+    plan = db.get(AnalysisPlan, parent.plan_id) if parent else None
+    if not plan or plan.job_id != job_id or not owner_live(db, plan) or not job_live(job, job_attempt, now()):
+        raise ValueError("The recovery no longer owns its review")
+    if not output_limited(db, plan, parent):
+        raise ValueError("Only a known output-limit failure can be split")
+    if (len(specifications) != len(parent.scope) or len({spec.key for spec in specifications}) != len(specifications)
+            or any(len(spec.scope) != 1 or spec.stage != parent.stage or spec.dependencies != [parent.key]
+                   or spec.key != f"{parent.key}:unit:{fingerprint(spec.scope[0])[:16]}" for spec in specifications)
+            or sorted(fingerprint(spec.scope[0]) for spec in specifications)
+               != sorted(fingerprint(scope) for scope in parent.scope)):
+        raise ValueError("Recovery must partition the exact assigned units once each")
+    tasks = []
+    for spec in specifications:
+        identity = fingerprint([plan.id, spec.key])
+        task = db.get(AnalysisTask, identity)
+        if task:
+            if (task.input_hash != spec.input_hash or task.scope != spec.scope
+                    or task.dependencies != [parent.id] or task.stage != parent.stage):
+                raise ValueError("Saved recovery inputs are immutable")
+        else:
+            task = AnalysisTask(id=identity, plan_id=plan.id, key=spec.key, stage=parent.stage,
+                                input_hash=spec.input_hash, scope=spec.scope, dependencies=[parent.id])
+            db.add(task)
+        tasks.append(task)
+    db.flush()
+    return tasks
 
 
 def workflow_task(db, plan_id, job_attempt, specification: TaskSpec):
@@ -294,10 +343,15 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
         if task.status != "pending":
             return None
         if task.dependencies:
-            completed = set(db.scalars(select(AnalysisTask.id).where(
-                AnalysisTask.id.in_(task.dependencies), AnalysisTask.status == "completed")))
-            if completed != set(task.dependencies):
-                return None
+            for parent_id in task.dependencies:
+                parent = db.get(AnalysisTask, parent_id)
+                if parent and parent.status == "completed":
+                    continue
+                if not (parent and parent.plan_id == plan.id and len(task.dependencies) == 1
+                        and len(task.scope) == 1 and task.scope[0] in parent.scope and task.stage == parent.stage
+                        and task.key == f"{parent.key}:unit:{fingerprint(task.scope[0])[:16]}"
+                        and output_limited(db, plan, parent)):
+                    return None
         budget = db.scalar(select(AnalysisBudget).where(
             AnalysisBudget.plan_id == plan.id, AnalysisBudget.stage == task.stage).with_for_update())
         unknown = db.scalar(select(AnalysisAttempt.id).join(AnalysisTask).where(

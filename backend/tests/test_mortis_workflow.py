@@ -88,7 +88,10 @@ def workflow(source_case, monkeypatch):  # noqa: F811
             state["requests"].append("analysis")
             source_case["finding"] = state["findings_enabled"]
             # Reuse M3's real planner/executor wire fixture for discovery results.
-            return source_case["handler"](request)
+            valid = source_case["handler"](request)
+            if state.get("truncate_analysis") and state["requests"].count("analysis") == 1:
+                return httpx.Response(200, json=wire_result("openai", stop="length"))
+            return valid
         if "relationship" in schema:
             state["requests"].append("assessment")
             content = next(message["content"] for message in body["messages"] if message["role"] == "user")
@@ -184,6 +187,27 @@ def test_interrupted_mortis_summary_reaches_terminal_stage(workflow, saved_resul
         assert run.summary["tokens"] == (12 if saved_result else None)
         assert db.scalar(select(Job.id).where(Job.kind == "finalize_review"))
     assert workflow["requests"] == []
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_recovered_analysis_completes_assessment_summary_and_publication(workflow, parallel):
+    workflow["truncate_analysis"] = True
+    if parallel:
+        workflow["config"]["pipeline_version"] = 2
+        with transaction() as db:
+            run = db.get(ReviewRun, "mortis-run")
+            run.config = copy.deepcopy(workflow["config"])
+            run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
+    finish_workflow(workflow, "mortis-run", "mortis-job", parallel=parallel)
+    assert workflow["requests"].count("analysis") == 3
+    with transaction() as db:
+        run = db.get(ReviewRun, "mortis-run")
+        assert run.report["summary"]["total_tokens"] == 36 and analytics.run_tokens(db, run) == 60
+        assert len(run.report["manifest"]["coverage"]["completed"]) == 2
+        assert run.publication == "published" and db.scalar(select(ReviewCandidate)).result["verdict"] == "confirmed"
+        tasks = list(db.scalars(select(AnalysisTask).where(AnalysisTask.stage == "analysis")))
+        assert len(tasks) == 3 and sum(task.status == "failed" for task in tasks) == 1
+        assert all(task.status == "completed" for task in tasks if ":unit:" in task.key)
 
 
 @pytest.mark.parametrize("parallel", [False, True])

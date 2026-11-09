@@ -338,6 +338,8 @@ def decode_response(protocol: str, data: dict, request: Request, request_id=None
             message, stop = choice["message"], choice["finish_reason"]
             if message.get("refusal"):
                 raise InferenceError("refusal", "The provider refused this inference request.", **common)
+            if stop == "length":
+                raise InferenceError("output_limit", "The provider exhausted the response token allowance.", **common)
             content = message.get("content")
             if content is not None:
                 if not isinstance(content, str):
@@ -357,6 +359,9 @@ def decode_response(protocol: str, data: dict, request: Request, request_id=None
         elif protocol == "openai-responses":
             stop = data["status"]
             if stop != "completed":
+                if (stop == "incomplete" and isinstance(data.get("incomplete_details"), dict)
+                        and data["incomplete_details"].get("reason") == "max_output_tokens"):
+                    raise InferenceError("output_limit", "The provider exhausted the response token allowance.", **common)
                 raise InferenceError("incomplete", "The provider did not complete this inference response.", **common)
             if not isinstance(data["output"], list):
                 raise ValueError()
@@ -378,6 +383,8 @@ def decode_response(protocol: str, data: dict, request: Request, request_id=None
             complete, tool_stop = {"completed"}, "completed"
         elif protocol == "anthropic":
             stop = data["stop_reason"]
+            if stop == "max_tokens":
+                raise InferenceError("output_limit", "The provider exhausted the response token allowance.", **common)
             if not isinstance(data["content"], list):
                 raise ValueError()
             for block in data["content"]:
@@ -515,6 +522,8 @@ async def post_json(client: httpx.AsyncClient, url: str, headers, body: dict | b
                 if response.status_code >= 400:
                     status = response.status_code
                     code = "authentication" if status in {401, 403} else "rate_limit" if status == 429 else "provider_error"
+                    if 500 <= status < 600:
+                        code = f"provider_http_{status}"
                     try:
                         error_body = _json(b"".join(chunks))
                         error = error_body.get("error", {}) if isinstance(error_body, dict) else {}

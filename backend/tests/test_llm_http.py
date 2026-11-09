@@ -129,13 +129,34 @@ def test_malformed_structured_output_retains_usage(protocol, content):
     assert not caught.value.consumption_unknown
 
 
-@pytest.mark.parametrize("protocol,stop", [("openai", "length"), ("openai-responses", "incomplete"),
-                                           ("anthropic", "max_tokens"), ("anthropic", "pause_turn")])
-def test_incomplete_output_is_never_accepted(protocol, stop):
+@pytest.mark.parametrize("protocol,stop,code", [("openai", "length", "output_limit"),
+    ("openai-responses", "incomplete", "incomplete"), ("anthropic", "max_tokens", "output_limit"),
+    ("anthropic", "pause_turn", "incomplete")])
+def test_incomplete_output_is_never_accepted(protocol, stop, code):
     with pytest.raises(llm_http.InferenceError) as caught:
         llm_http.decode_response(protocol, result(protocol, stop=stop), request())
-    assert caught.value.code == "incomplete"
+    assert caught.value.code == code
     assert caught.value.usage.total_tokens == 12
+
+
+@pytest.mark.parametrize("reason,code", [("max_output_tokens", "output_limit"), ("content_filter", "incomplete"),
+                                        ("PRIVATE_PROVIDER_TEXT", "incomplete")])
+def test_responses_incomplete_reason_is_allowlisted(reason, code):
+    payload = result("openai-responses", stop="incomplete")
+    payload["incomplete_details"] = {"reason": reason}
+    with pytest.raises(llm_http.InferenceError) as caught:
+        llm_http.decode_response("openai-responses", payload, request())
+    assert caught.value.code == code and caught.value.usage.total_tokens == 12
+    assert "PRIVATE_PROVIDER_TEXT" not in str(caught.value)
+
+
+def test_truncated_tool_arguments_keep_output_limit_and_usage_diagnostics():
+    payload = result("openai", stop="length")
+    payload["choices"][0]["message"]["tool_calls"] = [{"function": {"arguments": '{"path":'}}]
+    with pytest.raises(llm_http.InferenceError) as caught:
+        llm_http.decode_response("openai", payload, request())
+    assert caught.value.code == "output_limit"
+    assert caught.value.usage.total_tokens == 12 and caught.value.request_id == "request-fixture"
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
@@ -308,7 +329,8 @@ def test_go_session_is_stable_and_cannot_be_overridden(monkeypatch):
 
 @pytest.mark.parametrize("status,code,unknown,retry", [(401, "authentication", False, False),
     (403, "authentication", False, False), (429, "rate_limit", False, True),
-    (500, "provider_error", True, False), (307, "redirect", False, False)])
+    (500, "provider_http_500", True, False), (503, "provider_http_503", True, False),
+    (307, "redirect", False, False)])
 def test_errors_are_bounded_sanitized_and_never_retried(status, code, unknown, retry):
     calls = []
     async def handler(wire):
@@ -382,7 +404,7 @@ def test_bounded_response_and_exact_signed_bytes(monkeypatch):
     (429, {"error": {"code": "insufficient_quota"}}, None, "quota", False),
     (429, {"error": {"type": "rate_limit_error"}}, [], "rate_limit", False),
     (400, {"error": {}}, [400], "provider_error", True),
-    (500, {"error": {}}, [500], "provider_error", False),
+    (500, {"error": {}}, [500], "provider_http_500", False),
 ])
 def test_quota_and_configured_retry_codes(status, body, configured, code, retry):
     async def run():

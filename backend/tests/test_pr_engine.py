@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from code_mortis.core import analysis
 from code_mortis.core.errors import ReviewStopped
 from code_mortis.integrations import llm
 from code_mortis.integrations.llm_http import InferenceError
@@ -30,10 +31,11 @@ def plan(units=None):
          for path in sorted({u.path for u in units})], [], units, [units])
 
 
-def prepared(value=None, *, options=None, graph=None, connection=None, source_code_policy=engine.SOURCE_CODE_POLICY):
+def prepared(value=None, *, options=None, graph=None, connection=None, source_code_policy=engine.SOURCE_CODE_POLICY,
+             prompt_version=engine.PROMPT_VERSION):
     value = value or plan()
     return engine.prepare_batches(value, connection or CONNECTION, options or OPTIONS, dict(CREDENTIALS),
-                                  graph_by_path=graph, source_code_policy=source_code_policy)
+                                  graph_by_path=graph, source_code_policy=source_code_policy, prompt_version=prompt_version)
 
 
 def final(batch, findings=None):
@@ -100,6 +102,7 @@ def test_preparation_is_deterministic_includes_all_required_input_and_preference
     assert first.request.effort == "medium"
     supplied = json.loads(first.request.messages[0].content)
     assert supplied["language"] == "Spanish" and "Balanced" in supplied["reporting_policy"]
+    assert supplied["remaining_source_rounds"] == engine.ROUNDS[OPTIONS["effort"]]
     assert [item["source"] for item in supplied["assigned_units"]] == [u.source for u in value.units]
     assert [item["diff"] for item in supplied["assigned_units"]] == [u.patch for u in value.units]
     assert {tool.name for tool in first.request.tools} == {"read_source"}
@@ -343,6 +346,7 @@ def test_repair_can_complete_without_persisting_rejected_provider_text_and_repla
     result, ledger = run(monkeypatch, value, batches, [response(invalid), response(final(batches[0]))])
     assert result[0] == "completed" and result[1]["summary"]["total_tokens"] == 24
     repair = json.loads(ledger.calls[1].messages[1].content)
+    assert repair["remaining_source_rounds"] == 1
     assert repair["validation_diagnostics"]["issues"][0]["code"] == "unexpected_code_quote"
     assert "PRIVATE_RESPONSE_MARKER" not in json.dumps([repair, ledger.rows])
     again, ledger = run(monkeypatch, value, batches, [], ledger=ledger)
@@ -350,7 +354,7 @@ def test_repair_can_complete_without_persisting_rejected_provider_text_and_repla
 
 
 def test_legacy_feedback_replays_its_already_settled_repair_without_replacing_inputs(monkeypatch):
-    value, batches = plan(), prepared()
+    value, batches = plan(), prepared(prompt_version="mortis-pr-prompt/v1")
     batch = batches[0]
     ledger = Ledger(batches, [])
     ledger.rows[batch.key].update(status="completed", result={"kind": "feedback", "code": "invalid_result"}, usage_tokens=7)
@@ -995,8 +999,9 @@ def test_final_evidence_request_withholds_unavailable_tools_without_faking_cover
     assert len(ledger.calls) == limit + 1 and len(ledger.appended) == limit
     assert all(request.effort == effort and request.max_output_tokens == 16384 for request in ledger.calls)
     supplied = json.loads(ledger.calls[-1].messages[-1].content)
-    assert len(supplied["supporting_sources"]) == limit
-    assert all(source == supplied["supporting_sources"][0] for source in supplied["supporting_sources"])
+    assert len(supplied["supporting_sources"]) == 1
+    assert [json.loads(request.messages[-1].content)["remaining_source_rounds"]
+            for request in ledger.calls] == list(range(limit, -1, -1))
     assert ledger.calls[-1].messages[0] == batches[0].request.messages[0]
     coverage = result[1]["manifest"]["coverage"]
     assert result[0] == ("completed" if complete else "failed")
@@ -1008,7 +1013,8 @@ def test_final_evidence_request_withholds_unavailable_tools_without_faking_cover
 def test_legacy_source_tool_policy_replays_unchanged_request_hashes(monkeypatch):
     install_source_reads(monkeypatch)
     value = plan()
-    batches = engine.prepare_batches(value, CONNECTION, OPTIONS, CREDENTIALS, output_token_policy=None)
+    batches = engine.prepare_batches(value, CONNECTION, OPTIONS, CREDENTIALS, output_token_policy=None,
+                                      prompt_version="mortis-pr-prompt/v1")
     responses = [tool_response(), tool_response(), response(final(batches[0]))]
     ledger = Ledger(batches, responses)
     monkeypatch.setattr(llm, "execute_task", ledger.execute)
@@ -1019,3 +1025,41 @@ def test_legacy_source_tool_policy_replays_unchanged_request_hashes(monkeypatch)
         authorize=lambda: None, register_task=ledger.register, load_task=ledger.rows.get, limit_source_tools=False)
     assert first == replay and first[0] == "completed"
     assert len(ledger.calls) == 3 and all(request.tools and request.max_output_tokens == 8192 for request in ledger.calls)
+    payload = json.loads(ledger.calls[-1].messages[-1].content)
+    assert len(payload["supporting_sources"]) == 2 and "remaining_source_rounds" not in payload
+
+
+def test_followup_omits_repeated_source_but_preserves_missing_ranges_and_read_results():
+    value = plan([unit(start=1, source="one\ntwo\n"), unit(key="u2", start=3, source="three\nfour\n")])
+    batch = prepared(value)[0]
+    supplied = engine._source(value.head_sha, "app.py", 2, 3, "two\nthree")
+    extension = engine._source(value.head_sha, "app.py", 4, 5, "four\nfive")
+    other = engine._source(value.head_sha, "other.py", 2, 3, "two\nthree")
+    notices = [{"path": "app.py", "start_line": 2, "end_line": 3, "reason": "available"}]
+    sources = [supplied, extension, extension, other]
+    request = engine._next_request(batch, sources, notices, remaining_source_rounds=0, allow_source_reads=False)
+    payload = json.loads(request.messages[-1].content)
+    assert payload["supporting_sources"] == [extension, other]
+    assert payload["source_read_results"] == notices and payload["remaining_source_rounds"] == 0
+    assert sources == [supplied, extension, extension, other] and not request.tools
+    assert request.messages[0] == batch.request.messages[0]
+
+
+@pytest.mark.parametrize("policy", ["split-units/v1", analysis.OUTPUT_RECOVERY_POLICY])
+def test_output_recovery_narrows_three_units_without_losing_source_diff_rules_or_citations(policy):
+    value = plan([unit(key=f"u{i}", start=i, source=f"value = {i}\n") for i in range(1, 4)])
+    batch = prepared(value)[0]
+    original = json.loads(batch.request.messages[0].content)
+    children = engine._recovery_batches(batch, batch.request, batch.sources, batch.key, recovery_policy=policy)
+    assert len(children) == 3 and [child.units[0] for child in children] == value.units
+    for child in children:
+        payload = json.loads(child.request.messages[0].content)
+        assert len(payload["assigned_units"]) == 1 and len(payload["context_units"]) == 2
+        assert sorted(payload["assigned_units"] + payload["context_units"], key=lambda item: item["key"]) == original["assigned_units"]
+        assert payload["citation_sources"] == original["citation_sources"] and child.sources == batch.sources
+        assert child.request.max_output_tokens == (16384 if policy == "split-units/v1" else 32768)
+        assert child.request.effort == batch.request.effort and not child.request.tools
+        assert engine.validate_result(final(child), child, child.sources, CREDENTIALS)["completed_units"] == [child.units[0].key]
+        with pytest.raises(ValueError, match="assigned"):
+            engine.validate_result(final(child) | {"completed_units": [unit.key for unit in value.units]},
+                                   child, child.sources, CREDENTIALS)
