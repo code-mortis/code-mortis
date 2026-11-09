@@ -1,8 +1,11 @@
 import copy
 import json
 import os
+import signal
+import subprocess
 import sys
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -113,6 +116,34 @@ def test_unlimited_subprocess_completes_and_remains_cancellable(tmp_path):
                     timeout=None, stopped=lambda: True)
     with pytest.raises(TimeoutError):
         process.command([sys.executable, "-c", "import time; time.sleep(30)"], tmp_path, os.environ.copy(), timeout=0)
+
+
+@pytest.mark.parametrize("exiting_signal", [signal.SIGTERM, signal.SIGKILL])
+@pytest.mark.parametrize("error", [ReviewStopped("cancelled"), TimeoutError("deadline"), ValueError("output limit")])
+def test_subprocess_exit_race_preserves_original_error_and_reaps_child(tmp_path, monkeypatch, exiting_signal, error):
+    waits, signals = [], []
+
+    def wait(timeout=None):
+        waits.append(timeout)
+        if timeout == 3 and exiting_signal == signal.SIGKILL:
+            raise subprocess.TimeoutExpired("child", timeout)
+        return 0
+
+    def killpg(pid, requested):
+        signals.append(requested)
+        if requested == exiting_signal:
+            raise ProcessLookupError()
+
+    def interrupted():
+        raise error
+
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(pid=123, poll=lambda: None, wait=wait))
+    monkeypatch.setattr(process.os, "killpg", killpg)
+    with pytest.raises(type(error)) as caught:
+        process.command(["child"], tmp_path, {}, timeout=None, poll=interrupted)
+    assert caught.value is error
+    assert waits == ([3] if exiting_signal == signal.SIGTERM else [3, None])
+    assert signals == ([signal.SIGTERM] if exiting_signal == signal.SIGTERM else [signal.SIGTERM, signal.SIGKILL])
 
 
 def test_long_reviews_renew_only_the_current_job_lease(seed, github_stub, monkeypatch):

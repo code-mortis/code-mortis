@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from code_mortis.core.errors import ReviewStopped
@@ -97,11 +98,13 @@ def command(
             )
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
 
 
