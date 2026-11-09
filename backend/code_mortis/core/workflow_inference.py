@@ -76,7 +76,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
     if token_budget is not None and (type(token_budget) is not int or token_budget < 0):
         raise ValueError("The remaining token allowance must be nonnegative or unlimited")
     if timeout is not None and (type(timeout) not in {int, float} or not 0 < timeout < float("inf")):
-        raise TimeoutError("The structured workflow reached its time limit")
+        raise ValueError("The structured workflow timeout must be a positive finite number of seconds")
     dispatch_deadline = time.monotonic() + timeout if timeout is not None else None
     supplied = review_context.sanitize(context, credentials, stopped)
     content = evidence_bundle(supplied) if "sources" in supplied and "diff" in supplied else json.dumps(supplied, ensure_ascii=False)

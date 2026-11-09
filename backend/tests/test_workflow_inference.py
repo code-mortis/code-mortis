@@ -52,6 +52,16 @@ def call(case, **kwargs):
                                       options.pop("context", {"source": "safe source"}), **options)
 
 
+@pytest.mark.parametrize("timeout", [0, -1, True, False, "1", float("nan"), float("inf"), float("-inf")])
+def test_invalid_timeout_rejected_before_work_starts(workflow, timeout):
+    with pytest.raises(ValueError, match="timeout must be a positive finite number"):
+        call(workflow, timeout=timeout)
+    assert workflow["wire"] == []
+    with transaction() as db:
+        assert db.scalar(select(AnalysisPlan)) is None
+        assert db.scalar(select(AnalysisAttempt)) is None
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_completed_result_replays_after_worker_restart_without_new_consumption(workflow, monkeypatch, legacy):
     with monkeypatch.context() as patcher:
