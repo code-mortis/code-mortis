@@ -254,7 +254,7 @@ def _diff_lines(patch):
             if row.startswith(("+", " ")):
                 result.add(line)
                 line += 1
-            elif row.startswith(("diff --git", "+++", "---")):
+            elif row.startswith("diff --git"):
                 line = None
     return result
 

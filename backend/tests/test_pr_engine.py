@@ -143,6 +143,30 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
     assert engine.validate_result(final(batch), batch, batch.sources, dict(CREDENTIALS))["comments"] == []
 
 
+@pytest.mark.parametrize("removed", ["-- SQL comment", "-- a/header-like.sql", "ordinary removed line"])
+def test_removed_header_like_content_preserves_inline_finding_anchor(removed):
+    value = plan([unit("query.sql", start=7, source="-- current comment\nSELECT 1;\n")])
+    value.units[0].patch = (
+        "diff --git a/query.sql b/query.sql\n--- a/query.sql\n+++ b/query.sql\n"
+        f"@@ -7,2 +7,2 @@\n-{removed}\n+-- current comment\n SELECT 1;\n"
+    )
+    batch = prepared(value)[0]
+    item = finding(batch)
+    item.update(start_line=8, end_line=8)
+    item["evidence"][0].update(start_line=8, end_line=8)
+    result = engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+    assert result["comments"][0]["inline_line"] == 8
+    assert result["comments"][0]["evidence"][0]["quote"] == "SELECT 1;"
+
+
+def test_diff_file_headers_are_not_counted_as_hunk_lines():
+    patch = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -10 +10 @@\n-old\n+++value\n"
+    )
+    assert engine._diff_lines(patch) == {1, 10}
+
+
 def test_selected_code_is_built_from_exact_redacted_fragment_without_model_quotes():
     batch = prepared(plan([unit(start=12, source="def value():\n    return 'fixture-key'\n")]))[0]
     item = finding(batch)
