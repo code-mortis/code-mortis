@@ -609,12 +609,14 @@ def controlled_performance(seal, results):
                 "Controlled fixture/pair identity drift")
         gaps = pilot.required_work_gaps(attempt, case["workload"], results.get("scanner_snapshot", {}).get("sha256"))
         work = attempt.get("nontrivial_work_evidence", {})
+        work = work if isinstance(work, dict) else {}
+        source_paths = work.get("source_paths")
+        valid_paths = isinstance(source_paths, list) and all(isinstance(path, str) for path in source_paths)
         expected_work = case["expected_work"]
         if not (sha(work.get("artifact_sha256"))
                 and all(type(work.get(field)) is int and work[field] == expected for field, expected in expected_work.items())
                 and isinstance(attempt.get("findings"), list) and len(attempt["findings"]) == expected_work["findings"]
-                and isinstance(work.get("source_paths"), list)
-                and len(set(work["source_paths"])) == expected_work["source_files"]):
+                and valid_paths and len(set(source_paths)) == expected_work["source_files"]):
             gaps.append("missing_or_mismatched_declared_work_evidence")
         if case["workload"] == "pr" and (work.get("assessment_candidates") != len(attempt.get("candidates", []))
                                           or work.get("historical_verification_targets") != len(attempt.get("verification_targets", []))):
@@ -625,7 +627,7 @@ def controlled_performance(seal, results):
             grouped = {phase: {key.split(":", 1)[1]: task for key, task in tasks.items() if key.startswith(phase + ":")}
                        for phase in ("analysis", "assessment", "verification")} if isinstance(tasks, dict) else {}
             records = [task for phase in grouped.values() for task in phase.values()]
-            if (set(grouped.get("analysis", {})) != set(work.get("source_paths", []))
+            if (not valid_paths or set(grouped.get("analysis", {})) != set(source_paths)
                     or len(grouped.get("analysis", {})) != expected_work["security_analysis_tasks"]
                     or any(not isinstance(task, dict) or task.get("status") != "completed"
                            or not sha(task.get("input_hash")) or not isinstance(task.get("result"), dict)
@@ -785,7 +787,7 @@ def consumption_evidence(attempt, protocol):
 
 def score(seal, results, documents=(), evidence=None, performance_results=None):
     cases, planned = verify_seal(seal)
-    protocol, evidence = seal["protocol"], evidence or {}
+    protocol, evidence = seal["protocol"], evidence if isinstance(evidence, dict) else {}
     controlled_groups, controlled = controlled_performance(seal, performance_results)
     require(results.get("schema") == "mortis-engine-acceptance-results/v2"
             and results.get("seal_sha256") == fingerprint(seal), "Results must bind prospective acceptance seal")
@@ -834,7 +836,12 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
     if missing:
         blockers.add("missing_planned_attempts")
     packet = blind(results, seal["corpus"])
+    valid_documents = []
     for document in documents:
+        if not isinstance(document, dict):
+            blockers.add("independent_review_pending")
+            continue
+        valid_documents.append(document)
         excluded_reviewers = (seal["corpus"]["provenance"]["implementer_ids"]
                               + seal["corpus"]["provenance"]["truth_author_ids"])
         require(document.get("reviewer_id") not in excluded_reviewers,
@@ -844,7 +851,7 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
                     "Acceptance reviewer identity was not independently designated before outputs")
     normalized = [{**document, "reviewer_kind": "human"} if document.get("reviewer_kind") == "external_expert"
                   else {**document, "reviewer_kind": "agent"} if document.get("reviewer_kind") == "independent_agent"
-                  else document for document in documents]
+                  else document for document in valid_documents]
     decisions = pilot.judgments_by_id(normalized, packet)
     rows = pilot.quality_rows(attempts, cases, decisions)
     if any(row["pending"] for row in rows):
@@ -893,16 +900,24 @@ def score(seal, results, documents=(), evidence=None, performance_results=None):
         if limit is not None and (not all(pilot.number(value) for value in values) or sum(values) > limit):
             blockers.add("finite_spending_cap_unknown_or_exceeded")
     checks = evidence.get("checks", {})
+    checks = checks if isinstance(checks, dict) else {}
     evidence_bound = evidence.get("results_sha256") == fingerprint(results) and evidence.get("seal_sha256") == fingerprint(seal)
-    reliability = {name: {**checks.get(name, {}), "valid": evidence_bound and checks.get(name, {}).get("status") == "passed"
-                         and sha(checks.get(name, {}).get("artifact_sha256"))} for name in protocol["required_reliability_checks"]}
+    reliability = {}
+    for name in protocol["required_reliability_checks"]:
+        check = checks.get(name)
+        check = check if isinstance(check, dict) else {}
+        reliability[name] = {**check, "valid": evidence_bound and check.get("status") == "passed"
+                             and sha(check.get("artifact_sha256"))}
     if not all(item["valid"] for item in reliability.values()):
         blockers.add("reliability_feature_resource_evidence_incomplete")
     independent_reviews = evidence.get("independent_reviews", [])
+    independent_reviews = independent_reviews if isinstance(independent_reviews, list) else []
     covered = set()
     expected_findings = {item["blind_id"] for item in packet["items"]}
     for review in independent_reviews:
-        qualifying = [document for document in documents
+        if not isinstance(review, dict):
+            continue
+        qualifying = [document for document in valid_documents
                       if document.get("reviewer_kind") == review.get("reviewer_kind")
                       and document.get("reviewer_id") == review.get("reviewer_id")
                       and fingerprint(document) == review.get("judgments_sha256")]

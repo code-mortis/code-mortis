@@ -286,6 +286,53 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "custody"):
             acceptance.verify_seal(seal)
 
+    def test_malformed_reliability_and_signoff_evidence_blocks_acceptance(self):
+        seal = self.seal()
+        results = self.results(seal)
+        documents = self.judgments(results, seal)
+        documents[0]["reviewer_kind"] = "external_expert"
+        check_name = seal["protocol"]["required_reliability_checks"][0]
+        evidence = {"seal_sha256": acceptance.fingerprint(seal), "results_sha256": acceptance.fingerprint(results),
+                    "checks": {name: {"status": "passed", "artifact_sha256": "a" * 64}
+                               for name in seal["protocol"]["required_reliability_checks"]},
+                    "independent_reviews": [{"reviewer_id": "invented-test-reviewer", "reviewer_kind": "external_expert",
+                                             "independent": True, "arm_blinded": True, "status": "passed",
+                                             "artifact_sha256": "a" * 64,
+                                             "packet_sha256": acceptance.fingerprint(acceptance.blind(results, seal["corpus"])),
+                                             "judgments_sha256": acceptance.fingerprint(documents[0])}]}
+        baseline = acceptance.score(seal, results, documents, evidence)
+        self.assertTrue(all(check["valid"] for check in baseline["reliability"].values()))
+        self.assertNotIn("independent_review_pending", baseline["blockers"])
+        for field in ("evidence", "checks", "check", "independent_reviews", "review", "document"):
+            for malformed in (None, [], [1], "invalid", 1, True):
+                with self.subTest(field=field, malformed=malformed):
+                    changed, judgments = copy.deepcopy(evidence), documents
+                    if field == "evidence":
+                        changed = malformed
+                    elif field == "check":
+                        changed["checks"][check_name] = malformed
+                    elif field == "review":
+                        changed["independent_reviews"] = [malformed]
+                    elif field == "document":
+                        judgments = [malformed]
+                    else:
+                        changed[field] = malformed
+                    report = acceptance.score(seal, results, judgments, changed)
+                    blocker = ("reliability_feature_resource_evidence_incomplete"
+                               if field in {"evidence", "checks", "check"} else "independent_review_pending")
+                    self.assertIn(blocker, report["blockers"])
+                    self.assertEqual(report["acceptance"], "not_established")
+                    if field == "document":
+                        self.assertIn("unresolved_adjudication", report["blockers"])
+                        self.assertEqual(report["independently_reviewed_findings"], 0)
+                        report = acceptance.score(seal, results, [*documents, malformed], evidence)
+                        self.assertIn("independent_review_pending", report["blockers"])
+        for field in ("checks", "independent_reviews"):
+            changed = {**evidence, field: {}}
+            report = acceptance.score(seal, results, documents, changed)
+            self.assertIn("reliability_feature_resource_evidence_incomplete" if field == "checks"
+                          else "independent_review_pending", report["blockers"])
+
     def test_live_provider_timings_are_descriptive_only(self):
         seal = self.seal()
         live = self.results(seal)
@@ -424,6 +471,24 @@ class AcceptanceTests(unittest.TestCase):
             if attempt["arm"] == "mortis":
                 attempt["ledger"] = {"attempts": [], "tasks": [{"id": "gateway-task", "stage": "security", "status": "completed"}]}
         return result
+
+    def test_malformed_controlled_work_evidence_excludes_the_pair(self):
+        seal = self.seal()
+        original = self.controlled_security(seal)
+        self.assertTrue(acceptance.controlled_performance(seal, original)[0])
+        for field in ("nontrivial_work_evidence", "source_paths"):
+            for malformed in (None, [], {}, [1], [{}], [[]], "invalid", 1, True):
+                with self.subTest(field=field, malformed=malformed):
+                    results = copy.deepcopy(original)
+                    parent = results["attempts"][0]
+                    if field == "source_paths":
+                        parent = parent["nontrivial_work_evidence"]
+                    parent[field] = malformed
+                    groups, report = acceptance.controlled_performance(seal, results)
+                    self.assertFalse(groups)
+                    self.assertIn("controlled_required_work_timing_or_resource_evidence_incomplete", report["blockers"])
+                    self.assertIn("missing_or_mismatched_declared_work_evidence",
+                                  report["attempt_inventory"][0]["required_work_gaps"])
 
     def test_security_counts_bind_shared_ocr_and_mortis_checkpoints(self):
         seal = self.seal()
