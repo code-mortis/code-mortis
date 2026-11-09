@@ -25,7 +25,7 @@ x-app: &app
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   init: true
-  tmpfs: ["/tmp:mode=1777,size=2g", "/home/mortis/.opencodereview:uid=10001,gid=10001,mode=0700,size=256m"]
+  tmpfs: ["/tmp:mode=1777,size=2g"]
   depends_on:
     postgres: {condition: service_healthy}
     redis: {condition: service_healthy}
@@ -60,7 +60,6 @@ services:
       - ./backend/migrations:/app/backend/migrations:ro
       - code-graph-data:/var/lib/code-mortis/code-graph:ro
     command: [uvicorn, code_mortis.main:app, --host, "0.0.0.0", --port, "8080", --reload, --reload-dir, /app/backend/code_mortis, --no-access-log]
-    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -85,11 +84,7 @@ services:
       api: {condition: service_healthy}
   review-worker:
     <<: *app
-    environment:
-      <<: *environment
-      CM_OCR_ISOLATED_RUNTIME: "true"
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, reviews, --concurrency=1, --loglevel=INFO, --hostname=reviews@%h]
-    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -97,7 +92,6 @@ services:
     <<: *app
     environment:
       <<: *environment
-      CM_OCR_ISOLATED_RUNTIME: "true"
       CM_TRIVY_CACHE_DIR: /var/cache/mortis-trivy
     volumes:
       - ./backend/code_mortis:/app/backend/code_mortis:ro
@@ -106,27 +100,18 @@ services:
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, security, --concurrency=1, --loglevel=INFO, --hostname=security@%h]
     mem_limit: 2g
     cpus: 2
-    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
   verification-worker:
     <<: *app
-    environment:
-      <<: *environment
-      CM_OCR_ISOLATED_RUNTIME: "true"
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, verification, --concurrency=1, --loglevel=INFO, --hostname=verification@%h]
-    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
   summary-worker:
     <<: *app
-    environment:
-      <<: *environment
-      CM_OCR_ISOLATED_RUNTIME: "true"
     command: [celery, -A, code_mortis.jobs:celery, worker, -Q, summaries, --concurrency=1, --loglevel=INFO, --hostname=summaries@%h]
-    networks: [default, runners]
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -188,18 +173,6 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
-  runner:
-    image: code-mortis-runner:0.2.0
-    build: {context: ., dockerfile: Dockerfile.runner}
-    environment:
-      CM_RUNNER_TOKEN: ${CM_RUNNER_TOKEN:?Generate .env.dev with init-env}
-    volumes: [runner-profiles:/profiles, "./backend/code_mortis:/app/backend/code_mortis:ro"]
-    tmpfs: ["/tmp:mode=1777,size=1g", "/home/mortis:uid=10001,gid=10001,mode=0700,size=64m"]
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    init: true
-    networks: [runners]
   relay:
     image: code-mortis-relay:5.0.0
     build: {context: ., dockerfile: Dockerfile.relay}
@@ -212,7 +185,6 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  runner-profiles:
   trivy-cache:
   code-graph-data:
   frontend-modules:
@@ -220,4 +192,3 @@ volumes:
 networks:
   code-graph:
     internal: true
-  runners:

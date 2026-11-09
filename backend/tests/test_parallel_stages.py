@@ -9,6 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
+from runtime_helpers import file_limit_result
 from sqlalchemy import select
 from test_assessment import SOURCE, verdict
 from test_assessment import pipeline as assessment_scenario  # noqa: F401
@@ -18,13 +19,14 @@ from test_pr_summary import (
     completed_run,
     overview_api,  # noqa: F401
 )
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 from test_verification import RESULT as FIXED
 from test_verification import scenario as verification_scenario  # noqa: F401
 
 from code_mortis import jobs
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
@@ -36,12 +38,18 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.reviews import assessment, pipeline, verification
+from code_mortis.reviews import assessment, mortis, pipeline, verification
 from code_mortis.reviews import service as reviews
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings, StageState
 
 DIAGRAM = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
+
+
+@pytest.fixture(autouse=True)
+def neutral_stage_checkout(monkeypatch):
+    monkeypatch.setattr(pipeline.git_source, "review_snapshot",
+        lambda *args, **kwargs: nullcontext((Path("/tmp/repo"), {}, {}, "b" * 40)))
 
 
 def enable_parallel(identity):
@@ -54,9 +62,9 @@ def enable_parallel(identity):
 
 
 def stub_summary_context(monkeypatch):
-    monkeypatch.setattr(pr_summary, "build_context", lambda *a: copy.deepcopy(CONTEXT))
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "src/retry.py\0" if "--name-only" in a else "b" * 40)
-    monkeypatch.setattr(verification, "filter_context", lambda _repo, _env, paths, *a: paths)
+    monkeypatch.setattr(pr_summary, "build_context", lambda *a, **kw: copy.deepcopy(CONTEXT))
+    monkeypatch.setattr(git_source, "git", lambda *a, **k: "src/retry.py\0" if "--name-only" in a else "b" * 40)
+    monkeypatch.setattr(verification, "filter_context", lambda _repo, _env, paths, *a, **kw: paths)
 
 
 @pytest.mark.parametrize("status,metadata", [
@@ -112,9 +120,9 @@ def test_malformed_report_summary_preserves_analysis(verification_scenario, monk
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
         return result
 
-    monkeypatch.setattr(ocr, "review", engine)
+    monkeypatch.setattr(mortis, "review", engine)
     monkeypatch.setattr(pr_summary, "generate", lambda *a: None)
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.progress["analysis_saved"] and run.progress["analysis_status"] == "completed"
@@ -135,7 +143,7 @@ def test_malformed_report_summary_preserves_analysis(verification_scenario, monk
 def test_expired_pipeline_preserves_timeout_and_saved_analysis(seed, github_stub, monkeypatch, saved_status, summary_started):
     identity = new_run(assessed=True, overview=True, parallel=True)
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Expired runs must not start inference"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Expired runs must not start inference"))
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         run.started_at = now() - timedelta(seconds=run.config["settings"]["timeout_seconds"] + 1)
@@ -144,10 +152,10 @@ def test_expired_pipeline_preserves_timeout_and_saved_analysis(seed, github_stub
             db.add(Job(kind="summarize_review", payload={"run_id": identity}, status="running"))
         if saved_status:
             run.progress = {"analysis_saved": True, "analysis_status": saved_status}
-            run.report = ocr.file_limit_result(["src/retry.py"], 0)[1] if saved_status == "skipped" else {"summary": {"total_tokens": 100}}
+            run.report = file_limit_result(["src/retry.py"], 0)[1] if saved_status == "skipped" else {"summary": {"total_tokens": 100}}
             if saved_status in {"completed", "partial"}:
                 db.add(ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT))
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.status == "running" and run.failure_reason == "timeout"
@@ -193,17 +201,17 @@ def test_three_workers_overlap_and_join_without_early_resolution(verification_sc
         return result
 
     def infer(*args, **kwargs):
-        summary = "instructions" in kwargs
-        calls.append(("summary" if summary else "verification", args[5]))
+        summary = kwargs["stage"] == "summary"
+        calls.append(("summary" if summary else "verification", args[3]))
         overlap.wait()
         assert finish.wait(10)
         return (copy.deepcopy(RESULT), {"tokens": 321}) if summary else (copy.deepcopy(FIXED), {"tokens": 50})
 
-    monkeypatch.setattr(ocr, "review", engine)
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(mortis, "review", engine)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     execute = jobs.execute_job.run
     with ThreadPoolExecutor(max_workers=3) as pool:
-        main = pool.submit(reviews.perform_review, identity)
+        main = pool.submit(perform_review, identity)
         assert started.wait(10)
         with transaction() as db:
             auxiliary = list(db.scalars(select(Job).where(Job.kind.in_(pipeline.KINDS))))
@@ -276,7 +284,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
             if parallel_assessment:
                 assessment_barrier.wait(timeout=10)
             assert release.is_set()
-            supplied = args[4]
+            supplied = args[2]
             assert any(reason.startswith("Commit " + supplied["head_sha"])
                        for item in supplied["history"] for reason in item["reasons"])
             # Both candidates remain observations of the existing finding, never new comments.
@@ -288,13 +296,12 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
             raise verification.VerificationOutputError("Verification interrupted", {"tokens": 50}, verification_outcome)
         return {**copy.deepcopy(FIXED), "verdict": verification_outcome}, {"tokens": 50}
 
-    monkeypatch.setattr(ocr, "review", engine)
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **k: nullcontext())
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
+    monkeypatch.setattr(mortis, "review", engine)
+    monkeypatch.setattr(assessment.git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(assessment, "build_context", context)
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     # OCR finishes first; candidates must remain queued until the other worker stops writing history.
-    reviews.perform_review(identity)
+    perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.stages["assessment"]["status"] == "waiting"
@@ -322,7 +329,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
         assessment_job = deferred[0].id
         assert db.scalar(select(Activity.id).where(Activity.source == "verification"))
     # A recovered OCR delivery cannot bypass the deferred stage or repeat its model calls.
-    reviews.perform_review(identity)
+    perform_review(identity)
     assert calls.count("ocr") == 1 and "assessment" not in calls
     jobs.execute_job(assessment_job)
     jobs.execute_job(assessment_job)
@@ -532,8 +539,9 @@ def test_queue_routing_and_personal_connection_wait(verification_scenario):  # n
         job_id = summary_job.id
     jobs.execute_job(job_id)
     with transaction() as db:
-        assert db.get(Job, job_id).status == "queued"
-        assert db.get(ReviewRun, identity).stages["summary"]["status"] == "waiting"
+        assert db.get(Job, job_id).status == "failed"
+        assert db.get(ReviewRun, identity).status == "cancelled"
+        assert db.get(ReviewRun, identity).stages["summary"]["status"] == "cancelled"
     assert jobs.job_queue("verify_fixes") == "verification"
     assert jobs.job_queue("assess_candidates") == "reviews"
     assert jobs.job_queue("summarize_review") == jobs.job_queue("generate_summary") == "summaries"
@@ -592,7 +600,7 @@ def test_summary_publishes_before_finalization_and_refreshes_coverage(seed, over
         run.summary = {"status": "completed", "tokens": 10, "result": {**RESULT, "narrative": "A new overview."}}
         status = "skipped" if outcome == "file_limit" else "partial" if outcome == "partial" else "completed"
         run.progress = {"analysis_saved": True, "analysis_status": status}
-        run.report = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)[1] if outcome == "file_limit" else {"summary": {"total_tokens": 100}}
+        run.report = file_limit_result(["src/retry.py", "src/test.py"], 1)[1] if outcome == "file_limit" else {"summary": {"total_tokens": 100}}
         for stage in pipeline.STAGES:
             pipeline.update(run, stage, "completed", tokens=10)
         if outcome == "summary_failed":
@@ -646,8 +654,7 @@ def test_summary_uses_one_call_for_optional_diagram(seed, github_stub, monkeypat
         calls.append((args, kwargs))
         return {**RESULT, "diagram": graph}, {"tokens": 27}
 
-    monkeypatch.setattr(verification, "api_verify", infer)
-    monkeypatch.setattr(runner_client, "review", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         connection = db.get(Connection, "connection")
@@ -658,10 +665,15 @@ def test_summary_uses_one_call_for_optional_diagram(seed, github_stub, monkeypat
             **run.config["settings"], "summary_diagram_enabled": diagram != "off",
         }}
         snapshot = run.config["connection"]
+    if native:
+        with pytest.raises(ValueError, match="retired"):
+            pr_summary.generate(identity, None, {}, snapshot, {}, "claim")
+        assert not calls
+        return
     for _ in range(2):
         pr_summary.generate(identity, None, {}, snapshot, {}, "claim")
     assert len(calls) == 1
-    schema = calls[0][0][2]["output_schema"] if native else calls[0][1]["schema"]
+    schema = calls[0][1]["schema"]
     assert ("diagram" in schema["properties"]) == (diagram != "off")
     with transaction() as db:
         saved = db.get(ReviewRun, identity).summary
@@ -674,7 +686,7 @@ def test_file_limit_prevents_verification_but_still_generates_summary(verificati
     identity = verification_scenario["run"]
     enable_parallel(identity)
     stub_summary_context(monkeypatch)
-    limited = ocr.file_limit_result(["src/retry.py", "src/test.py"], 1)
+    limited = file_limit_result(["src/retry.py", "src/test.py"], 1)
 
     def engine(*args, **kwargs):
         result = kwargs.get("saved_review")
@@ -685,12 +697,12 @@ def test_file_limit_prevents_verification_but_still_generates_summary(verificati
         return result
 
     def summary_only(*args, **kwargs):
-        assert "instructions" in kwargs
+        assert kwargs["stage"] == "summary"
         return copy.deepcopy(RESULT), {"tokens": 15}
 
-    monkeypatch.setattr(ocr, "review", engine)
-    monkeypatch.setattr(verification, "api_verify", summary_only)
-    reviews.perform_review(identity)
+    monkeypatch.setattr(mortis, "review", engine)
+    monkeypatch.setattr(verification, "mortis_verify", summary_only)
+    perform_review(identity)
     with transaction() as db:
         assert not db.scalar(select(Job.id).where(Job.kind == "verify_fixes"))
         assert db.get(ReviewRun, identity).stages["verification"]["status"] == "skipped"
@@ -779,7 +791,7 @@ def test_verification_keeps_unknown_usage_separate_from_its_reservation(verifica
     def unknown(*args, **kwargs):
         raise ValueError("Usage unavailable")
 
-    monkeypatch.setattr(verification, "api_verify", unknown)
+    monkeypatch.setattr(verification, "mortis_verify", unknown)
     jobs.execute_job(job_id)
     with transaction() as db:
         row = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity))

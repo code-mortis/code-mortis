@@ -212,21 +212,22 @@ function SecurityRepositoryActions({ repository, summary, admin, onRun }: {
   </DropdownMenu>;
 }
 
-function ScanDialog({ repositoryId, user, onClose, retry, returnTo }: { repositoryId: number; user: User; onClose: () => void; retry?: Scan; returnTo?: HTMLElement | null }) {
+function ScanDialog({ repositoryId, onClose, retry, returnTo }: { repositoryId: number; user: User; onClose: () => void; retry?: Scan; returnTo?: HTMLElement | null }) {
   const focus = useReturnFocus(returnTo);
   const repo = useApi<SecurityRepo>(`/security/repositories/${repositoryId}`);
   const connections = useApi<Connection[]>(`/connections?repository_id=${repositoryId}`);
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent {...focus} className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
-    <DialogHeader><DialogTitle>{retry ? "Retry security scan" : "Run security scan"}</DialogTitle><DialogDescription>Scan the full default branch with OCR and Trivy. This uses the selected AI connection and its quota.</DialogDescription></DialogHeader>
+    <DialogHeader><DialogTitle>{retry ? "Retry security scan" : "Run security scan"}</DialogTitle><DialogDescription>{retry && retry.config.analysis_engine !== "mortis" ? "This saved scan used a retired engine. Start a new Mortis scan with Rescan repository." : "Scan the full default branch with Mortis and Trivy. This uses the selected AI connection and its quota."}</DialogDescription></DialogHeader>
     <ErrorNotice error={repo.error || connections.error} />
     {repo.isPending || connections.isPending ? <Loading /> : repo.data && connections.data && !repo.error && !connections.error &&
-      <ScanForm repository={repo.data} connections={connections.data.filter((connection) => connection.kind === "api" || connection.owner_id === user.id)} onClose={onClose} retry={retry} />}
+      <ScanForm repository={repo.data} connections={connections.data.filter((connection) => connection.kind === "api")} onClose={onClose} retry={retry} />}
   </DialogContent></Dialog>;
 }
 
 function ScanForm({ repository, connections, onClose, retry }: { repository: SecurityRepo; connections: Connection[]; onClose: () => void; retry?: Scan }) {
   const navigate = useNavigate();
   const action = useAction<Scan>();
+  const retiredEngine = !!retry && retry.config.analysis_engine !== "mortis";
   const savedConnection = object(retry?.config.connection);
   const savedLimits = object(retry?.config.limits);
   const [connectionId, setConnectionId] = useState(retry ? text(savedConnection.id) : repository.repository.connection_id ?? "");
@@ -246,7 +247,7 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
     action.mutate({ path: retry ? `/security/scans/${retry.id}/retry` : `/security/repositories/${repository.repository.id}/scans`, body: {
       connection_id: connectionId, model, token_budget: unlimitedTokens ? null : Number(tokens),
       timeout_seconds: unlimitedTimeout ? null : Number(timeout), request_key: requestKey.current,
-      concurrency: selected?.kind === "api" ? Number(concurrency) : 1,
+      concurrency: Number(concurrency),
     } }, { onSuccess: (scan) => { onClose(); navigate(`/security/scans/${scan.id}`); } });
   }
   return <form onSubmit={submit} className="space-y-5">
@@ -257,13 +258,15 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited token budget" checked={unlimitedTokens} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTokens(checked === true); if (!tokens) setTokens("200000"); }} />Unlimited</label></div>
       <div className="space-y-2"><Field label="Timeout (seconds)">{(id) => <Input id={id} type="number" min={60} max={3600} value={timeout} placeholder="Unlimited" required={!unlimitedTimeout} disabled={action.isPending || !!retry || unlimitedTimeout} onChange={(event) => setTimeout(event.target.value)} />}</Field>
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited timeout" checked={unlimitedTimeout} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTimeout(checked === true); if (!timeout) setTimeout("900"); }} />Unlimited</label></div></div>
-    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={selected?.kind === "api" ? concurrency : "1"} required disabled={action.isPending || selected?.kind !== "api"} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
-      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{selected?.kind === "api" ? "Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order." : "Personal connections run one task at a time."}{retry ? " Completed work is reused when its inputs match; the saved model and limits stay the same." : selected?.kind === "api" ? " Defaults to the repository concurrency setting." : ""}</p></div>
+    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={concurrency} required disabled={action.isPending || !selected} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
+      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{"Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order."}{retry ? " Completed work is reused when its inputs match; the saved model and limits stay the same." : " Defaults to the repository concurrency setting."}</p></div>
     <p className="text-xs leading-relaxed text-muted-foreground">Concurrent tasks share the remaining token budget. Budgets stop further work between requests; they are not a guaranteed billing cap. Finished reports grade confirmed findings; incomplete coverage remains visible.</p>
-    {selected?.kind !== "api" && selected && <p className="text-xs leading-relaxed text-muted-foreground">Authorize this repository on your personal connection in <Link className="underline" to="/settings" onClick={onClose}>AI connection settings</Link> before scanning.</p>}
+    {retiredEngine && <p role="status" className="text-sm text-muted-foreground">This scan used Open Code Review, which is retired. Start a new Mortis scan with Rescan repository. The saved scan remains unchanged.</p>}
+    {retry && !selected && <p role="status" className="text-sm text-muted-foreground">This scan's connection is unavailable or retired. Start a new scan with an explicitly selected shared API connection. The saved scan remains unchanged.</p>}
+    {!retry && repository.repository.connection_requires_setup && <p role="status" className="text-sm text-muted-foreground">The repository's subscription connection is retired. Choose a shared API connection for this new scan.</p>}
     <ErrorNotice error={action.error} />
     {repository.can_write === false && <p className="text-sm text-muted-foreground">Repository write access is required to run security scans.</p>}
-    <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || !selected || !model.trim() || repository.can_write === false}><Play aria-hidden="true" className="size-4" />{action.isPending ? "Queuing scan…" : retry ? "Retry scan" : "Run scan"}</Button></DialogFooter>
+    <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={action.isPending || retiredEngine || !selected || !model.trim() || repository.can_write === false}><Play aria-hidden="true" className="size-4" />{action.isPending ? "Queuing scan…" : retry ? "Retry scan" : "Run scan"}</Button></DialogFooter>
   </form>;
 }
 
@@ -501,6 +504,7 @@ export function SecurityScan({ user }: { user: User }) {
   if (query.isPending) return <Loading />;
   if (query.error || !query.data) return <div className="space-y-3"><ErrorNotice error={query.error || "Security scan unavailable."} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Reload scan</Button></div>;
   const { scan, repository: repo, can_write: canWrite } = query.data;
+  const engine = scan.config.analysis_engine === "mortis" ? "Mortis" : "Open Code Review";
   const work = object(scan.progress.work);
   const report = object(scan.report);
   const reportProblems = (Array.isArray(report.problems) ? report.problems : [])
@@ -515,9 +519,10 @@ export function SecurityScan({ user }: { user: User }) {
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
     </>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span>{engine}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
+    {engine === "Open Code Review" && <p role="status" className="mb-4 text-sm text-muted-foreground">This historical scan used Open Code Review, which is retired. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
     <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
     <ScanStages scan={scan} />
     <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Security scan" className={findingTabsClass}>

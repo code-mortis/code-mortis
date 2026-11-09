@@ -11,12 +11,12 @@ os.environ.setdefault("CM_TRIVY_CACHE_DIR", "/tmp/security-scanner-cache")
 os.environ.setdefault("CM_BOOTSTRAP_TOKEN", "isolated-scanner-smoke-only")
 os.environ.setdefault("CM_OWNER_GITHUB_LOGIN", "synthetic-scanner-test")
 
-from code_mortis.integrations import ocr
+from code_mortis.core.process import child_environment
 from code_mortis.security_scans import engine as security_engine
 
 with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
     root = Path(directory)
-    item = security_engine.Snapshot(root, "a" * 40, ocr.child_environment(), lambda: False)
+    item = security_engine.Snapshot(root, "a" * 40, child_environment(), lambda: False)
     item.git.mkdir()
     fixtures = {
         "app.py": "token = 'ghp_" + "aB9cD8eF7gH6iJ5kL4mN3oP2qR1sT0uV9wX8" + "'\n",

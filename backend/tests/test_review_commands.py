@@ -5,13 +5,14 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from runtime_helpers import file_limit_result
 from sqlalchemy import func, select
 from test_checks import rerun_body
-from test_review_flow import new_run, remote
+from test_review_flow import new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core.db import transaction
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import (
     AppConfig,
     Connection,
@@ -23,17 +24,17 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import checks
+from code_mortis.reviews import checks, mortis
 from code_mortis.reviews import service as reviews
 from code_mortis.schemas.common import RepoSettings
 
 
 def skipped_run(monkeypatch):
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    result = ocr.file_limit_result([f"file{i}.py" for i in range(41)], 40)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: result)
+    result = file_limit_result([f"file{i}.py" for i in range(41)], 40)
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: result)
     identity = new_run()
-    reviews.perform_review(identity)
+    perform_review(identity)
     return identity
 
 
@@ -70,7 +71,7 @@ def test_notice_recovers_lost_response_without_analysis(seed, github_stub, monke
             "To bypass the file limit for one review of this revision, post:\n"
             "`@mortis-test[bot] review anyway`\n\n"
             "Requires an enabled Code Mortis member with repository write access. "
-            "Personal connections remain owner-only. Other review limits still apply.\n\n"
+            "Choose a shared API connection. Other review limits still apply.\n\n"
             f"[View run details](http://testserver/runs/{source})\n\n" + reviews.marker("run", f"{source}:0")
         )
         with transaction() as db:
@@ -79,7 +80,7 @@ def test_notice_recovers_lost_response_without_analysis(seed, github_stub, monke
         raise github.GitHubError(503, "Response lost")
 
     monkeypatch.setattr(github, "request", request)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Notice publication cannot run AI"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Notice publication cannot run AI"))
     with pytest.raises(github.GitHubError):
         reviews.publish_run(source)
     monkeypatch.setattr(reviews, "publication_plan", lambda *a: pytest.fail("Must reuse the saved notice"))
@@ -300,10 +301,11 @@ def test_personal_connection_owner_can_override(seed, github_stub, monkeypatch, 
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id = kind, 7
-    deliver()
+    with pytest.raises(ValueError, match="retired"):
+        deliver()
     with transaction() as db:
-        run = db.scalar(select(ReviewRun).where(ReviewRun.id != source))
-        assert run.owner_id == 7 and run.engine == kind and run.config["settings"]["max_files"] is None
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
+        assert db.get(ReviewRun, source).config["connection"]["kind"] == "api"
 
 
 @pytest.mark.parametrize("revocation", ["membership", "disabled", "no_write"])
@@ -320,6 +322,6 @@ def test_command_rechecks_actor_before_execution(seed, github_stub, monkeypatch,
         def denied(*a, **k):
             raise github.GitHubError(403, "Write permission required")
         monkeypatch.setattr(github, "authorize_repo", denied)
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Revoked members cannot run AI"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Revoked members cannot run AI"))
     with pytest.raises((ValueError, github.GitHubError)):
-        reviews.perform_review(run_id)
+        perform_review(run_id)

@@ -1,6 +1,6 @@
 # PR Code: local delivery and validation
 
-Delivered locally on 2026-10-29 from [checkpoints A–D](pr-code-plan.md). This supersedes the browser entry point in graph Phase 4; it does not change Phase 2's experimental review-enrichment decision or complete Phase 5 production readiness.
+Delivered locally on 2026-10-29 from [checkpoints A–D](plans/pr-code/plan.md). This supersedes the browser entry point in graph Phase 4; it does not change Phase 2's experimental review-enrichment decision or complete Phase 5 production readiness.
 
 ## Delivered behavior
 
@@ -49,7 +49,7 @@ These are individual browser Resource Timing samples, not a distribution or SLO.
 
 ## Performance follow-up
 
-The [performance follow-up](pr-code-performance-plan.md#delivered-results) is implemented and verified locally. Production-frontend/real-backend measurement: Dependencies entry **967ms median / 1,188ms p95** across 20 entries, versus the earlier 3,899ms single trace. Valid cached view/file switches measured **25–29ms median**, with zero blocking content requests; expired reads still revalidate. Idle terminal-PR traffic fell from **41 to 5 calls/minute**. The follow-up records all-interaction percentiles, 20 warm backend samples per view, 60 passing Code browser checks, focused backend/neighbor regressions and preserved restart hashes. The timings above remain historical; no production SLO follows.
+The [performance follow-up](plans/pr-code/performance.md#delivered-results) is implemented and verified locally. Production-frontend/real-backend measurement: Dependencies entry **967ms median / 1,188ms p95** across 20 entries, versus the earlier 3,899ms single trace. Valid cached view/file switches measured **25–29ms median**, with zero blocking content requests; expired reads still revalidate. Idle terminal-PR traffic fell from **41 to 5 calls/minute**. The follow-up records all-interaction percentiles, 20 warm backend samples per view, 60 passing Code browser checks, focused backend/neighbor regressions and preserved restart hashes. The timings above remain historical; no production SLO follows.
 
 ## Safe local reload and continuation
 
@@ -60,11 +60,11 @@ The implementation uses existing storage and access paths. The remaining work is
 
 ## Review workflow
 
-The [high-priority workflow](pr-code-review-workflow-plan.md) adds automatic reviewed-file checks, Previous/Next navigation with scoped Alt+Up/Down and saved-finding row indicators. Filters support multiple review and finding states alongside existing search/groups. Selected values within each filter match with OR; review status, findings, search and groups combine with AND. A check comes from validated completed/reused file outcomes at the current PR base/head; it does not mean there are no findings. There is no Reviewed checkbox, manual action or new persistence. The diff retains its original natural height with a 70vh maximum and internal scrolling; the viewport-filling experiment was reverted at the user's request.
+The [high-priority workflow](plans/pr-code/review-workflow.md) adds automatic reviewed-file checks, Previous/Next navigation with scoped Alt+Up/Down and saved-finding row indicators. Filters support multiple review and finding states alongside existing search/groups. Selected values within each filter match with OR; review status, findings, search and groups combine with AND. A check comes from validated completed/reused file outcomes at the current PR base/head; it does not mean there are no findings. There is no Reviewed checkbox, manual action or new persistence. The diff retains its original natural height with a 70vh maximum and internal scrolling; the viewport-filling experiment was reverted at the user's request.
 
 The browser-only workspace response includes `file_states` parallel to its authorized bounded inventory. Review coverage is validated as a complete, nonoverlapping partition of selected items; earlier, malformed or incomplete file outcomes do not earn a check. Finding counts inspect at most 1,000 bounded immutable occurrences across all saved revisions in one batch, using shared credential context and explicit lower bounds/unknown counts when incomplete. Each finding counts once per file in its current resolution state, including historical and unanchored evidence. Without findings requires a complete zero count; other finding filters retain unknown counts. Indicators sum the selected states without double counting, or all states when unfiltered, and open matching saved evidence. The review and finding filters use bounded lists, accept legacy single-value requests, and preserve multiple selections in repeated URL parameters, applied before file pagination on bootstrap and subsequent local navigation, and combine with search and saved groups. Empty filtered lists offer Clear filters. Indicators refresh saved evidence before opening the existing sheet. Existing finding actions refresh counts. Both metadata paths reuse authorization, need no graph/model/worker, and never write progress or resolve findings implicitly.
 
-Final workflow verification: **158 selected backend checks**, **76 Code browser checks**, Ruff, regenerated types and build pass. Real local PR #34 shows **46/62 reviewed** with no checkbox and the original bounded diff height restored after feedback. Final timing: **20 warm reads, 957ms p95; 20 cached switches, 19.5ms p95; six idle API calls/minute**. See the [workflow acceptance](pr-code-review-workflow-plan.md#evidence-and-resume) for raw timing artifacts, bound tests, preserved records and local-only limits.
+Final workflow verification: **158 selected backend checks**, **76 Code browser checks**, Ruff, regenerated types and build pass. Real local PR #34 shows **46/62 reviewed** with no checkbox and the original bounded diff height restored after feedback. Final timing: **20 warm reads, 957ms p95; 20 cached switches, 19.5ms p95; six idle API calls/minute**. See the [workflow acceptance](plans/pr-code/review-workflow.md#evidence-and-resume) for raw timing artifacts, bound tests, preserved records and local-only limits.
 
 ## Historical finding markers, 2026-10-29
 

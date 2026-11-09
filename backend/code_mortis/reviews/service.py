@@ -7,14 +7,21 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
+from code_mortis.core.review_results import fingerprint, report_tokens
 from code_mortis.core.security import digest, unseal
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.core.shared_execution import (
+    cancel_retired_review,
+    is_shared,
+    require_shared,
+)
+from code_mortis.integrations import github
 from code_mortis.models import (
     Activity,
     Connection,
-    ConnectionGrant,
     Finding,
     FindingVerification,
     Installation,
@@ -28,7 +35,7 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import assessment, graph_context, pipeline, verification
+from code_mortis.reviews import assessment, graph_context, mortis, pipeline, verification
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings
 
@@ -67,8 +74,12 @@ def stop_review(db: Session, run: ReviewRun, status: str, reason: str, *, public
 
 def cancel_review(db: Session, run: ReviewRun):
     run.cancel_requested = True
+    ambiguous = run.publication in {"publishing", "uncertain"} and not run.review_ids
+    publication = "partially_published" if run.review_ids or run.publication in {"partially_published", "publishing", "uncertain"} else "not_applicable"
+    if ambiguous:
+        run.publication_error = "GitHub may have accepted a comment before cancellation. Reconcile the saved publication before sending any comments again."
     stop_review(db, run, "cancelled", "The run was cancelled.",
-                publication="partially_published" if run.review_ids else "not_applicable")
+                publication=publication)
 
 
 def cancel_pr_reviews(db: Session, pr: PullRequest) -> list[ReviewRun]:
@@ -93,7 +104,6 @@ def connection_snapshot(connection: Connection) -> dict:
         "kind": connection.kind,
         "owner_id": connection.owner_id,
         "client_version": {"chatgpt": "0.160.1", "claude_code": "2.1.292"}.get(connection.kind),
-        "ocr_version": settings().ocr_version,
     }
 
 
@@ -128,12 +138,16 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.model_validate(repo.settings).model_dump()
+    require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None
     config = {"connection": connection_snapshot(connection), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2"}
-    if graph := graph_context.configuration(db, repo, connection, actor):
+    # Freeze a bounded PR request timeout; old snapshots retain their original 120-second default.
+    config["connection"]["options"] = {"timeout_sec": 300, **config["connection"]["options"]}
+    config.update(engine_snapshot(options))
+    if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
         config["code_graph"] = graph
     if options["model"]:
         config["connection"]["model"] = options["model"]
@@ -174,7 +188,7 @@ def create_run(
         config=config,
         connection_id=connection.id,
         owner_id=connection.owner_id,
-        engine="ocr" if connection.kind == "api" else connection.kind,
+        engine=config["analysis_engine"] if connection.kind == "api" else connection.kind,
         progress={"comment_requests": {request_key: True}} if request_key else {},
         summary={"status": "pending", "tokens": 0},
         stages={stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES},
@@ -266,22 +280,7 @@ def review_anyway(db: Session, body: dict, delivery_id: str):
 
 
 def authorize_connection(db, connection, repo, trigger, actor=None, *, check_repository=True):
-    if connection.kind == "api":
-        return
-    owner = db.get(User, connection.owner_id)
-    if not owner or not owner.enabled or not db.get(Membership, owner.id):
-        raise ValueError("The subscription owner no longer has access to this instance.")
-    if trigger == "manual":
-        if not actor or actor.id != owner.id:
-            raise ValueError("Choose your own personal connection or a shared API connection.")
-    else:
-        grant = db.get(ConnectionGrant, (connection.id, repo.id))
-        if not grant or not grant.automatic:
-            raise ValueError(
-                "The subscription owner has not authorized automatic reviews for this repository."
-            )
-    if check_repository:
-        github.authorize_repo(db, owner, repo.full_name, write=True)
+    require_shared(connection)
 
 
 def execution_identity(run):
@@ -330,7 +329,7 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
 def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool:
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
-        if not run or run.cancel_requested or run.status in {"cancelled", "superseded"}:
+        if not run or run.cancel_requested or run.status in {"cancelled", "superseded"} or not is_shared(run.config.get("connection", {})):
             return True
         from code_mortis.api_tokens import provenance as pat_provenance
         from code_mortis.mcp import provenance as mcp_provenance
@@ -363,8 +362,9 @@ def review_stopped(run_id: str, claim: str | None = None, *, stage=None) -> bool
         return False
 
 
-def perform_review(run_id: str, claim: str | None = None):
-    claim = claim or uid()
+def perform_review(run_id: str, claim: str):
+    if not isinstance(claim, str) or not re.fullmatch(r"[^:]+:[1-9][0-9]*", claim):
+        raise ValueError("Mortis analysis requires a durable job attempt")
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.status not in ACTIVE or run.cancel_requested:
@@ -379,13 +379,17 @@ def perform_review(run_id: str, claim: str | None = None):
         ):
             cancel_review(db, run)
             return
+        if not is_shared(run.config.get("connection", {})):
+            cancel_retired_review(db, run)
+            return
+        require_execution_engine(run.config)
         prior_claim = run.progress.get("execution", "")
         if prior_claim and prior_claim != claim and ":" in prior_claim:
             job_id, attempt = prior_claim.rsplit(":", 1)
             prior_job = db.get(Job, job_id)
             if prior_job and prior_job.status == "running" and str(prior_job.attempts) == attempt and prior_job.lease_until > now():
                 if run.progress.get("assessment_retry"):
-                    raise runner_client.RunnerBlocked("busy")
+                    raise RunnerBlocked("busy")
                 return
         if not pipeline.enabled(run) and run.summary.get("status") == "running":
             pr_summary.interrupt(run)
@@ -426,7 +430,7 @@ def perform_review(run_id: str, claim: str | None = None):
             from code_mortis.security_scans.service import connection_busy
 
             if connection_busy(db, connection.id, run_id=run.id):
-                raise runner_client.RunnerBlocked("busy")
+                raise RunnerBlocked("busy")
             other = db.scalar(
                 select(ReviewRun.id)
                 .where(
@@ -437,9 +441,9 @@ def perform_review(run_id: str, claim: str | None = None):
                 .limit(1)
             )
             if other:
-                raise runner_client.RunnerBlocked("busy")
+                raise RunnerBlocked("busy")
             if connection.auth_status != "connected":
-                raise runner_client.RunnerBlocked("authentication")
+                raise RunnerBlocked("authentication")
         credentials = json.loads(unseal(connection.secret))
         if not retry:
             verification.prepare(db, run, repo, token)
@@ -453,15 +457,6 @@ def perform_review(run_id: str, claim: str | None = None):
         saved_review = None
         if run.progress.get("analysis_saved"):
             saved_review = (run.progress["analysis_status"], run.report, [])
-        if connection.kind == "api" and not saved_review and run.progress.get("analysis_started"):
-            # OCR cannot recover an interrupted API call's usage. Never issue a fresh token allowance.
-            run.failure_reason, run.error = "worker_stopped", "The review worker stopped before saving token usage. The remaining budget cannot be verified, so this run cannot resume. Start a new review."
-            if pipeline.enabled(run):
-                complete_saved_review(db, run, run.error)
-            else:
-                run.status, run.publication, run.finished_at = "failed", "not_applicable", now()
-                verification.skip_pending(db, run, run.error)
-            return
         allowance = run.config["settings"]["timeout_seconds"]
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         remaining = int(allowance - (now() - started_at).total_seconds()) if allowance is not None else None
@@ -523,7 +518,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     if current.progress.get("execution") != claim or current.cancel_requested:
                         return
-                    pipeline.update(current, "ocr", result[0], tokens=ocr.report_tokens(result[1]))
+                    pipeline.update(current, "ocr", result[0], tokens=report_tokens(result[1]))
                     if pipeline.defer_assessment(db, current):
                         return
                     pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
@@ -554,7 +549,7 @@ def perform_review(run_id: str, claim: str | None = None):
                     current.progress = {**current.progress, "file_limit_checked": True, "file_limit_exceeded": limited is not None}
                     pipeline.enqueue_stages(db, current)
 
-        status, report, comments = ocr.review(
+        status, report, comments = mortis.review(
             *args,
             stopped=lambda: review_stopped(run_id, claim),
             run_id=run_id,
@@ -564,8 +559,9 @@ def perform_review(run_id: str, claim: str | None = None):
             after_review=after_review,
             before_analysis=before_analysis,
             graph_options=run.config.get("code_graph"),
+            claim=claim,
         )
-    except ocr.ReviewStopped:
+    except ReviewStopped:
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             if run.progress.get("execution") != claim:
@@ -645,7 +641,8 @@ def save_analysis(run_id, claim, status, report, comments):
         if status in {"failed", "skipped"}:
             run.publication = "not_applicable"
             if status == "failed":
-                run.error = "OCR did not complete the selected review scope. Inspect coverage and retry the review."
+                engine = "Mortis" if run.config.get("analysis_engine") == "mortis" else "OCR"
+                run.error = f"{engine} did not complete the selected review scope. Inspect coverage and retry the review."
         if assessment.enabled(run):
             for position, comment in enumerate(comments):
                 db.add(ReviewCandidate(run_id=run.id, position=position, snapshot=comment))
@@ -654,7 +651,7 @@ def save_analysis(run_id, claim, status, report, comments):
             return
         seen = set()
         for comment in comments:
-            key = ocr.fingerprint(comment)
+            key = fingerprint(comment)
             if key in seen:
                 continue
             seen.add(key)
@@ -779,7 +776,7 @@ def publication_plan(db: Session, run: ReviewRun) -> list[dict]:
                 "To bypass the file limit for one review of this revision, post:\n"
                 f"`@{github.app_config(db).github_slug}[bot] review anyway`\n\n"
                 "Requires an enabled Code Mortis member with repository write access. "
-                "Personal connections remain owner-only. Other review limits still apply.\n\n"
+                "Choose a shared API connection. Other review limits still apply.\n\n"
                 f"[View run details]({settings().public_url}/runs/{run.id})\n\n"
                 + marker("run", f"{run.id}:0")
             ),
@@ -1020,10 +1017,13 @@ def publish_run(run_id: str):
                         if not actor or not actor.enabled or not db.get(Membership, actor.id):
                             raise ValueError("The requesting user no longer has access to publish this review.")
                         github.authorize_repo(db, actor, repo.full_name, write=True)
-                    connection = db.get(Connection, run.connection_id) if run.connection_id else None
-                    if not connection:
-                        raise ValueError("The selected connection is no longer available.")
-                    authorize_connection(db, connection, repo, trigger, actor)
+                    if not is_shared(run.config.get("connection", {})) and not run.owner_id:
+                        raise ValueError("The original review owner is no longer available to authorize publication.")
+                    if run.owner_id:
+                        owner = db.get(User, run.owner_id)
+                        if not owner or not owner.enabled or not db.get(Membership, owner.id):
+                            raise ValueError("The original review owner no longer has access to publish this review.")
+                        github.authorize_repo(db, owner, repo.full_name, write=True)
                     claimed = list(db.scalars(select(Finding).where(
                         Finding.publication_run_id == run.id, Finding.publication_batch == index,
                     ).with_for_update()))

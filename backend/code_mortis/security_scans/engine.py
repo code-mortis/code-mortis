@@ -14,12 +14,17 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
+from code_mortis.core import analysis, process
+from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.security import clean_text, digest, safe_repo_name
-from code_mortis.integrations import ocr, runner_client
+from code_mortis.core.shared_execution import require_shared
+from code_mortis.integrations import llm
 from code_mortis.reviews import verification
 from code_mortis.schemas.common import ReviewComment
+from code_mortis.schemas.inference import Message, Request
 from code_mortis.schemas.security import (
     SecurityAnalysis,
     SecurityAnalysisSelection,
@@ -28,10 +33,12 @@ from code_mortis.schemas.security import (
     SecurityFix,
     SecurityFixSelection,
 )
+from code_mortis.security_scans import policy
 
 POLICY = "code-mortis.security/v1"
 CITATION_CONTRACT = "source-selection/v1"
-TASK_CONTRACT = "security-task/v2"
+LEGACY_TASK_CONTRACT = "security-task/v3"
+TASK_CONTRACT = policy.TASK_CONTRACT
 SEVERITIES = {"low", "medium", "high", "critical"}
 EXCLUDED = {".git", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
 CODE_EXTENSIONS = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".rb",
@@ -59,7 +66,7 @@ INSTRUCTIONS = (
     "unavailable, explain the gap and return uncertain for assessment or verification; never invent source or confirm "
     "an issue or fix without evidence. Use the requested language for "
     "explanations and remediation. If validation_feedback has kind delivery, submit the complete result "
-    "using the requested task_done envelope, including both state and result. For kind schema, correct every listed field to "
+    "using the requested response contract. For kind schema, correct every listed field to "
     "match the requested schema. For kind citation_selection, correct every listed source_id or line range using "
     "citation_sources and the numbered source blocks. Return the complete "
     "requested schema, never invent evidence or weaken a finding to bypass validation. "
@@ -107,7 +114,7 @@ def redact_secrets(text, values, rules=(), stopped=None):
         prefix = hmac.new(settings().encryption_key.encode(), (POLICY + "\0" + name + "\0").encode(), hashlib.sha256)
         for offset in range(len(data) - size + 1):
             if offset % 4096 == 0 and stopped and stopped():
-                raise ocr.ReviewStopped("Security redaction cancelled.")
+                raise ReviewStopped("Security redaction cancelled.")
             candidate = prefix.copy()
             candidate.update(data[offset:offset + size])
             if candidate.hexdigest() in identities:
@@ -155,7 +162,7 @@ class Snapshot:
         self.renames = {}
 
     def read(self, path, sha=None):
-        return verification.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
+        return git_source.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
 
     def redact(self, text):
         return redact_secrets(text, self.secret_values, self.secret_rules, self.stopped)
@@ -171,7 +178,7 @@ class Snapshot:
         return "\n".join(lines)
 
     def populate(self):
-        entries = ocr.git(self.git, self.env, "ls-tree", "-r", "-l", "-z", self.sha, stopped=self.stopped)
+        entries = git_source.git(self.git, self.env, "ls-tree", "-r", "-l", "-z", self.sha, stopped=self.stopped)
         total = 0
         for entry in entries.split("\0"):
             if not entry:
@@ -212,14 +219,14 @@ class Snapshot:
                 self.excluded.append({"path": path, "reason": "No AI analysis for this file type or protected instruction path; Trivy may inspect it as data"})
 
     def diff(self, original):
-        return self.redact(ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
+        return self.redact(git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
                                    original, self.sha, stopped=self.stopped))
 
     def renamed(self, original, path):
         if original in self.renames:
             return self.renames[original].get(path, path)
         try:
-            names = ocr.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
+            names = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
                             "--find-renames", original, self.sha, stopped=self.stopped).split("\0")
         except ValueError:
             self.renames[original] = {}
@@ -243,16 +250,16 @@ def snapshot(full_name, sha, previous_shas, token, stopped):
     if any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in [sha, *previous_shas]):
         raise ValueError("Security scan commit references are invalid.")
     with tempfile.TemporaryDirectory(prefix="mortis-security-", dir=settings().work_dir) as temp:
-        item = Snapshot(Path(temp), sha, ocr.child_environment(), stopped)
+        item = Snapshot(Path(temp), sha, process.child_environment(), stopped)
         item.git.mkdir()
-        ocr.git(item.git, item.env, "init", "--quiet", stopped=stopped)
+        git_source.git(item.git, item.env, "init", "--quiet", stopped=stopped)
         authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         fetch_env = {**item.env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
                      "GIT_CONFIG_VALUE_0": f"Authorization: Basic {authorization}"}
-        ocr.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
+        git_source.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", sha, stopped=stopped)
         for old in set(previous_shas) - {sha}:
             try:
-                ocr.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", old, stopped=stopped)
+                git_source.git(item.git, fetch_env, "fetch", "--no-tags", "--depth=1", f"https://github.com/{full_name}.git", old, stopped=stopped)
             except ValueError:
                 pass  # Unavailable original evidence prevents resolution, not the new scan.
         item.populate()
@@ -260,7 +267,7 @@ def snapshot(full_name, sha, previous_shas, token, stopped):
 
 
 def scanner_environment(root):
-    return {key: value for key, value in {**ocr.child_environment(), "HOME": str(root),
+    return {key: value for key, value in {**process.child_environment(), "HOME": str(root),
             "TRIVY_DISABLE_TELEMETRY": "true", "TRIVY_SKIP_VERSION_CHECK": "true"}.items()
             if key in {"PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "HOME",
                        "TRIVY_DISABLE_TELEMETRY", "TRIVY_SKIP_VERSION_CHECK"}}
@@ -282,7 +289,7 @@ def trivy(item, timeout, stopped):
             target.write_text(inert)
             item.inventory[path]["scanner_hash"] = digest(inert)
             policy_overrides.append(path)
-    code, version, _ = ocr.command([config.trivy_binary, "--version"], item.root, env, timeout=10, stopped=stopped)
+    code, version, _ = process.command([config.trivy_binary, "--version"], item.root, env, timeout=10, stopped=stopped)
     if code or not re.search(rf"\b{re.escape(config.trivy_version)}\b", version):
         raise ValueError(f"Security scanning requires Trivy {config.trivy_version}. Rebuild the security worker.")
     trusted = item.root / "trivy-config.yaml"
@@ -293,7 +300,7 @@ def trivy(item, timeout, stopped):
     secret_config.write_text("skip-patterns: []\n")
     args = [config.trivy_binary, "fs", "--cache-dir", str(cache), "--config", str(trusted),
             "--disable-telemetry", "--skip-version-check", "--ignorefile", str(ignores), "--secret-config", str(secret_config)]
-    update_code, _, _ = ocr.command([*args, "--download-db-only"], item.root, env,
+    update_code, _, _ = process.command([*args, "--download-db-only"], item.root, env,
                                     timeout=min(timeout or 300, 300), stopped=stopped)
     metadata = {}
     try:
@@ -306,9 +313,9 @@ def trivy(item, timeout, stopped):
     scanners = "vuln,misconfig,secret" if fresh else "misconfig,secret"
     empty = item.root / "check-update"
     empty.mkdir()
-    ocr.command([*args, "--scanners", "misconfig", "--skip-db-update", "--offline-scan", str(empty)],
+    process.command([*args, "--scanners", "misconfig", "--skip-db-update", "--offline-scan", str(empty)],
                 item.root, env, timeout=min(timeout or 300, 300), stopped=stopped)
-    code, output, errors = ocr.command([sys.executable, "-m", "code_mortis.security_scans.scanner", *args,
+    code, output, errors = process.command([sys.executable, "-m", "code_mortis.security_scans.scanner", *args,
                                   "--scanners", scanners, "--format", "json", "--offline-scan", "--skip-check-update",
                                   "--skip-db-update", "--skip-java-db-update", "--list-all-pkgs", "--include-dev-deps", "--include-non-failures",
                                   "--parallel", "2", str(item.files)],
@@ -571,7 +578,11 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 
 
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
-        *, configuration_managed=False):
+        *, infer, source_packing=None, select_packing=None,
+        output_token_policy=analysis.OUTPUT_TOKEN_POLICY, navigation=None, select_navigation=None,
+        record_sources=None):
+    require_shared(connection)
+    deadline = time.monotonic() + timeout if timeout is not None else None
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
         if not any(part in PROTECTED for part in PurePosixPath(path).parts)
         and PurePosixPath(path).name not in INSTRUCTION_FILES and redacted_context(item, path) == path)})
@@ -594,6 +605,95 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                          "of a fix. Fixed requires original_issue_present, an actual source change, original/current citations, "
                          "and an explanation that rules out the original trigger. Check every affected location and caller."),
     }[task]
+    current_policy = context.get("task_contract") == TASK_CONTRACT
+    if current_policy:
+        instructions += " " + policy.instructions(task)
+
+    def supplied_context(feedback=None):
+        catalog = {}
+        for revision, sources in sorted(context["sources"].items()):
+            for path, source in sorted(sources.items()):
+                reference = source_ids.setdefault((revision, path), f"source_{len(source_ids) + 1}")
+                catalog[reference] = {"revision": revision, "path": path, "line_count": len(source.splitlines())}
+        selection_schema = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
+        selection_schema["source_id"]["enum"] = list(catalog) or ["unavailable"]
+        selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
+        for name in ("start_line", "end_line"):
+            selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
+        supplied = redacted_context(item, {**context, "citation_sources": catalog,
+            **({"validation_feedback": feedback} if feedback else {})})
+        if current_policy:
+            from code_mortis.security_scans.payload import compact_evidence
+
+            supplied = compact_evidence(supplied)
+        return supplied
+
+    def supporting_sources():
+        paths = [path for path in context["available_paths"] if item.inventory[path].get("code")]
+        sources = dict(context["sources"]["current"])
+        if len(set(paths) | set(sources)) > 16 or not any(path not in sources for path in paths):
+            return None
+        for path in paths:
+            if path not in sources:
+                if stopped():
+                    raise ReviewStopped("Security scan cancelled.")
+                sources[path] = item.source(path)
+            if sum(len(text.encode()) for text in sources.values()) > 32768:
+                return None
+        return sources
+
+    if current_policy:
+        from code_mortis.security_scans.context import source_navigation
+
+        def navigation_stopped():
+            if deadline is not None and time.monotonic() >= deadline:
+                raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": 0}, "skipped")
+            return stopped()
+
+        try:
+            if navigation is None:
+                navigation = source_navigation(item, context["sources"]["current"], context["available_paths"], navigation_stopped)
+            navigation = redacted_context(item, navigation)
+            if select_navigation is not None:
+                navigation = select_navigation(navigation)
+        except ReviewStopped as exc:
+            exc.usage = {"tokens": 0}
+            raise
+        context["source_navigation"] = navigation
+
+    # Pin the choice before dispatch: peer consumption or transient reads cannot change replay inputs.
+    if context.get("task_contract") in {LEGACY_TASK_CONTRACT, TASK_CONTRACT} and task in {"analysis", "assessment"}:
+        original, sources, selected = context["sources"], None, False
+        if source_packing is not False:
+            try:
+                sources = supporting_sources()
+                if sources is not None:
+                    from code_mortis.core.workflow_inference import schema_for_transport
+                    from code_mortis.reviews import context as review_context
+
+                    context["sources"] = {**original, "current": sources}
+                    packed = review_context.sanitize(supplied_context(), credentials, stopped)
+                    request = Request(instructions=review_context.sanitize(instructions, credentials, stopped),
+                        messages=[Message(role="user", content=verification.evidence_bundle(packed))],
+                        output_schema=schema_for_transport(schema),
+                        max_output_tokens=analysis.output_token_limit(output_token_policy), effort="high")
+                    required = llm.reservation(connection, request) + request.max_output_tokens
+                    selected = source_packing is True or budget is None or required <= budget
+            except (ValueError, verification.VerificationOutputError):
+                if source_packing is True:
+                    raise
+            finally:
+                context["sources"] = original
+                source_ids.clear()
+        if source_packing is True and not selected:
+            raise verification.VerificationOutputError("The pinned security supporting source is unavailable.", {"tokens": 0})
+        if select_packing is not None:
+            selected = select_packing(selected)
+        if selected:
+            sources = sources if sources is not None else supporting_sources()
+            if sources is None:
+                raise verification.VerificationOutputError("The pinned security supporting source is unavailable.", {"tokens": 0})
+            context["sources"] = {**original, "current": sources}
 
     def validate(raw, supplied):
         try:
@@ -623,6 +723,12 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                     validate_citations(proposed["evidence"], supplied["sources"], field=f"findings[{index}].evidence")
                 except verification.ResultValidationError as exc:
                     problems.extend(exc.feedback["errors"])
+                else:
+                    if current_policy and not any(citation["revision"] == "current"
+                            and citation["path"] == supplied["assigned_path"] for citation in proposed["evidence"]):
+                        feedback = {"kind": "schema", "errors": [{"loc": ["findings", index, "evidence"],
+                            "msg": "A finding must cite the assigned current file; supporting source alone cannot establish its local cause."}]}
+                        raise verification.ResultValidationError("Security finding lacks assigned-file evidence.", feedback)
             if problems:
                 feedback = {"kind": "citation_selection", **problems[0], "errors": problems}
                 raise verification.ResultValidationError("Security citation selection is invalid. " + json.dumps(feedback), feedback)
@@ -656,58 +762,37 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             {"tokens": used}, feedback={"kind": "evidence", "task": task, "required_paths": paths, "reason": reason},
         )
 
-    deadline = time.monotonic() + timeout if timeout is not None else None
     for attempt in range(4):
         if stopped():
-            raise ocr.ReviewStopped("Security scan cancelled.")
-        remaining = None if budget is None else budget - used
-        if remaining is not None and remaining <= 0:
-            raise verification.VerificationOutputError("Security token budget exhausted.", {"tokens": used}, "skipped")
+            raise ReviewStopped("Security scan cancelled.")
+        remaining = None if budget is None else max(0, budget - used)
         remaining_time = max(0, int(deadline - time.monotonic())) if deadline is not None else None
         if remaining_time is not None and remaining_time <= 0:
             raise verification.VerificationOutputError("Security analysis reached its time limit.", {"tokens": used}, "skipped")
-        catalog = {}
-        for revision, sources in sorted(context["sources"].items()):
-            for path, source in sorted(sources.items()):
-                reference = source_ids.setdefault((revision, path), f"source_{len(source_ids) + 1}")
-                catalog[reference] = {"revision": revision, "path": path, "line_count": len(source.splitlines())}
-        selection_schema = schema["$defs"]["SecurityEvidenceSelection"]["properties"]
-        selection_schema["source_id"]["enum"] = list(catalog) or ["unavailable"]
-        selection_schema["source_id"]["description"] = "Select a source_id from citation_sources. Empty files cannot be cited."
-        for name in ("start_line", "end_line"):
-            selection_schema[name]["maximum"] = max(1, max((source["line_count"] for source in catalog.values()), default=0))
         try:
-            request_context = redacted_context(item, {**context, "citation_sources": catalog,
-                **({"validation_feedback": feedback} if feedback else {})})
+            request_context = supplied_context(feedback)
+            if current_policy and record_sources is not None:
+                record_sources(sorted(context["sources"]["current"]))
         except verification.VerificationOutputError as exc:
             exc.usage = {"tokens": used}
             raise
+        except ReviewStopped as exc:
+            exc.usage = {"tokens": used}
+            raise
         try:
-            if connection["kind"] == "api":
-                result, usage = verification.api_verify(item.git, item.env, connection, credentials, request_context,
-                    remaining, remaining_time, stopped, instructions=instructions, schema=schema, validator=validate,
-                    configuration_managed=configuration_managed, structured_result=True, delivery=verification.STRUCTURED_RESULT_DELIVERY +
-                    " Select evidence using only source_id, start_line and end_line from citation_sources. "
-                    "Do not copy or generate quote, path or revision fields in evidence; Code Mortis supplies them from the snapshot.")
-            else:
-                result, usage = runner_client.review(connection["id"], f"{identity}-{attempt}", {
-                    "task": "security_verification" if task == "verification" else "security_analysis",
-                    "kind": connection["kind"], "model": connection["model"], "effort": "high",
-                    "prompt": instructions + "\n\n" + verification.evidence_bundle(request_context), "output_schema": schema,
-                    "prompt_token_ceiling": connection.get("options", {}).get("prompt_token_ceiling", 58888),
-                    "token_budget": remaining, "timeout": remaining_time,
-                }, stopped)
-                try:
-                    result = validate(result, request_context)
-                except (ValueError, KeyError, TypeError) as exc:
-                    raise verification.VerificationOutputError("The native security result failed source validation: " + str(exc), usage,
-                        feedback=exc.feedback if isinstance(exc, verification.ResultValidationError) else None) from exc
-        except (verification.VerificationOutputError, runner_client.RunnerBlocked) as exc:
+            result, usage = infer(request_context, schema=schema, instructions=instructions,
+                                  validator=lambda raw, supplied: redacted_context(item, validate(raw, supplied)),
+                                  budget=remaining, timeout=remaining_time, round=attempt)
+        except ReviewStopped as exc:
+            tokens = getattr(exc, "usage", {}).get("tokens")
+            exc.usage = {"tokens": used + tokens if type(tokens) is int and tokens >= 0 else None}
+            raise
+        except (verification.VerificationOutputError, RunnerBlocked) as exc:
             tokens = exc.usage.get("tokens")
             known = type(tokens) is int and tokens >= 0
             used = used + tokens if known else None
             exc.usage = {**exc.usage, "tokens": used}
-            if isinstance(exc, runner_client.RunnerBlocked) and exc.reason == "prompt_limit" and known:
+            if isinstance(exc, RunnerBlocked) and exc.reason == "prompt_limit" and known:
                 raise verification.VerificationOutputError("Necessary security context exceeds the connection's per-prompt limit; this task was withheld.",
                     exc.usage, feedback={"kind": "context_limit", "reason": "Necessary source and related history exceed the per-prompt limit"}) from exc
             if (isinstance(exc, verification.VerificationOutputError) and exc.feedback

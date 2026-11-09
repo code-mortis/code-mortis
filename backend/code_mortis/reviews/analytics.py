@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from sqlalchemy import JSON, case, column, func, select, true, union_all
 
 from code_mortis.core.db import now
-from code_mortis.integrations import github, ocr
+from code_mortis.core.review_results import report_tokens
+from code_mortis.integrations import github
 from code_mortis.models import Finding, FindingVerification, Job, PullRequest, ReviewCandidate, ReviewRun
 from code_mortis.schemas.analytics import (
     AnalyticsCount,
@@ -233,7 +234,7 @@ def run_tokens(db, run):
         "pipeline": run.config.get("pipeline_version"),
         "model": run.config.get("connection", {}).get("model"),
         "effort": run.config.get("settings", {}).get("effort"),
-        "tokens": ocr.report_tokens(run.report),
+        "tokens": report_tokens(run.report),
         "summary_tokens": run.summary.get("tokens"), "summary_status": run.summary.get("status"),
         "summary_retry": run.progress.get("summary_retry"),
     }])

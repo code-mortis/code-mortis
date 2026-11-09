@@ -15,13 +15,14 @@ from code_mortis.models import CodeGraphRepository, Repository
 from code_mortis.schemas.code_graph import CodeGraphLimits, CodeGraphRequest, blob_sha
 
 
-def manifest_request(monkeypatch, entries, limits=None, custom=""):
+def manifest_request(monkeypatch, entries, limits=None, custom="", *, loaded=None):
     rules = store.policy(SimpleNamespace(settings={"exclusions": custom}, code_graph_limits=limits or {}))
     row = SimpleNamespace(repository_id=22, commit_sha="a" * 40, id="00000000-0000-0000-0000-000000000001",
                           policy=rules, policy_digest=store.policy_digest(rules), extractor_version=store.contracts.EXTRACTOR_VERSION)
     monkeypatch.setattr(store, "git", lambda *a, **k: b"a" * 40)
     monkeypatch.setattr(store, "tree", lambda *a: {path: ("100644", "blob", blob_sha(raw), len(raw)) for path, raw in entries.items()})
-    loaded = []
+    if loaded is None:
+        loaded = []
 
     def read(root, blob, size, stopped, *, max_bytes):
         path, raw = next((path, raw) for path, raw in entries.items() if blob_sha(raw) == blob)
@@ -187,7 +188,7 @@ def test_summary_filters_legacy_selected_media_without_mutating_report(monkeypat
     report = {"manifest": {"coverage": {"selected": [{"path": path} for path in ("README.md", "image.SVG", "custom.py")]}}}
     run = SimpleNamespace(report=report, config={"settings": {"language": "English", "exclusions": "custom.py"}, "connection": {}},
                           base_sha="a" * 40, head_sha="b" * 40)
-    monkeypatch.setattr(summary.ocr, "git", lambda *a, **k: "a" * 40 if "merge-base" in a else "documentation change")
+    monkeypatch.setattr(summary.git_source, "git", lambda *a, **k: "" if "--name-status" in a else "a" * 40 if "merge-base" in a else "documentation change")
     context = summary.build_context(tmp_path, {}, run, lambda: False)
     assert context["paths"] == ["README.md"]
     assert len(report["manifest"]["coverage"]["selected"]) == 3

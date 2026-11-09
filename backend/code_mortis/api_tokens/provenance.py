@@ -361,6 +361,9 @@ def _effective_raw(db, job) -> tuple[bool, Any]:
     payload = getattr(job, "payload", None) or {}
     if isinstance(payload, dict) and PROVENANCE_KEY in payload:
         return True, payload.get(PROVENANCE_KEY)
+    if job.kind in {"generate_summary", "sync_summary"} and payload.get("summary_attempt_version") == 1:
+        # Explicit regeneration owns its new authorization, separate from historical review origin.
+        return False, None
     run_id = payload.get("run_id")
     if isinstance(run_id, str):
         run = db.get(ReviewRun, run_id)
@@ -520,6 +523,10 @@ def revoke_work(db, token_id: str) -> dict:
     ):
         job.status, job.error, job.lease_until, job.dispatched_at = "failed", REVOKED_MESSAGE, None, None
         job.available_at = now()
+        if job.kind == "generate_summary":
+            from code_mortis.reviews.summary import fail_retry
+
+            fail_retry(db, job, REVOKED_MESSAGE)
         counts["jobs"] += 1
     for run in db.scalars(
         select(ReviewRun)

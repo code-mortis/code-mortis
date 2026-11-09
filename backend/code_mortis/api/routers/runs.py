@@ -6,7 +6,9 @@ from sqlalchemy import func, select
 from code_mortis.api.dependencies import DB, USER, pr_access, review_pr_access
 from code_mortis.api.presenters import pr_out, repo_out
 from code_mortis.api_tokens import provenance as pat_provenance
+from code_mortis.core.analysis import require_execution_engine
 from code_mortis.core.ordering import RunFindingOrdering, list_order
+from code_mortis.core.shared_execution import RETIRED_MESSAGE
 from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
@@ -143,6 +145,12 @@ def retry_assessment(run_id: str, candidate_id: str, db: DB, user: USER):
     pr, repo, _ = review_pr_access(db, user, run.pr_id)
     run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
                     .execution_options(populate_existing=True))
+    if run.config.get("connection", {}).get("kind") != "api":
+        raise HTTPException(410, RETIRED_MESSAGE)
+    try:
+        require_execution_engine(run.config)
+    except ValueError as exc:
+        raise HTTPException(410, str(exc)) from exc
     candidate = db.get(ReviewCandidate, candidate_id)
     if not candidate or candidate.run_id != run.id:
         raise HTTPException(404, "Assessment candidate not found.")
@@ -226,6 +234,10 @@ def retry_review(run_id: str, db: DB, user: USER):
         )
     from code_mortis.reviews.service import authorize_connection, execution_identity
 
+    try:
+        require_execution_engine(run.config)
+    except ValueError as exc:
+        raise HTTPException(410, str(exc)) from exc
     connection = db.get(Connection, run.connection_id)
     if not connection or (connection.owner_id and connection.owner_id != user.id):
         raise HTTPException(403, "Only the connection owner can resume this review.")

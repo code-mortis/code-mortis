@@ -332,6 +332,9 @@ def rerequest(db: Session, body: dict, delivery_id: str):
             )
         authorize_connection(db, connection, repo, "manual", actor)
         if run.status == "blocked":
+            from code_mortis.core.analysis import require_execution_engine
+
+            require_execution_engine(run.config)
             run.status, run.error, run.blocked_reason, run.failure_reason = "queued", None, None, None
             enqueue(db, "review", {"run_id": run.id})
         else:

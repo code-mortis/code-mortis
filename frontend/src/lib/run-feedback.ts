@@ -106,7 +106,7 @@ export function runFeedback(run: Run) {
     destination = "repository";
     if (fileLimitSkip) {
       summary = `${selected} reviewable files exceed the limit of ${settings.max_files}. No files were reviewed.`;
-      nextStep = "An enabled Code Mortis member with repository write access can post the command shown in the GitHub skip notice to bypass the file limit for one review. Personal connections remain owner-only. Or adjust the review settings and start a new review.";
+      nextStep = "An enabled Code Mortis member with repository write access can post the command shown in the GitHub skip notice to bypass the file limit for one review. Choose a shared API connection. Or adjust the review settings and start a new review.";
     } else if (selected === 0) {
       summary = "No changed files were eligible for review.";
       if (exclusions.length && exclusions.every((item) => item.exclude_reason === "unsupported_ext")) {
@@ -130,10 +130,10 @@ export function runFeedback(run: Run) {
     destination = "pull";
   } else if (run.blocked_reason || run.status === "blocked") {
     const reasons: Record<string, [string, string]> = {
-      authentication: ["The AI connection needs to sign in again.", "The connection owner must reconnect the account, then resume this review."],
-      quota: ["The AI connection reached its usage limit.", "The connection owner can resume this review when usage becomes available. No other connection is used automatically."],
-      busy: ["The selected personal connection is reviewing another pull request.", "This review will retry automatically when the connection is available."],
-      unavailable: ["The review service is unavailable.", "Ask the administrator to check the service that runs ChatGPT and Claude Code. Queued reviews retry automatically."],
+      authentication: ["The AI connection needs authentication.", "Ask the administrator to check the shared connection credentials before retrying."],
+      quota: ["The AI connection reached its usage limit.", "Retry with the same shared connection when usage becomes available. No other connection is used automatically."],
+      busy: ["The selected AI connection is busy.", "This review will retry automatically when the connection is available."],
+      unavailable: ["The review service is unavailable.", "Ask the administrator to check the review worker and selected shared API connection. Queued reviews retry automatically."],
     };
     [summary, nextStep] = reasons[run.blocked_reason ?? ""] ?? [run.error || "This review needs attention.", "Check the selected AI connection before resuming."];
     if (!["busy", "unavailable"].includes(run.blocked_reason ?? "")) destination = "connections";
@@ -164,7 +164,7 @@ export function runFeedback(run: Run) {
       destination = "repository";
     } else if (rows(report.errors).some((item) => text(item.message).startsWith("Delegated context budget"))) {
       summary = `${summary} The native context budget was reached.`;
-      nextStep = "Start a new review. Subscription reviews now use the Token budget configured in repository settings.";
+      nextStep = "Start a new Mortis review using a shared API connection and the Token budget configured in repository settings.";
       destination = "repository";
     } else if (run.failure_reason === "worker_stopped") {
       summary = "The review worker stopped before the run could finish.";

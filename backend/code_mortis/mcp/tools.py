@@ -13,7 +13,7 @@ administrator or owner checks; ``ADMIN`` route annotations are FastAPI
 dependencies and do not run on direct calls, so those checks are
 repeated explicitly here.
 
-Excluded on purpose (see docs/mcp-plan.md): raw console tickets and the
+Excluded on purpose (see docs/plans/mcp.md): raw console tickets and the
 console socket, browser login/setup flows, webhooks, unsaved-connection
 model discovery and credential-bearing connection fields (credentials
 are entered in the browser), and bearer-in-URL report downloads (use
@@ -173,7 +173,7 @@ class ApprovalInput(MutationInput):
 class ManagementConnectionInput(ApprovalInput):
     """Connection fields without credentials; secrets are entered in the browser."""
 
-    kind: Literal["api", "chatgpt", "claude_code"] = "api"
+    kind: Literal["api"] = "api"
     name: str = Field(min_length=1, max_length=100)
     provider: str = Field(default="", max_length=100, pattern=r"^[a-z0-9-]*$")
     protocol: Literal["openai", "openai-responses", "anthropic", "anthropic-bedrock", "native"] = "native"
@@ -1273,20 +1273,7 @@ MANAGEMENT_TOOLS = [
      "Test a shared API connection.", False),
     (management_delete_connection, "management_delete_connection", "connections:manage",
      "Delete a connection after active work moves away. Needs approval.", False),
-    (management_start_connection_auth, "management_start_connection_auth", "connections:manage",
-     "Start personal-connection authentication in the official client.", False),
-    (management_get_connection_auth_status, "management_get_connection_auth_status", "connections:manage",
-     "Inspect personal-connection authentication progress.", True),
-    (management_cancel_connection_auth, "management_cancel_connection_auth", "connections:manage",
-     "Cancel a personal-connection authentication attempt.", False),
-    (management_disconnect_connection, "management_disconnect_connection", "connections:manage",
-     "Disconnect a personal connection and revoke its access. Needs approval.", False),
-    (management_list_connection_grants, "management_list_connection_grants", "connections:manage",
-     "List repository consents granted to a personal connection.", True),
-    (management_grant_repository_access, "management_grant_repository_access", "connections:manage",
-     "Grant a personal connection repository consumption. Needs approval.", False),
-    (management_revoke_repository_access, "management_revoke_repository_access", "connections:manage",
-     "Revoke a personal connection's repository consent. Needs approval.", False),
+
 ]
 
 

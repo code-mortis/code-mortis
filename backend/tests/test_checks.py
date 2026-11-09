@@ -9,13 +9,14 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
-from test_review_flow import COMMENT, new_run, remote
+from test_pr_engine import plan, unit
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import Connection, Job, Membership, Repository, ReviewRun, User, WebhookDelivery
-from code_mortis.reviews import checks
+from code_mortis.reviews import checks, engine, mortis
 from code_mortis.reviews import service as reviews
 
 
@@ -59,13 +60,13 @@ def test_lifecycle_mapping_and_safe_summary(state, publication, reason, status, 
 
 
 def test_review_limit_warning_cannot_publish_a_successful_check():
-    item = {"item_id": "main", "path": "main.py"}
-    status, report, _ = ocr.parse_report(json.dumps({
-        "manifest": {"schema_version": "ocr.run-manifest/v1", "terminal_state": "complete", "coverage": {
-            "selected": [item], "completed": [item], "reused": [], "failed": [], "waived": [],
-        }},
-        "comments": [], "warnings": [{"type": "review_limit_reached"}],
-    }), 0)
+    first, second = unit(), unit("other.py", key="other")
+    selected = plan([first, second])
+    status, report, _ = engine._report(selected, [], {
+        first.key: {"status": "completed", "comments": []},
+        second.key: {"status": "failed", "error": "budget"},
+    }, tokens=100)
+    assert status == "partial" and report["summary"]["budget_exceeded"]
     run = ReviewRun(id="run", head_sha="a" * 40, status=status, publication="no_new_comments",
                     report=report, progress={}, created_at=now())
     payload = checks.check_payload(run, 0)
@@ -145,13 +146,13 @@ def test_unknown_create_response_concurrent_recovery_and_latest_state(seed, chec
 
 def test_publication_gates_success_and_does_not_rerun_analysis(seed, check_api, monkeypatch):
     run_id = new_run()
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
-    reviews.perform_review(run_id)
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {}, [copy.deepcopy(COMMENT)]))
+    perform_review(run_id)
     checks.sync_check(run_id)
     assert check_api[1][-1][1]["output"]["title"] == "Publishing comments"
     with transaction() as db:
         db.get(ReviewRun, run_id).publication = "published"
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Check synchronization cannot run OCR"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Check synchronization cannot run Mortis"))
     checks.sync_check(run_id)
     assert check_api[1][-1][1]["conclusion"] == "success"
     assert "1 finding" in check_api[1][-1][1]["output"]["title"]
@@ -225,7 +226,7 @@ def test_timeout_and_worker_recovery_queue_final_check(seed, check_api, monkeypa
     def timeout(*args, **kwargs):
         raise TimeoutError("The operation exceeded its configured time limit.")
 
-    monkeypatch.setattr(ocr, "review", timeout)
+    monkeypatch.setattr(mortis, "review", timeout)
     with transaction() as db:
         review_id = db.scalar(select(Job.id).where(Job.kind == "review"))
     jobs.execute_job(review_id)
@@ -368,11 +369,14 @@ def test_rerun_rejects_invalid_or_unauthorized_requests(seed, check_api, monkeyp
         assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
 
 
-def test_rerun_publication_and_blocked_resume_reuse_run(seed, check_api):
+@pytest.mark.parametrize("engine", ["mortis", "ocr"])
+def test_rerun_publication_and_blocked_resume_reuse_run(seed, check_api, engine):
     run_id = new_run()
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         run.status, run.publication = "completed", "failed"
+        run.engine = engine
+        run.config = {**run.config, "analysis_engine": engine, "settings": {**run.config["settings"], "analysis_engine": engine}}
         db.add(WebhookDelivery(id="publish", event="check_run"))
     checks.sync_check(run_id)
     with transaction() as db:
@@ -383,8 +387,13 @@ def test_rerun_publication_and_blocked_resume_reuse_run(seed, check_api):
         db.get(ReviewRun, run_id).status = "blocked"
         db.add(WebhookDelivery(id="resume", event="check_run"))
     with transaction() as db:
-        checks.rerequest(db, rerun_body(run_id), "resume")
-        assert db.get(ReviewRun, run_id).status == "queued"
+        if engine == "ocr":
+            with pytest.raises(ValueError, match="OCR execution is retired"):
+                checks.rerequest(db, rerun_body(run_id), "resume")
+            assert db.get(ReviewRun, run_id).status == "blocked"
+        else:
+            checks.rerequest(db, rerun_body(run_id), "resume")
+            assert db.get(ReviewRun, run_id).status == "queued"
         assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
 
 

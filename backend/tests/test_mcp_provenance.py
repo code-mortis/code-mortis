@@ -49,7 +49,7 @@ def mcp_setup(seed):
 def saved_run(db, seed, status="queued", provenance=None):
     progress = {"mcp": provenance} if provenance else {}
     run = ReviewRun(id=uid(), pr_id=seed["pr"].id, trigger="automatic", dedup_key=uid(),
-                    base_sha="b" * 40, head_sha="a" * 40, config={"connection": {}, "settings": {}},
+                    base_sha="b" * 40, head_sha="a" * 40, config={"connection": {"id": "connection", "kind": "api"}, "settings": {}},
                     status=status, publication="pending",
                     progress=mcp_provenance.attach_progress(progress))
     db.add(run)

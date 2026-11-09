@@ -13,11 +13,10 @@ from uuid import UUID
 
 from code_mortis.code_graph import errors
 from code_mortis.code_graph.syntax import LANGUAGES
-from code_mortis.core import file_policy
+from code_mortis.core import file_policy, process
 from code_mortis.core.config import settings
+from code_mortis.core.errors import RunnerBlocked
 from code_mortis.core.security import safe_repo_name
-from code_mortis.integrations import ocr
-from code_mortis.integrations.runner_client import RunnerBlocked
 from code_mortis.schemas import code_graph as contracts
 
 MAX_STORE_BYTES = 1024 * 1024 * 1024
@@ -72,7 +71,7 @@ def git(root, *args, token=None, stopped=lambda: False, poll=lambda: None):
               "protocol.https.allow": "always", "http.followRedirects": "false", "fetch.recurseSubmodules": "false",
               "core.fsmonitor": "false", "gc.auto": "0", "maintenance.auto": "false", "pack.windowMemory": "32m"}
     flags = [flag for k, v in config.items() for flag in ("-c", f"{k}={v}")]
-    code, output, stderr = ocr.command(["git", *flags, *args], root, env, timeout=180,
+    code, output, stderr = process.command(["git", *flags, *args], root, env, timeout=180,
                                 stopped=stopped, poll=poll, binary=True)
     if code:
         denied = any(marker in stderr.lower() for marker in (b"authentication failed", b"repository not found", b"error: 403", b"error: 401", b"403 forbidden", b"401 unauthorized", b"access denied"))

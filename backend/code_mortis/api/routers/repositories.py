@@ -10,7 +10,7 @@ from code_mortis.code_graph import service as graphs
 from code_mortis.code_graph import store
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
-from code_mortis.models import CodeGraphRepository, Connection, ConnectionGrant, Job, Repository, ReviewRun
+from code_mortis.models import CodeGraphRepository, Connection, Job, Repository, ReviewRun
 from code_mortis.reviews import background, inbox
 from code_mortis.reviews.service import enqueue
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
@@ -43,10 +43,11 @@ def repositories(db: DB, user: USER):
 def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: ADMIN):
     db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update())
     repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    effective_settings = body.settings.model_dump()
     if body.code_graph_enabled is not None or body.code_graph_limits is not None:
         graphs.browser_only()
-        if (body.code_graph_enabled or body.code_graph_limits is not None) and (type(remote.get("id")) is not int or remote["id"] != repo.id):
-            raise HTTPException(403, "GitHub repository identity changed.")
     if body.connection_id and not db.get(Connection, body.connection_id):
         raise HTTPException(422, "Choose an existing AI connection.")
     if body.enabled and not body.connection_id:
@@ -55,22 +56,18 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         github.installation_token(db, repo.installation_id, resolve=True)
     if body.connection_id:
         selected = db.get(Connection, body.connection_id)
-        if body.enabled and not (body.settings.model.strip() or selected.model.strip()):
-            raise HTTPException(422, "Choose a model before enabling reviews.")
         if selected.kind != "api":
-            grant = db.get(ConnectionGrant, (selected.id, repo.id))
-            if not grant or (body.settings.automatic and not grant.automatic):
-                raise HTTPException(
-                    403,
-                    "The connection owner must authorize this repository and its automatic reviews first.",
-                )
+            if selected.id != repo.connection_id or (body.enabled and not repo.enabled):
+                raise HTTPException(422, "Subscription connections are retired. Select a shared API connection.")
+        elif body.enabled and not (body.settings.model.strip() or selected.model.strip()):
+            raise HTTPException(422, "Choose a model before enabling reviews.")
     old_policy = store.policy(repo)
     if body.code_graph_limits is not None:
         repo.code_graph_limits = body.code_graph_limits.model_dump()
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,
-        body.settings.model_dump(),
+        effective_settings,
     )
     config = db.get(CodeGraphRepository, repo.id)
     graph_changed = body.code_graph_enabled is not None and body.code_graph_enabled != bool(config and config.enabled)
@@ -81,7 +78,7 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         browser = pat.current_provenance() is None and mcp.current_provenance() is None
         if browser and (body.code_graph_enabled is not None or old_policy != store.policy(repo)):
             graphs.schedule_refresh(db, repo.id, retry=graph_changed or old_policy != store.policy(repo))
-    if repo.enabled:
+    if repo.enabled and selected.kind == "api":
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)

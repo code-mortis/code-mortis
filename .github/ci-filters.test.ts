@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test"
 
-const filenames = ["ci.yml", "backend.yml", "image.yml", "native-clients.yml"]
+const filenames = ["ci.yml", "backend.yml", "image.yml"]
 const workflows = await Promise.all(filenames.map(async (name) =>
   Bun.YAML.parse(await Bun.file(new URL("./workflows/" + name, import.meta.url)).text()),
 ))
-const allJobs = ["backend", "export-openapi", "frontend", "image", "native-clients"]
+const allJobs = ["backend", "export-openapi", "frontend", "image"]
 const required = (files: string[], event: "push" | "pull_request") => workflows
   .filter((workflow) => files.some((file) => workflow.on[event].paths.some((pattern: string) => new Bun.Glob(pattern).match(file))))
   .flatMap((workflow) => Object.keys(workflow.jobs).filter((job) => job !== "backend-tests")).sort()
@@ -43,29 +43,25 @@ test.each([
   ["review package initialization", ["backend/code_mortis/reviews/__init__.py"], allJobs],
   ["scan package initialization", ["backend/code_mortis/security_scans/__init__.py"], allJobs],
   ["schema package initialization", ["backend/code_mortis/schemas/__init__.py"], allJobs],
-  ["native runner", ["backend/code_mortis/native_runner.py"], ["backend", "image", "native-clients"]],
-  ["native model discovery", ["backend/code_mortis/integrations/model_discovery.py"], ["backend", "image", "native-clients"]],
-  ["native review schema builder", ["backend/code_mortis/reviews/delegated.py"], ["backend", "image", "native-clients"]],
-  ["native security schema builder", ["backend/code_mortis/security_scans/engine.py"], ["backend", "image", "native-clients"]],
-  ["native transitive dependency", ["backend/code_mortis/reviews/diagnostics.py"], ["backend", "image", "native-clients"]],
+  ["Mortis review", ["backend/code_mortis/reviews/mortis.py"], ["backend", "image"]],
+  ["inference gateway", ["backend/code_mortis/integrations/llm.py"], ["backend", "image"]],
+  ["inference contracts", ["backend/code_mortis/schemas/inference.py"], allJobs],
+  ["security analysis", ["backend/code_mortis/security_scans/engine.py"], ["backend", "image"]],
+  ["review diagnostics", ["backend/code_mortis/reviews/diagnostics.py"], ["backend", "image"]],
   ["backend tests", ["backend/tests/test_review_flow.py"], ["backend", "image"]],
   ["backend dependencies", ["backend/pyproject.toml", "backend/uv.lock"], allJobs],
   ["migration", ["backend/migrations/versions/new.py"], ["backend", "image"]],
   ["database configuration", ["backend/alembic.ini"], ["backend", "image"]],
   ["test services", ["compose.test.yaml"], ["backend"]],
   ["Docker build", ["Dockerfile"], ["image"]],
-  ["Docker context", [".dockerignore"], ["image", "native-clients"]],
+  ["Docker context", [".dockerignore"], ["image"]],
   ["Docker-specific context", ["Dockerfile.dockerignore"], ["image"]],
-  ["OCR patch", ["build/ocr/diagnostics.patch"], ["image"]],
-  ["image notices", ["THIRD_PARTY_NOTICES.md", "LICENSE", "LICENSES/OCR.txt"], ["image"]],
+  ["image notices", ["THIRD_PARTY_NOTICES.md", "LICENSE", "LICENSES/Apache-2.0.txt"], ["image"]],
   ["frontend workflow", [".github/workflows/ci.yml"], ["export-openapi", "frontend"]],
   ["backend workflow", [".github/workflows/backend.yml"], ["backend"]],
   ["image workflow", [".github/workflows/image.yml"], ["image"]],
-  ["native workflow", [".github/workflows/native-clients.yml"], ["native-clients"]],
   ["filter tests", [".github/ci-filters.test.ts"], allJobs],
-  ["runner image", ["Dockerfile.runner"], ["native-clients"]],
-  ["runner-specific context", ["Dockerfile.runner.dockerignore"], ["native-clients"]],
-  ["native smoke", ["backend/tests/native_runner_smoke.py"], ["backend", "image", "native-clients"]],
+  ["Mortis image smoke", ["backend/tests/mortis_container_smoke.py"], ["backend", "image"]],
   ["rename out of backend", ["backend/removed.py", "docs/removed.py"], ["backend", "image"]],
   ["mixed changes", ["frontend/src/reviews.tsx", "compose.test.yaml"], ["backend", "export-openapi", "frontend", "image"]],
   ["no changes", [], []],

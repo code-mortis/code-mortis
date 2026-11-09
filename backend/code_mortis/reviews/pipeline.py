@@ -4,9 +4,12 @@ import json
 
 from sqlalchemy import select
 
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
+from code_mortis.core.review_results import report_tokens
 from code_mortis.core.security import unseal
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.integrations import github
 from code_mortis.models import (
     Connection,
     FindingVerification,
@@ -23,6 +26,8 @@ from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import summary as pr_summary
 
 TERMINAL = {"completed", "partial", "failed", "skipped", "cancelled"}
+
+# The stored analysis key remains readable in historical runs. It never selects an executable engine.
 STAGES = ("ocr", "assessment", "verification", "summary")
 KINDS = {"verify_fixes": "verification", "summarize_review": "summary", "assess_candidates": "assessment"}
 
@@ -86,7 +91,7 @@ def enqueue_stages(db, run):
 
 def review_done(db, run, error=None):
     status = run.progress.get("analysis_status", "failed")
-    update(run, "ocr", status, tokens=ocr.report_tokens(run.report), error=error)
+    update(run, "ocr", status, tokens=report_tokens(run.report), error=error)
     if error or not run.progress.get("assessment_deferred"):
         assessment_done(db, run, error)
     enqueue_finalizer(db, run)
@@ -123,7 +128,7 @@ def fail_stage(db, run, stage, error):
 
 def defer_assessment(db, run):
     if run.progress.get("assessment_deferred"):
-        return True  # A recovered OCR job must not take ownership from the assessment job.
+        return True  # A recovered analysis job must not take ownership from the assessment job.
     if (run.config["connection"]["kind"] != "api"
         or run.stages.get("verification", {}).get("status") in TERMINAL
         or not db.scalar(select(ReviewCandidate.id).where(
@@ -138,7 +143,13 @@ def defer_assessment(db, run):
 
 
 def perform(payload):
-    from code_mortis.reviews.service import authorize_connection, execution_identity, review_stopped
+    from code_mortis.core.analysis import require_execution_engine
+    from code_mortis.core.shared_execution import cancel_retired_review, is_shared
+    from code_mortis.reviews.service import (
+        authorize_connection,
+        execution_identity,
+        review_stopped,
+    )
 
     run_id, claim = payload["run_id"], payload["_claim"]
     with transaction() as db:
@@ -149,6 +160,10 @@ def perform(payload):
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not run or run.cancel_requested or run.status in {"cancelled", "superseded", "completed", "partial", "failed", "skipped"} or run.stages.get(stage, {}).get("status") in TERMINAL:
             return
+        if not is_shared(run.config.get("connection", {})):
+            cancel_retired_review(db, run)
+            return
+        require_execution_engine(run.config)
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
@@ -161,30 +176,24 @@ def perform(payload):
             fail_stage(db, run, stage, _pat.REVOKED_MESSAGE)
             return
         if run.status != "running":
-            raise runner_client.RunnerBlocked("busy")
+            raise RunnerBlocked("busy")
         previous = run.stages.get(stage, {})
         if previous.get("status") == "running":
             previous_id, _, previous_attempt = previous.get("execution", "").rpartition(":")
             previous_job = db.get(Job, previous_id) if previous_id else None
             if previous_job and previous_job.status == "running" and str(previous_job.attempts) == previous_attempt and previous_job.lease_until > now():
                 return
-            fail_stage(db, run, stage, "The worker stopped during this stage. Unknown usage will not be spent again automatically.")
-            return
+            if stage == "summary":
+                fail_stage(db, run, stage, "The worker stopped during this stage. Unknown usage will not be spent again automatically.")
+                return
         connection = db.get(Connection, run.connection_id)
         snapshot = run.config["connection"]
         if not connection or any(snapshot[key] != getattr(connection, key) for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
             raise ValueError("The selected connection changed. Start a new review with the current settings.")
-        # Personal profiles are serialized; OCR/assessment keep priority within this run.
-        if connection.kind != "api":
-            predecessors = ["ocr"] + ([] if stage == "assessment" else ["assessment"]) + (["verification"] if stage == "summary" else [])
-            if any(run.stages.get(name, {}).get("status") not in TERMINAL for name in predecessors):
-                raise runner_client.RunnerBlocked("busy")
-            if connection.auth_status != "connected":
-                raise runner_client.RunnerBlocked("authentication")
         pr = db.get(PullRequest, run.pr_id)
         repo = db.get(Repository, pr.repository_id)
         if pr.ignored or not repo.enabled or not repo.active or not db.get(Installation, repo.installation_id).active:
-            raise ocr.ReviewStopped()
+            raise ReviewStopped()
         actor_id, trigger = execution_identity(run)
         actor = db.get(User, actor_id) if actor_id else None
         if actor_id:
@@ -195,7 +204,7 @@ def perform(payload):
         token = github.installation_token(db, repo.installation_id)
         remote = github.request("GET", f"/repos/{repo.full_name}/pulls/{pr.number}", token)
         if remote["state"] != "open" or (remote["head"]["sha"], remote["base"]["sha"]) != (run.head_sha, run.base_sha):
-            raise ocr.ReviewStopped("The pull request changed before this stage started.")
+            raise ReviewStopped("The pull request changed before this stage started.")
         from code_mortis.reviews.context import execution_credentials
 
         credentials = execution_credentials(db, repo.id, json.loads(unseal(connection.secret)), token)
@@ -218,8 +227,9 @@ def perform(payload):
         else:
             pr_summary.generate(run_id, repo_path, env, snapshot, credentials, claim, stage="summary")
 
-    ocr.review(full_name, number, run.base_sha, run.head_sha, snapshot, credentials, options, token,
-               stopped, saved_review=("completed", {}, []), after_review=after_checkout)
+    with git_source.review_snapshot(full_name, number, run.base_sha, run.head_sha, token, stopped,
+                                timeout_seconds=options["timeout_seconds"]) as (repo_path, env, fetch_env, _):
+        after_checkout(("completed", {}, []), repo_path, env, fetch_env)
     with transaction() as db:
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
         if not owns(run, stage, claim) or run.cancel_requested or run.status in {"cancelled", "superseded"}:

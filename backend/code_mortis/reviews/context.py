@@ -3,6 +3,7 @@
 import copy
 from types import SimpleNamespace
 
+from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.security import digest
 
 TASK_CONTRACT = "review-task/v2"
@@ -22,7 +23,6 @@ def correctable(feedback):
 
 
 def sanitize(value, credentials, stopped=lambda: False, *, usage=None):
-    from code_mortis.integrations import ocr
     from code_mortis.security_scans import engine as security_engine
 
     values = credentials.setdefault("redaction_values", [])
@@ -31,7 +31,7 @@ def sanitize(value, credentials, stopped=lambda: False, *, usage=None):
 
     def redact(text):
         if stopped():
-            raise ocr.ReviewStopped("Review stopped before sanitization.")
+            raise ReviewStopped("Review stopped before sanitization.")
         return security_engine.redact_secrets(text, values, credentials.get("redaction_rules", []), stopped=stopped)
 
     try:
@@ -123,21 +123,3 @@ def execution_credentials(db, repository_id, credentials, token):
     rules = [dict(row.evidence, path=row.path) for row in db.scalars(select(SecurityFinding).where(
         SecurityFinding.repository_id == repository_id, SecurityFinding.kind == "secret"))]
     return {**credentials, "redaction_values": [token], "redaction_rules": rules}
-
-
-def prepare_ocr_redaction(repo, env, base, head, credentials, stopped):
-    from code_mortis.integrations import ocr
-
-    if not credentials.get("redaction_rules"):
-        return
-    sanitize("", credentials, stopped)
-    changed = ocr.git(repo, env, "diff", "--name-only", "-z", f"{base}...{head}", stopped=stopped).strip("\0").split("\0")
-    paths = set(filter(None, changed)) | {rule["path"] for rule in credentials["redaction_rules"]}
-    for path in sorted(paths):
-        ocr.ReviewComment.relative_path(path)
-        for sha in (base, head):
-            try:
-                source = ocr.git(repo, env, "show", f"{sha}:{path}", stopped=stopped)
-            except ValueError:
-                continue
-            sanitize(source, credentials, stopped)

@@ -57,8 +57,8 @@ def test_cgroup_peak_handles_unavailable_counters(monkeypatch, v2, v1, expected)
     ("check_pr_code_performance.py", [*PROBE_ARGS, "--samples", "101"], "--samples must be between 1 and 100"),
     ("check_pr_code_performance.py", PROBE_ARGS, "User not found"),
     ("code_graph_eval/quality_run.py", ["--authorized", "--requests", "requests.json", "--output", "out.json",
-                                        "--connection-id", "unused"], "restricted to local development"),
-    ("code_graph_eval/overlap_workload.py", ["database"], "must never use an application database"),
+                                        "--connection-id", "unused"], "historical OCR/native evaluation is retired"),
+    ("code_graph_eval/overlap_workload.py", ["database"], "historical OCR/native overlap evaluation is retired"),
 ])
 def test_script_guards_survive_optimized_python(tmp_path, script, args, error):
     env = os.environ.copy()

@@ -158,6 +158,8 @@ def job_provenance(db, job) -> dict | None:
     if direct is not None:
         return direct
     payload = getattr(job, "payload", None) or {}
+    if job.kind in {"generate_summary", "sync_summary"} and payload.get("summary_attempt_version") == 1:
+        return None
     run_id = payload.get("run_id")
     if isinstance(run_id, str):
         run = db.get(ReviewRun, run_id)
@@ -197,6 +199,10 @@ def job_provenance(db, job) -> dict | None:
 
 
 def job_revoked(db, job, **kwargs) -> bool:
+    payload = getattr(job, "payload", None) or {}
+    if (job.kind in {"generate_summary", "sync_summary"} and payload.get("summary_attempt_version") == 1
+            and PROVENANCE_KEY in payload and _clean(payload[PROVENANCE_KEY]) is None):
+        return True
     return revoked(db, job_provenance(db, job), **kwargs)
 
 
@@ -276,6 +282,10 @@ def revoke_work(db, grant_id: str) -> dict:
     ):
         job.status, job.error, job.lease_until, job.dispatched_at = "failed", REVOKED_MESSAGE, None, None
         job.available_at = now()
+        if job.kind == "generate_summary":
+            from code_mortis.reviews.summary import fail_retry
+
+            fail_retry(db, job, REVOKED_MESSAGE)
         counts["jobs"] += 1
     for run in db.scalars(
         select(ReviewRun)

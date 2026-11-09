@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Bot, Check, Copy, FolderGit2, Github, KeyRound, MoreHorizontal, Palette, Plug, Plus, UserRound, Users } from "lucide-react";
+import { ArrowUpRight, Bot, Check, Copy, FolderGit2, Github, KeyRound, MoreHorizontal, Palette, Plug, Plus, Users } from "lucide-react";
 import {
   api,
   useAction,
@@ -10,7 +10,6 @@ import {
   type Repository,
   type Schema,
 } from "./api";
-import { PersonalConnection } from "./subscriptions";
 import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
@@ -177,6 +176,7 @@ export function RepositorySettings({
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const [settings, setSettings] = useState({
     ...repo.settings,
+    analysis_engine: "mortis" as const,
     timeout_seconds: repo.settings.timeout_seconds ?? null,
     token_budget: repo.settings.token_budget ?? null,
     assessment_token_budget: repo.settings.assessment_token_budget ?? null,
@@ -200,10 +200,8 @@ export function RepositorySettings({
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
   const [error, setError] = useState<unknown>();
-  const selectedConnection = connections.data?.find((item) => item.id === connection);
-  const personal = ["chatgpt", "claude_code"].includes(
-    selectedConnection?.kind ?? "api",
-  );
+  const sharedConnections = connections.data?.filter((item) => item.kind === "api") ?? [];
+  const selectedConnection = sharedConnections.find((item) => item.id === connection);
   function change<K extends keyof typeof settings>(
     key: K,
     value: (typeof settings)[K],
@@ -242,7 +240,7 @@ export function RepositorySettings({
               connection_id: connection || null,
               settings: {
                 ...settings,
-                concurrency: personal ? 1 : settings.concurrency,
+                concurrency: settings.concurrency,
                 rules: rules.trim() ? parseObject(rules, "Rules") : null,
               },
             },
@@ -372,6 +370,8 @@ export function RepositorySettings({
               <h2 id={`${id}-connection`} className="text-xl font-semibold tracking-tight">Connection and model</h2>
               <p className="mt-1 text-sm text-muted-foreground">Choose the connection and model used to review this repository.</p>
             </div>
+            {repo.connection_requires_setup && <p role="status" className="rounded-md border p-4 text-sm">The saved subscription connection is retired. Select a shared API connection to resume reviews. Historical runs remain available.</p>}
+            <p className="text-sm text-muted-foreground">Mortis reviews this repository using the selected shared API connection.</p>
             <Field label="AI connection">
               {(id) => (
                 <SearchSelect
@@ -386,8 +386,8 @@ export function RepositorySettings({
                   }}
                   options={[
                     { value: "", label: "No connection" },
-                    ...(connection && !selectedConnection ? [{ value: connection, label: connections.isPending ? "Loading connections…" : "Connection unavailable" }] : []),
-                    ...(connections.data ?? []).map((item) => ({ value: item.id, label: item.name })),
+                    ...(connection && !selectedConnection ? [{ value: connection, label: connections.isPending ? "Loading connections…" : repo.connection_requires_setup ? "Retired connection" : "Connection unavailable" }] : []),
+                    ...sharedConnections.map((item) => ({ value: item.id, label: item.name })),
                   ]}
                 />
               )}
@@ -472,7 +472,7 @@ export function RepositorySettings({
           <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
             <div>
               <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Limits & rules</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize OCR rules.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize review rules.</p>
             </div>
             {([
               { key: "execution", title: "Review execution", fields: [
@@ -482,8 +482,8 @@ export function RepositorySettings({
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
               ] },
               { key: "budgets", title: "Token budgets", fields: [
-                { key: "token_budget", label: "OCR token budget", min: 1000, max: 5000000,
-                  hint: "Budget for OCR analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
+                { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000,
+                  hint: "Budget for Mortis analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
                 { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000,
                   hint: "Independent budget for validating proposed findings, including correction attempts." },
                 { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000,
@@ -540,21 +540,16 @@ export function RepositorySettings({
                   {group.key === "execution" && <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
                     <div className="space-y-2">
                       <label htmlFor={`${id}-concurrency`} className="text-sm font-medium">Concurrency</label>
-                      <p id={`${id}-concurrency-hint`} className="text-xs leading-relaxed text-muted-foreground">{personal
-                        ? "Personal subscriptions run one review at a time."
-                        : "Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
-                      }</p>
+                      <p id={`${id}-concurrency-hint`} className="text-xs leading-relaxed text-muted-foreground">Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider.</p>
                     </div>
                     <Input
-                      key={personal ? "personal" : "api"}
                       id={`${id}-concurrency`}
                       aria-describedby={`${id}-concurrency-hint`}
                       type="number"
                       min={1}
                       max={8}
                       required
-                      disabled={personal}
-                      defaultValue={personal ? 1 : settings.concurrency}
+                      defaultValue={settings.concurrency}
                       onChange={(event) => {
                         const value = event.target.valueAsNumber;
                         if (!Number.isFinite(value) || !event.target.validity.valid) return;
@@ -566,23 +561,19 @@ export function RepositorySettings({
               </section>
             ))}
             <section aria-labelledby={`${id}-rules`} className="space-y-3">
-              <h3 id={`${id}-rules`} className="text-base font-semibold">OCR rules</h3>
+              <h3 id={`${id}-rules`} className="text-base font-semibold">Review rules</h3>
               <div className="space-y-4 rounded-lg border bg-card p-5">
                 <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
                   Optional rule-file object. Empty uses rules from the trusted base revision.
                 </p>
                 <Textarea
-                  aria-label="OCR rules JSON"
+                  aria-label="Review rules JSON"
                   aria-describedby={`${id}-rules-hint`}
                   rows={6}
                   className="min-h-40 max-h-96 resize-y font-mono text-xs"
                   value={rules}
                   onChange={(e) => setRules(e.target.value)}
                 />
-                <Button asChild variant="link" className="h-auto p-0 text-xs underline">
-                  <a href="https://github.com/alibaba/open-code-review/blob/main/pages/src/content/docs/en/review-rules.md"
-                    target="_blank" rel="noreferrer">Rule file documentation<ArrowUpRight aria-hidden="true" className="size-3" /></a>
-                </Button>
               </div>
             </section>
           </section>
@@ -604,19 +595,15 @@ export function RepositorySettings({
 function ConnectionForm({
   connection,
   providers,
-  canCreateApi,
-  initialKind,
   onSaved,
   onSavingChange,
 }: {
   connection?: Connection;
   providers: Provider[];
-  canCreateApi: boolean;
-  initialKind: string;
   onSaved: (connection: Connection) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
-  const [kind, setKind] = useState(connection?.kind ?? initialKind);
+  const kind = "api";
   const tabbed = !!connection && kind === "api";
   const [tab, setTab] = useState("general");
   const advancedSettings = useRef<HTMLDetailsElement>(null);
@@ -688,10 +675,8 @@ function ConnectionForm({
       onChange={(event) => setName(event.target.value)} placeholder="Team review model" />}
   </Field>;
   const ceilingField = <Field
-    label={kind === "api" ? "Evidence prompt ceiling (tokens)" : "Prompt ceiling (tokens)"}
-    hint={kind === "api"
-      ? "For assessments and fix verification. OCR accepts prompts up to 80% of this value. Choose a value your model supports; the total review token budget stays separate."
-      : "Each prompt, including instructions and output schema, is checked conservatively against 80% of this value. The total review Token budget stays separate."}
+    label="Evidence prompt ceiling (tokens)"
+    hint="Each Mortis request, including instructions and output schema, is checked conservatively against this limit. Choose a value your model supports; the total review token budget stays separate."
   >
     {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
       value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
@@ -759,9 +744,7 @@ function ConnectionForm({
         }
         let body;
         try {
-          body = kind !== "api"
-            ? { name, kind, model: connection ? model : "", options: { prompt_token_ceiling: promptTokenCeiling() } }
-            : { name, model, ...apiBody() };
+          body = { name, model, ...apiBody() };
         } catch (error) {
           if (tabbed) setTab("advanced");
           else if (advancedSettings.current) {
@@ -816,23 +799,9 @@ function ConnectionForm({
         <ErrorNotice error={error} />
         <section className="space-y-4" aria-label="Connection details">
           <h3 className="text-sm font-semibold">Connection details</h3>
-          <Field label="Connection type">
-            {(id) => <SearchSelect id={id} value={kind} disabled={!!connection} onChange={setKind}
-              options={[
-                ...(canCreateApi ? [{ value: "api", label: "Shared API connection", icon: <Plug aria-hidden="true" className="size-4 shrink-0 text-primary" /> }] : []),
-                { value: "chatgpt", label: "Personal ChatGPT subscription", icon: <ProviderLogo logo="openai" /> },
-                { value: "claude_code", label: "Personal Claude Code subscription", icon: <ProviderLogo logo="claude" /> },
-              ]} />}
-          </Field>
           {nameField}
         </section>
-        {kind === "api" ? <>{authentication}{modelFields}</> : <>
-          {ceilingField}
-          {!connection && <p className="text-sm text-muted-foreground">
-            First save your connection, then sign in with the official client and choose a model.
-            Automatic reviews require your separate authorization per repository.
-          </p>}
-        </>}
+        {authentication}{modelFields}
         {kind === "api" && <details ref={advancedSettings} className="border-t pt-5">
           <summary className="cursor-pointer text-sm font-medium">Advanced provider settings</summary>
           <div className="mt-4 space-y-4">{advancedFields}</div>
@@ -878,11 +847,8 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
   const action = useAction();
   const memberAction = useAction();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
-  const [newKind, setNewKind] = useState(isAdmin ? "api" : "chatgpt");
   const [savingConnection, setSavingConnection] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
-  const [personal, setPersonal] = useState<Connection | null>(null);
-  const [personalTab, setPersonalTab] = useState<"general" | "account">("account");
   const [member, setMember] = useState<Instance["members"][number] | "new" | null>(null);
   const [removingMember, setRemovingMember] = useState<Instance["members"][number] | null>(null);
   const [login, setLogin] = useState("");
@@ -900,7 +866,6 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
   const webhookEndpoint = instance?.webhook_url ?? `${instance?.public_url}/api/v1/webhooks/github`;
   const groups = [
     { title: "Shared API connections", kind: "api", items: connections.data?.filter((item) => (item.kind ?? "api") === "api") ?? [] },
-    { title: "Your subscriptions", kind: "chatgpt", items: connections.data?.filter((item) => (item.kind ?? "api") !== "api") ?? [] },
   ];
 
   function openMember(value: Instance["members"][number] | "new") {
@@ -919,7 +884,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
     <header className="mb-5">
       <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        {isAdmin ? "Manage AI connections, API tokens, MCP access, GitHub installations, team access, and appearance." : "Manage your AI connections, personal subscriptions, API tokens, MCP access, and appearance."}
+        {isAdmin ? "Manage AI connections, API tokens, MCP access, GitHub installations, team access, and appearance." : "View shared AI connections and manage your API tokens, MCP access, and appearance."}
       </p>
     </header>
     <div className="grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
@@ -942,11 +907,10 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
               <h2 id="connections-heading" ref={connectionHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">AI connections</h2>
               <p className="mt-1 text-sm text-muted-foreground">Connections and default models for manual and automatic reviews.</p>
             </div>
-            <Button disabled={!providers.data} onClick={(event) => {
+            {isAdmin && <Button disabled={!providers.data} onClick={(event) => {
               returnFocus.current = event.currentTarget;
-              setNewKind(isAdmin ? "api" : "chatgpt");
               setEditing("new");
-            }}><Plus className="size-4" />Add connection</Button>
+            }}><Plus className="size-4" />Add connection</Button>}
           </div>
           <ErrorNotice error={connections.error || providers.error || (!deleting && action.error)} />
           {providers.isError && <Button variant="outline" size="sm" disabled={providers.isFetching} onClick={() => { void providers.refetch(); }}>
@@ -959,44 +923,28 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                 {group.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{group.items.length}</span>
               </h3>
               {!group.items.length ? <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed p-5">
-                <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{group.kind === "api"
-                  ? isAdmin ? "Add an API connection for reviews shared with your team." : "An administrator can add an API connection for your team."
-                  : "Connect your ChatGPT or Claude Code subscription."}</p>
-                {(group.kind !== "api" || isAdmin) && <Button variant="outline" size="sm" disabled={!providers.data} onClick={(event) => {
+                <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{isAdmin ? "Add an API connection for reviews shared with your team." : "An administrator can add an API connection for your team."}</p>
+                {isAdmin && <Button variant="outline" size="sm" disabled={!providers.data} onClick={(event) => {
                   returnFocus.current = event.currentTarget;
-                  setNewKind(group.kind);
                   setEditing("new");
-                }}>{group.kind === "api" ? "Add API connection" : "Connect subscription"}</Button>}
+                }}>Add API connection</Button>}
               </div> : <div className="overflow-hidden rounded-lg border bg-card">
                 <div aria-hidden="true" className="settings-record settings-connection-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
                   <span>Connection</span><span>Default model</span><span>Account status</span><span />
                 </div>
                 {group.items.map((connection) => {
-                  const personalConnection = (connection.kind ?? "api") !== "api";
-                  let kindLabel = `${connection.provider} · ${connection.protocol}`;
-                  if (connection.kind === "chatgpt") kindLabel = "ChatGPT subscription";
-                  else if (connection.kind === "claude_code") kindLabel = "Claude Code subscription";
-                  else if (personalConnection) kindLabel = "Personal subscription";
-                  const canManage = personalConnection ? connection.owner_id === user.id : isAdmin;
-                  const Icon = personalConnection ? UserRound : Plug;
-                  const logo = connection.kind === "chatgpt" ? "openai" : connection.kind === "claude_code" ? "claude"
-                    : !personalConnection ? apiProviderLogos.get(connection.provider) : undefined;
+                  const kindLabel = `${connection.provider} · ${connection.protocol}`;
+                  const canManage = isAdmin;
+                  const logo = apiProviderLogos.get(connection.provider);
                   const testing = connection.last_test === "Testing connection…"
                     || (action.isPending && action.variables?.path === `/connections/${connection.id}/test`);
                   const testStatus = testing ? "running" : !connection.last_test ? "not_tested"
                     : connection.last_test.startsWith("Connected.") ? "connected" : "failed";
                   const testDetail = testing ? "Testing connection…" : connection.last_test ?? undefined;
-                  let nextAction = "Sign in";
-                  if (personalConnection) {
-                    if (connection.auth_status === "connected") nextAction = connection.model.trim() ? "Edit" : "Choose model";
-                    else if (connection.auth_status === "connecting") nextAction = "Continue setup";
-                    else if (connection.auth_status === "unavailable") nextAction = "Check account";
-                  }
-                  const needsSignIn = personalConnection && (nextAction === "Sign in" || nextAction === "Continue setup");
                   return <article key={connection.id} aria-label={connection.name}
                     className="settings-record settings-connection-row border-b px-4 py-4 text-sm last:border-b-0 sm:px-5">
                     <div className="settings-identity flex min-w-0 items-start gap-3">
-                      {logo ? <ProviderLogo logo={logo} className="mt-0.5" /> : <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
+                      {logo ? <ProviderLogo logo={logo} className="mt-0.5" /> : <Plug aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />}
                       <div className="min-w-0">
                         <h4 className="break-words font-medium">{connection.name}</h4>
                         <p className="mt-1 break-words text-xs text-muted-foreground">
@@ -1009,28 +957,14 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                       <p className="break-words text-xs leading-relaxed"><span className="sr-only">Default model: </span>{connection.model || "Choose a model"}</p>
                     </div>
                     <div className="min-w-0 text-xs text-muted-foreground" role="status"
-                      title={personalConnection ? undefined : testDetail}
-                      aria-description={personalConnection ? undefined : testDetail}>
+                      title={testDetail}
+                      aria-description={testDetail}>
                       <span className="settings-cell-label mb-1">Account status</span>
-                      {canManage && needsSignIn ? <Button variant="link" size="sm" className="px-0 text-xs underline" disabled={action.isPending}
-                        onClick={(event) => {
-                          returnFocus.current = event.currentTarget;
-                          setPersonalTab("account");
-                          setPersonal(connection);
-                        }}>Complete sign in</Button> : personalConnection ? <Status value={connection.auth_status}
-                        icon={connection.auth_status === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} /> : <Status value={testStatus}
+                      {<Status value={testStatus}
                         label={testing ? "Testing" : testStatus === "not_tested" ? "Not tested" : undefined}
                         icon={testStatus === "connected" ? <Check aria-hidden="true" className="size-3" /> : undefined} />}
                     </div>
                     <div className="settings-actions flex items-center justify-end gap-1">
-                      {canManage && personalConnection && !needsSignIn && nextAction !== "Edit" && <Button variant="outline" size="sm" disabled={action.isPending}
-                        onClick={(event) => {
-                          returnFocus.current = event.currentTarget;
-                          setPersonalTab(nextAction === "Choose model" ? "general" : "account");
-                          setPersonal(connection);
-                        }}>
-                        {nextAction}
-                      </Button>}
                       {canManage && <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="size-8" disabled={action.isPending} aria-label={`Actions for ${connection.name}`}
@@ -1039,16 +973,11 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
                               <MoreHorizontal className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting || personal) event.preventDefault(); }}>
-                            <DropdownMenuItem disabled={!personalConnection && !providers.data} onSelect={() => {
-                              if (personalConnection) {
-                                setPersonalTab(connection.auth_status === "connected" ? "general" : "account");
-                                setPersonal(connection);
-                              } else setEditing(connection);
-                            }}>Edit</DropdownMenuItem>
-                            {!personalConnection && <DropdownMenuItem disabled={testing} onSelect={() => {
+                          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => { if (editing || deleting) event.preventDefault(); }}>
+                            <DropdownMenuItem disabled={!providers.data} onSelect={() => setEditing(connection)}>Edit</DropdownMenuItem>
+                            <DropdownMenuItem disabled={testing} onSelect={() => {
                               action.reset(); action.mutate({ path: `/connections/${connection.id}/test` });
-                            }}>{testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection"}</DropdownMenuItem>}
+                            }}>{testing ? "Testing…" : testStatus === "connected" ? "Test again" : "Test connection"}</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem variant="destructive" onSelect={() => { action.reset(); setDeleting(connection); }}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
@@ -1060,7 +989,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
             </section>)}
           </div>}
           <p className="text-xs leading-relaxed text-muted-foreground">
-            API connections are shared. Personal subscriptions belong to you; automatic reviews require your explicit authorization per repository.
+            Shared API connections are managed by administrators. Review and security history remains available after a connection is retired.
           </p>
         </section>}
         {(tab === "github" || tab === "team") && query.isPending && <Loading />}
@@ -1179,23 +1108,19 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
         </details>}
       </div>
     </div>
-    <Dialog open={!!editing || !!personal} onOpenChange={(open) => {
-      if (!open && !savingConnection) { setEditing(null); setPersonal(null); }
+    <Dialog open={!!editing} onOpenChange={(open) => {
+      if (!open && !savingConnection) setEditing(null);
     }}>
-      <DialogContent className={personal ? "flex h-[min(660px,90dvh)] overflow-hidden sm:max-w-lg"
-        : editing && editing !== "new" ? "flex h-[min(660px,90dvh)] flex-col overflow-hidden sm:max-w-lg"
+      <DialogContent className={editing && editing !== "new" ? "flex h-[min(660px,90dvh)] flex-col overflow-hidden sm:max-w-lg"
         : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"} onCloseAutoFocus={restoreFocus}>
         {editing && <DialogHeader className="shrink-0">
           <DialogTitle>{editing === "new" ? "Add AI connection" : "Edit AI connection"}</DialogTitle>
           <DialogDescription>Credentials are encrypted on this instance.</DialogDescription>
         </DialogHeader>}
         {editing && providers.data && <ConnectionForm key={editing === "new" ? "new" : editing.id}
-          connection={editing === "new" ? undefined : editing} providers={providers.data} canCreateApi={isAdmin}
-          initialKind={newKind}
+          connection={editing === "new" ? undefined : editing} providers={providers.data}
           onSavingChange={setSavingConnection}
-          onSaved={(saved) => { setEditing(null); if (saved.kind !== "api") { setPersonalTab("account"); setPersonal(saved); } }} />}
-        {personal && <PersonalConnection key={personal.id} connection={personal} initialTab={personalTab}
-          onSavingChange={setSavingConnection} onDone={() => setPersonal(null)} />}
+          onSaved={() => setEditing(null)} />}
       </DialogContent>
     </Dialog>
     <Dialog open={!!deleting} onOpenChange={(open) => { if (!open && !action.isPending) { setDeleting(null); action.reset(); } }}>

@@ -4,6 +4,10 @@ Run after backend tests have released mortis_test: python scripts/code_graph_eva
 Requires the development stack and isolated test database. Does not restart or resize Docker.
 """
 
+if __name__ == "__main__":
+    raise SystemExit("This historical OCR/native overlap evaluation is retired; saved evidence remains available.")
+
+
 import json
 import os
 import re

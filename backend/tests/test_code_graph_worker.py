@@ -8,7 +8,7 @@ from redis import Redis
 from code_mortis import jobs
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
-from code_mortis.models import Job
+from code_mortis.models import Job, ReviewRun
 
 
 @pytest.mark.parametrize("kind", sorted(jobs.CODE_GRAPH_KINDS))
@@ -55,9 +55,17 @@ def test_active_graph_claim_is_not_reset_by_a_stale_delivery(seed):
         assert (job.status, job.attempts, job.lease_until) == ("running", 1, lease)
 
 
+def saved_review(db):
+    db.add(ReviewRun(id="review-run", pr_id="pr", trigger="manual", dedup_key="review-run",
+                     base_sha="b" * 40, head_sha="a" * 40,
+                     engine="mortis", config={"analysis_engine": "mortis", "connection": {"id": "connection", "kind": "api"}, "settings": {}}))
+    db.flush()
+
+
 def test_graph_worker_refuses_a_review_delivery(seed):
     with transaction() as db:
-        db.add(Job(id="review", kind="review", payload={"repository_id": 22}, dispatched_at=now()))
+        saved_review(db)
+        db.add(Job(id="review", kind="review", payload={"run_id": "review-run"}, dispatched_at=now()))
     jobs.execute_job.push_request(delivery_info={"routing_key": "code-graph"})
     try:
         jobs.execute_job.run("review")
@@ -83,7 +91,8 @@ def test_real_broker_graph_work_finishes_while_review_worker_is_busy(seed, monke
 
     monkeypatch.setattr(jobs, "execute", execute)
     with transaction() as db:
-        db.add_all([Job(id="review", kind="review", payload={"repository_id": 22}),
+        saved_review(db)
+        db.add_all([Job(id="review", kind="review", payload={"run_id": "review-run"}),
                     Job(id="graph", kind="code_graph_refresh", payload={"repository_id": 22})])
     with Redis.from_url(settings().redis_url) as broker:
         broker.delete("reviews", "code-graph")

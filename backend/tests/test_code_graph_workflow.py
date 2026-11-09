@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -11,9 +12,10 @@ from sqlalchemy import event, func, select
 from code_mortis import jobs
 from code_mortis.code_graph import client, service, store
 from code_mortis.code_graph.extract import extract
+from code_mortis.core import process
 from code_mortis.core.config import settings
 from code_mortis.core.db import engine, now, transaction
-from code_mortis.integrations import github, ocr
+from code_mortis.integrations import github
 from code_mortis.models import (
     CodeGraphFile,
     CodeGraphRepository,
@@ -303,7 +305,7 @@ def test_acquisition_uses_only_fixed_https_credentials_and_safe_git_env(seed, tm
         calls.append((args, env))
         return 0, b"commit\n" if "cat-file" in args else b"", b""
 
-    monkeypatch.setattr(ocr, "command", command)
+    monkeypatch.setattr(store.process, "command", command)
     store.acquire(22, "team/project", "a" * 40, "00000000-0000-0000-0000-000000000001", "fixture-secret", lambda: False)
     args, env = next(c for c in calls if "fetch" in c[0])
     assert "https://github.com/team/project.git" in args and "--no-write-fetch-head" in args
@@ -315,7 +317,7 @@ def test_acquisition_uses_only_fixed_https_credentials_and_safe_git_env(seed, tm
 
 
 def test_binary_command_preserves_source_bytes(tmp_path):
-    code, raw, _ = ocr.command(["python", "-c", "import sys;sys.stdout.buffer.write(bytes([255,13,10,0]))"],
+    code, raw, _ = process.command([sys.executable, "-c", "import sys;sys.stdout.buffer.write(bytes([255,13,10,0]))"],
                                tmp_path, os.environ.copy(), binary=True)
     assert code == 0 and raw == b"\xff\r\n\0"
 

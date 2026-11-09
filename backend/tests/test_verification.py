@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from threading import Event
@@ -14,13 +15,16 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
+from runtime_helpers import file_limit_result
 from sqlalchemy import func, select
-from test_review_flow import COMMENT, new_run, remote
+from test_review_flow import COMMENT, new_run, perform_review, remote
 
 from code_mortis import jobs
-from code_mortis.core import file_policy
+from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import github, ocr, runner_client
+from code_mortis.core.errors import ReviewStopped, RunnerBlocked
+from code_mortis.core.process import child_environment
+from code_mortis.integrations import github
 from code_mortis.integrations.github import threads as github_threads
 from code_mortis.models import (
     Activity,
@@ -35,7 +39,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import assessment, checks, pipeline, verification
+from code_mortis.reviews import assessment, checks, mortis, pipeline, verification
 from code_mortis.reviews import service as reviews
 from code_mortis.schemas.common import RepoSettings
 
@@ -91,30 +95,28 @@ def test_markdown_context_preserves_scope_and_protected_paths(tmp_path, monkeypa
         ".ssh/guide.md": "unsupported_ext",
         ".opencodereview/guide.md": "unsupported_ext",
     }
-    original_command = ocr.command
-
-    def preview(args, root, env, **kwargs):
-        if args[0] != ocr.settings().ocr_binary:
-            return original_command(args, root, env, **kwargs)
-        assert args[:3] == [ocr.settings().ocr_binary, "scan", "--preview"]
-        assert args[-2:] == ["--rule", args[-1]]
-        if rule_source == "project":
-            assert json.loads((root / ".opencodereview/rule.json").read_text()) == rules
-        if rule_source == "custom":
-            assert json.loads(Path(args[-1]).read_text()) == file_policy.review_rules(options)
-        return 0, json.dumps({"files": [{"path": path, "will_review": reason is None,
-                                        "exclude_reason": reason} for path, reason in reasons.items()]}), ""
-
-    monkeypatch.setattr(ocr, "command", preview)
-    selected = verification.filter_context(repo, ocr.child_environment(), dict.fromkeys(reasons, "# context\n"), options, lambda: False)
-    assert selected == {"main.py", "docs/operations.md", "collections/code-mortis/README.md", "docs/guide.MARKDOWN"}
+    for path in reasons:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# context\n")
+    env = child_environment()
+    git_source.git(repo, env, "init", "--quiet")
+    git_source.git(repo, env, "add", "-f", ".")
+    git_source.git(repo, env, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-qm", "scope")
+    sha = git_source.git(repo, env, "rev-parse", "HEAD").strip()
+    selected = verification.filter_context(repo, env, dict.fromkeys(reasons, "# context\n"), options,
+                                           lambda: False, base_sha=sha, head_sha=sha)
+    expected = {"main.py", "docs/operations.md", "collections/code-mortis/README.md", "docs/guide.MARKDOWN", "docs/notes.txt", "docs/binary.md", "docs/large.md"}
+    if rule_source != "custom":
+        expected.add("private/guide.md")
+    assert selected == expected
 
 
 @pytest.mark.parametrize("stage", ["assessment", "verification"])
 @pytest.mark.parametrize("path", ["docs/operations.md", "collections/code-mortis/README.md"])
 @pytest.mark.parametrize("content_kind", ["text", "binary", "symlink", "oversized"])
 def test_markdown_evidence_expansion_keeps_git_and_size_checks(tmp_path, monkeypatch, stage, path, content_kind):
-    env = ocr.child_environment()
+    env = child_environment()
     source = "# Operations\n\nUse HTTPS through the reverse proxy.\n"
     target = tmp_path / path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -122,23 +124,12 @@ def test_markdown_evidence_expansion_keeps_git_and_size_checks(tmp_path, monkeyp
         target.symlink_to("/etc/passwd")
     else:
         target.write_text("\x00binary" if content_kind == "binary" else "x" * 1_500_000 if content_kind == "oversized" else source)
-    ocr.git(tmp_path, env, "init", "--quiet")
-    ocr.git(tmp_path, env, "add", ".")
-    ocr.git(tmp_path, env, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "--quiet", "-m", "Evidence")
-    sha = ocr.git(tmp_path, env, "rev-parse", "HEAD").strip()
+    git_source.git(tmp_path, env, "init", "--quiet")
+    git_source.git(tmp_path, env, "add", ".")
+    git_source.git(tmp_path, env, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "--quiet", "-m", "Evidence")
+    sha = git_source.git(tmp_path, env, "rev-parse", "HEAD").strip()
     options = RepoSettings().model_dump()
-    context = {"original_sha": sha, "head_sha": sha, "sources": {"current": {}}, "diff": ""}
-    original_command = ocr.command
-
-    def preview(args, *a, **k):
-        if args[0] != ocr.settings().ocr_binary:
-            return original_command(args, *a, **k)
-        return 0, json.dumps({"files": [
-            {"path": path, "will_review": False, "exclude_reason": "unsupported_ext"},
-        ]}), ""
-
-    monkeypatch.setattr(ocr, "command", preview)
-
+    context = {"base_sha": sha, "original_sha": sha, "head_sha": sha, "sources": {"current": {}}, "diff": ""}
     def expand():
         if stage == "assessment":
             run = SimpleNamespace(base_sha=sha, head_sha=sha, config={"settings": options})
@@ -157,10 +148,12 @@ def test_markdown_evidence_expansion_keeps_git_and_size_checks(tmp_path, monkeyp
 
 @pytest.fixture
 def scenario(seed, github_stub, monkeypatch):
+    monkeypatch.setattr(pipeline.git_source, "review_snapshot",
+        lambda *a, **k: nullcontext((Path("/tmp/repo"), {}, {}, "b" * 40)))
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: ("completed", {"summary": {"total_tokens": 100}}, [copy.deepcopy(COMMENT)]))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: ("completed", {"summary": {"total_tokens": 100}}, [copy.deepcopy(COMMENT)]))
     first = new_run()
-    reviews.perform_review(first)
+    perform_review(first)
     with transaction() as db:
         finding = db.scalar(select(Finding))
         finding.thread_id, finding.comment_id = "thread", 12
@@ -173,7 +166,7 @@ def scenario(seed, github_stub, monkeypatch):
                   {"databaseId": 12, "body": reviews.marker("finding", fid), "url": "https://github.com/thread",
                    "author": {"login": "mortis-test[bot]"}, "updatedAt": "2026-10-07T10:00:00Z"}
               ]}}
-    monkeypatch.setattr(github, "threads", lambda *a: [copy.deepcopy(thread)])
+    monkeypatch.setattr(github, "threads", lambda *a, **kwargs: [copy.deepcopy(thread)])
     monkeypatch.setattr(github, "request", lambda *a, **k: remote(HEAD))
     with transaction() as db:
         run = reviews.create_run(db, db.get(PullRequest, "pr"), db.get(Repository, 22), "automatic")
@@ -191,14 +184,14 @@ def scenario(seed, github_stub, monkeypatch):
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
         return result
 
-    monkeypatch.setattr(ocr, "review", engine)
-    monkeypatch.setattr(verification, "build_context", lambda *a: copy.deepcopy(CONTEXT))
+    monkeypatch.setattr(mortis, "review", engine)
+    monkeypatch.setattr(verification, "build_context", lambda *a, **kwargs: copy.deepcopy(CONTEXT))
 
-    def verify(*args):
+    def verify(*args, **kwargs):
         calls.append("verify")
         return copy.deepcopy(RESULT), {"tokens": 50}
 
-    monkeypatch.setattr(verification, "api_verify", verify)
+    monkeypatch.setattr(verification, "mortis_verify", verify)
     mutations = []
 
     def set_thread(token, identity, resolved):
@@ -226,12 +219,12 @@ def saved():
 
 
 def perform(scenario):
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     return saved()
 
 
 @pytest.mark.parametrize("automatic", [False, True])
-@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_manual_reviews_verify_and_resolve_without_automatic_review_grant(scenario, monkeypatch, automatic, kind):
     with transaction() as db:
         repo, run = db.get(Repository, 22), db.get(ReviewRun, scenario["run"])
@@ -242,7 +235,6 @@ def test_manual_reviews_verify_and_resolve_without_automatic_review_grant(scenar
             connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
             run.owner_id = 7
             run.config = {**run.config, "connection": reviews.connection_snapshot(connection)}
-    monkeypatch.setattr(runner_client, "review", lambda *a, **k: (copy.deepcopy(RESULT), {"tokens": 50}))
     row, finding, run = perform(scenario)
     assert row.status == "completed" and row.resolution == "pending"
     reviews.synchronize_finding(finding.sync_intent)
@@ -277,11 +269,11 @@ def test_new_manual_run_retries_unsuccessful_verification_with_current_settings(
         job_id = job.id if job else None
     calls = []
 
-    def verify(*args):
-        calls.append((args[2]["model"], args[5], args[6]))
+    def verify(*args, **kwargs):
+        calls.append((args[0]["model"], args[3], args[4]))
         return copy.deepcopy(RESULT), {"tokens": 50}
 
-    monkeypatch.setattr(verification, "api_verify", verify)
+    monkeypatch.setattr(verification, "mortis_verify", verify)
     if job_id:
         jobs.execute_job.run(job_id)
         jobs.execute_job.run(job_id)
@@ -318,7 +310,7 @@ def test_retry_migration_preserves_previous_attempt(scenario):
 @pytest.mark.parametrize("verdict", ["fixed", "still_present", "uncertain"])
 def test_explicit_verdict_and_immutable_history(scenario, monkeypatch, verdict):
     result = {**RESULT, "verdict": verdict}
-    monkeypatch.setattr(verification, "api_verify", lambda *a: (result, {"tokens": 50}))
+    monkeypatch.setattr(verification, "mortis_verify", lambda *a, **kwargs: (result, {"tokens": 50}))
     row, finding, run = perform(scenario)
     assert row.verdict == verdict and row.status == "completed" and finding.status == "open"
     assert row.context == CONTEXT and run.status == "completed"
@@ -431,7 +423,7 @@ def test_citation_feedback_preserves_missing_source_and_line_range_boundaries():
     assert all("source_lines" not in error for error in errors)
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("sequence", ["request", "correct_request", "request_correct", "multiple_citations", "missing_request", "excluded_request", "excluded_uncertain"])
 def test_dependency_evidence_and_citation_correction_share_budget(scenario, monkeypatch, kind, parallel, sequence):
@@ -449,13 +441,13 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
             run.owner_id = 7
             run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
     helper = "\n\ndef report_tokens(report):\n    return None\n"
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"private/helper.py"})
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a, **kwargs: set(paths) - {"private/helper.py"})
     def tree(repo, env, *args, stopped):
         assert args == ("ls-tree", "-r", "-t", "-z", HEAD) and not stopped()
         return "\0".join(f"{mode} blob {'a' * 40}\t{path}" for mode, path in (
             ("100644", "helper.py"), ("100644", "private/helper.py"), ("120000", "linked/helper.py"),
         ))
-    monkeypatch.setattr(ocr, "git", tree)
+    monkeypatch.setattr(git_source, "git", tree)
     reads, calls, native_ids = [], [], []
     def read(repo, env, sha, path, stopped):
         reads.append((sha, path))
@@ -508,23 +500,15 @@ def test_dependency_evidence_and_citation_correction_share_budget(scenario, monk
                     raw.update(verdict="uncertain", explanation="Required evidence is excluded by review scope.")
         return raw
 
-    def api(repo, env, connection, credentials, context, budget, remaining, stopped):
+    def api(connection, credentials, context, budget, remaining, stopped, **kwargs):
         raw = respond(context, budget, remaining, stopped)
         try:
             return verification.validate_response(raw, context), {"tokens": 25}
         except verification.ResultValidationError as exc:
             raise verification.VerificationOutputError(str(exc), {"tokens": 25}, feedback=exc.feedback) from exc
 
-    def native(connection, attempt_id, payload, stopped):
-        native_ids.append(attempt_id)
-        assert "required_sources" in payload["output_schema"]["required"]
-        assert "1 | while True:" in payload["prompt"]
-        with transaction() as db:
-            context = db.scalar(select(FindingVerification).where(FindingVerification.run_id == identity)).context
-        return respond(context, payload["token_budget"], payload["timeout"], stopped), {"tokens": 25}
-    monkeypatch.setattr(verification, "api_verify", api)
-    monkeypatch.setattr(runner_client, "review", native)
-    reviews.perform_review(identity)
+    monkeypatch.setattr(verification, "mortis_verify", api)
+    perform_review(identity)
     if parallel:
         with transaction() as db:
             if kind != "api":
@@ -555,21 +539,21 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
     calls = []
     tick = now()
     monkeypatch.setattr(verification, "now", lambda: tick)
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if stop == "excluded" else set(paths))
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a, **kwargs: set() if stop == "excluded" else set(paths))
     if stop.startswith("missing"):
         def missing_git(*args, **kwargs):
             nonlocal tick
             if stop == "missing_timeout":
                 tick += timedelta(hours=1)
             return ""
-        monkeypatch.setattr(ocr, "git", missing_git)
+        monkeypatch.setattr(git_source, "git", missing_git)
     else:
-        monkeypatch.setattr(verification, "read_source", lambda *a: "dependency = True\n")
+        monkeypatch.setattr(verification, "read_source", lambda *a, **kwargs: "dependency = True\n")
     if stop in {"budget", "missing_budget"}:
         with transaction() as db:
             run = db.get(ReviewRun, scenario["run"])
             run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": 125}}
-    def infer(repo, env, connection, credentials, context, budget, remaining, stopped):
+    def infer(connection, credentials, context, budget, remaining, stopped, **kwargs):
         nonlocal tick
         calls.append(budget)
         if stop == "unknown":
@@ -595,11 +579,11 @@ def test_verification_followups_keep_guards_and_usage(scenario, monkeypatch, sto
         return {**RESULT, "verdict": "uncertain", "required_sources": [
             {"revision": "current", "path": f"helper{len(calls)}.py"},
         ]}, {"tokens": None if stop == "missing_unknown" else 25}
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     row, finding, _ = perform(scenario)
     assert len(calls) == (3 if stop in {"three_passes", "missing", "excluded"} else 2 if stop == "repeat_citation" else 1)
     assert row.verdict == "uncertain" and finding.desired_status is None
-    assert row.usage == {"tokens": calls[0] if stop == "unknown" else None if stop == "missing_unknown" else 25 * len(calls)}
+    assert row.usage == {"tokens": None if stop in {"unknown", "missing_unknown"} else 25 * len(calls)}
     assert row.status == ("completed" if stop in {"three_passes", "missing", "excluded"} else "failed" if stop in {"connection", "unknown", "missing_unknown", "repeat_citation"} else "skipped")
     if stop == "missing":
         assert "three passes" in row.result["explanation"]
@@ -611,7 +595,7 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
     if bad == "file_limit":
         context["diff_only_paths"] = [f"changed{index}.py" for index in range(99)]
     path = "../secret" if bad == "traversal" else "src/retry.py" if bad == "already_loaded" else "helper.py"
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set() if bad == "excluded" else set(paths))
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a, **kwargs: set() if bad == "excluded" else set(paths))
     commands = []
     def git(repo, env, *args, **kwargs):
         commands.append(args)
@@ -621,7 +605,7 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
                 return ""
             return f"{'120000' if bad == 'symlink' else '100644'} blob {'a' * 40}\thelper.py"
         return "\x00binary" if bad == "binary" else "x" * 1_500_001
-    monkeypatch.setattr(ocr, "git", git)
+    monkeypatch.setattr(git_source, "git", git)
     with pytest.raises(ValueError) as error:
         verification.expand_context(tmp_path, {}, context, [{"revision": "current", "path": path}], {}, lambda: False)
     if bad in {"missing", "symlink"}:
@@ -633,7 +617,7 @@ def test_dependency_loading_keeps_source_boundaries(tmp_path, monkeypatch, bad):
 def test_requested_original_dependency_uses_pinned_revision(tmp_path, monkeypatch):
     context = copy.deepcopy(CONTEXT)
     context["diff_only_paths"] = ["helper.py"]
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths))
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a, **kwargs: set(paths))
     reads = []
     def read(repo, env, sha, path, stopped):
         reads.append((sha, path))
@@ -654,12 +638,12 @@ def test_requested_original_dependency_uses_pinned_revision(tmp_path, monkeypatc
 def test_excluded_evidence_does_not_consume_source_capacity(tmp_path, monkeypatch, task, extra_permitted):
     context = {"sources": {"current": {f"source{i}.py": "safe" for i in range(100)}}, "diff": ""}
     requested = ["private.yml", *(["helper.py"] if extra_permitted else [])]
-    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a: set(paths) - {"private.yml"})
-    monkeypatch.setattr(verification, "read_source", lambda *a: pytest.fail("No further source may be loaded"))
+    monkeypatch.setattr(verification, "filter_context", lambda _r, _e, paths, *a, **kwargs: set(paths) - {"private.yml"})
+    monkeypatch.setattr(verification, "read_source", lambda *a, **kwargs: pytest.fail("No further source may be loaded"))
     error = ValueError if extra_permitted else verification.ResultValidationError
     with pytest.raises(error, match="100-source-file" if extra_permitted else "excluded.*private.yml"):
         if task == "assessment":
-            assessment.expand_context(tmp_path, {}, SimpleNamespace(config={"settings": {}}), context, requested, lambda: False)
+            assessment.expand_context(tmp_path, {}, SimpleNamespace(config={"settings": {}}, base_sha="b" * 40, head_sha=HEAD), context, requested, lambda: False)
         else:
             verification.expand_context(tmp_path, {}, context,
                 [{"revision": "current", "path": path} for path in requested], {}, lambda: False)
@@ -676,79 +660,26 @@ def test_dependency_requests_cannot_claim_a_fix_or_escape_limits(verdict, count,
 @pytest.mark.parametrize("known", [False, True])
 def test_correction_failure_accounts_for_previous_consumption(scenario, monkeypatch, known):
     calls = []
-    def infer(*args):
-        calls.append(args[5])
+    def infer(*args, **kwargs):
+        calls.append(args[3])
         raise verification.VerificationOutputError("Invalid citation", {"tokens": 25 if len(calls) == 1 or known else None},
                                                    feedback={"field": "evidence[0]"})
-    monkeypatch.setattr(verification, "api_verify", infer)
+    monkeypatch.setattr(verification, "mortis_verify", infer)
     row, finding, _ = perform(scenario)
     assert len(calls) == 2 and calls[1] == calls[0] - 25
-    assert row.status == "failed" and row.usage == {"tokens": 50 if known else calls[0]}
+    assert row.status == "failed" and row.usage == {"tokens": 50 if known else None}
     assert finding.desired_status is None
-
-
-@pytest.mark.parametrize("mode", [
-    "valid", "unrelated_empty", "unrelated_truncated", "missing", "multiple", "wrong_repo", "wrong_task",
-    "malformed", "nonobject", "empty", "wrong_session", "wrong_response_session", "missing_session",
-    "flat_result", "string_result", "missing_state",
-])
-def test_terminal_result_is_scoped_to_one_explicit_response(tmp_path, monkeypatch, mode):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    folder = tmp_path / ".opencodereview/sessions/repo"
-    folder.mkdir(parents=True)
-    root = tmp_path / "repo"
-    session_id = "00000000-0000-4000-8000-000000000001"
-    record = {"type": "llm_response", "sessionId": session_id, "taskType": "main_task", "tool_calls": [{
-        "name": "task_done", "arguments": json.dumps({"state": "DONE", "result": RESULT}),
-    }]}
-    if mode == "multiple":
-        record["tool_calls"] *= 2
-    elif mode == "missing":
-        record["tool_calls"][0]["arguments"] = '{"state":"DONE"}'
-    elif mode == "wrong_task":
-        record["taskType"] = "review_filter_task"
-    elif mode == "malformed":
-        record["tool_calls"][0]["arguments"] = "invalid"
-    elif mode == "nonobject":
-        record["tool_calls"][0]["arguments"] = "null"
-    elif mode == "flat_result":
-        record["tool_calls"][0]["arguments"] = json.dumps({"state": "DONE", **RESULT})
-    elif mode == "string_result":
-        record["tool_calls"][0]["arguments"] = json.dumps({"state": "DONE", "result": json.dumps(RESULT)})
-    elif mode == "missing_state":
-        record["tool_calls"][0]["arguments"] = json.dumps({"result": RESULT})
-    elif mode == "wrong_response_session":
-        record["sessionId"] = "another-session"
-    header = {"type": "session_start", "sessionId": session_id,
-              "cwd": str(root) if mode != "wrong_repo" else "/another/repo"}
-    if mode == "wrong_session":
-        header["sessionId"] = "another-session"
-    (folder / f"{session_id}.jsonl").write_text(
-        "" if mode == "empty" else json.dumps(header) + "\n" + json.dumps(record) + "\n",
-    )
-    if mode.startswith("unrelated_"):
-        (folder / "interrupted.jsonl").write_text("{" if mode == "unrelated_truncated" else "")
-    if mode == "valid" or mode.startswith("unrelated_"):
-        assert verification.terminal_result(root, session_id) == RESULT
-    else:
-        with pytest.raises(ValueError) as caught:
-            verification.terminal_result(root, None if mode == "missing_session" else session_id)
-        if mode in {"missing", "malformed", "nonobject", "flat_result", "string_result", "missing_state", "multiple", "wrong_task"}:
-            assert caught.value.feedback["kind"] == "delivery"
-            assert caught.value.feedback["expected"]["state"] == "DONE"
-        else:
-            assert not hasattr(caught.value, "feedback")
 
 
 def test_unchanged_code_or_suggestion_match_is_not_fix_proof():
     assert verification.validate_result(RESULT, {**CONTEXT, "diff": ""})["verdict"] == "uncertain"
 
 
-@pytest.mark.parametrize("failure", [ValueError("missing context"), runner_client.RunnerBlocked("quota"), TimeoutError("time limit"), RuntimeError("provider-secret")])
+@pytest.mark.parametrize("failure", [ValueError("missing context"), RunnerBlocked("quota"), TimeoutError("time limit"), RuntimeError("provider-secret")])
 def test_verification_failures_preserve_new_review(scenario, monkeypatch, failure):
-    def fail(*a):
+    def fail(*a, **kwargs):
         raise failure
-    monkeypatch.setattr(verification, "api_verify", fail)
+    monkeypatch.setattr(verification, "mortis_verify", fail)
     row, finding, run = perform(scenario)
     assert row.verdict == "uncertain" and row.status == "failed"
     assert finding.status == "open" and finding.desired_status is None
@@ -812,7 +743,7 @@ def test_lost_success_response_recovers_without_duplicate_mutation(scenario, mon
         jid = db.scalar(select(Job.id).where(Job.kind == "resolve"))
     jobs.execute_job(jid)
     assert saved()[1].status == "open"
-    monkeypatch.setattr(github, "set_thread", lambda *a: pytest.fail("Resolved twice"))
+    monkeypatch.setattr(github, "set_thread", lambda *a, **kwargs: pytest.fail("Resolved twice"))
     reviews.synchronize_finding(finding.sync_intent)
     assert saved()[1].status == "resolved" and scenario["mutations"] == [True]
 
@@ -884,19 +815,36 @@ def test_resume_reuses_review_and_saved_verification(scenario):
     calls = list(scenario["calls"])
     with transaction() as db:
         db.get(ReviewRun, scenario["run"]).status = "running"
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert scenario["calls"] == calls and saved()[0].id == row.id
 
 
-def test_interrupted_verification_reservation_is_not_reissued(scenario):
+@pytest.mark.parametrize("usage", [{"tokens": None, "reserved_tokens": 199900}, {"tokens": 199900}, {"tokens": None}])
+@pytest.mark.parametrize("parallel", [False, True])
+def test_interrupted_verification_reservation_is_not_reissued(scenario, monkeypatch, usage, parallel):
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
+        if parallel:
+            run.config = {**run.config, "pipeline_version": 2,
+                          "settings": {**run.config["settings"], "max_files": None}}
+            run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
         verification.prepare(db, run, db.get(Repository, 22), "token")
         db.flush()
         row = db.scalar(select(FindingVerification))
-        row.status, row.usage = "running", {"tokens": 199900}
-    row, finding, _ = perform(scenario)
+        if not parallel:
+            row.status, row.usage = "running", copy.deepcopy(usage)
+    monkeypatch.setattr(verification, "mortis_verify", lambda *a, **k: pytest.fail("Interrupted inference was reissued"))
+    perform_review(scenario["run"])
+    if parallel:
+        with transaction() as db:
+            row = db.scalar(select(FindingVerification))
+            row.status, row.usage = "running", copy.deepcopy(usage)
+            job_id = db.scalar(select(Job.id).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == scenario["run"]))
+            assert job_id is not None
+        jobs.execute_job.run(job_id)
+    row, finding, _ = saved()
     assert row.status == "failed" and row.verdict == "uncertain"
+    assert row.usage == usage and "reserved budget cannot be reused" in row.error
     assert finding.status == "open" and scenario["calls"] == ["review"]
 
 
@@ -910,7 +858,7 @@ def test_existing_limits_never_reset(scenario, limit):
             run.started_at = now() - timedelta(hours=1)
         else:
             db.get(Repository, 22).settings = {"auto_resolve": True, "automatic": False}
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert "verify" not in scenario["calls"] and not scenario["mutations"]
 
 
@@ -939,12 +887,12 @@ def test_unlimited_verification_preserves_other_allowances(scenario, monkeypatch
         run = db.get(ReviewRun, scenario["run"])
         run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": tokens, "timeout_seconds": timeout}}
         run.started_at = now() - timedelta(seconds=10 if timeout else 7300)
-    def verify(repo, env, connection, credentials, context, budget, remaining, stopped):
+    def verify(connection, credentials, context, budget, remaining, stopped, **kwargs):
         assert budget == (None if tokens is None else tokens - 100)
         assert remaining is None if timeout is None else 0 < remaining <= 890
         assert not stopped()
         return RESULT, {"tokens": 75}
-    monkeypatch.setattr(verification, "api_verify", verify)
+    monkeypatch.setattr(verification, "mortis_verify", verify)
     row, _, run = perform(scenario)
     assert row.status == "completed" and row.usage == {"tokens": 75} and run.status == "completed"
 
@@ -954,25 +902,25 @@ def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypa
         run = db.get(ReviewRun, scenario["run"])
         run.config = {**run.config, "settings": {**run.config["settings"], "token_budget": None, "timeout_seconds": None}}
     calls = []
-    def fail(*args):
+    def fail(*args, **kwargs):
         calls.append(True)
         raise ValueError("Consumption unknown")
-    monkeypatch.setattr(verification, "api_verify", fail)
+    monkeypatch.setattr(verification, "mortis_verify", fail)
     row, _, _ = perform(scenario)
     assert row.status == "failed" and row.usage == {"tokens": None}
     with transaction() as db:
         db.get(ReviewRun, scenario["run"]).status = "running"
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
 
 
 def test_file_limit_skips_verification_and_queues_notice(scenario, monkeypatch):
-    result = ocr.file_limit_result([f"file{i}.py" for i in range(41)], 40)
+    result = file_limit_result([f"file{i}.py" for i in range(41)], 40)
     def skipped(*args, **kwargs):
         kwargs["after_review"](result, Path("/tmp/repo"), {}, {})
         return result
-    monkeypatch.setattr(ocr, "review", skipped)
-    monkeypatch.setattr(verification, "perform", lambda *a: pytest.fail("Skipped runs must not verify findings"))
+    monkeypatch.setattr(mortis, "review", skipped)
+    monkeypatch.setattr(verification, "perform", lambda *a, **kwargs: pytest.fail("Skipped runs must not verify findings"))
     row, finding, run = perform(scenario)
     assert row.status == "skipped" and finding.status == "open" and not scenario["mutations"]
     assert run.status == "skipped" and run.publication == "pending"
@@ -984,34 +932,28 @@ def test_file_limit_skips_verification_and_queues_notice(scenario, monkeypatch):
 
 @pytest.mark.parametrize("kind", ["chatgpt", "claude_code"])
 @pytest.mark.parametrize("unlimited", [False, True])
-def test_native_verification_uses_same_connection_and_schema(scenario, monkeypatch, kind, unlimited):
+def test_retired_native_verification_never_starts(scenario, monkeypatch, kind, unlimited):
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.kind, connection.owner_id, connection.auth_status = kind, 7, "connected"
         db.add(ConnectionGrant(connection_id=connection.id, repository_id=22, automatic=True))
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
-        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7,
-                                                  "options": {"prompt_token_ceiling": 200000}}}
+        run.owner_id, run.engine = 7, kind
+        run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
         if unlimited:
-            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None,
-                                                   "token_budget": None}}
+            run.config = {**run.config, "settings": {**run.config["settings"], "timeout_seconds": None, "token_budget": None}}
             run.started_at = now() - timedelta(seconds=7300)
             run.report = {"summary": {"total_tokens": 200000}, "limits": {"context_bytes": 800000}}
             run.progress = {"analysis_saved": True, "analysis_status": "completed"}
-    calls = []
-    def native(connection, identity, payload, stopped):
-        calls.append(payload)
-        assert connection == "connection" and identity.startswith("verify-") and not stopped()
-        assert payload["timeout"] is None if unlimited else payload["timeout"] > 0
-        assert payload["token_budget"] == (None if unlimited else 199900)
-        return RESULT, {"tokens": 50}
-    monkeypatch.setattr(runner_client, "review", native)
-    row, _, _ = perform(scenario)
-    assert row.verdict == "fixed" and len(calls) == 1
-    assert calls[0]["task"] == "verification" and calls[0]["output_schema"]["additionalProperties"] is False
-    assert calls[0]["prompt_token_ceiling"] == 200000
-    assert row.usage == {"tokens": 50}
+        before = copy.deepcopy((run.config, run.report))
+    perform_review(scenario["run"])
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        assert run.status == "cancelled" and "retired" in run.error
+        assert (run.config, run.report) == before
+        assert not db.scalar(select(FindingVerification))
+        assert db.get(Finding, scenario["finding"]).status == "open"
+    assert scenario["calls"] == [] and scenario["mutations"] == []
 
 
 def test_migration_preserves_findings_occurrences_and_defaults(scenario):
@@ -1071,7 +1013,7 @@ def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypa
         return set(sources) - {"private.py", "file-secret.py"}
     monkeypatch.setattr(verification, "filter_context", select_paths)
     finding = {**COMMENT, "path": "missing.py" if change == "missing" else "original.py"}
-    args = (root, ocr.child_environment(), {}, finding, original, head,
+    args = (root, child_environment(), {}, finding, original, head,
             RepoSettings(delegated_context_bytes=byte_budget).model_dump(), lambda: False)
     if change in {"missing", "symlink"}:
         with pytest.raises(ValueError, match="not a regular file"):
@@ -1094,34 +1036,34 @@ def test_context_uses_original_git_objects_and_tracks_renames(tmp_path, monkeypa
 
 
 def test_manual_change_during_analysis_invalidates_fixed_result(scenario, monkeypatch):
-    def changed(*args):
+    def changed(*args, **kwargs):
         with transaction() as db:
             reviews.request_finding_status(db, db.get(Finding, scenario["finding"]), "open", db.get(User, 7), "Investigating")
         return RESULT, {"tokens": 50}
-    monkeypatch.setattr(verification, "api_verify", changed)
+    monkeypatch.setattr(verification, "mortis_verify", changed)
     row, finding, _ = perform(scenario)
     assert row.verdict == "fixed" and row.resolution == "skipped"
     assert finding.desired_status == "open" and scenario["mutations"] == []
 
 
 def test_new_commit_during_analysis_never_resolves(scenario, monkeypatch):
-    def push(*args):
+    def push(*args, **kwargs):
         with transaction() as db:
             reviews.upsert_pr(db, db.get(Repository, 22), remote("d" * 40))
         return RESULT, {"tokens": 50}
-    monkeypatch.setattr(verification, "api_verify", push)
+    monkeypatch.setattr(verification, "mortis_verify", push)
     row, finding, run = perform(scenario)
     assert row.status == "skipped" and finding.desired_status is None
     assert run.status == "superseded"
 
 
 def test_worker_attempt_fences_stale_verification_result(scenario, monkeypatch):
-    def replaced(*args):
+    def replaced(*args, **kwargs):
         with transaction() as db:
             run = db.get(ReviewRun, scenario["run"])
             run.progress = {**run.progress, "execution": "new-worker"}
         return RESULT, {"tokens": 50}
-    monkeypatch.setattr(verification, "api_verify", replaced)
+    monkeypatch.setattr(verification, "mortis_verify", replaced)
     row, finding, _ = perform(scenario)
     assert row.result is None and finding.desired_status is None
 
@@ -1134,7 +1076,7 @@ def test_unknown_or_incomplete_thread_never_resolves(scenario):
 
 
 def test_false_positive_retains_dismissal_workflow(scenario, monkeypatch, client):
-    monkeypatch.setattr(verification, "api_verify", lambda *a: ({**RESULT, "original_issue_present": False, "dismissal_recommended": True}, {"tokens": 50}))
+    monkeypatch.setattr(verification, "mortis_verify", lambda *a, **kwargs: ({**RESULT, "original_issue_present": False, "dismissal_recommended": True}, {"tokens": 50}))
     row, finding, _ = perform(scenario)
     assert row.verdict == "uncertain" and finding.status == "open" and not finding.desired_status
     detail = client.get(f"/api/v1/findings/{finding.id}").json()
@@ -1142,20 +1084,19 @@ def test_false_positive_retains_dismissal_workflow(scenario, monkeypatch, client
     assert "context" not in detail["verifications"][0]  # Only cited evidence is exposed in history.
 
 
-def test_native_consent_revocation_during_verification_stops_resolution(scenario, monkeypatch):
+def test_retired_native_verification_cannot_start_without_grants(scenario, monkeypatch):
     with transaction() as db:
-        c = db.get(Connection, "connection")
-        c.kind, c.owner_id, c.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id=c.id, repository_id=22, automatic=True))
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
+        run.owner_id, run.engine = 7, "chatgpt"
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
-    monkeypatch.setattr(runner_client, "review", lambda *args: (RESULT, {"tokens": 50}))
-    _, finding, _ = perform(scenario)
+    perform_review(scenario["run"])
     with transaction() as db:
-        db.delete(db.get(ConnectionGrant, ("connection", 22)))
-    reviews.synchronize_finding(finding.sync_intent)
-    assert saved()[1].status == "open" and not scenario["mutations"]
+        assert db.get(ReviewRun, scenario["run"]).status == "cancelled"
+        assert db.get(Finding, scenario["finding"]).status == "open"
+        assert not db.scalar(select(FindingVerification))
+    assert scenario["calls"] == [] and not scenario["mutations"]
 
 
 def test_manual_reopen_racing_remote_write_is_restored(scenario, monkeypatch):
@@ -1180,86 +1121,13 @@ def test_manual_reopen_racing_remote_write_is_restored(scenario, monkeypatch):
     assert saved()[1].status == "open" and scenario["thread"]["isResolved"] is False
 
 
-@pytest.mark.parametrize("bad", ["absent", "budget", "warning", "usage", "multiple", "malformed"])
-def test_api_adapter_requires_explicit_complete_output(tmp_path, monkeypatch, bad):
-    from contextlib import nullcontext
-    response = {"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 10}, "comments": []}
-    if bad == "budget":
-        response["summary"]["budget_exceeded"] = True
-    elif bad == "warning":
-        response["warnings"] = ["incomplete"]
-    elif bad == "usage":
-        response["summary"].pop("total_tokens")
-    def terminal(root, session_id):
-        if bad in {"absent", "multiple"}:
-            raise ValueError("Expected exactly one terminal result.")
-        return {"verdict": "bad"} if bad == "malformed" else RESULT
-    monkeypatch.setattr(verification, "terminal_result", terminal)
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    def command(args, *a, **k):
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        return 0, json.dumps(response), ""
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(ValueError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
-    if bad != "usage":
-        assert caught.value.usage == {"tokens": 10}
-
-
-@pytest.mark.parametrize("session", ["valid", "unavailable", "wrong_repo"])
-def test_api_process_failure_preserves_redacted_diagnostics(tmp_path, monkeypatch, session):
-    from contextlib import contextmanager
-
-    session_id = "00000000-0000-4000-8000-000000000001"
-    api_secret, header_secret = 'provider-"secret', "header-\nsecret"
-    active, calls = [], []
-    @contextmanager
-    def configuration(*args, **kwargs):
-        active.append(True)
-        try:
-            yield
-        finally:
-            active.clear()
-    monkeypatch.setattr(ocr, "configuration", configuration)
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    def command(args, root, *a, **k):
-        calls.append(args)
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        if "scan" in args:
-            return 1, "", f"[ocr] Session: {session_id} (retry with: --resume {session_id})\nError: scan failed: {api_secret}"
-        assert active, "Session diagnostics must be read before configuration cleanup"
-        assert args[1:] == ["session", "show", "--repo", str(root), "--json", session_id]
-        if session == "unavailable":
-            raise ValueError("Session was unavailable")
-        return 0, json.dumps({
-            "summary": {"session_id": session_id, "repo_dir": str(root) if session == "valid" else "/another/repo"},
-            "items": [{"file_path": "evidence.py", "error": f"Provider rejected context: {header_secret} " + "x" * 5000}],
-        }), ""
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(ValueError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {
-            "api_key": api_secret, "extra_headers": {"X-Key": header_secret},
-        }, CONTEXT, 10000, 30, lambda: False)
-    detail = str(caught.value)
-    assert "exit_code" in detail and '"exit_code": 1' in detail
-    assert "token consumption is unknown" in detail and "[redacted]" in detail
-    assert "OCR verification process failed" in detail
-    assert json.dumps(api_secret)[1:-1] not in detail and json.dumps(header_secret)[1:-1] not in detail
-    assert ("Provider rejected context" in detail) == (session == "valid")
-    assert len(detail) < 5000 and not hasattr(caught.value, "usage")
-    assert sum("scan" in args and "--preview" not in args for args in calls) == 1
-
-
 def test_multiple_run_jobs_do_not_start_two_analyses(scenario, monkeypatch):
     with transaction() as db:
         first = db.scalar(select(Job).where(Job.kind == "review", Job.payload["run_id"].as_string() == scenario["run"]))
         first.status, first.attempts, first.lease_until = "running", 1, now() + timedelta(hours=1)
         run = db.get(ReviewRun, scenario["run"])
         run.status, run.progress = "running", {"execution": f"{first.id}:1"}
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Concurrent analysis"))
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Concurrent analysis"))
     reviews.perform_review(scenario["run"], "different-job:1")
 
 
@@ -1326,6 +1194,8 @@ def test_unrecoverable_worker_preserves_completed_analysis(scenario, monkeypatch
         jid = job.id
         if failure == "expired_lease":
             job.status, job.attempts, job.lease_until = "running", 3, now() - timedelta(seconds=1)
+        else:
+            job.status, job.available_at = "queued", now()
     if failure == "expired_lease":
         monkeypatch.setattr(jobs.execute_job, "apply_async", lambda **kw: None)
         jobs.dispatch()
@@ -1401,39 +1271,47 @@ def test_reconciliation_fetches_before_locking_and_refreshes_manual_intent(scena
         assert finding.status == "open" and finding.desired_status == "open"
 
 
-def test_subscription_verification_does_not_reset_token_allowance(scenario, monkeypatch):
+def test_retired_subscription_verification_preserves_saved_consumption(scenario, monkeypatch):
     with transaction() as db:
-        c = db.get(Connection, "connection")
-        c.kind, c.owner_id, c.auth_status = "chatgpt", 7, "connected"
-        db.add(ConnectionGrant(connection_id=c.id, repository_id=22, automatic=True))
+        connection = db.get(Connection, "connection")
+        connection.kind, connection.owner_id, connection.auth_status = "chatgpt", 7, "connected"
         run = db.get(ReviewRun, scenario["run"])
-        run.owner_id = 7
+        run.owner_id, run.engine = 7, "chatgpt"
         run.config = {**run.config, "connection": {**run.config["connection"], "kind": "chatgpt", "owner_id": 7}}
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
-        run.report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
-    monkeypatch.setattr(runner_client, "review", lambda *a: pytest.fail("Token allowance was reset"))
-    row, _, run = perform(scenario)
-    limit = run.config["settings"]["token_budget"]
-    assert row.status == "skipped"
-    assert row.error == f"Token budget exhausted: {limit:,} / {limit:,} tokens used or reserved. Fix verification skipped."
-
-
-def test_interrupted_primary_api_review_gets_no_new_allowance(scenario, monkeypatch):
+        report = {"summary": {"total_tokens": run.config["settings"]["token_budget"]}}
+        run.report = report
+    perform_review(scenario["run"])
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])
+        assert run.status == "cancelled" and "retired" in run.error
+        assert run.report == report
+        assert not db.scalar(select(FindingVerification))
+    assert scenario["calls"] == [] and not scenario["mutations"]
+
+
+def test_interrupted_ocr_review_refuses_execution_without_new_allowance(scenario, monkeypatch):
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        run.engine = "ocr"
+        run.config = {**run.config, "analysis_engine": "ocr", "settings": {**run.config["settings"], "analysis_engine": "ocr"}}
         run.progress = {"analysis_started": True, "execution": "vanished-worker"}
-    monkeypatch.setattr(ocr, "review", lambda *a, **k: pytest.fail("Unknown usage was given a fresh allowance"))
-    reviews.perform_review(scenario["run"])
-    row, finding, run = saved()
-    assert run.status == "failed" and "remaining budget cannot be verified" in run.error
-    assert row.status == "skipped" and finding.status == "open"
+        original_report = copy.deepcopy(run.report)
+    monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Retired work reached inference"))
+    with pytest.raises(ValueError, match="OCR execution is retired"):
+        perform_review(scenario["run"])
+    with transaction() as db:
+        run = db.get(ReviewRun, scenario["run"])
+        assert run.engine == "ocr" and run.config["analysis_engine"] == "ocr"
+        assert run.report == original_report and not db.scalar(select(FindingVerification))
+        assert db.get(Finding, scenario["finding"]).status == "open"
 
 
 def test_verification_cancellation_keeps_finding_open(scenario, monkeypatch, client):
-    def cancelled(*args):
+    def cancelled(*args, **kwargs):
         assert client.post(f"/api/v1/runs/{scenario['run']}/cancel").status_code == 200
         return RESULT, {"tokens": 50}
-    monkeypatch.setattr(verification, "api_verify", cancelled)
+    monkeypatch.setattr(verification, "mortis_verify", cancelled)
     row, finding, run = perform(scenario)
     assert row.status == "skipped" and run.status == "cancelled"
     assert finding.status == "open" and not finding.desired_status
@@ -1450,9 +1328,9 @@ def test_late_sync_failure_does_not_overwrite_confirmed_resolution(scenario):
 
 
 def test_empty_stop_message_records_uncertain_without_discarding_review(scenario, monkeypatch):
-    def stopped(*args):
-        raise ocr.ReviewStopped()
-    monkeypatch.setattr(verification, "api_verify", stopped)
+    def stopped(*args, **kwargs):
+        raise ReviewStopped()
+    monkeypatch.setattr(verification, "mortis_verify", stopped)
     row, finding, run = perform(scenario)
     assert row.status == "skipped" and row.verdict == "uncertain"
     assert row.error == "Verification did not complete."
@@ -1471,7 +1349,7 @@ def test_graphql_bot_identity_links_only_app_owned_threads(scenario, monkeypatch
         }}}}
     monkeypatch.setattr(github, "graphql", response)
     threads = github_threads("token", "team/project", 3)
-    monkeypatch.setattr(github, "threads", lambda *args: threads)
+    monkeypatch.setattr(github, "threads", lambda *args, **kwargs: threads)
     with transaction() as db:
         finding = db.get(Finding, scenario["finding"])
         assert bool(verification.owned_thread(db, finding, threads)) == (actor_type == "Bot")
@@ -1506,7 +1384,7 @@ def test_resolution_setting_changes_do_not_repeat_same_commit_analysis(seed, cha
         assert pushed.id != first.id and pushed.config["settings"]["auto_resolve"] == (change == "enable")
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, monkeypatch, kind):
     with transaction() as db:
         finding = db.get(Finding, scenario["finding"])
@@ -1528,14 +1406,13 @@ def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, mo
             run.owner_id = 7
             run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
     contexts = []
-    def context(*args):
+    def context(*args, **kwargs):
         contexts.append(True)
         if len(contexts) == 1:
             raise ValueError("Necessary context is unavailable")
         return copy.deepcopy(CONTEXT)
     monkeypatch.setattr(verification, "build_context", context)
-    monkeypatch.setattr(runner_client, "review", lambda *a: (copy.deepcopy(RESULT), {"tokens": 50}))
-    reviews.perform_review(scenario["run"])
+    perform_review(scenario["run"])
     with transaction() as db:
         rows = list(db.scalars(select(FindingVerification)))
         failed = next(row for row in rows if row.status == "failed")
@@ -1545,7 +1422,7 @@ def test_context_failure_does_not_spend_the_next_findings_allowance(scenario, mo
 
 
 @pytest.mark.parametrize("known_usage", [True, False])
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenario, monkeypatch, known_usage, kind):
     if kind != "api":
         with transaction() as db:
@@ -1555,14 +1432,13 @@ def test_invalid_provider_output_keeps_known_usage_or_unknown_reservation(scenar
             run = db.get(ReviewRun, scenario["run"])
             run.owner_id = 7
             run.config = {**run.config, "connection": {**run.config["connection"], "kind": kind, "owner_id": 7}}
-    def fail(*args):
+    def fail(*args, **kwargs):
         if kind != "api":
-            raise runner_client.RunnerBlocked("failed", {"tokens": 25 if known_usage else None})
+            raise RunnerBlocked("failed", {"tokens": 25 if known_usage else None})
         if known_usage:
             raise verification.VerificationOutputError("Missing verdict", {"tokens": 25})
         raise ValueError("Unknown provider consumption")
-    monkeypatch.setattr(verification, "api_verify", fail)
-    monkeypatch.setattr(runner_client, "review", fail)
+    monkeypatch.setattr(verification, "mortis_verify", fail)
     row, finding, run = perform(scenario)
     assert row.usage["tokens"] == (25 if known_usage else run.config["settings"]["token_budget"] - 100 if kind == "api" else None)
     assert row.verdict == "uncertain" and finding.status == "open"
@@ -1647,159 +1523,12 @@ def test_lost_compensation_response_reconciles_without_duplicate_activity(scenar
         reviews.synchronize_finding(finding.sync_intent)
     row, finding, _ = saved()
     assert finding.desired_status == "open" and finding.sync_intent.get("reopen_verification_id") == row.id
-    monkeypatch.setattr(github, "set_thread", lambda *a: pytest.fail("Reopening repeated"))
+    monkeypatch.setattr(github, "set_thread", lambda *a, **kwargs: pytest.fail("Reopening repeated"))
     reviews.synchronize_finding(finding.sync_intent)
     reviews.synchronize_finding(finding.sync_intent)
     assert saved()[1].status == "open" and saved()[1].desired_status is None
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(Activity).where(Activity.action == "auto_resolution_reverted")) == 1
-
-
-@pytest.mark.parametrize("failure", ["too_large", "invalid_preview", "cancelled"])
-@pytest.mark.parametrize("ceiling", [58888, 200000])
-def test_evidence_preflight_never_spends_provider_allowance(tmp_path, monkeypatch, failure, ceiling):
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a: pytest.fail("Provider configuration entered"))
-    def preview(args, *a, **k):
-        assert "--preview" in args
-        assert args[args.index("--max-tokens") + 1] == str(ceiling)
-        if failure == "cancelled":
-            raise ocr.ReviewStopped()
-        return 0, "not json" if failure == "invalid_preview" else json.dumps({"files": [
-            {"path": "evidence.py", "will_review": False, "exclude_reason": "too_large"}
-        ]}), ""
-    monkeypatch.setattr(ocr, "command", preview)
-    with pytest.raises(verification.VerificationOutputError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {"options": {"prompt_token_ceiling": ceiling}}, {}, CONTEXT, 10000, 30, lambda: False)
-    assert caught.value.usage == {"tokens": 0}
-    assert caught.value.status == ("failed" if failure == "invalid_preview" else "skipped")
-    if failure == "too_large":
-        assert f"{ceiling * 4 // 5:,} tokens" in str(caught.value) and f"max_tokens={ceiling:,}" in str(caught.value)
-        assert "too_large" in str(caught.value) and "Evidence size:" in str(caught.value)
-
-
-@pytest.mark.parametrize("options, ceiling", [({}, 58888), ({"prompt_token_ceiling": 200000}, 200000)])
-def test_complete_prompt_limit_is_actionable_without_provider_usage(tmp_path, monkeypatch, options, ceiling):
-    from contextlib import nullcontext
-
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(verification, "terminal_result", lambda *a: None)
-    def command(args, *a, **k):
-        assert args[args.index("--max-tokens") + 1] == str(ceiling)
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        return 0, json.dumps({"status": "completed_with_warnings", "summary": {"total_tokens": 0},
-                             "warnings": [{"type": "token_threshold_exceeded",
-                                           "message": f"prompt tokens ({ceiling}) exceed 80% of max_tokens({ceiling})"}]}), ""
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(verification.VerificationOutputError, match=f"{ceiling * 4 // 5:,}-token limit.*{ceiling}") as caught:
-        verification.api_verify(tmp_path / "repo", {}, {"options": options}, {}, CONTEXT, 10000, 30, lambda: False)
-    assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
-
-
-@pytest.mark.parametrize("session", ["valid", "wrong_id", "wrong_repo", "wrong_limit", "wrong_path", "provider_error",
-                                     "completed", "reused", "llm_failure", "extra_item", "missing_counts", "bool_count"])
-def test_failed_scan_prompt_limit_requires_matching_pre_request_session(tmp_path, monkeypatch, session):
-    from contextlib import nullcontext
-
-    session_id = "00000000-0000-4000-8000-000000000001"
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    calls = []
-    def command(args, root, *a, **k):
-        calls.append(args)
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        if "scan" in args:
-            return 1, "", f"[ocr] Session: {session_id}\nError: all file scans failed"
-        summary = {"session_id": session_id, "repo_dir": str(root), "review_mode": "full_scan",
-                   "selected_files": 1, "failed_files": 1, "completed_files": 0, "reused_files": 0,
-                   "llm_failures": 0}
-        item = {"type": "failed", "file_path": "evidence.py",
-                "error": "prompt tokens (48135) exceed 80% of max_tokens(58888)"}
-        if session == "wrong_id":
-            summary["session_id"] = "another-session"
-        elif session == "wrong_repo":
-            summary["repo_dir"] = "/another/repo"
-        elif session == "wrong_limit":
-            item["error"] = "prompt tokens (48135) exceed 80% of max_tokens(32000)"
-        elif session == "wrong_path":
-            item["file_path"] = "another.py"
-        elif session == "provider_error":
-            item["error"] = "LLM completion error: prompt tokens (48135) exceed 80% of max_tokens(58888)"
-        elif session == "completed":
-            summary["completed_files"] = 1
-        elif session == "reused":
-            summary["reused_files"] = 1
-        elif session == "llm_failure":
-            summary["llm_failures"] = 1
-        elif session == "missing_counts":
-            summary.pop("llm_failures")
-        elif session == "bool_count":
-            summary["selected_files"] = True
-        return 0, json.dumps({"summary": summary, "items": [item] * (2 if session == "extra_item" else 1)}), ""
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(ValueError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {}, CONTEXT, 10000, 30, lambda: False)
-    if session == "valid":
-        assert isinstance(caught.value, verification.VerificationOutputError)
-        assert caught.value.status == "skipped" and caught.value.usage == {"tokens": 0}
-        assert "47,110-token limit" in str(caught.value) and "58888" in str(caught.value)
-    else:
-        assert "token consumption is unknown" in str(caught.value)
-        assert not hasattr(caught.value, "usage")
-    assert sum("scan" in args and "--preview" not in args for args in calls) == 1
-
-
-def test_api_prompt_ceiling_preserves_full_evidence_and_total_budget(tmp_path, monkeypatch):
-    from contextlib import nullcontext
-
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(verification, "terminal_result", lambda *a: RESULT)
-    calls = []
-    def command(args, root, *a, **k):
-        calls.append(args)
-        assert args[args.index("--max-tokens") + 1] == "200000"
-        assert args[args.index("--max-tokens-budget") + 1] == "10000"
-        assert (root / "evidence.py").read_text() == verification.evidence_bundle(CONTEXT)
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        return 0, json.dumps({"status": "success", "summary": {"files_reviewed": 1, "total_tokens": 10}, "comments": []}), ""
-    monkeypatch.setattr(ocr, "command", command)
-    result, usage = verification.api_verify(tmp_path / "repo", {}, {"options": {"prompt_token_ceiling": 200000}},
-                                            {}, CONTEXT, 10000, 30, lambda: False)
-    assert result == RESULT and usage == {"tokens": 10} and len(calls) == 2
-
-
-def test_api_adapter_retains_structured_citation_feedback_before_truncation(tmp_path, monkeypatch):
-    from contextlib import nullcontext
-
-    from code_mortis.reviews import assessment
-
-    context = {**CONTEXT, "history": []}
-    raw = {"verdict": "rejected", "relationship": "new", "finding_id": None,
-           "explanation": "x" * 10000, "cause": "", "trigger": "", "consequence": "",
-           "history_explanation": "", "contradicts_prior": False, "changed_conditions": "",
-           "suggestion_supported": False, "evidence": copy.deepcopy(RESULT["evidence"]), "required_paths": []}
-    raw["evidence"].append({**raw["evidence"][-1], "quote": "invented"})
-    monkeypatch.setattr(ocr, "git", lambda *a, **k: "")
-    monkeypatch.setattr(ocr, "configuration", lambda *a, **kwargs: nullcontext())
-    monkeypatch.setattr(verification, "terminal_result", lambda *a: raw)
-    def command(args, *a, **k):
-        if "--preview" in args:
-            return 0, json.dumps({"files": [{"path": "evidence.py", "will_review": True}]}), ""
-        return 0, json.dumps({"status": "success", "summary": {"total_tokens": 17, "files_reviewed": 1}}), ""
-    monkeypatch.setattr(ocr, "command", command)
-    with pytest.raises(verification.VerificationOutputError) as caught:
-        verification.api_verify(tmp_path / "repo", {}, {}, {}, context, 10000, 30, lambda: False,
-                                instructions=assessment.INSTRUCTIONS, schema=assessment.output_schema(context),
-                                validator=assessment.validate_response)
-    assert caught.value.usage == {"tokens": 17}
-    assert caught.value.feedback["field"] == "evidence[2]"
-    detail = str(caught.value).split("; response=", 1)[0]
-    assert "evidence[2]" in detail and "current" in detail and "src/retry.py" in detail
 
 
 def test_missing_resolution_permission_skips_analysis_but_preserves_review(scenario, monkeypatch):
@@ -1834,9 +1563,9 @@ def test_verifier_diagnostics_are_actionable_and_redacted(scenario, monkeypatch)
     raw = {**RESULT, "original_issue_present": "true"}
     with pytest.raises(ValueError, match="original_issue_present: bool_type"):
         verification.validate_result(raw, CONTEXT)
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise verification.VerificationOutputError("Invalid response: provider-secret", {"tokens": 17})
-    monkeypatch.setattr(verification, "api_verify", fail)
+    monkeypatch.setattr(verification, "mortis_verify", fail)
     row, finding, _ = perform(scenario)
     assert "provider-secret" not in row.error and "[redacted]" in row.error
     assert row.usage == {"tokens": 17} and finding.status == "open"
@@ -1892,7 +1621,7 @@ def test_ignore_and_restore_do_not_revive_pending_automatic_resolution(scenario,
     assert scenario["mutations"] == []
 
 
-@pytest.mark.parametrize("kind", ["api", "chatgpt", "claude_code"])
+@pytest.mark.parametrize("kind", ["api"])
 def test_fix_verification_validates_against_redacted_request_context(scenario, monkeypatch, kind):
     from code_mortis.core.security import seal
 
@@ -1909,7 +1638,7 @@ def test_fix_verification_validates_against_redacted_request_context(scenario, m
     original = copy.deepcopy(CONTEXT)
     for sources in original["sources"].values():
         sources["src/retry.py"] = sources["src/retry.py"].replace("\n", f" # {credential}\n", 1)
-    monkeypatch.setattr(verification, "build_context", lambda *a: copy.deepcopy(original))
+    monkeypatch.setattr(verification, "build_context", lambda *a, **kwargs: copy.deepcopy(original))
     calls = []
     def response(supplied):
         result = copy.deepcopy(RESULT)
@@ -1918,9 +1647,7 @@ def test_fix_verification_validates_against_redacted_request_context(scenario, m
             assert credential not in evidence["quote"] and "[redacted]" in evidence["quote"]
         calls.append(supplied)
         return result, {"tokens": 50}
-    monkeypatch.setattr(verification, "api_verify", lambda *args: response(args[4]))
-    monkeypatch.setattr(runner_client, "review", lambda connection, identity, payload, stopped:
-        response(payload["_evidence_context"]))
+    monkeypatch.setattr(verification, "mortis_verify", lambda *args, **kwargs: response(args[2]))
     row, finding, _ = perform(scenario)
     assert row.status == "completed" and row.verdict == "fixed" and row.usage == {"tokens": 50}
     assert len(calls) == 1 and finding.desired_status == "resolved"

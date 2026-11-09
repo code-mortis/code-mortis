@@ -33,7 +33,7 @@ async function mockInbox(page: Page, options: { many?: boolean; empty?: boolean;
     else if (path.endsWith("/runs")) data = { items: [], total: 0, page: 1, has_more: false, page_size: 10 };
     else if (path.startsWith("/pulls/")) data = {
       pull_request: { ...rows[0], url: "https://github.com/acme/code-mortis/pull/42", latest_run: null, head_ref: "feature", head_sha: "a".repeat(40), base_sha: "b".repeat(40), fork: false },
-      repository: repositories[0], run_count: 0, has_active_run: false, latest_observed_run_id: null, can_write: false,
+      repository: { ...repositories[0], settings: { analysis_engine: "mortis" }, connection_requires_setup: false }, run_count: 0, has_active_run: false, latest_observed_run_id: null, can_write: false,
     };
     else if (path === "/pulls") {
       requests.push(params);
