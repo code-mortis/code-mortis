@@ -327,6 +327,7 @@ def checkpoint(scan_id, key, state, **values):
             scan.cancel_requested = True
             raise ReviewStopped(_pat.REVOKED_MESSAGE)
         tasks = dict(scan.progress.get("tasks", {}))
+        # Pin context choices per task so retries preserve the durable request identity.
         for field in ("source_packing", "source_navigation"):
             if field in values and field in tasks.get(key, {}):
                 values[field] = tasks[key][field]

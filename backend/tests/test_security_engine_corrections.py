@@ -114,15 +114,26 @@ def test_navigation_replay_uses_pinned_context_without_new_discovery(tmp_path, m
     assert usage == {"tokens": 7}
 
 
-def test_source_navigation_checkpoint_is_immutable(scan_workflow):
+@pytest.mark.parametrize("field,first,replacement", [
+    ("source_navigation", {"hints": [{"path": "guards.py"}]}, {"hints": []}),
+    ("source_packing", True, False),
+    ("source_packing", False, True),
+])
+def test_source_context_choices_are_pinned_while_checkpoint_progress_advances(scan_workflow, field, first, replacement):
     scan_id = scan_workflow["scan_id"]
     with transaction() as db:
         scan = db.get(SecurityScan, scan_id)
         scan.status = "running"
-    first = {"hints": [{"path": "guards.py"}]}
-    service.checkpoint(scan_id, "analysis:app.py", "running", source_navigation=first)
-    result = service.checkpoint(scan_id, "analysis:app.py", "running", source_navigation={"hints": []})
-    assert result["source_navigation"] == first
+    service.checkpoint(scan_id, "analysis:app.py", "running", **{field: first}, context_paths=["app.py"])
+    result = service.checkpoint(scan_id, "analysis:app.py", "running", **{field: replacement},
+                                context_paths=["app.py", "guards.py"])
+    assert result[field] == first and result["context_paths"] == ["app.py", "guards.py"]
+    result = service.checkpoint(scan_id, "analysis:app.py", "completed", tokens=7, result={"findings": []})
+    assert result[field] == first and result["status"] == "completed" and result["tokens"] == 7
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.progress["tasks"]["analysis:app.py"] == result
+        assert scan.progress["tokens"] == 7
 
 
 @pytest.mark.parametrize("selected", ["ocr", "mortis"])
