@@ -109,6 +109,8 @@ def test_parallel_profile_seeds_queued_production_job(evaluation, workload):  # 
 @pytest.fixture
 def queued_database(monkeypatch, tmp_path):
     """Own a fresh eval DB on the isolated test server; never reset a pre-existing DB."""
+    from code_mortis import jobs
+
     original = engine().url
     assert original.host in {"127.0.0.1", "host.docker.internal"} and original.port == 55439 and original.database == "mortis_test"
     evaluation_url = original.set(database="mortis_eval").render_as_string(hide_password=False)
@@ -138,7 +140,25 @@ def queued_database(monkeypatch, tmp_path):
             for name in ("GITHUB_TOKEN", "GH_TOKEN", "CM_GITHUB_TOKEN"):
                 patcher.delenv(name, raising=False)
             command.upgrade(Config("alembic.ini"), "head")
-            yield
+            # Jobs may have been imported before this fixture changed the broker settings.
+            dispatch = jobs.execute_job.apply_async
+            with jobs.celery.connection_for_write(url=settings().redis_url) as connection:
+                patcher.setattr(jobs.execute_job, "apply_async", lambda **kwargs: dispatch(connection=connection, **kwargs))
+                launcher = tmp_path / "queue_worker.py"
+                launcher.write_text(
+                    "import json,sys\nfrom pathlib import Path\n"
+                    f"sys.path.insert(0, {str(ROOT / 'scripts/engine_eval')!r})\n"
+                    "import runtime\nruntime.queue_worker(json.loads(Path(sys.argv[2]).read_text()))\n"
+                )
+                popen = runtime.subprocess.Popen
+
+                def worker_command(arguments, *args, **kwargs):
+                    if len(arguments) > 2 and arguments[1:3] == [str(Path(runtime.__file__).resolve()), "--queue-worker"]:
+                        arguments = [arguments[0], str(launcher), *arguments[2:]]
+                    return popen(arguments, *args, **kwargs)
+
+                patcher.setattr(runtime.subprocess, "Popen", worker_command)
+                yield
             engine().dispose()
             engine.cache_clear()
     finally:
@@ -187,7 +207,6 @@ def test_real_prefork_queue_completes_all_stages_and_preserves_history(
                         "unit_key": supplied["assigned_units"][0]["key"], "path": "billing.py",
                         "start_line": 14, "end_line": 14, "severity": "medium", "category": "correctness",
                         "content": "Rounding each amount changes the aggregate tax.", "suggestion_code": "",
-                        "existing_code": "    taxes = ((amount * rate).quantize(CENT, rounding=ROUND_HALF_EVEN) for amount in amounts)",
                         "trigger": "Several fractional tax amounts.", "consequence": "Incorrect rounded total.",
                         "evidence": [{"source_id": next(row["source_id"] for row in supplied["citation_sources"] if row["path"] == "billing.py"),
                                       "start_line": 14, "end_line": 14}],
@@ -328,7 +347,7 @@ def test_queued_large_security_guards_scanner_before_any_ai(
     marker = tmp_path / "synthetic-scanner-executed"
     bootstrap = tmp_path / "security_bootstrap.py"
     bootstrap.write_text(
-        "import runpy,sys\nfrom pathlib import Path\n"
+        "import json,sys\nfrom pathlib import Path\n"
         "from code_mortis.security_scans import engine\n"
         "def synthetic_scan(*args, **kwargs):\n"
         f" Path({str(marker)!r}).write_text('synthetic scanner ran')\n"
@@ -336,8 +355,7 @@ def test_queued_large_security_guards_scanner_before_any_ai(
         "'scanners': ['vuln','misconfig','secret']}, 'findings': [], 'problems': [], 'targets': {}}\n"
         "engine.trivy=synthetic_scan\n"
         f"sys.path.insert(0,{str(ROOT / 'scripts/engine_eval')!r})\n"
-        f"sys.argv=[{str(ROOT / 'scripts/engine_eval/runtime.py')!r},*sys.argv[1:]]\n"
-        f"runpy.run_path({str(ROOT / 'scripts/engine_eval/runtime.py')!r},run_name='__main__')\n"
+        "import runtime\nruntime.queue_worker(json.loads(Path(sys.argv[2]).read_text()))\n"
     )
     popen = runtime.subprocess.Popen
 

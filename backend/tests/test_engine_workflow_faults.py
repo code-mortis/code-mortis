@@ -157,7 +157,6 @@ def test_prefork_workflow_loss_preserves_consumption_without_repeating_analysis(
                         "unit_key": supplied["assigned_units"][0]["key"], "path": "billing.py",
                         "start_line": 14, "end_line": 14, "severity": "medium", "category": "correctness",
                         "content": "Rounding each amount changes the aggregate tax.", "suggestion_code": "",
-                        "existing_code": "    taxes = ((amount * rate).quantize(CENT, rounding=ROUND_HALF_EVEN) for amount in amounts)",
                         "trigger": "Several fractional tax amounts.", "consequence": "Incorrect rounded total.",
                         "evidence": [{"source_id": next(row["source_id"] for row in supplied["citation_sources"] if row["path"] == "billing.py"),
                                       "start_line": 14, "end_line": 14}],
