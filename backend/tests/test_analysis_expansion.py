@@ -148,6 +148,35 @@ def test_evidence_rounds_follow_one_bounded_chain(expansion):
         assert db.get(AnalysisTask, parent_id).dependencies == []
 
 
+@pytest.mark.parametrize("dependencies", [["a"], ["a", "b"], ["b"]])
+def test_plan_dependencies_do_not_change_evidence_root_or_round_limit(seed, dependencies):
+    from test_analysis_foundation import planned
+
+    tasks = [task.model_dump(mode="json") for task in specification().tasks]
+    tasks[1]["dependencies"] = ["a"]
+    tasks[2]["dependencies"] = dependencies
+    plan_id, identities = planned(seed, tasks=tasks, settings={"concurrency": 2, "max_evidence_rounds": 2},
+                                  budgets={"analysis": None, "summary": None})
+    complete(identities["a"])
+    if "b" in dependencies:
+        complete(identities["b"])
+    parent_id = identities["summary"]
+    complete(parent_id)
+    first = append(parent_id)
+    assert append(parent_id) == first
+    complete(first)
+    second = append(first, child(first, round=2))
+    complete(second)
+    with pytest.raises(ValueError, match="round limit was reached"):
+        append(second, child(second, round=3))
+    with transaction() as db:
+        assert db.get(AnalysisTask, first).key == "summary:round:1:context"
+        assert db.get(AnalysisTask, second).key == "summary:round:2:context"
+        assert db.get(AnalysisTask, first).dependencies == [parent_id]
+        assert db.get(AnalysisTask, parent_id).dependencies == [identities[key] for key in dependencies]
+        assert db.get(AnalysisPlan, plan_id).snapshot["tasks"][2]["dependencies"] == dependencies
+
+
 @pytest.mark.parametrize("key", ["a:round:0:context", "a:round:2:context", "b:round:1:context", "arbitrary",
                                 "a:round:1:context:unit:forged"])
 def test_evidence_round_identity_must_name_its_root_and_exact_depth(expansion, key):

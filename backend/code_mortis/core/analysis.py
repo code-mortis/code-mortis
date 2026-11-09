@@ -162,8 +162,9 @@ def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specific
     limit = plan.snapshot["settings"].get("max_evidence_rounds", 0)
     if type(limit) is not int or not 0 <= limit <= 4:
         raise ValueError("Invalid evidence round limit")
+    plan_keys = {task["key"] for task in plan.snapshot["tasks"]}
     root, depth, seen = parent, 1, set()
-    while root.dependencies:
+    while root.key not in plan_keys and root.dependencies:
         if len(root.dependencies) != 1 or root.id in seen:
             raise ValueError("Evidence rounds require a single immutable parent chain")
         seen.add(root.id)
@@ -171,7 +172,7 @@ def append_task(db, job_id: str, job_attempt: int, parent_task_id: str, specific
         if root is None or root.plan_id != plan.id:
             raise ValueError("Evidence rounds cannot cross plans")
         depth += 1
-    if depth > limit or root.key not in {task["key"] for task in plan.snapshot["tasks"]}:
+    if depth > limit or root.key not in plan_keys:
         raise ValueError("The evidence round limit was reached")
     prefix = f"{root.key}:round:{depth}:"
     if not specification.key.startswith(prefix) or ":unit:" in specification.key:
